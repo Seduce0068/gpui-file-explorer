@@ -1,0 +1,819 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Safe filesystem operations used by the file explorer.
+//!
+//! Safety rules (enforced here, not only in the UI):
+//!
+//! - **Never overwrite an existing destination.** Callers choose
+//!   [`ConflictPolicy::Fail`], [`ConflictPolicy::Skip`] or
+//!   [`ConflictPolicy::Rename`]; there is deliberately no "overwrite" policy.
+//! - **Never follow symlinks when deleting.** [`remove_entry_safe`] inspects
+//!   `symlink_metadata` first, so a symlink to a directory is removed as a
+//!   link, not recursively traversed.
+//! - **Copy files atomically.** Data is written to a `.partial-*` sibling and
+//!   linked/renamed into place only after a complete, flushed copy; partial
+//!   files are removed on error or cancellation.
+//! - **Moves keep the source on failure.** Cross-device moves copy first and
+//!   delete the source only after the copy finished successfully.
+//! - **Cancellation leaves no half-written destination.** The caller passes a
+//!   [`CancelFlag`]; it is checked between entries and between 64 KiB chunks.
+//!
+//! This module is intentionally GPUI-free so it can be unit tested headlessly.
+//! It is currently exercised by the tests below and will back the P1
+//! cut/copy/paste UI; until then the module-level `allow(dead_code)` keeps the
+//! crate free of warnings.
+
+#![allow(dead_code)]
+
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Size of the chunks used when copying file contents.
+pub const COPY_CHUNK_SIZE: usize = 64 * 1024;
+
+/// Cooperative cancellation flag shared with the background operation.
+#[derive(Debug, Default)]
+pub struct CancelFlag(AtomicBool);
+
+impl CancelFlag {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// What to do when the destination name already exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictPolicy {
+    /// Abort with [`OpError::AlreadyExists`] (safest default).
+    Fail,
+    /// Leave the existing entry untouched and report it in [`OpStats::skipped`].
+    Skip,
+    /// Pick a unique name (`name (1).ext`, ...) and copy alongside.
+    Rename,
+}
+
+/// A failure of a filesystem operation. Messages are user-displayable.
+#[derive(Debug)]
+pub enum OpError {
+    NotFound(PathBuf),
+    PermissionDenied(PathBuf),
+    AlreadyExists(PathBuf),
+    InvalidTarget(String),
+    Unsupported(String),
+    Cancelled,
+    Io { path: PathBuf, message: String },
+}
+
+impl std::fmt::Display for OpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(path) => write!(f, "見つかりません: {}", path.display()),
+            Self::PermissionDenied(path) => {
+                write!(f, "アクセスが拒否されました: {}", path.display())
+            }
+            Self::AlreadyExists(path) => write!(f, "既に存在します: {}", path.display()),
+            Self::InvalidTarget(reason) => write!(f, "操作できません: {reason}"),
+            Self::Unsupported(reason) => write!(f, "未対応の操作です: {reason}"),
+            Self::Cancelled => write!(f, "操作はキャンセルされました"),
+            Self::Io { path, message } => write!(f, "{}: {message}", path.display()),
+        }
+    }
+}
+
+impl std::error::Error for OpError {}
+
+/// Counters and lists describing a completed (or partially completed) operation.
+#[derive(Debug, Default, Clone)]
+pub struct OpStats {
+    /// Number of regular files copied/moved.
+    pub files: u64,
+    /// Number of directories created.
+    pub dirs: u64,
+    /// Total bytes copied.
+    pub bytes: u64,
+    /// Entries skipped because they already existed (policy `Skip`).
+    pub skipped: Vec<PathBuf>,
+    /// Destination paths that were created (top-level first).
+    pub created: Vec<PathBuf>,
+}
+
+impl OpStats {
+    fn merge(&mut self, other: OpStats) {
+        self.files += other.files;
+        self.dirs += other.dirs;
+        self.bytes += other.bytes;
+        self.skipped.extend(other.skipped);
+        self.created.extend(other.created);
+    }
+}
+
+fn io_error(path: &Path, err: std::io::Error) -> OpError {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => OpError::NotFound(path.to_path_buf()),
+        std::io::ErrorKind::PermissionDenied => OpError::PermissionDenied(path.to_path_buf()),
+        std::io::ErrorKind::AlreadyExists => OpError::AlreadyExists(path.to_path_buf()),
+        _ => OpError::Io {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        },
+    }
+}
+
+/// Validate a single file name (not a path): no separators, no `.`/`..`,
+/// no NUL byte, and no characters that Windows reserves.
+pub fn validate_file_name(name: &str) -> Result<(), OpError> {
+    if name.is_empty() {
+        return Err(OpError::InvalidTarget("名前が空です".to_string()));
+    }
+    if name == "." || name == ".." {
+        return Err(OpError::InvalidTarget(
+            "`.` と `..` は名前として使えません".to_string(),
+        ));
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(OpError::InvalidTarget(
+            "名前にパス区切り文字は使えません".to_string(),
+        ));
+    }
+    if name.contains('\0') {
+        return Err(OpError::InvalidTarget(
+            "名前に NUL 文字は使えません".to_string(),
+        ));
+    }
+    #[cfg(windows)]
+    {
+        const RESERVED: [&str; 22] = [
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ];
+        let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+        if RESERVED.contains(&stem.as_str()) {
+            return Err(OpError::InvalidTarget(format!(
+                "Windows の予約名は使えません: {name}"
+            )));
+        }
+        if name.contains(['<', '>', ':', '"', '|', '?', '*']) {
+            return Err(OpError::InvalidTarget(
+                "Windows で使えない文字が含まれています".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Return `dir/name` if free, otherwise the first free `name (N).ext`.
+pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.to_string());
+    let extension = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    for counter in 1..=10_000 {
+        let candidate = dir.join(format!("{stem} ({counter}){extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Practically unreachable; fall back to the original path so the caller
+    // fails with AlreadyExists instead of looping forever.
+    dir.join(name)
+}
+
+/// Resolve the destination path for `src` inside `dest_dir` according to
+/// `policy`, without touching the filesystem beyond existence checks.
+fn resolve_destination(
+    src: &Path,
+    dest_dir: &Path,
+    policy: ConflictPolicy,
+) -> Result<Option<PathBuf>, OpError> {
+    let name = src
+        .file_name()
+        .ok_or_else(|| OpError::InvalidTarget("移動元の名前を取得できません".to_string()))?;
+    let candidate = dest_dir.join(name);
+    if !candidate.exists() {
+        return Ok(Some(candidate));
+    }
+    match policy {
+        ConflictPolicy::Fail => Err(OpError::AlreadyExists(candidate)),
+        ConflictPolicy::Skip => Ok(None),
+        ConflictPolicy::Rename => Ok(Some(unique_path(dest_dir, &name.to_string_lossy()))),
+    }
+}
+
+/// Reject copying/moving a directory into itself or one of its descendants.
+fn ensure_not_into_itself(src: &Path, dest_dir: &Path) -> Result<(), OpError> {
+    if !src.is_dir() {
+        return Ok(());
+    }
+    let canonical_src = fs::canonicalize(src).map_err(|e| io_error(src, e))?;
+    let canonical_dest = fs::canonicalize(dest_dir).map_err(|e| io_error(dest_dir, e))?;
+    if canonical_dest == canonical_src || canonical_dest.starts_with(&canonical_src) {
+        return Err(OpError::InvalidTarget(
+            "ディレクトリを自身または配下へコピー/移動できません".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Copy a single file atomically: write a sibling `.partial-*` file, flush,
+/// then link it into place. `dest` must not exist.
+fn copy_file_atomic(
+    src: &Path,
+    dest: &Path,
+    cancel: &CancelFlag,
+    stats: &mut OpStats,
+) -> Result<(), OpError> {
+    let metadata = fs::metadata(src).map_err(|e| io_error(src, e))?;
+    let parent = dest
+        .parent()
+        .ok_or_else(|| OpError::InvalidTarget("コピー先の親がありません".to_string()))?;
+    let file_name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "copy".to_string());
+    let partial = parent.join(format!(
+        ".{file_name}.partial-{}-{}",
+        std::process::id(),
+        stats.files
+    ));
+
+    let result = (|| -> Result<u64, OpError> {
+        let mut input = fs::File::open(src).map_err(|e| io_error(src, e))?;
+        let mut output = fs::File::create(&partial).map_err(|e| io_error(&partial, e))?;
+        let mut buffer = vec![0u8; COPY_CHUNK_SIZE];
+        let mut total = 0u64;
+        loop {
+            if cancel.is_cancelled() {
+                return Err(OpError::Cancelled);
+            }
+            let read = input.read(&mut buffer).map_err(|e| io_error(src, e))?;
+            if read == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..read])
+                .map_err(|e| io_error(&partial, e))?;
+            total += read as u64;
+        }
+        output.flush().map_err(|e| io_error(&partial, e))?;
+        // Best-effort durability; a failure here is not fatal for a UI copy.
+        let _ = output.sync_all();
+        Ok(total)
+    })();
+
+    let bytes = match result {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let _ = fs::remove_file(&partial);
+            return Err(err);
+        }
+    };
+
+    // `hard_link` fails when `dest` exists, which gives us a no-clobber rename
+    // on filesystems that support it. Fall back to a checked rename.
+    match fs::hard_link(&partial, dest) {
+        Ok(()) => {
+            let _ = fs::remove_file(&partial);
+        }
+        Err(_) => {
+            if dest.exists() {
+                let _ = fs::remove_file(&partial);
+                return Err(OpError::AlreadyExists(dest.to_path_buf()));
+            }
+            fs::rename(&partial, dest).map_err(|e| {
+                let _ = fs::remove_file(&partial);
+                io_error(dest, e)
+            })?;
+        }
+    }
+
+    // Preserve the Unix permission bits (best effort).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode();
+        let _ = fs::set_permissions(dest, fs::Permissions::from_mode(mode));
+    }
+
+    stats.files += 1;
+    stats.bytes += bytes;
+    Ok(())
+}
+
+/// Copy a symlink as a symlink (never follow it). On non-Unix platforms this
+/// is unsupported for safety: following the link could copy unintended data.
+fn copy_symlink(src: &Path, dest: &Path, stats: &mut OpStats) -> Result<(), OpError> {
+    #[cfg(unix)]
+    {
+        let target = fs::read_link(src).map_err(|e| io_error(src, e))?;
+        std::os::unix::fs::symlink(&target, dest).map_err(|e| io_error(dest, e))?;
+        stats.files += 1;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (src, dest, stats);
+        Err(OpError::Unsupported(
+            "シンボリックリンクのコピーは未対応です".to_string(),
+        ))
+    }
+}
+
+/// Recursively copy `src` to `dest` (which must not exist yet).
+fn copy_recursive(
+    src: &Path,
+    dest: &Path,
+    cancel: &CancelFlag,
+    stats: &mut OpStats,
+) -> Result<(), OpError> {
+    if cancel.is_cancelled() {
+        return Err(OpError::Cancelled);
+    }
+    let metadata = fs::symlink_metadata(src).map_err(|e| io_error(src, e))?;
+
+    if metadata.file_type().is_symlink() {
+        return copy_symlink(src, dest, stats);
+    }
+    if metadata.is_dir() {
+        fs::create_dir(dest).map_err(|e| io_error(dest, e))?;
+        stats.dirs += 1;
+        let mut entries: Vec<PathBuf> = Vec::new();
+        let reader = fs::read_dir(src).map_err(|e| io_error(src, e))?;
+        for entry in reader {
+            let entry = entry.map_err(|e| io_error(src, e))?;
+            entries.push(entry.path());
+        }
+        entries.sort();
+        for child in entries {
+            let name = child.file_name().ok_or_else(|| {
+                OpError::InvalidTarget("子要素の名前を取得できません".to_string())
+            })?;
+            copy_recursive(&child, &dest.join(name), cancel, stats)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = metadata.permissions().mode();
+            let _ = fs::set_permissions(dest, fs::Permissions::from_mode(mode));
+        }
+        return Ok(());
+    }
+    if metadata.is_file() {
+        return copy_file_atomic(src, dest, cancel, stats);
+    }
+    Err(OpError::Unsupported(format!(
+        "特殊ファイルはコピーできません: {}",
+        src.display()
+    )))
+}
+
+/// Copy `src` into `dest_dir`, honouring `policy`. Returns counters for the
+/// caller's progress/status UI. `on_progress` is called once per copied file
+/// with the cumulative byte count.
+pub fn copy_entry(
+    src: &Path,
+    dest_dir: &Path,
+    policy: ConflictPolicy,
+    cancel: &CancelFlag,
+    mut on_progress: impl FnMut(u64),
+) -> Result<OpStats, OpError> {
+    if !src.exists() && !src.is_symlink() {
+        return Err(OpError::NotFound(src.to_path_buf()));
+    }
+    if !dest_dir.is_dir() {
+        return Err(OpError::InvalidTarget(format!(
+            "コピー先がディレクトリではありません: {}",
+            dest_dir.display()
+        )));
+    }
+    ensure_not_into_itself(src, dest_dir)?;
+
+    let Some(dest) = resolve_destination(src, dest_dir, policy)? else {
+        let mut stats = OpStats::default();
+        stats
+            .skipped
+            .push(dest_dir.join(src.file_name().unwrap_or_default()));
+        return Ok(stats);
+    };
+
+    let mut stats = OpStats::default();
+    copy_recursive(src, &dest, cancel, &mut stats)?;
+    stats.created.insert(0, dest);
+    on_progress(stats.bytes);
+    Ok(stats)
+}
+
+/// Remove `path` without following symlinks. Directories are emptied
+/// recursively first; a symlink is unlinked, never traversed.
+pub fn remove_entry_safe(path: &Path) -> Result<(), OpError> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| io_error(path, e))?;
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        return fs::remove_file(path).map_err(|e| io_error(path, e));
+    }
+    if metadata.is_dir() {
+        let reader = fs::read_dir(path).map_err(|e| io_error(path, e))?;
+        for entry in reader {
+            let entry = entry.map_err(|e| io_error(path, e))?;
+            remove_entry_safe(&entry.path())?;
+        }
+        return fs::remove_dir(path).map_err(|e| io_error(path, e));
+    }
+    Err(OpError::Unsupported(format!(
+        "特殊ファイルは削除できません: {}",
+        path.display()
+    )))
+}
+
+/// Move `src` into `dest_dir`. Uses `rename` when possible; on `EXDEV` falls
+/// back to copy-then-delete, keeping the source intact if the copy fails.
+pub fn move_entry(
+    src: &Path,
+    dest_dir: &Path,
+    policy: ConflictPolicy,
+    cancel: &CancelFlag,
+    mut on_progress: impl FnMut(u64),
+) -> Result<OpStats, OpError> {
+    if !src.exists() && !src.is_symlink() {
+        return Err(OpError::NotFound(src.to_path_buf()));
+    }
+    if !dest_dir.is_dir() {
+        return Err(OpError::InvalidTarget(format!(
+            "移動先がディレクトリではありません: {}",
+            dest_dir.display()
+        )));
+    }
+    ensure_not_into_itself(src, dest_dir)?;
+
+    // Same-directory move is a no-op.
+    if src.parent() == Some(dest_dir) {
+        return Ok(OpStats::default());
+    }
+
+    let Some(dest) = resolve_destination(src, dest_dir, policy)? else {
+        let mut stats = OpStats::default();
+        stats
+            .skipped
+            .push(dest_dir.join(src.file_name().unwrap_or_default()));
+        return Ok(stats);
+    };
+
+    match fs::rename(src, &dest) {
+        Ok(()) => {
+            let mut stats = OpStats::default();
+            stats.created.push(dest);
+            on_progress(0);
+            Ok(stats)
+        }
+        Err(err) if err.raw_os_error() == Some(18) => {
+            // EXDEV: cross-device link. Copy to the resolved destination first,
+            // then delete the source only after a fully successful copy.
+            let mut stats = OpStats::default();
+            if let Err(copy_err) = copy_recursive(src, &dest, cancel, &mut stats) {
+                let _ = remove_entry_safe(&dest);
+                return Err(copy_err);
+            }
+            on_progress(stats.bytes);
+            if cancel.is_cancelled() {
+                let _ = remove_entry_safe(&dest);
+                return Err(OpError::Cancelled);
+            }
+            if let Err(remove_err) = remove_entry_safe(src) {
+                return Err(OpError::Io {
+                    path: src.to_path_buf(),
+                    message: format!(
+                        "コピーは完了しましたが元を削除できませんでした: {remove_err}"
+                    ),
+                });
+            }
+            stats.created.insert(0, dest);
+            Ok(stats)
+        }
+        Err(err) => Err(io_error(src, err)),
+    }
+}
+
+/// Rename `src` to `new_name` in its current directory. Refuses to overwrite
+/// an existing entry. Case-only renames go through a temporary name so they
+/// work on case-insensitive filesystems too.
+pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
+    validate_file_name(new_name)?;
+    if !src.exists() {
+        return Err(OpError::NotFound(src.to_path_buf()));
+    }
+    let parent = src
+        .parent()
+        .ok_or_else(|| OpError::InvalidTarget("親ディレクトリがありません".to_string()))?;
+    let target = parent.join(new_name);
+    if target == src {
+        return Ok(target);
+    }
+    if target.exists() {
+        // Case-only rename on a case-insensitive filesystem: the target is the
+        // same file. Route through a temporary name.
+        let same_file = fs::canonicalize(src)
+            .ok()
+            .zip(fs::canonicalize(&target).ok())
+            .is_some_and(|(a, b)| a == b);
+        if !same_file {
+            return Err(OpError::AlreadyExists(target));
+        }
+        let temp = parent.join(format!(".rename-{}-{}", std::process::id(), new_name));
+        fs::rename(src, &temp).map_err(|e| io_error(src, e))?;
+        fs::rename(&temp, &target).map_err(|e| io_error(&target, e))?;
+        return Ok(target);
+    }
+    fs::rename(src, &target).map_err(|e| io_error(src, e))?;
+    Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-ops-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(path: &Path, contents: &[u8]) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn validate_file_name_rejects_paths_and_dots() {
+        assert!(validate_file_name("ok.txt").is_ok());
+        assert!(validate_file_name("").is_err());
+        assert!(validate_file_name(".").is_err());
+        assert!(validate_file_name("..").is_err());
+        assert!(validate_file_name("a/b").is_err());
+        assert!(validate_file_name("a\\b").is_err());
+        assert!(validate_file_name("a\0b").is_err());
+    }
+
+    #[test]
+    fn copy_file_into_directory() {
+        let dir = scratch("copy-file");
+        let src = dir.join("a.txt");
+        write(&src, b"hello");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let stats = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(stats.files, 1);
+        assert_eq!(stats.bytes, 5);
+        assert_eq!(fs::read(dest_dir.join("a.txt")).unwrap(), b"hello");
+        assert!(src.exists(), "copy must keep the source");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_refuses_to_overwrite_by_default() {
+        let dir = scratch("copy-conflict");
+        let src = dir.join("a.txt");
+        write(&src, b"new");
+        let dest_dir = dir.join("dest");
+        write(&dest_dir.join("a.txt"), b"old");
+
+        let err = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::AlreadyExists(_)));
+        assert_eq!(fs::read(dest_dir.join("a.txt")).unwrap(), b"old");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_skip_and_rename_policies() {
+        let dir = scratch("copy-policies");
+        let src = dir.join("a.txt");
+        write(&src, b"new");
+        let dest_dir = dir.join("dest");
+        write(&dest_dir.join("a.txt"), b"old");
+
+        let skipped = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Skip,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(skipped.skipped.len(), 1);
+        assert_eq!(fs::read(dest_dir.join("a.txt")).unwrap(), b"old");
+
+        copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Rename,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(fs::read(dest_dir.join("a (1).txt")).unwrap(), b"new");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_directory_recursively_and_keep_symlink() {
+        let dir = scratch("copy-dir");
+        let src = dir.join("tree");
+        write(&src.join("sub/nested.txt"), b"nested");
+        write(&src.join("top.txt"), b"top");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("top.txt", src.join("link.txt")).unwrap();
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let stats = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(stats.files, 3); // top, nested, symlink
+        assert_eq!(stats.dirs, 2);
+        assert_eq!(fs::read(dest_dir.join("tree/top.txt")).unwrap(), b"top");
+        assert_eq!(
+            fs::read(dest_dir.join("tree/sub/nested.txt")).unwrap(),
+            b"nested"
+        );
+        #[cfg(unix)]
+        {
+            let link = dest_dir.join("tree/link.txt");
+            assert!(fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_link(&link).unwrap(), Path::new("top.txt"));
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_into_itself_is_rejected() {
+        let dir = scratch("copy-self");
+        let src = dir.join("tree");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        write(&src.join("sub/a.txt"), b"a");
+
+        let err = copy_entry(
+            &src,
+            &src.join("sub"),
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::InvalidTarget(_)));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancellation_leaves_no_partial_file() {
+        let dir = scratch("cancel");
+        let src = dir.join("big.bin");
+        write(&src, &vec![7u8; COPY_CHUNK_SIZE * 4]);
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let cancel = CancelFlag::new();
+        cancel.cancel();
+        let err = copy_entry(&src, &dest_dir, ConflictPolicy::Fail, &cancel, |_| {}).unwrap_err();
+        assert!(matches!(err, OpError::Cancelled));
+        assert!(!dest_dir.join("big.bin").exists());
+        let leftovers: Vec<_> = fs::read_dir(&dest_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".partial-"))
+            .collect();
+        assert!(leftovers.is_empty(), "partial files must be cleaned up");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_within_same_filesystem() {
+        let dir = scratch("move");
+        let src = dir.join("a.txt");
+        write(&src, b"move me");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let stats = move_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(stats.created.len(), 1);
+        assert!(!src.exists());
+        assert_eq!(fs::read(dest_dir.join("a.txt")).unwrap(), b"move me");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_into_same_directory_is_a_noop() {
+        let dir = scratch("move-noop");
+        let src = dir.join("a.txt");
+        write(&src, b"x");
+        let stats =
+            move_entry(&src, &dir, ConflictPolicy::Fail, &CancelFlag::new(), |_| {}).unwrap();
+        assert_eq!(stats.files, 0);
+        assert!(src.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_entry_refuses_overwrite() {
+        let dir = scratch("rename");
+        let src = dir.join("a.txt");
+        write(&src, b"a");
+        write(&dir.join("b.txt"), b"b");
+
+        let err = rename_entry(&src, "b.txt").unwrap_err();
+        assert!(matches!(err, OpError::AlreadyExists(_)));
+        assert_eq!(fs::read(dir.join("b.txt")).unwrap(), b"b");
+
+        let renamed = rename_entry(&src, "c.txt").unwrap();
+        assert_eq!(renamed, dir.join("c.txt"));
+        assert_eq!(fs::read(renamed).unwrap(), b"a");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_entry_safe_does_not_follow_symlinks() {
+        let dir = scratch("remove-symlink");
+        let outside = dir.join("outside");
+        write(&outside.join("keep.txt"), b"keep");
+        let tree = dir.join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        write(&tree.join("own.txt"), b"own");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, tree.join("link-outside")).unwrap();
+
+        remove_entry_safe(&tree).unwrap();
+        assert!(!tree.exists());
+        #[cfg(unix)]
+        assert!(
+            outside.join("keep.txt").exists(),
+            "symlink target must survive"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
