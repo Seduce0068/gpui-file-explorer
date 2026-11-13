@@ -231,6 +231,8 @@ struct Explorer {
     op_task: Option<Task<()>>,
     /// Cancellation flag of the running operation (Esc cancels).
     op_cancel: Option<Arc<CancelFlag>>,
+    /// Byte progress of the running copy/move: (done, total). `None` when idle.
+    op_progress: Option<(u64, u64)>,
     /// Inline rename dialog (F2 / context menu). `None` when closed.
     renaming: Option<RenameState>,
     /// Set after a successful rename; the next render refocuses the list.
@@ -248,6 +250,9 @@ struct Explorer {
     /// Development-only hook: `GPUI_FE_DEBUG_TRASH_RESTORE=1` restores the
     /// first trash item after the trash listing loads (end-to-end smoke test).
     debug_restore_trash_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_PROGRESS=1` shows a fake progress
+    /// bar after startup (screenshot of the progress UI).
+    debug_progress_once: bool,
 }
 
 impl Explorer {
@@ -291,12 +296,14 @@ impl Explorer {
             clipboard: None,
             op_task: None,
             op_cancel: None,
+            op_progress: None,
             renaming: None,
             focus_list_on_next_render: false,
             debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
             debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
             debug_open_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH").is_some(),
             debug_restore_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH_RESTORE").is_some(),
+            debug_progress_once: std::env::var_os("GPUI_FE_DEBUG_PROGRESS").is_some(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -564,7 +571,10 @@ impl Explorer {
             while watch_rx.recv().await.is_ok() {
                 while watch_rx.try_recv().is_ok() {}
                 let updated = this.update(cx, |this, cx| {
-                    if this.is_suppressed() || this.view == ViewMode::Trash {
+                    if this.is_suppressed()
+                        || this.view == ViewMode::Trash
+                        || this.op_cancel.is_some()
+                    {
                         return;
                     }
                     this.status = "変更を検出しました".to_string();
@@ -1079,26 +1089,32 @@ impl Explorer {
         // Byte progress from the background copy/move is forwarded through a
         // channel and throttled to ~80 ms so the UI is not flooded with
         // notifications. The pump stops when the operation drops its sender.
-        let (progress_tx, progress_rx) = async_channel::unbounded::<u64>();
+        let (progress_tx, progress_rx) = async_channel::unbounded::<(u64, u64)>();
         let progress_verb = verb;
         cx.spawn(async move |this, cx| {
             let mut last_report = Instant::now();
             let mut last_bytes = 0u64;
-            while let Ok(bytes) = progress_rx.recv().await {
-                if bytes <= last_bytes || last_report.elapsed() < Duration::from_millis(80) {
+            while let Ok((done, total)) = progress_rx.recv().await {
+                if done <= last_bytes && done != 0 {
+                    continue;
+                }
+                let first_update = last_bytes == 0;
+                if !first_update && last_report.elapsed() < Duration::from_millis(80) {
                     continue;
                 }
                 last_report = Instant::now();
-                last_bytes = bytes;
+                last_bytes = done;
                 let _ = this.update(cx, |this, cx| {
                     // Ignore progress that arrives after the operation settled
                     // (the final status message must not be overwritten).
                     if this.op_cancel.is_none() {
                         return;
                     }
+                    this.op_progress = Some((done, total));
                     this.status = format!(
-                        "{progress_verb}中… {}（Esc でキャンセル）",
-                        human_size(bytes)
+                        "{progress_verb}中… {} / {}（Esc でキャンセル）",
+                        human_size(done),
+                        human_size(total)
                     );
                     cx.notify();
                 });
@@ -1110,6 +1126,8 @@ impl Explorer {
         let cwd_for_task = cwd.clone();
         let progress_tx_for_task = progress_tx.clone();
         let background = cx.background_spawn(async move {
+            let total_bytes = ops::total_bytes(&paths);
+            let _ = progress_tx_for_task.try_send((0, total_bytes));
             let mut total = OpStats::default();
             let mut first_error: Option<OpError> = None;
             let mut first_created: Option<PathBuf> = None;
@@ -1122,7 +1140,7 @@ impl Explorer {
                 let base = offset;
                 let tx = progress_tx_for_task.clone();
                 let mut progress = move |bytes: u64| {
-                    let _ = tx.try_send(base + bytes);
+                    let _ = tx.try_send((base + bytes, total_bytes));
                 };
                 let result = if cut {
                     ops::move_entry(
@@ -1170,6 +1188,7 @@ impl Explorer {
             let _ = this.update(cx, |this, cx| {
                 this.op_task = None;
                 this.op_cancel = None;
+                this.op_progress = None;
                 let succeeded = stats.files + stats.dirs > 0;
                 let status = match first_error {
                     Some(OpError::Cancelled) => "キャンセルしました".to_string(),
@@ -2202,6 +2221,41 @@ impl Explorer {
             } else {
                 div().into_any_element()
             })
+            .child(if let Some((done, total)) = self.op_progress {
+                let fraction = if total == 0 {
+                    0.0
+                } else {
+                    (done as f64 / total as f64).clamp(0.0, 1.0)
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .w(px(120.0))
+                            .h(px(5.0))
+                            .rounded_full()
+                            .bg(rgb(C_SURFACE))
+                            .flex()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .rounded_full()
+                                    .bg(rgb(C_BLUE))
+                                    .w(px(120.0 * fraction as f32)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(C_MUTED))
+                            .child(format!("{:.0}%", fraction * 100.0)),
+                    )
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            })
             .child(if hidden_count > 0 && !self.settings.show_hidden {
                 div()
                     .text_color(rgb(C_MUTED))
@@ -2276,6 +2330,12 @@ impl Render for Explorer {
         if self.debug_open_trash_once && self.view == ViewMode::Directory {
             self.debug_open_trash_once = false;
             self.enter_trash(cx);
+        }
+        if self.debug_progress_once && !self.entries.is_empty() {
+            self.debug_progress_once = false;
+            self.op_progress = Some((35_000_000, 100_000_000));
+            self.suppress_for(Duration::from_secs(30));
+            self.status = "コピー中… 35.0 MB / 100.0 MB（Esc でキャンセル）".to_string();
         }
         if self.debug_restore_trash_once
             && self.view == ViewMode::Trash

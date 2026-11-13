@@ -438,6 +438,37 @@ pub fn remove_entry_safe(path: &Path) -> Result<(), OpError> {
     )))
 }
 
+/// Best-effort total size of `paths`, used for progress display.
+///
+/// Symlinks are not followed (counted as 0), unreadable entries are skipped,
+/// and directories are walked recursively. The function never fails: an
+/// incomplete total is still useful for a progress bar.
+pub fn total_bytes(paths: &[PathBuf]) -> u64 {
+    paths.iter().map(|path| total_bytes_of(path)).sum()
+}
+
+fn total_bytes_of(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.file_type().is_symlink() {
+        return 0;
+    }
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    if metadata.is_dir() {
+        let Ok(reader) = fs::read_dir(path) else {
+            return 0;
+        };
+        return reader
+            .filter_map(|entry| entry.ok())
+            .map(|entry| total_bytes_of(&entry.path()))
+            .sum();
+    }
+    0
+}
+
 /// Move `src` into `dest_dir`. Uses `rename` when possible; on `EXDEV` falls
 /// back to copy-then-delete, keeping the source intact if the copy fails.
 pub fn move_entry(
@@ -727,6 +758,25 @@ mod tests {
             fs::read(dest_dir.join("big.bin")).unwrap().len() as u64,
             size
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn total_bytes_counts_files_and_directories() {
+        let dir = scratch("total");
+        write(&dir.join("a.bin"), &[0u8; 10]);
+        write(&dir.join("sub/b.bin"), &[0u8; 20]);
+        assert_eq!(total_bytes(&[dir.join("a.bin")]), 10);
+        assert_eq!(total_bytes(std::slice::from_ref(&dir)), 30);
+        assert_eq!(total_bytes(&[dir.join("missing")]), 0);
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("a.bin"), dir.join("link.bin")).unwrap();
+            // The symlink itself must not be followed/counted.
+            assert_eq!(total_bytes(&[dir.join("link.bin")]), 0);
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
