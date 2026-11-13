@@ -335,7 +335,7 @@ fe-dev が並行実装中の `app/src/` は、時間優先で次の**フラッ�
 | `chrono` を日時表示に使用 | §8.4 は std で可とした | P0 は許容（表示専用）。依存を増やしたくない場合は P1 で `std::time` に戻す |
 | `icons.rs`（FileKind + IconName） | `icons.rs`（同じ役割） | 一致 |
 | `settings.rs`（atomic save） | `settings.rs` | 一致 |
-| （P1 先行）`ops.rs` に copy/move/rename エンジンを追加（ユニットテスト 11 件）＋ `Ctrl+C/X/V`・右クリックメニュー・F2 リネームダイアログへ接続済み（貼り付けは常に Rename、Esc でキャンセル、リネーム失敗時は原名維持） | `fs/ops.rs`（§6 の安全則） | 上書き禁止・symlink 非追跡・`.partial` 経由の原子的コピー・EXDEV フォールバック・キャンセル・64 KiB 単位のバイト進捗通知を実装。複数選択（`model::Selection`、パスキー）とバッチ操作（コピー/切り取り/ゴミ箱、件数付き確認）、ゴミ箱ビュー（`trash_view.rs`、一覧・復元のみで完全削除なし）、視覚的進捗バー（`ops::total_bytes` の事前計算 + ステータスバー表示）にも対応。最終的に `fs/ops.rs` へ移動 |
+| （P1 先行）`ops.rs` に copy/move/rename エンジンを追加（ユニットテスト 11 件）＋ `Ctrl+C/X/V`・右クリックメニュー・F2 リネームダイアログへ接続済み（貼り付けは常に Rename、Esc でキャンセル、リネーム失敗時は原名維持） | `fs/ops.rs`（§6 の安全則） | 上書き禁止・symlink 非追跡・`.partial` 経由の原子的コピー・EXDEV フォールバック・キャンセル・64 KiB 単位のバイト進捗通知を実装。複数選択（`model::Selection`、パスキー）とバッチ操作（コピー/切り取り/ゴミ箱、件数付き確認）、ゴミ箱ビュー（`trash_view.rs`、一覧・復元のみで完全削除なし）、視覚的進捗バー（`ops::total_bytes` の事前計算 + ステータスバー表示）、アイコングリッド表示（`uniform_list` の行チャンク方式、`settings.view` に永続化）にも対応。最終的に `fs/ops.rs` へ移動 |
 
 - **差分の記録義務**: 上表に無い逸脱が生じた場合は [`app/README.md`](app/README.md) の「設計からの差分」に追記し、本設計書の改版（v0.2）で反映する。
 
