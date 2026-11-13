@@ -770,17 +770,52 @@ impl Explorer {
 
         let cancel = Arc::new(CancelFlag::new());
         self.op_cancel = Some(cancel.clone());
+
+        // Byte progress from the background copy/move is forwarded through a
+        // channel and throttled to ~80 ms so the UI is not flooded with
+        // notifications. The pump stops when the operation drops its sender.
+        let (progress_tx, progress_rx) = async_channel::unbounded::<u64>();
+        let progress_verb = verb;
+        cx.spawn(async move |this, cx| {
+            let mut last_report = Instant::now();
+            let mut last_bytes = 0u64;
+            while let Ok(bytes) = progress_rx.recv().await {
+                if bytes <= last_bytes || last_report.elapsed() < Duration::from_millis(80) {
+                    continue;
+                }
+                last_report = Instant::now();
+                last_bytes = bytes;
+                let _ = this.update(cx, |this, cx| {
+                    // Ignore progress that arrives after the operation settled
+                    // (the final status message must not be overwritten).
+                    if this.op_cancel.is_none() {
+                        return;
+                    }
+                    this.status = format!(
+                        "{progress_verb}中… {}（Esc でキャンセル）",
+                        human_size(bytes)
+                    );
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+
         let task_cancel = cancel.clone();
         let src_for_task = src.clone();
         let cwd_for_task = cwd.clone();
+        let progress_tx_for_task = progress_tx.clone();
         let background = cx.background_spawn(async move {
+            let mut progress = move |bytes: u64| {
+                let _ = progress_tx_for_task.try_send(bytes);
+            };
             if cut {
                 ops::move_entry(
                     &src_for_task,
                     &cwd_for_task,
                     ConflictPolicy::Rename,
                     &task_cancel,
-                    |_| {},
+                    &mut progress,
                 )
             } else {
                 ops::copy_entry(
@@ -788,7 +823,7 @@ impl Explorer {
                     &cwd_for_task,
                     ConflictPolicy::Rename,
                     &task_cancel,
-                    |_| {},
+                    &mut progress,
                 )
             }
         });
