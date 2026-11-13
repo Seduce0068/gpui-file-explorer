@@ -1,0 +1,7 @@
+[package]
+name = "gpui-file-explorer-poc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gpui-kit = "=0.9.1"
