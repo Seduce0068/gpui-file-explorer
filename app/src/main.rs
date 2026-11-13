@@ -8,6 +8,7 @@
 mod history;
 mod icons;
 mod model;
+mod ops;
 mod settings;
 mod watcher;
 
