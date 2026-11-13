@@ -29,9 +29,9 @@ use crate::icons::{icon_for_entry, kind_for_entry, FileKind};
 use crate::model::{
     breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
     human_age, human_datetime, human_size, last_index, parent_dir, read_entries, step_selection,
-    visible_entries, Entry, SortKey, SortSpec,
+    visible_entries, Entry, Selection, SortKey, SortSpec,
 };
-use crate::ops::{CancelFlag, ConflictPolicy, OpStats};
+use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use crate::settings::Settings;
 use crate::watcher::DirWatcher;
 
@@ -164,7 +164,7 @@ struct RenameState {
 /// had copied. Paste resolves the source path at operation time.
 #[derive(Clone, Debug)]
 struct ClipboardSlot {
-    path: PathBuf,
+    paths: Vec<PathBuf>,
     cut: bool,
 }
 
@@ -175,7 +175,10 @@ struct Explorer {
     all_entries: Vec<Entry>,
     /// Filtered + sorted view rendered by `uniform_list`.
     entries: Vec<Entry>,
+    /// Focused row index (keyboard cursor / single-selection shortcut).
     selected: usize,
+    /// Multi-selection keyed by path so it survives reloads and re-sorting.
+    selection: Selection,
     history: History,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
@@ -209,6 +212,9 @@ struct Explorer {
     /// for the first entry after the initial load (used for UI screenshots
     /// where synthetic keyboard input is unavailable).
     debug_open_rename_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_SELECT_ALL=1` selects every entry
+    /// after the first load (multi-selection screenshot).
+    debug_select_all_once: bool,
 }
 
 impl Explorer {
@@ -233,6 +239,7 @@ impl Explorer {
             all_entries: Vec::new(),
             entries: Vec::new(),
             selected: 0,
+            selection: Selection::default(),
             history: History::new(),
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
@@ -252,6 +259,7 @@ impl Explorer {
             renaming: None,
             focus_list_on_next_render: false,
             debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
+            debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -300,6 +308,7 @@ impl Explorer {
                         this.all_entries.clear();
                         this.entries.clear();
                         this.selected = 0;
+                        this.selection.clear();
                         this.error = Some(error);
                     }
                 }
@@ -326,11 +335,26 @@ impl Explorer {
     fn rebuild_view(&mut self, keep: Option<PathBuf>) {
         let order = self.settings.sort.order();
         let view = visible_entries(&self.all_entries, self.settings.show_hidden, order);
-        let selected = keep
-            .and_then(|path| view.iter().position(|entry| entry.path == path))
+        let paths: Vec<PathBuf> = view.iter().map(|entry| entry.path.clone()).collect();
+        // Paths are the stable key: keep what still exists after a reload and
+        // drop the rest, then derive the focused row.
+        self.selection.retain(&paths);
+        let focused = keep
+            .and_then(|path| paths.iter().position(|candidate| candidate == &path))
+            .or_else(|| {
+                self.selection
+                    .paths()
+                    .first()
+                    .and_then(|path| paths.iter().position(|candidate| candidate == path))
+            })
             .unwrap_or(0);
         self.entries = view;
-        self.selected = clamp_index(selected, self.entries.len());
+        self.selected = clamp_index(focused, self.entries.len());
+        if self.selection.is_empty() {
+            if let Some(entry) = self.entries.get(self.selected) {
+                self.selection.select_single(entry.path.clone());
+            }
+        }
         if !self.entries.is_empty() {
             self.scroll_handle
                 .scroll_to_item(self.selected, ScrollStrategy::Nearest);
@@ -530,29 +554,86 @@ impl Explorer {
 
     // -------------------------------------------------------------- selection
 
-    fn select(&mut self, index: usize, cx: &mut Context<Self>) {
+    /// Select one row (plain click / arrow key) and move the keyboard cursor.
+    fn select_single_index(&mut self, index: usize, cx: &mut Context<Self>) {
         let index = clamp_index(index, self.entries.len());
-        if self.selected != index || self.status.is_empty() {
-            self.selected = index;
-            if !self.entries.is_empty() {
-                self.scroll_handle
-                    .scroll_to_item(index, ScrollStrategy::Nearest);
-            }
-            cx.notify();
+        self.selected = index;
+        if let Some(entry) = self.entries.get(index) {
+            self.selection.select_single(entry.path.clone());
+        } else {
+            self.selection.clear();
         }
+        if !self.entries.is_empty() {
+            self.scroll_handle
+                .scroll_to_item(index, ScrollStrategy::Nearest);
+        }
+        cx.notify();
     }
 
-    fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+    /// Apply a click with Ctrl (toggle) or Shift (range) modifiers.
+    fn select_with_modifiers(
+        &mut self,
+        index: usize,
+        control: bool,
+        shift: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let index = clamp_index(index, self.entries.len());
+        let Some(entry) = self.entries.get(index) else {
+            return;
+        };
+        let path = entry.path.clone();
+        let paths: Vec<PathBuf> = self
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        if shift {
+            self.selection.select_range(&paths, &path);
+        } else if control {
+            self.selection.toggle(path);
+        } else {
+            self.selection.select_single(path);
+        }
+        self.selected = index;
+        self.scroll_handle
+            .scroll_to_item(index, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = self
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        self.selection.select_all(&paths);
+        cx.notify();
+    }
+
+    fn move_selection(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
         let next = step_selection(self.selected, self.entries.len(), delta);
-        self.select(next, cx);
+        self.select_with_modifiers(next, false, extend, cx);
     }
 
-    fn select_first(&mut self, cx: &mut Context<Self>) {
-        self.select(first_index(self.entries.len()), cx);
+    fn select_first(&mut self, extend: bool, cx: &mut Context<Self>) {
+        self.select_with_modifiers(first_index(self.entries.len()), false, extend, cx);
     }
 
-    fn select_last(&mut self, cx: &mut Context<Self>) {
-        self.select(last_index(self.entries.len()), cx);
+    fn select_last(&mut self, extend: bool, cx: &mut Context<Self>) {
+        self.select_with_modifiers(last_index(self.entries.len()), false, extend, cx);
+    }
+
+    /// Paths an action (copy/cut/trash) should apply to: the multi-selection
+    /// when non-empty, otherwise the focused row.
+    fn action_paths(&self) -> Vec<PathBuf> {
+        if !self.selection.is_empty() {
+            return self.selection.paths().to_vec();
+        }
+        self.entries
+            .get(self.selected)
+            .map(|entry| vec![entry.path.clone()])
+            .unwrap_or_default()
     }
 
     fn selected_entry(&self) -> Option<&Entry> {
@@ -576,6 +657,7 @@ impl Explorer {
         if modifiers.control {
             match (key, modifiers.shift) {
                 ("h", _) => self.toggle_hidden(cx),
+                ("a", false) => self.select_all(cx),
                 ("r", _) => self.reload(cx),
                 ("n", true) => self.new_folder(cx),
                 ("c", false) => self.copy_selected(cx),
@@ -601,12 +683,12 @@ impl Explorer {
             ((viewport_height - 140.0) / 28.0).floor().max(1.0) as isize
         };
         match key {
-            "up" => self.move_selection(-1, cx),
-            "down" => self.move_selection(1, cx),
-            "pageup" => self.move_selection(-page_step, cx),
-            "pagedown" => self.move_selection(page_step, cx),
-            "home" => self.select_first(cx),
-            "end" => self.select_last(cx),
+            "up" => self.move_selection(-1, modifiers.shift, cx),
+            "down" => self.move_selection(1, modifiers.shift, cx),
+            "pageup" => self.move_selection(-page_step, modifiers.shift, cx),
+            "pagedown" => self.move_selection(page_step, modifiers.shift, cx),
+            "home" => self.select_first(modifiers.shift, cx),
+            "end" => self.select_last(modifiers.shift, cx),
             "enter" => self.open_selected(cx),
             "backspace" => self.go_parent(cx),
             "f5" => self.reload(cx),
@@ -687,35 +769,43 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Remember the selected entry for a later paste (Ctrl+C).
+    /// Remember the selected entries for a later paste (Ctrl+C).
     fn copy_selected(&mut self, cx: &mut Context<Self>) {
-        let Some(entry) = self.entries.get(self.selected) else {
+        let paths = self.action_paths();
+        if paths.is_empty() {
             return;
+        }
+        let count = paths.len();
+        let status = if count == 1 {
+            format!(
+                "コピーしました: {}（Ctrl+V で貼り付け）",
+                display_path(&paths[0])
+            )
+        } else {
+            format!("{count} 件をコピーしました（Ctrl+V で貼り付け）")
         };
-        self.clipboard = Some(ClipboardSlot {
-            path: entry.path.clone(),
-            cut: false,
-        });
-        self.status = format!(
-            "コピーしました: {}（Ctrl+V で貼り付け）",
-            display_path(&entry.path)
-        );
+        self.clipboard = Some(ClipboardSlot { paths, cut: false });
+        self.status = status;
         cx.notify();
     }
 
-    /// Remember the selected entry as a move source (Ctrl+X).
+    /// Remember the selected entries as move sources (Ctrl+X).
     fn cut_selected(&mut self, cx: &mut Context<Self>) {
-        let Some(entry) = self.entries.get(self.selected) else {
+        let paths = self.action_paths();
+        if paths.is_empty() {
             return;
+        }
+        let count = paths.len();
+        let status = if count == 1 {
+            format!(
+                "切り取りました: {}（Ctrl+V で移動）",
+                display_path(&paths[0])
+            )
+        } else {
+            format!("{count} 件を切り取りました（Ctrl+V で移動）")
         };
-        self.clipboard = Some(ClipboardSlot {
-            path: entry.path.clone(),
-            cut: true,
-        });
-        self.status = format!(
-            "切り取りました: {}（Ctrl+V で移動）",
-            display_path(&entry.path)
-        );
+        self.clipboard = Some(ClipboardSlot { paths, cut: true });
+        self.status = status;
         cx.notify();
     }
 
@@ -747,22 +837,41 @@ impl Explorer {
             return;
         }
 
-        let src = slot.path.clone();
         let cwd = self.cwd.clone();
-        if !src.exists() && !src.is_symlink() {
+        let cut = slot.cut;
+        let verb = if cut { "移動" } else { "コピー" };
+
+        // Drop missing sources and same-directory cut sources; keep the rest.
+        let mut missing: Vec<PathBuf> = Vec::new();
+        let mut same_dir = 0usize;
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for path in slot.paths {
+            if !path.exists() && !path.is_symlink() {
+                missing.push(path);
+                continue;
+            }
+            if cut && path.parent() == Some(cwd.as_path()) {
+                same_dir += 1;
+                continue;
+            }
+            paths.push(path);
+        }
+        if !missing.is_empty() {
             self.clipboard = None;
-            self.status = format!("対象が存在しません: {}", display_path(&src));
+            self.status = format!("{} 件は既に存在しません", missing.len());
             self.reload(cx);
             return;
         }
-        if slot.cut && src.parent() == Some(cwd.as_path()) {
-            self.status = "同じフォルダのため移動しません".to_string();
+        if paths.is_empty() {
+            self.status = if same_dir > 0 {
+                "同じフォルダのため移動しません".to_string()
+            } else {
+                "コピー/切り取りした項目がありません".to_string()
+            };
             cx.notify();
             return;
         }
 
-        let cut = slot.cut;
-        let verb = if cut { "移動" } else { "コピー" };
         self.status = format!("{verb}中…（Esc でキャンセル）");
         cx.notify();
 
@@ -800,55 +909,90 @@ impl Explorer {
         .detach();
 
         let task_cancel = cancel.clone();
-        let src_for_task = src.clone();
         let cwd_for_task = cwd.clone();
         let progress_tx_for_task = progress_tx.clone();
         let background = cx.background_spawn(async move {
-            let mut progress = move |bytes: u64| {
-                let _ = progress_tx_for_task.try_send(bytes);
-            };
-            if cut {
-                ops::move_entry(
-                    &src_for_task,
-                    &cwd_for_task,
-                    ConflictPolicy::Rename,
-                    &task_cancel,
-                    &mut progress,
-                )
-            } else {
-                ops::copy_entry(
-                    &src_for_task,
-                    &cwd_for_task,
-                    ConflictPolicy::Rename,
-                    &task_cancel,
-                    &mut progress,
-                )
+            let mut total = OpStats::default();
+            let mut first_error: Option<OpError> = None;
+            let mut first_created: Option<PathBuf> = None;
+            let mut offset = 0u64;
+            for path in paths {
+                if task_cancel.is_cancelled() {
+                    first_error = Some(OpError::Cancelled);
+                    break;
+                }
+                let base = offset;
+                let tx = progress_tx_for_task.clone();
+                let mut progress = move |bytes: u64| {
+                    let _ = tx.try_send(base + bytes);
+                };
+                let result = if cut {
+                    ops::move_entry(
+                        &path,
+                        &cwd_for_task,
+                        ConflictPolicy::Rename,
+                        &task_cancel,
+                        &mut progress,
+                    )
+                } else {
+                    ops::copy_entry(
+                        &path,
+                        &cwd_for_task,
+                        ConflictPolicy::Rename,
+                        &task_cancel,
+                        &mut progress,
+                    )
+                };
+                match result {
+                    Ok(stats) => {
+                        offset += stats.bytes;
+                        total.files += stats.files;
+                        total.dirs += stats.dirs;
+                        total.bytes += stats.bytes;
+                        total.skipped.extend(stats.skipped);
+                        if first_created.is_none() {
+                            first_created = stats.created.first().cloned();
+                        }
+                    }
+                    Err(error) => {
+                        let cancelled = matches!(error, OpError::Cancelled);
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                        if cancelled {
+                            break;
+                        }
+                    }
+                }
             }
+            (total, first_error, first_created)
         });
         let task = cx.spawn(async move |this, cx| {
-            let result = background.await;
+            let (stats, first_error, first_created) = background.await;
             let _ = this.update(cx, |this, cx| {
                 this.op_task = None;
                 this.op_cancel = None;
-                match result {
-                    Ok(stats) => {
-                        this.suppress_for(SELF_OP_SUPPRESS);
-                        if cut {
-                            this.clipboard = None;
-                        }
-                        if let Some(dest) = stats.created.first() {
-                            if dest.parent() == Some(this.cwd.as_path()) {
-                                this.pending_select = Some(dest.clone());
-                            }
-                        }
-                        this.status = summarize_op(verb, &stats);
-                        this.reload(cx);
+                let succeeded = stats.files + stats.dirs > 0;
+                let status = match first_error {
+                    Some(OpError::Cancelled) => "キャンセルしました".to_string(),
+                    Some(error) if succeeded => {
+                        format!("{verb}しました（一部失敗: {error}）")
                     }
-                    Err(error) => {
-                        this.status = format!("{verb}できません: {error}");
-                        this.reload(cx);
+                    Some(error) => format!("{verb}できません: {error}"),
+                    None => summarize_op(verb, &stats),
+                };
+                this.suppress_for(SELF_OP_SUPPRESS);
+                if cut {
+                    // Moved sources are gone; never keep a stale cut clipboard.
+                    this.clipboard = None;
+                }
+                if let Some(dest) = first_created {
+                    if dest.parent() == Some(this.cwd.as_path()) {
+                        this.pending_select = Some(dest);
                     }
                 }
+                this.status = status;
+                this.reload(cx);
                 cx.notify();
             });
         });
@@ -1073,33 +1217,54 @@ impl Explorer {
     }
 
     fn trash_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.entries.get(self.selected) else {
+        let paths = self.action_paths();
+        if paths.is_empty() {
             return;
-        };
-        let path = entry.path.clone();
-        let name = entry.name.clone();
-        self.trash_path(path, name, window, cx);
+        }
+        self.trash_paths(paths, window, cx);
     }
 
-    /// Ask for confirmation, then move the target path to the system trash on
-    /// the background executor. The path is resolved by the caller at click
-    /// time, so a re-sorted list cannot redirect the deletion.
-    fn trash_path(
-        &mut self,
-        path: PathBuf,
-        name: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !path.exists() {
-            self.status = format!("対象は既に存在しません: {}", display_path(&path));
+    /// Ask for confirmation, then move the given paths to the system trash on
+    /// the background executor.
+    ///
+    /// Safety: confirmation is always shown (with the item count), sources are
+    /// re-checked before deletion, and permanent deletion is never performed.
+    fn trash_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let mut existing: Vec<PathBuf> = Vec::new();
+        for path in paths {
+            if path.exists() || path.is_symlink() {
+                existing.push(path);
+            }
+        }
+        if existing.is_empty() {
+            self.status = "対象は既に存在しません".to_string();
             self.reload(cx);
             return;
         }
+        let count = existing.len();
+        let names: Vec<String> = existing
+            .iter()
+            .filter_map(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .collect();
+        let (message, detail) = if count == 1 {
+            (
+                format!("「{}」をゴミ箱へ移動しますか？", names[0]),
+                "システムのゴミ箱へ移動します（あとで元に戻せます）。".to_string(),
+            )
+        } else {
+            let preview = names.iter().take(3).cloned().collect::<Vec<_>>().join("、");
+            (
+                format!("{count} 件をゴミ箱へ移動しますか？"),
+                format!("{preview} ほか。システムのゴミ箱へ移動します（あとで元に戻せます）。"),
+            )
+        };
         let receiver = window.prompt(
             PromptLevel::Warning,
-            &format!("「{name}」をゴミ箱へ移動しますか？"),
-            Some("システムのゴミ箱へ移動します（あとで元に戻せます）。"),
+            &message,
+            Some(&detail),
             &["cancel", "ゴミ箱へ移動"],
             cx,
         );
@@ -1109,23 +1274,52 @@ impl Explorer {
             if answer != 1 {
                 return;
             }
-            let trashed = path.clone();
+            let targets = existing.clone();
             let result = background
-                .spawn(async move { trash::delete(&trashed) })
+                .spawn(async move {
+                    let mut trashed: Vec<PathBuf> = Vec::new();
+                    let mut failures: Vec<(PathBuf, String)> = Vec::new();
+                    for path in targets {
+                        match trash::delete(&path) {
+                            Ok(()) => trashed.push(path),
+                            Err(error) => failures.push((path, error.to_string())),
+                        }
+                    }
+                    (trashed, failures)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                match result {
-                    Ok(()) => {
-                        this.suppress_for(SELF_OP_SUPPRESS);
-                        this.status = format!("「{name}」をゴミ箱へ移動しました");
-                        this.all_entries.retain(|entry| entry.path != path);
-                        this.fingerprint = fingerprint(&this.all_entries);
-                        this.rebuild_view(None);
-                        this.reload(cx);
+                let (trashed, failures) = result;
+                if trashed.is_empty() {
+                    this.error = Some(format!(
+                        "ゴミ箱へ移動できません: {}",
+                        failures
+                            .first()
+                            .map(|(_, message)| message.clone())
+                            .unwrap_or_default()
+                    ));
+                } else {
+                    this.suppress_for(SELF_OP_SUPPRESS);
+                    let mut message = if trashed.len() == 1 {
+                        format!(
+                            "「{}」をゴミ箱へ移動しました",
+                            trashed[0]
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default()
+                        )
+                    } else {
+                        format!("{} 件をゴミ箱へ移動しました", trashed.len())
+                    };
+                    if !failures.is_empty() {
+                        message.push_str(&format!("（{} 件失敗）", failures.len()));
                     }
-                    Err(error) => {
-                        this.error = Some(format!("ゴミ箱へ移動できません: {error}"));
-                    }
+                    this.status = message;
+                    this.all_entries
+                        .retain(|entry| !trashed.contains(&entry.path));
+                    this.fingerprint = fingerprint(&this.all_entries);
+                    this.rebuild_view(None);
+                    this.reload(cx);
                 }
                 cx.notify();
             });
@@ -1144,12 +1338,15 @@ impl Explorer {
         entity: Entity<Self>,
         path: PathBuf,
         is_dir: bool,
+        batch_paths: Vec<PathBuf>,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let weak = entity.downgrade();
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| display_path(&path));
+        let batch_count = batch_paths.len();
+        let batch_suffix = if batch_count > 1 {
+            format!("（{batch_count} 件）")
+        } else {
+            String::new()
+        };
         move |menu, _window, _menu_cx| {
             let open_weak = weak.clone();
             let reveal_weak = weak.clone();
@@ -1164,8 +1361,7 @@ impl Explorer {
             let open_path = path.clone();
             let reveal_path = path.clone();
             let copy_path = path.clone();
-            let trash_path = path.clone();
-            let trash_name = name.clone();
+            let trash_paths = batch_paths.clone();
             let open_label = if is_dir {
                 "開く"
             } else {
@@ -1197,14 +1393,14 @@ impl Explorer {
                     }),
             )
             .item(
-                PopupMenuItem::new("コピー")
+                PopupMenuItem::new(format!("コピー{batch_suffix}"))
                     .icon(Icon::new(IconName::ClipboardCopy))
                     .on_click(move |_, _window, cx| {
                         let _ = copy_sel_weak.update(cx, |this, cx| this.copy_selected(cx));
                     }),
             )
             .item(
-                PopupMenuItem::new("切り取り")
+                PopupMenuItem::new(format!("切り取り{batch_suffix}"))
                     .icon(Icon::new(IconName::ClipboardMinus))
                     .on_click(move |_, _window, cx| {
                         let _ = cut_sel_weak.update(cx, |this, cx| this.cut_selected(cx));
@@ -1228,13 +1424,12 @@ impl Explorer {
             )
             .separator()
             .item(
-                PopupMenuItem::new("ゴミ箱へ移動")
+                PopupMenuItem::new(format!("ゴミ箱へ移動{batch_suffix}"))
                     .icon(Icon::new(IconName::Trash))
                     .on_click(move |_, _window, cx| {
-                        let target = trash_path.clone();
-                        let target_name = trash_name.clone();
+                        let targets = trash_paths.clone();
                         let _ = trash_weak.update_in(cx, |this, window, cx| {
-                            this.trash_path(target, target_name, window, cx);
+                            this.trash_paths(targets, window, cx);
                         });
                     }),
             )
@@ -1350,7 +1545,8 @@ impl Explorer {
 
     fn list_row(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
-        let selected = this.selected == index;
+        let selected = this.selection.contains(&entry.path);
+        let focused = this.selected == index;
         let is_dir = entry.is_dir;
         let icon = icon_for_entry(&entry);
         let icon_color = if entry.is_symlink {
@@ -1361,17 +1557,34 @@ impl Explorer {
 
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_handle.focus(window, cx);
-            this.select(index, cx);
+            let modifiers = event.modifiers();
+            this.select_with_modifiers(index, modifiers.control, modifiers.shift, cx);
             if event.click_count() >= 2 {
                 this.open_index(index, cx);
             }
         });
         let right_click = cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
             this.focus_handle.focus(window, cx);
-            this.select(index, cx);
+            // Right-clicking inside an existing multi-selection keeps it, so
+            // batch actions (copy/trash) can be applied to the whole selection.
+            let already_selected = this
+                .entries
+                .get(index)
+                .is_some_and(|entry| this.selection.contains(&entry.path));
+            if already_selected {
+                this.selected = index;
+                cx.notify();
+            } else {
+                this.select_single_index(index, cx);
+            }
         });
         let entity = cx.entity();
-        let context_menu = Self::entry_menu(entity, entry.path.clone(), is_dir);
+        let batch_paths = if this.selection.contains(&entry.path) {
+            this.selection.paths().to_vec()
+        } else {
+            vec![entry.path.clone()]
+        };
+        let context_menu = Self::entry_menu(entity, entry.path.clone(), is_dir, batch_paths);
 
         Some(
             div()
@@ -1385,6 +1598,8 @@ impl Explorer {
                 .text_sm()
                 .bg(if selected {
                     rgb(C_OVERLAY)
+                } else if focused {
+                    rgb(0x252537)
                 } else {
                     rgb(C_BASE)
                 })
@@ -1617,11 +1832,15 @@ impl Explorer {
             .child(
                 div()
                     .text_color(rgb(C_MUTED))
-                    .child(match self.selected_entry() {
-                        Some(entry) if !self.entries.is_empty() => {
-                            format!("選択: {}", format_selected(entry))
+                    .child(if self.selection.len() > 1 {
+                        format!("{} 件選択", self.selection.len())
+                    } else {
+                        match self.selected_entry() {
+                            Some(entry) if !self.entries.is_empty() => {
+                                format!("選択: {}", format_selected(entry))
+                            }
+                            _ => "選択なし".to_string(),
                         }
-                        _ => "選択なし".to_string(),
                     }),
             );
         let right = div()
@@ -1712,6 +1931,10 @@ fn icon_button(
 
 impl Render for Explorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.debug_select_all_once && !self.entries.is_empty() && self.selection.len() <= 1 {
+            self.debug_select_all_once = false;
+            self.select_all(cx);
+        }
         if self.debug_open_rename_once && !self.entries.is_empty() && self.renaming.is_none() {
             self.debug_open_rename_once = false;
             self.start_rename(window, cx);
