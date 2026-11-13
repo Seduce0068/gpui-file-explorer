@@ -1076,6 +1076,17 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 
 ---
 
+### 10.9 Linux DEB パッケージ（2026-11-14 追加）
+
+- 実装: `packaging/linux/build-deb.sh`（root 不要、`dpkg-deb --root-owner-group`）。
+  `app/target/release/gpui-file-explorer`、`.desktop`、hicolor アイコン（16〜512px + scalable）、
+  `README` / `copyright` / `NOTICE` を FHS 準拠の配置で収録する。
+- `Depends` は `ldd` + `dpkg -S` から自動生成（ローカライズされた diversion 行を除外）。
+  Vulkan ローダは dlopen のため `libvulkan1` を明示追加する。
+- 検証: `dpkg-deb -x` 展開後のバイナリで `--version` と Wayland GUI 起動、`apt-get -s install` の
+  依存解決を確認済み。署名・リポジトリ公開・タグ付けはスコープ外（リリースはユーザー指示時のみ）。
+- 制約: Linux amd64 のみ。AppImage/Flatpak/Windows/macOS のパッケージングは未実装。
+
 ## 11. 未確認事項（⚠ 実装前に確認する）
 
 1. **gpui-component の ContextMenuExt / PopupMenu の Wayland 実行時挙動**（ソース存在は ✅ 確認。`src/menu/context_menu.rs`、`src/menu/popup_menu.rs`）。P0 実機で確認し、不調なら `deferred`+`anchored` に切替（ADR-008 のフォールバック）。

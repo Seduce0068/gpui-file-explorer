@@ -214,9 +214,7 @@ struct Explorer {
 impl Explorer {
     fn new(cx: &mut Context<Self>) -> Self {
         let settings = Settings::load();
-        let start_dir = std::env::args()
-            .nth(1)
-            .map(PathBuf::from)
+        let start_dir = startup_dir()
             .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
             .filter(|path| path.is_dir())
             .or_else(|| settings.last_dir.clone())
@@ -1788,7 +1786,42 @@ impl Render for Explorer {
     }
 }
 
+/// Handle `--version` / `--help` before starting GPUI.
+///
+/// Returns `true` when the process should exit without opening a window.
+fn handle_cli() -> bool {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("gpui-file-explorer {}", env!("CARGO_PKG_VERSION"));
+        return true;
+    }
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!(
+            "gpui-file-explorer {}\n\n\
+             使い方: gpui-file-explorer [ディレクトリ]\n\n\
+             引数なしの場合は前回のディレクトリ（無ければ $HOME）を開きます。\n\
+             主なキー: F2 名前変更 / Ctrl+C・Ctrl+X・Ctrl+V コピー・切り取り・貼り付け /\n\
+             Ctrl+H 隠しファイル / Ctrl+Shift+N 新規フォルダ / Alt+←→ 戻る・進む / Esc キャンセル\n\n\
+             ライセンス: AGPL-3.0-or-later",
+            env!("CARGO_PKG_VERSION")
+        );
+        return true;
+    }
+    false
+}
+
+/// First non-flag argument, treated as the initial directory.
+fn startup_dir() -> Option<PathBuf> {
+    std::env::args()
+        .skip(1)
+        .find(|arg| !arg.starts_with('-'))
+        .map(PathBuf::from)
+}
+
 fn main() {
+    if handle_cli() {
+        return;
+    }
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     app.run(|cx: &mut App| {
         gpui_kit::init(cx);

@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=GPUI File Explorer
+Name[ja]=GPUI ファイルエクスプローラー
+GenericName=File Manager
+GenericName[ja]=ファイルマネージャー
+Comment=A fast cross-platform file explorer built with GPUI
+Comment[ja]=GPUI で作られた高速なファイルエクスプローラー
+Exec=gpui-file-explorer
+Icon=gpui-file-explorer
+Terminal=false
+Categories=System;FileManager;
+Keywords=files;explorer;manager;browser;
+Keywords[ja]=ファイル;エクスプローラー;ファイラー;
+StartupWMClass=gpui-file-explorer
