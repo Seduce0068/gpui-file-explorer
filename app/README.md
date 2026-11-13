@@ -239,6 +239,18 @@ minimized=false, fullscreen=false, type=0
   ポータル保存スクショは削除済みで、`~/.config/gpui-file-explorer/settings.json`
   も最終確認後に削除しています（Lead の独立検証でも残存なしを確認済み）。
 
+## 配布（Linux DEB）
+
+リポジトリ直下のスクリプトで DEB を作成できます（root 不要、ホストへはインストールしません）:
+
+```bash
+bash packaging/linux/build-deb.sh
+# 出力: packaging/linux/build/gpui-file-explorer_<version>-1_<arch>.deb
+```
+
+`.desktop`（`StartupWMClass=gpui-file-explorer`）、hicolor アイコン、ドキュメントを同梱します。
+依存パッケージはビルド時に `ldd` + `dpkg -S` から生成します。
+
 ## 既知の制限
 
 - **ファイルを開く / リビールの失敗は検知できません**: 使用 API

@@ -12,3 +12,6 @@ poc/native-libs/
 *.swp
 .idea/
 .vscode/
+
+# Packaging build output
+packaging/linux/build/

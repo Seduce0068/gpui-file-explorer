@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#1e1e2e"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="none" stroke="#313244" stroke-width="8"/>
+  <path d="M104 176a24 24 0 0 1 24-24h96l32 40h128a24 24 0 0 1 24 24v152a24 24 0 0 1-24 24H128a24 24 0 0 1-24-24z"
+        fill="#89b4fa"/>
+  <path d="M104 232h304v136a24 24 0 0 1-24 24H128a24 24 0 0 1-24-24z" fill="#a6c8ff"/>
+  <path d="M104 232h304" stroke="#74a8f7" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="352" cy="352" r="56" fill="#1e1e2e" fill-opacity="0.25"/>
+  <circle cx="352" cy="352" r="44" fill="none" stroke="#cdd6f4" stroke-width="14"/>
+  <path d="M384 384l40 40" stroke="#cdd6f4" stroke-width="18" stroke-linecap="round"/>
+</svg>

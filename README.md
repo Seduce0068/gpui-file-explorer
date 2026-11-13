@@ -41,6 +41,7 @@ cargo test           # 36 tests
 | [poc/](poc/) | スタック検証用の最小 PoC（`gpui-kit` のみ、実機でビルド・起動確認済み） |
 | [notes/](notes/) | 一次調査ノート（GPUI API 棚卸し・エコシステム・OS/FS 差分）と独立検証レポート |
 | [scripts/dev-setup.sh](scripts/dev-setup.sh) | `libxkbcommon-x11` 開発ファイル欠如時のローカル symlink 作成（システム変更なし） |
+| [packaging/linux/](packaging/linux/) | Linux DEB ビルド（`build-deb.sh`、`.desktop`、hicolor アイコン）。root 不要・ホストへインストールしない |
 | [.github/workflows/ci.yml](.github/workflows/ci.yml) | 個人リポジトリ共通の Rust ゲート（`Seduce0068/workflows@v1`）へ委譲 |
 
 > `notes/` は元の開発ワークスペース（`work/gpui-file-explorer/`）で作成した調査記録です。
@@ -56,12 +57,32 @@ cargo test           # 36 tests
 - Lead 再検証: [notes/lead-verify/SUMMARY.md](notes/lead-verify/SUMMARY.md)
 - 証拠画像: [postfix-after.png](notes/lead-verify/postfix-after.png)
 
+## 配布ビルド（Linux DEB）
+
+```bash
+# リポジトリ直下で実行（root では実行できません）
+bash packaging/linux/build-deb.sh
+# 出力: packaging/linux/build/gpui-file-explorer_0.1.0-1_amd64.deb
+
+# release バイナリを再ビルドせずパッケージだけ作り直す場合
+bash packaging/linux/build-deb.sh --skip-build
+```
+
+- 収録物: `/usr/bin/gpui-file-explorer`、`.desktop`、hicolor アイコン（16〜512px + scalable）、
+  `README.md` / `copyright` / `NOTICE`
+- `Depends` は `ldd` + `dpkg -S` から自動生成（Vulkan ローダは dlopen のため `libvulkan1` を明示追加）
+- `dpkg-deb --root-owner-group` を使うため **sudo 不要**。ホストへのインストールも行いません
+- 検証済み: `dpkg-deb -x` で展開したバイナリが `--version` / GUI 起動（Wayland）で動作、
+  `apt-get -s install ./...deb` の依存解決が通ること
+- 署名・リポジトリ公開・タグ付けは未実施（リリースはユーザー指示があるまで行いません）
+
 ## 既知の制限
 
 - キーボード / 右クリック / 削除確認ダイアログの**実押下 E2E は未検証**
   （Wayland ネイティブへ合成入力を送るツールが検証機に無いため）
 - P1 進行中: 安全なファイル操作（`app/src/ops.rs`: 上書き禁止・symlink非追跡・キャンセル対応）、コピー/切り取り/貼り付け（`Ctrl+C`/`Ctrl+X`/`Ctrl+V`）、リネームダイアログ（F2、上書き拒否・失敗時は原名維持）、コピー/移動のバイト進捗表示（ステータスバー、80msスロットル）を実装・テスト済み。未実装: 視覚的進捗バー、グリッド表示、タブ、検索、ボリューム一覧、複数選択
 - Windows / macOS の実機ビルド・実行は未検証（設計は `std::fs` / `dirs` / `trash` でポータブル）
+- 配布パッケージは Linux amd64 の DEB のみ（署名・AppImage/Flatpak・Windows/macOS は未対応）
 - 詳細は [app/README.md](app/README.md) の「既知の制限」
 
 ## ライセンス
