@@ -10,6 +10,7 @@ mod icons;
 mod model;
 mod ops;
 mod settings;
+mod trash_view;
 mod watcher;
 
 use std::path::PathBuf;
@@ -108,6 +109,13 @@ fn summarize_op(verb: &str, stats: &OpStats) -> String {
     message
 }
 
+/// Which listing the window currently shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewMode {
+    Directory,
+    Trash,
+}
+
 /// One sidebar "place".
 ///
 /// Paths are resolved **once** (at startup) and their existence re-checked only
@@ -119,6 +127,8 @@ struct Place {
     icon: IconName,
     path: Option<PathBuf>,
     exists: bool,
+    /// Special entry: opens the system trash view instead of a directory.
+    trash: bool,
 }
 
 fn build_places() -> Vec<Place> {
@@ -132,7 +142,7 @@ fn build_places() -> Vec<Place> {
         ("ビデオ", IconName::Video, dirs::video_dir()),
         ("ルート", IconName::HardDrive, Some(PathBuf::from("/"))),
     ];
-    entries
+    let mut places: Vec<Place> = entries
         .into_iter()
         .map(|(label, icon, path)| {
             let exists = path.as_ref().is_some_and(|target| target.is_dir());
@@ -141,9 +151,18 @@ fn build_places() -> Vec<Place> {
                 icon,
                 path,
                 exists,
+                trash: false,
             }
         })
-        .collect()
+        .collect();
+    places.push(Place {
+        label: "ゴミ箱",
+        icon: IconName::Trash,
+        path: None,
+        exists: true,
+        trash: true,
+    });
+    places
 }
 
 /// Inline rename dialog state. Dropping it closes the dialog and drops the
@@ -156,6 +175,10 @@ struct RenameState {
     _subscription: Subscription,
     error: Option<String>,
 }
+
+/// Boxed context-menu builder, used where the trash and directory views need
+/// different menus for the same row.
+type MenuBuilder = Box<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
 /// One entry on the internal cut/copy clipboard (P1: single selection).
 ///
@@ -179,6 +202,10 @@ struct Explorer {
     selected: usize,
     /// Multi-selection keyed by path so it survives reloads and re-sorting.
     selection: Selection,
+    /// Current listing source (real directory or the system trash).
+    view: ViewMode,
+    /// Trash items backing the virtual listing (empty in directory view).
+    trash_items: Vec<trash::TrashItem>,
     history: History,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
@@ -215,6 +242,12 @@ struct Explorer {
     /// Development-only hook: `GPUI_FE_DEBUG_SELECT_ALL=1` selects every entry
     /// after the first load (multi-selection screenshot).
     debug_select_all_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_TRASH=1` opens the trash view once
+    /// after startup (screenshot / smoke testing without synthetic input).
+    debug_open_trash_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_TRASH_RESTORE=1` restores the
+    /// first trash item after the trash listing loads (end-to-end smoke test).
+    debug_restore_trash_once: bool,
 }
 
 impl Explorer {
@@ -240,6 +273,8 @@ impl Explorer {
             entries: Vec::new(),
             selected: 0,
             selection: Selection::default(),
+            view: ViewMode::Directory,
+            trash_items: Vec::new(),
             history: History::new(),
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
@@ -260,6 +295,8 @@ impl Explorer {
             focus_list_on_next_render: false,
             debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
             debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
+            debug_open_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH").is_some(),
+            debug_restore_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH_RESTORE").is_some(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -285,6 +322,10 @@ impl Explorer {
         self.error = None;
         self.refresh_places();
         self.update_watcher();
+        if self.view == ViewMode::Trash {
+            self.reload_trash(cx);
+            return;
+        }
         let dir = self.cwd.clone();
         // Drop the previous waiter: cancelling its Task discards the stale
         // result; the generation check is the second line of defence.
@@ -317,6 +358,99 @@ impl Explorer {
         });
         self.load_task = Some(task);
         cx.notify();
+    }
+
+    /// Load the system trash into the virtual listing (background executor).
+    fn reload_trash(&mut self, cx: &mut Context<Self>) {
+        let generation = self.generation;
+        self.loading = true;
+        self.error = None;
+        self.load_task.take();
+        let background = cx.background_spawn(async move { trash_view::list() });
+        let task = cx.spawn(async move |this, cx| {
+            let result = background.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.loading = false;
+                match result {
+                    Ok(items) => {
+                        this.trash_items = items;
+                        this.apply_trash_loaded();
+                    }
+                    Err(error) => {
+                        this.trash_items.clear();
+                        this.all_entries.clear();
+                        this.entries.clear();
+                        this.selected = 0;
+                        this.selection.clear();
+                        this.error = Some(format!("ゴミ箱を読み込めません: {error}"));
+                    }
+                }
+                cx.notify();
+            });
+        });
+        self.load_task = Some(task);
+        cx.notify();
+    }
+
+    /// Map trash items to rows without applying the directory hidden/sort
+    /// filters (the trash is always newest-first).
+    fn apply_trash_loaded(&mut self) {
+        let keep = self
+            .entries
+            .get(self.selected)
+            .map(|entry| entry.path.clone());
+        let entries = trash_view::entries_from_items(&self.trash_items);
+        let paths: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
+        self.selection.retain(&paths);
+        let focused = keep
+            .and_then(|path| paths.iter().position(|candidate| candidate == &path))
+            .or_else(|| {
+                self.selection
+                    .paths()
+                    .first()
+                    .and_then(|path| paths.iter().position(|candidate| candidate == path))
+            })
+            .unwrap_or(0);
+        self.all_entries = entries.clone();
+        self.entries = entries;
+        self.fingerprint = fingerprint(&self.all_entries);
+        self.selected = clamp_index(focused, self.entries.len());
+        if self.selection.is_empty() {
+            if let Some(entry) = self.entries.get(self.selected) {
+                self.selection.select_single(entry.path.clone());
+            }
+        }
+        if !self.entries.is_empty() {
+            self.scroll_handle
+                .scroll_to_item(self.selected, ScrollStrategy::Nearest);
+        }
+    }
+
+    fn enter_trash(&mut self, cx: &mut Context<Self>) {
+        if self.view == ViewMode::Trash {
+            self.reload(cx);
+            return;
+        }
+        self.view = ViewMode::Trash;
+        self.selection.clear();
+        self.selected = 0;
+        self.pending_select = None;
+        self.status = "ゴミ箱を読み込んでいます…".to_string();
+        self.reload(cx);
+    }
+
+    fn exit_trash(&mut self, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Trash {
+            return;
+        }
+        self.view = ViewMode::Directory;
+        self.selection.clear();
+        self.selected = 0;
+        self.status.clear();
+        self.reload(cx);
     }
 
     /// Apply a freshly loaded listing, keeping the selection on the same path
@@ -375,7 +509,11 @@ impl Explorer {
     }
 
     fn update_watcher(&mut self) {
-        let dirs = self.watched_dirs();
+        let dirs = if self.view == ViewMode::Trash {
+            Vec::new()
+        } else {
+            self.watched_dirs()
+        };
         self.watcher.watch(&dirs);
     }
 
@@ -383,7 +521,11 @@ impl Explorer {
     /// only — never from `render`.
     fn refresh_places(&mut self) {
         for place in &mut self.places {
-            place.exists = place.path.as_ref().is_some_and(|target| target.is_dir());
+            if place.trash {
+                place.exists = true;
+            } else {
+                place.exists = place.path.as_ref().is_some_and(|target| target.is_dir());
+            }
         }
     }
 
@@ -391,7 +533,9 @@ impl Explorer {
     /// reload only when the content fingerprint actually changed. This covers
     /// events lost by the OS watcher (queue overflow, unwatchable paths, ...).
     fn reconcile(&mut self, cx: &mut Context<Self>) {
-        if self.loading {
+        // The trash view has its own listing; the directory reconcile must not
+        // overwrite it with the current directory contents.
+        if self.loading || self.view == ViewMode::Trash {
             return;
         }
         let generation = self.generation;
@@ -420,7 +564,7 @@ impl Explorer {
             while watch_rx.recv().await.is_ok() {
                 while watch_rx.try_recv().is_ok() {}
                 let updated = this.update(cx, |this, cx| {
-                    if this.is_suppressed() {
+                    if this.is_suppressed() || this.view == ViewMode::Trash {
                         return;
                     }
                     this.status = "変更を検出しました".to_string();
@@ -459,6 +603,7 @@ impl Explorer {
     // ------------------------------------------------------------- navigation
 
     fn set_cwd(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.view = ViewMode::Directory;
         if path == self.cwd {
             self.reload(cx);
             return;
@@ -474,6 +619,7 @@ impl Explorer {
     }
 
     fn navigate_to(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.view = ViewMode::Directory;
         if path == self.cwd {
             self.reload(cx);
             return;
@@ -491,6 +637,10 @@ impl Explorer {
     }
 
     fn go_back(&mut self, cx: &mut Context<Self>) {
+        if self.view == ViewMode::Trash {
+            self.exit_trash(cx);
+            return;
+        }
         if let Some(target) = self.history.go_back(self.cwd.clone()) {
             if target.is_dir() {
                 self.set_cwd(target, cx);
@@ -502,6 +652,10 @@ impl Explorer {
     }
 
     fn go_forward(&mut self, cx: &mut Context<Self>) {
+        if self.view == ViewMode::Trash {
+            self.exit_trash(cx);
+            return;
+        }
         if let Some(target) = self.history.go_forward(self.cwd.clone()) {
             if target.is_dir() {
                 self.set_cwd(target, cx);
@@ -513,6 +667,10 @@ impl Explorer {
     }
 
     fn go_parent(&mut self, cx: &mut Context<Self>) {
+        if self.view == ViewMode::Trash {
+            self.exit_trash(cx);
+            return;
+        }
         if let Some(parent) = parent_dir(&self.cwd) {
             if parent != self.cwd {
                 self.navigate_to(parent, cx);
@@ -521,6 +679,10 @@ impl Explorer {
     }
 
     fn open_selected(&mut self, cx: &mut Context<Self>) {
+        if self.view == ViewMode::Trash {
+            self.restore_selected(cx);
+            return;
+        }
         self.open_index(self.selected, cx);
     }
 
@@ -660,9 +822,30 @@ impl Explorer {
                 ("a", false) => self.select_all(cx),
                 ("r", _) => self.reload(cx),
                 ("n", true) => self.new_folder(cx),
-                ("c", false) => self.copy_selected(cx),
-                ("x", false) => self.cut_selected(cx),
-                ("v", false) => self.paste(cx),
+                ("c", false) => {
+                    if self.view == ViewMode::Trash {
+                        self.status = "ゴミ箱ビューではコピーできません".to_string();
+                        cx.notify();
+                    } else {
+                        self.copy_selected(cx);
+                    }
+                }
+                ("x", false) => {
+                    if self.view == ViewMode::Trash {
+                        self.status = "ゴミ箱ビューでは切り取りできません".to_string();
+                        cx.notify();
+                    } else {
+                        self.cut_selected(cx);
+                    }
+                }
+                ("v", false) => {
+                    if self.view == ViewMode::Trash {
+                        self.status = "ゴミ箱ビューでは貼り付けできません".to_string();
+                        cx.notify();
+                    } else {
+                        self.paste(cx);
+                    }
+                }
                 ("q", _) => cx.quit(),
                 _ => {}
             }
@@ -692,8 +875,23 @@ impl Explorer {
             "enter" => self.open_selected(cx),
             "backspace" => self.go_parent(cx),
             "f5" => self.reload(cx),
-            "f2" => self.start_rename(window, cx),
-            "delete" => self.trash_selected(window, cx),
+            "f2" => {
+                if self.view == ViewMode::Trash {
+                    self.status = "ゴミ箱ビューでは名前を変更できません".to_string();
+                    cx.notify();
+                } else {
+                    self.start_rename(window, cx);
+                }
+            }
+            "delete" => {
+                if self.view == ViewMode::Trash {
+                    // Permanent deletion is intentionally not offered.
+                    self.status = "ゴミ箱内の完全削除は未対応です".to_string();
+                    cx.notify();
+                } else {
+                    self.trash_selected(window, cx);
+                }
+            }
             "escape" => self.cancel_op(cx),
             _ => {}
         }
@@ -1327,6 +1525,50 @@ impl Explorer {
         .detach();
     }
 
+    // ------------------------------------------------------------------- trash
+
+    fn restore_selected(&mut self, cx: &mut Context<Self>) {
+        let paths = self.action_paths();
+        self.restore_paths(paths, cx);
+    }
+
+    /// Restore trash items to their original locations (background executor).
+    ///
+    /// Restoring is non-destructive; collisions are reported by the `trash`
+    /// crate and leave the affected items in the trash.
+    fn restore_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Trash {
+            return;
+        }
+        let items: Vec<trash::TrashItem> = self
+            .trash_items
+            .iter()
+            .filter(|item| paths.contains(&PathBuf::from(&item.id)))
+            .cloned()
+            .collect();
+        if items.is_empty() {
+            self.status = "復元対象がありません".to_string();
+            cx.notify();
+            return;
+        }
+        let count = items.len();
+        self.status = format!("{count} 件を復元中…");
+        cx.notify();
+        let background = cx.background_spawn(async move { trash_view::restore(items) });
+        cx.spawn(async move |this, cx| {
+            let result = background.await;
+            let _ = this.update(cx, |this, cx| {
+                this.status = match result {
+                    Ok(()) => format!("{count} 件を元の場所へ復元しました"),
+                    Err(error) => format!("復元できません: {error}"),
+                };
+                this.reload(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     // ------------------------------------------------------------- context menu
 
     /// Build the per-row context menu.
@@ -1444,6 +1686,34 @@ impl Explorer {
         }
     }
 
+    /// Context menu for trash rows: restore only (no permanent deletion).
+    fn trash_entry_menu(
+        entity: Entity<Self>,
+        batch_paths: Vec<PathBuf>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let weak = entity.downgrade();
+        let count = batch_paths.len();
+        let suffix = if count > 1 {
+            format!("（{count} 件）")
+        } else {
+            String::new()
+        };
+        move |menu, _window, _menu_cx| {
+            let restore_weak = weak.clone();
+            let targets = batch_paths.clone();
+            menu.item(
+                PopupMenuItem::new(format!("元の場所へ復元{suffix}"))
+                    .icon(Icon::new(IconName::ArchiveRestore))
+                    .on_click(move |_, _window, cx| {
+                        let targets = targets.clone();
+                        let _ = restore_weak.update(cx, |this, cx| {
+                            this.restore_paths(targets, cx);
+                        });
+                    }),
+            )
+        }
+    }
+
     // ------------------------------------------------------------------- render
 
     fn sort_header_cell(
@@ -1511,7 +1781,14 @@ impl Explorer {
         } else if self.loading {
             ("読み込み中…".to_string(), C_MUTED)
         } else if self.all_entries.is_empty() {
-            ("このフォルダは空です".to_string(), C_MUTED)
+            (
+                if self.view == ViewMode::Trash {
+                    "ゴミ箱は空です".to_string()
+                } else {
+                    "このフォルダは空です".to_string()
+                },
+                C_MUTED,
+            )
         } else if self.entries.is_empty() {
             (
                 format!(
@@ -1548,11 +1825,17 @@ impl Explorer {
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
-        let icon = icon_for_entry(&entry);
-        let icon_color = if entry.is_symlink {
-            C_MUTED
+        let (icon, icon_color) = if this.view == ViewMode::Trash {
+            (IconName::Trash, C_MUTED)
         } else {
-            kind_color(kind_for_entry(&entry))
+            (
+                icon_for_entry(&entry),
+                if entry.is_symlink {
+                    C_MUTED
+                } else {
+                    kind_color(kind_for_entry(&entry))
+                },
+            )
         };
 
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -1560,7 +1843,11 @@ impl Explorer {
             let modifiers = event.modifiers();
             this.select_with_modifiers(index, modifiers.control, modifiers.shift, cx);
             if event.click_count() >= 2 {
-                this.open_index(index, cx);
+                if this.view == ViewMode::Trash {
+                    this.restore_selected(cx);
+                } else {
+                    this.open_index(index, cx);
+                }
             }
         });
         let right_click = cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
@@ -1584,7 +1871,16 @@ impl Explorer {
         } else {
             vec![entry.path.clone()]
         };
-        let context_menu = Self::entry_menu(entity, entry.path.clone(), is_dir, batch_paths);
+        let context_menu: MenuBuilder = if this.view == ViewMode::Trash {
+            Box::new(Self::trash_entry_menu(entity, batch_paths))
+        } else {
+            Box::new(Self::entry_menu(
+                entity,
+                entry.path.clone(),
+                is_dir,
+                batch_paths,
+            ))
+        };
 
         Some(
             div()
@@ -1628,7 +1924,7 @@ impl Explorer {
                         .text_xs()
                         .text_right()
                         .text_color(rgb(C_MUTED))
-                        .child(if entry.is_dir {
+                        .child(if entry.is_dir || this.view == ViewMode::Trash {
                             "-".to_string()
                         } else {
                             human_size(entry.size)
@@ -1667,10 +1963,16 @@ impl Explorer {
         // Cached places only: no `dirs::*_dir()` / `is_dir()` I/O in render.
         for (index, place) in self.places.iter().enumerate() {
             let existing = place.exists;
-            let active = place
-                .path
-                .as_ref()
-                .is_some_and(|target| target == &self.cwd);
+            let is_trash = place.trash;
+            let active = if is_trash {
+                self.view == ViewMode::Trash
+            } else {
+                self.view == ViewMode::Directory
+                    && place
+                        .path
+                        .as_ref()
+                        .is_some_and(|target| target == &self.cwd)
+            };
             let mut row = div()
                 .id(20_000 + index as u64)
                 .mx_2()
@@ -1685,7 +1987,15 @@ impl Explorer {
                 .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
                 .child(Icon::new(place.icon))
                 .child(place.label);
-            if let Some(target) = place.path.clone().filter(|_| existing) {
+            if is_trash {
+                row = row
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .on_click(cx.listener(|this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.enter_trash(cx);
+                    }));
+            } else if let Some(target) = place.path.clone().filter(|_| existing) {
                 row = row
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(C_SURFACE)))
@@ -1708,7 +2018,21 @@ impl Explorer {
             .overflow_hidden()
             .gap_1()
             .mx_2();
-        let segments = breadcrumb_segments(&self.cwd);
+        if self.view == ViewMode::Trash {
+            breadcrumb = breadcrumb.child(
+                div()
+                    .px_1()
+                    .py_0p5()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("ゴミ箱"),
+            );
+        }
+        let segments = if self.view == ViewMode::Trash {
+            Vec::new()
+        } else {
+            breadcrumb_segments(&self.cwd)
+        };
         let last = segments.len().saturating_sub(1);
         for (index, (label, path)) in segments.into_iter().enumerate() {
             if index > 0 {
@@ -1738,7 +2062,7 @@ impl Explorer {
         let back = icon_button(
             "nav-back",
             IconName::ArrowLeft,
-            self.history.can_go_back(),
+            self.history.can_go_back() || self.view == ViewMode::Trash,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.go_back(cx);
@@ -1747,7 +2071,7 @@ impl Explorer {
         let forward = icon_button(
             "nav-forward",
             IconName::ArrowRight,
-            self.history.can_go_forward(),
+            self.history.can_go_forward() || self.view == ViewMode::Trash,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.go_forward(cx);
@@ -1756,7 +2080,7 @@ impl Explorer {
         let up = icon_button(
             "nav-up",
             IconName::ArrowUp,
-            parent_dir(&self.cwd).is_some(),
+            self.view == ViewMode::Trash || parent_dir(&self.cwd).is_some(),
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.go_parent(cx);
@@ -1774,7 +2098,7 @@ impl Explorer {
         let new_folder = icon_button(
             "new-folder",
             IconName::FolderPlus,
-            true,
+            self.view == ViewMode::Directory,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.new_folder(cx);
@@ -1825,7 +2149,11 @@ impl Explorer {
                     .max_w(px(520.0))
                     .truncate()
                     .text_color(rgb(C_SUBTEXT))
-                    .child(display_path(&self.cwd)),
+                    .child(if self.view == ViewMode::Trash {
+                        "ゴミ箱".to_string()
+                    } else {
+                        display_path(&self.cwd)
+                    }),
             )
             .child(div().text_color(rgb(C_DIM)).child("|"))
             .child(format!("{} 件", self.entries.len()))
@@ -1836,6 +2164,15 @@ impl Explorer {
                         format!("{} 件選択", self.selection.len())
                     } else {
                         match self.selected_entry() {
+                            Some(entry)
+                                if !self.entries.is_empty() && self.view == ViewMode::Trash =>
+                            {
+                                format!(
+                                    "選択: {}（削除: {}）",
+                                    entry.name,
+                                    human_datetime(entry.modified)
+                                )
+                            }
                             Some(entry) if !self.entries.is_empty() => {
                                 format!("選択: {}", format_selected(entry))
                             }
@@ -1873,7 +2210,12 @@ impl Explorer {
             } else {
                 div().into_any_element()
             })
-            .child(if self.watcher.is_supported() {
+            .child(if self.view == ViewMode::Trash {
+                div()
+                    .text_color(rgb(C_MUTED))
+                    .child("ゴミ箱（自動更新なし）")
+                    .into_any_element()
+            } else if self.watcher.is_supported() {
                 div()
                     .text_color(rgb(C_MUTED))
                     .child(format!(
@@ -1931,6 +2273,18 @@ fn icon_button(
 
 impl Render for Explorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.debug_open_trash_once && self.view == ViewMode::Directory {
+            self.debug_open_trash_once = false;
+            self.enter_trash(cx);
+        }
+        if self.debug_restore_trash_once
+            && self.view == ViewMode::Trash
+            && !self.loading
+            && !self.entries.is_empty()
+        {
+            self.debug_restore_trash_once = false;
+            self.restore_selected(cx);
+        }
         if self.debug_select_all_once && !self.entries.is_empty() && self.selection.len() <= 1 {
             self.debug_select_all_once = false;
             self.select_all(cx);
