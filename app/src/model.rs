@@ -165,6 +165,23 @@ impl Selection {
     }
 }
 
+/// Number of icon-grid columns that fit into `available_width` when each cell
+/// needs at least `min_cell_width` pixels.
+pub fn grid_columns(available_width: f32, min_cell_width: f32) -> usize {
+    if min_cell_width <= 0.0 || !available_width.is_finite() {
+        return 1;
+    }
+    ((available_width / min_cell_width).floor() as usize).max(1)
+}
+
+/// Number of rows needed to show `items` in a grid with `columns` per row.
+pub fn grid_row_count(items: usize, columns: usize) -> usize {
+    if columns == 0 {
+        return 0;
+    }
+    items.div_ceil(columns)
+}
+
 /// Which column the list is sorted by.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -851,5 +868,29 @@ mod selection_tests {
 
         selection.retain(&[]);
         assert!(selection.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::{grid_columns, grid_row_count};
+
+    #[test]
+    fn columns_are_at_least_one() {
+        assert_eq!(grid_columns(0.0, 100.0), 1);
+        assert_eq!(grid_columns(50.0, 100.0), 1);
+        assert_eq!(grid_columns(1000.0, 100.0), 10);
+        assert_eq!(grid_columns(-5.0, 100.0), 1);
+        assert_eq!(grid_columns(1000.0, 0.0), 1);
+    }
+
+    #[test]
+    fn row_count_rounds_up() {
+        assert_eq!(grid_row_count(0, 4), 0);
+        assert_eq!(grid_row_count(1, 4), 1);
+        assert_eq!(grid_row_count(4, 4), 1);
+        assert_eq!(grid_row_count(5, 4), 2);
+        assert_eq!(grid_row_count(8, 4), 2);
+        assert_eq!(grid_row_count(5, 0), 0);
     }
 }
