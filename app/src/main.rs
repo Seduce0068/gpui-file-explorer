@@ -29,11 +29,11 @@ use crate::history::History;
 use crate::icons::{icon_for_entry, kind_for_entry, FileKind};
 use crate::model::{
     breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
-    human_age, human_datetime, human_size, last_index, parent_dir, read_entries, step_selection,
-    visible_entries, Entry, Selection, SortKey, SortSpec,
+    grid_columns, grid_row_count, human_age, human_datetime, human_size, last_index, parent_dir,
+    read_entries, step_selection, visible_entries, Entry, Selection, SortKey, SortSpec,
 };
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
-use crate::settings::Settings;
+use crate::settings::{Settings, ViewMode as LayoutMode};
 use crate::watcher::DirWatcher;
 
 // Catppuccin Mocha-ish palette.
@@ -253,6 +253,9 @@ struct Explorer {
     /// Development-only hook: `GPUI_FE_DEBUG_PROGRESS=1` shows a fake progress
     /// bar after startup (screenshot of the progress UI).
     debug_progress_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_GRID=1` switches to the icon grid
+    /// view once after startup (screenshot).
+    debug_grid_once: bool,
 }
 
 impl Explorer {
@@ -304,6 +307,7 @@ impl Explorer {
             debug_open_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH").is_some(),
             debug_restore_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH_RESTORE").is_some(),
             debug_progress_once: std::env::var_os("GPUI_FE_DEBUG_PROGRESS").is_some(),
+            debug_grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -773,6 +777,16 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Switch between the details list and the icon grid (persisted).
+    fn set_view(&mut self, mode: LayoutMode, cx: &mut Context<Self>) {
+        if self.settings.view == mode {
+            return;
+        }
+        self.settings.view = mode;
+        self.settings.save();
+        cx.notify();
+    }
+
     fn select_all(&mut self, cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = self
             .entries
@@ -830,6 +844,8 @@ impl Explorer {
             match (key, modifiers.shift) {
                 ("h", _) => self.toggle_hidden(cx),
                 ("a", false) => self.select_all(cx),
+                ("1", false) => self.set_view(LayoutMode::Details, cx),
+                ("2", false) => self.set_view(LayoutMode::Icons, cx),
                 ("r", _) => self.reload(cx),
                 ("n", true) => self.new_folder(cx),
                 ("c", false) => {
@@ -1961,6 +1977,145 @@ impl Explorer {
         )
     }
 
+    /// One row of the icon grid: up to `columns` cells.
+    fn grid_row(
+        this: &mut Self,
+        row_index: usize,
+        columns: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let start = row_index.checked_mul(columns)?;
+        if start >= this.entries.len() {
+            return None;
+        }
+        let end = (start + columns).min(this.entries.len());
+        let mut cells = Vec::with_capacity(end - start);
+        for index in start..end {
+            if let Some(cell) = Self::grid_cell(this, index, cx) {
+                cells.push(cell);
+            }
+        }
+        if cells.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .w_full()
+                .items_start()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .children(cells)
+                .into_any_element(),
+        )
+    }
+
+    fn grid_cell(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let entry = this.entries.get(index).cloned()?;
+        let selected = this.selection.contains(&entry.path);
+        let focused = this.selected == index;
+        let is_dir = entry.is_dir;
+        let (icon, icon_color) = if this.view == ViewMode::Trash {
+            (IconName::Trash, C_MUTED)
+        } else {
+            (
+                icon_for_entry(&entry),
+                if entry.is_symlink {
+                    C_MUTED
+                } else {
+                    kind_color(kind_for_entry(&entry))
+                },
+            )
+        };
+        let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
+            this.focus_handle.focus(window, cx);
+            let modifiers = event.modifiers();
+            this.select_with_modifiers(index, modifiers.control, modifiers.shift, cx);
+            if event.click_count() >= 2 {
+                if this.view == ViewMode::Trash {
+                    this.restore_selected(cx);
+                } else {
+                    this.open_index(index, cx);
+                }
+            }
+        });
+        let right_click = cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+            this.focus_handle.focus(window, cx);
+            let already_selected = this
+                .entries
+                .get(index)
+                .is_some_and(|entry| this.selection.contains(&entry.path));
+            if already_selected {
+                this.selected = index;
+                cx.notify();
+            } else {
+                this.select_single_index(index, cx);
+            }
+        });
+        let entity = cx.entity();
+        let batch_paths = if this.selection.contains(&entry.path) {
+            this.selection.paths().to_vec()
+        } else {
+            vec![entry.path.clone()]
+        };
+        let context_menu: MenuBuilder = if this.view == ViewMode::Trash {
+            Box::new(Self::trash_entry_menu(entity, batch_paths))
+        } else {
+            Box::new(Self::entry_menu(
+                entity,
+                entry.path.clone(),
+                is_dir,
+                batch_paths,
+            ))
+        };
+        Some(
+            div()
+                .id(("grid-cell", index))
+                .w(px(108.0))
+                .h(px(104.0))
+                .rounded_md()
+                .px_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .bg(if selected {
+                    rgb(C_OVERLAY)
+                } else if focused {
+                    rgb(0x252537)
+                } else {
+                    rgb(C_BASE)
+                })
+                .cursor_pointer()
+                .hover(|style| {
+                    style.bg(if selected {
+                        rgb(C_OVERLAY)
+                    } else {
+                        rgb(0x252537)
+                    })
+                })
+                .on_click(click)
+                .on_mouse_down(MouseButton::Right, right_click)
+                .context_menu(context_menu)
+                .child(
+                    div()
+                        .text_2xl()
+                        .child(Icon::new(icon).text_color(rgb(icon_color))),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .text_xs()
+                        .text_center()
+                        .truncate()
+                        .child(entry.name.clone()),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn sidebar(&self, cx: &mut Context<Self>) -> Div {
         let mut sidebar = div()
             .w(px(190.0))
@@ -2114,6 +2269,24 @@ impl Explorer {
                 this.reload(cx);
             }),
         );
+        let view_details = icon_button(
+            "view-details",
+            IconName::List,
+            true,
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.set_view(LayoutMode::Details, cx);
+            }),
+        );
+        let view_grid = icon_button(
+            "view-grid",
+            IconName::LayoutGrid,
+            true,
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.set_view(LayoutMode::Icons, cx);
+            }),
+        );
         let new_folder = icon_button(
             "new-folder",
             IconName::FolderPlus,
@@ -2151,6 +2324,8 @@ impl Explorer {
             .child(forward)
             .child(up)
             .child(refresh)
+            .child(view_details)
+            .child(view_grid)
             .child(breadcrumb)
             .child(new_folder)
             .child(toggle_hidden)
@@ -2331,6 +2506,10 @@ impl Render for Explorer {
             self.debug_open_trash_once = false;
             self.enter_trash(cx);
         }
+        if self.debug_grid_once {
+            self.debug_grid_once = false;
+            self.settings.view = LayoutMode::Icons;
+        }
         if self.debug_progress_once && !self.entries.is_empty() {
             self.debug_progress_once = false;
             self.op_progress = Some((35_000_000, 100_000_000));
@@ -2358,17 +2537,34 @@ impl Render for Explorer {
             let handle = self.focus_handle.clone();
             window.on_next_frame(move |window, cx| handle.focus(window, cx));
         }
-        let header = self.sort_header(cx);
         let rename_dialog = self.rename_dialog(cx);
 
+        let grid_mode = self.settings.view == LayoutMode::Icons;
+        // Column headers only make sense in the details list.
+        let header = if grid_mode {
+            None
+        } else {
+            Some(self.sort_header(cx))
+        };
+        let columns = grid_columns(window.viewport_size().width.to_f64() as f32 - 214.0, 108.0);
+        let item_count = if grid_mode {
+            grid_row_count(self.entries.len(), columns)
+        } else {
+            self.entries.len()
+        };
         let list = uniform_list(
             "explorer-list",
-            self.entries.len(),
+            item_count,
             cx.processor(
-                |this: &mut Self, range: std::ops::Range<usize>, _window, cx| {
+                move |this: &mut Self, range: std::ops::Range<usize>, _window, cx| {
                     let mut rows = Vec::with_capacity(range.len());
                     for index in range {
-                        if let Some(row) = Self::list_row(this, index, cx) {
+                        let row = if grid_mode {
+                            Self::grid_row(this, index, columns, cx)
+                        } else {
+                            Self::list_row(this, index, cx)
+                        };
+                        if let Some(row) = row {
                             rows.push(row);
                         }
                     }
@@ -2402,7 +2598,7 @@ impl Render for Explorer {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(header)
+                    .children(header)
                     .child(list_area),
             );
 

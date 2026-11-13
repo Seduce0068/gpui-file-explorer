@@ -24,9 +24,8 @@ pub const APP_DIR: &str = "gpui-file-explorer";
 /// Current settings schema version.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// List view mode. Only `Details` is implemented in P0; the field exists so
-/// the on-disk schema does not need a breaking migration when the icon/grid
-/// view arrives (P2, DESIGN.md §5.7).
+/// List view mode: the detailed list or the icon grid. Persisted in
+/// `settings.json` as `"details"` / `"icons"`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ViewMode {
