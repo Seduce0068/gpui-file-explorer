@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# 個人リポジトリ共通の再利用可能ワークフロー（rust-gates.yml）へ委譲する。
+# ゲート: fmt → check → test → clippy → cargo audit。
+# GPUI 系のビルドに必要な Linux 開発パッケージのみ導入する。
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    # 共有ワークフローは実アカウント名（旧 onoderakeita からリネーム済み）で参照する。
+    uses: Seduce0068/workflows/.github/workflows/rust-gates.yml@v1
+    with:
+      working_directory: app
+      apt_packages: |
+        pkg-config
+        libfontconfig-dev
+        libfreetype-dev
+        libxkbcommon-dev
+        libxkbcommon-x11-dev
+        libwayland-dev
+        libx11-xcb-dev
+      audit: true

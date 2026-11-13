@@ -1,0 +1,14 @@
+# Build artifacts
+/target
+target/
+**/target/
+
+# Local machine-specific build shims (created by scripts/dev-setup.sh)
+app/native-libs/
+poc/native-libs/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
