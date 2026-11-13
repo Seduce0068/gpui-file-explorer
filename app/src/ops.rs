@@ -19,10 +19,7 @@
 //!
 //! This module is intentionally GPUI-free so it can be unit tested headlessly.
 //! It is currently exercised by the tests below and will back the P1
-//! cut/copy/paste UI; until then the module-level `allow(dead_code)` keeps the
-//! crate free of warnings.
-
-#![allow(dead_code)]
+//! cut/copy/paste UI.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -51,6 +48,7 @@ impl CancelFlag {
 }
 
 /// What to do when the destination name already exists.
+#[allow(dead_code)] // Fail/Skip are part of the engine API; the P1 UI uses Rename.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictPolicy {
     /// Abort with [`OpError::AlreadyExists`] (safest default).
@@ -106,16 +104,6 @@ pub struct OpStats {
     pub created: Vec<PathBuf>,
 }
 
-impl OpStats {
-    fn merge(&mut self, other: OpStats) {
-        self.files += other.files;
-        self.dirs += other.dirs;
-        self.bytes += other.bytes;
-        self.skipped.extend(other.skipped);
-        self.created.extend(other.created);
-    }
-}
-
 fn io_error(path: &Path, err: std::io::Error) -> OpError {
     match err.kind() {
         std::io::ErrorKind::NotFound => OpError::NotFound(path.to_path_buf()),
@@ -130,6 +118,7 @@ fn io_error(path: &Path, err: std::io::Error) -> OpError {
 
 /// Validate a single file name (not a path): no separators, no `.`/`..`,
 /// no NUL byte, and no characters that Windows reserves.
+#[allow(dead_code)] // rename UI lands in the next change
 pub fn validate_file_name(name: &str) -> Result<(), OpError> {
     if name.is_empty() {
         return Err(OpError::InvalidTarget("名前が空です".to_string()));
@@ -512,6 +501,7 @@ pub fn move_entry(
 /// Rename `src` to `new_name` in its current directory. Refuses to overwrite
 /// an existing entry. Case-only renames go through a temporary name so they
 /// work on case-insensitive filesystems too.
+#[allow(dead_code)] // rename UI lands in the next change
 pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
     validate_file_name(new_name)?;
     if !src.exists() {
