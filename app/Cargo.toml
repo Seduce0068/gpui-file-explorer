@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "gpui-file-explorer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license = "AGPL-3.0-or-later"
+description = "A cross-platform file explorer prototype built with GPUI (gpui-kit)"
+repository = "https://github.com/Seduce0068/gpui-file-explorer"
+homepage = "https://github.com/Seduce0068/gpui-file-explorer"
+readme = "README.md"
+
+[dependencies]
+gpui-kit = "=0.9.1"
+alphanumeric-sort = "1.5"
+notify = "8.2"
+notify-debouncer-full = "0.7"
+trash = "5.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+async-channel = "2.5"
+chrono = "0.4"
+
+[profile.dev]
+# GPUI + wgpu の debuginfo は巨大（PoC で debug バイナリ 745MiB）。
+# 試作のビルド時間・容量を抑えるため依存の debuginfo は生成しない。
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0

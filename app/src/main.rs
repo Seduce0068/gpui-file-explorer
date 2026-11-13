@@ -1,0 +1,1324 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! GPUI file explorer prototype — Linux/Wayland first, cross-platform design.
+//!
+//! Stack: `gpui-kit` 0.9.1 (GPUI snapshot + GPUI Component + Lucide assets).
+//! See `../README.md` for build/run instructions, key bindings and known
+//! limitations, and `../PROGRESS.md` for the implementation log.
+
+mod history;
+mod icons;
+mod model;
+mod settings;
+mod watcher;
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use gpui_kit::assets::IconName;
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use gpui_kit::component::{Icon, Theme, ThemeMode};
+use gpui_kit::prelude::*;
+use gpui_kit::*;
+
+use crate::history::History;
+use crate::icons::{icon_for_entry, kind_for_entry, FileKind};
+use crate::model::{
+    breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
+    human_age, human_datetime, human_size, last_index, parent_dir, read_entries, step_selection,
+    visible_entries, Entry, SortKey, SortSpec,
+};
+use crate::settings::Settings;
+use crate::watcher::DirWatcher;
+
+// Catppuccin Mocha-ish palette.
+const C_BASE: u32 = 0x1e1e2e;
+const C_MANTLE: u32 = 0x181825;
+const C_SURFACE: u32 = 0x313244;
+const C_OVERLAY: u32 = 0x45475a;
+const C_TEXT: u32 = 0xcdd6f4;
+const C_SUBTEXT: u32 = 0xa6adc8;
+const C_MUTED: u32 = 0x6c7086;
+const C_DIM: u32 = 0x585b70;
+const C_BLUE: u32 = 0x89b4fa;
+const C_GREEN: u32 = 0xa6e3a1;
+const C_YELLOW: u32 = 0xf9e2af;
+const C_RED: u32 = 0xf38ba8;
+const C_MAUVE: u32 = 0xcba6f7;
+const C_TEAL: u32 = 0x94e2d5;
+const C_LAVENDER: u32 = 0xb4befe;
+
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(10);
+const SELF_OP_SUPPRESS: Duration = Duration::from_millis(1500);
+
+/// Icon colour per file kind (folders are blue, everything else is tinted).
+fn kind_color(kind: FileKind) -> u32 {
+    match kind {
+        FileKind::Folder => C_BLUE,
+        FileKind::Image => C_GREEN,
+        FileKind::Code => C_LAVENDER,
+        FileKind::Archive => C_YELLOW,
+        FileKind::Pdf => C_RED,
+        FileKind::Text => C_SUBTEXT,
+        FileKind::Audio => C_MAUVE,
+        FileKind::Video => C_TEAL,
+        FileKind::Unknown => C_MUTED,
+    }
+}
+
+/// Expression in the status bar (relaxed English/Japanese)
+fn format_selected(entry: &Entry) -> String {
+    if entry.is_dir {
+        format!("{}（フォルダ）", entry.name)
+    } else {
+        format!(
+            "{}（{} / {}）",
+            entry.name,
+            human_size(entry.size),
+            human_age(entry.modified)
+        )
+    }
+}
+
+/// One sidebar "place".
+///
+/// Paths are resolved **once** (at startup) and their existence re-checked only
+/// on reload: `dirs::desktop_dir()` and friends read `user-dirs.dirs` from disk
+/// on every call, so calling them from `render()` would be synchronous I/O per
+/// frame (and violate the UI-thread I/O rule).
+struct Place {
+    label: &'static str,
+    icon: IconName,
+    path: Option<PathBuf>,
+    exists: bool,
+}
+
+fn build_places() -> Vec<Place> {
+    let entries: Vec<(&'static str, IconName, Option<PathBuf>)> = vec![
+        ("ホーム", IconName::House, dirs::home_dir()),
+        ("デスクトップ", IconName::Monitor, dirs::desktop_dir()),
+        ("ドキュメント", IconName::FileText, dirs::document_dir()),
+        ("ダウンロード", IconName::Download, dirs::download_dir()),
+        ("ピクチャ", IconName::Image, dirs::picture_dir()),
+        ("ミュージック", IconName::Music, dirs::audio_dir()),
+        ("ビデオ", IconName::Video, dirs::video_dir()),
+        ("ルート", IconName::HardDrive, Some(PathBuf::from("/"))),
+    ];
+    entries
+        .into_iter()
+        .map(|(label, icon, path)| {
+            let exists = path.as_ref().is_some_and(|target| target.is_dir());
+            Place {
+                label,
+                icon,
+                path,
+                exists,
+            }
+        })
+        .collect()
+}
+
+struct Explorer {
+    settings: Settings,
+    cwd: PathBuf,
+    /// Every entry read from the current directory.
+    all_entries: Vec<Entry>,
+    /// Filtered + sorted view rendered by `uniform_list`.
+    entries: Vec<Entry>,
+    selected: usize,
+    history: History,
+    focus_handle: FocusHandle,
+    scroll_handle: UniformListScrollHandle,
+    loading: bool,
+    error: Option<String>,
+    status: String,
+    /// Monotonic id of the latest load request; stale results are dropped.
+    generation: u64,
+    /// Fingerprint of `all_entries`, used by the 10s reconciliation timer.
+    fingerprint: u64,
+    /// Path to select once the next load finishes (new folder, etc.).
+    pending_select: Option<PathBuf>,
+    /// Foreground waiter of the latest load. Dropping it cancels the wait.
+    load_task: Option<Task<()>>,
+    watcher: DirWatcher,
+    /// Self-triggered FS operations suppress the watcher for a short window.
+    suppress_until: Option<Instant>,
+    /// Cached sidebar places (resolved once; see [`Place`]).
+    places: Vec<Place>,
+}
+
+impl Explorer {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let settings = Settings::load();
+        let start_dir = std::env::args()
+            .nth(1)
+            .map(PathBuf::from)
+            .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+            .filter(|path| path.is_dir())
+            .or_else(|| settings.last_dir.clone())
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("/"));
+
+        let (watch_tx, watch_rx) = async_channel::unbounded::<()>();
+        let watcher = DirWatcher::new(move || {
+            let _ = watch_tx.try_send(());
+        });
+
+        let places = build_places();
+        let mut this = Self {
+            settings,
+            cwd: start_dir,
+            all_entries: Vec::new(),
+            entries: Vec::new(),
+            selected: 0,
+            history: History::new(),
+            focus_handle: cx.focus_handle(),
+            scroll_handle: UniformListScrollHandle::new(),
+            loading: true,
+            error: None,
+            status: String::new(),
+            generation: 0,
+            fingerprint: 0,
+            pending_select: None,
+            load_task: None,
+            watcher,
+            suppress_until: None,
+            places,
+        };
+
+        // Remember the directory we actually started in (also proves the
+        // settings file round-trips on the very first launch).
+        this.settings.last_dir = Some(this.cwd.clone());
+        this.settings.save();
+
+        this.spawn_watch_loop(watch_rx, cx);
+        this.spawn_reconcile_loop(cx);
+        this.reload(cx);
+        this
+    }
+
+    // ---------------------------------------------------------------- loading
+
+    /// Kick off an asynchronous directory read. The blocking `read_dir` runs
+    /// on the GPUI background executor; the result is applied on the
+    /// foreground executor only if it still belongs to the latest generation.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        self.loading = true;
+        self.error = None;
+        self.refresh_places();
+        self.update_watcher();
+        let dir = self.cwd.clone();
+        // Drop the previous waiter: cancelling its Task discards the stale
+        // result; the generation check is the second line of defence.
+        self.load_task.take();
+        let background = cx.background_spawn(async move { read_entries(&dir) });
+        let task = cx.spawn(async move |this, cx| {
+            let result = background.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.loading = false;
+                match result {
+                    Ok(entries) => {
+                        this.apply_loaded(entries);
+                        // Keep self-operation notifications ("ゴミ箱へ移動しました",
+                        // "フォルダを作成しました", "変更を検出しました") visible; they are
+                        // replaced by the next action's message.
+                    }
+                    Err(error) => {
+                        this.all_entries.clear();
+                        this.entries.clear();
+                        this.selected = 0;
+                        this.error = Some(error);
+                    }
+                }
+                cx.notify();
+            });
+        });
+        self.load_task = Some(task);
+        cx.notify();
+    }
+
+    /// Apply a freshly loaded listing, keeping the selection on the same path
+    /// when possible and honouring `pending_select` (new folder).
+    fn apply_loaded(&mut self, entries: Vec<Entry>) {
+        let keep = self
+            .pending_select
+            .take()
+            .or_else(|| self.selected_entry().map(|entry| entry.path.clone()));
+        self.all_entries = entries;
+        self.fingerprint = fingerprint(&self.all_entries);
+        self.rebuild_view(keep);
+    }
+
+    /// Re-filter and re-sort the cached listing.
+    fn rebuild_view(&mut self, keep: Option<PathBuf>) {
+        let order = self.settings.sort.order();
+        let view = visible_entries(&self.all_entries, self.settings.show_hidden, order);
+        let selected = keep
+            .and_then(|path| view.iter().position(|entry| entry.path == path))
+            .unwrap_or(0);
+        self.entries = view;
+        self.selected = clamp_index(selected, self.entries.len());
+        if !self.entries.is_empty() {
+            self.scroll_handle
+                .scroll_to_item(self.selected, ScrollStrategy::Nearest);
+        }
+    }
+
+    /// Offsets of the watched directories: current dir + its parent
+    /// (non-recursive), so renames/moves performed by file managers that only
+    /// touch the directory entry itself still refresh the list.
+    fn watched_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.cwd.clone()];
+        if let Some(parent) = parent_dir(&self.cwd) {
+            if parent != self.cwd {
+                dirs.push(parent);
+            }
+        }
+        dirs
+    }
+
+    fn update_watcher(&mut self) {
+        let dirs = self.watched_dirs();
+        self.watcher.watch(&dirs);
+    }
+
+    /// Re-check whether the cached sidebar places exist. Called from `reload`
+    /// only — never from `render`.
+    fn refresh_places(&mut self) {
+        for place in &mut self.places {
+            place.exists = place.path.as_ref().is_some_and(|target| target.is_dir());
+        }
+    }
+
+    /// 10-second reconciliation: re-read the directory in the background and
+    /// reload only when the content fingerprint actually changed. This covers
+    /// events lost by the OS watcher (queue overflow, unwatchable paths, ...).
+    fn reconcile(&mut self, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
+        let generation = self.generation;
+        let dir = self.cwd.clone();
+        let task = cx.background_spawn(async move { read_entries(&dir) });
+        cx.spawn(async move |this, cx| {
+            let Ok(entries) = task.await else { return };
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation || this.loading {
+                    return;
+                }
+                if fingerprint(&entries) == this.fingerprint {
+                    return;
+                }
+                this.apply_loaded(entries);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Watcher events arrive on a background thread; this foreground loop
+    /// coalesces bursts and refreshes the listing.
+    fn spawn_watch_loop(&self, watch_rx: async_channel::Receiver<()>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            while watch_rx.recv().await.is_ok() {
+                while watch_rx.try_recv().is_ok() {}
+                let updated = this.update(cx, |this, cx| {
+                    if this.is_suppressed() {
+                        return;
+                    }
+                    this.status = "変更を検出しました".to_string();
+                    this.reload(cx);
+                });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn spawn_reconcile_loop(&self, cx: &mut Context<Self>) {
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| loop {
+            background.timer(RECONCILE_INTERVAL).await;
+            if this.update(cx, |this, cx| this.reconcile(cx)).is_err() {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// Whether events caused by our own trash/mkdir operations should be
+    /// ignored for a short moment.
+    fn is_suppressed(&self) -> bool {
+        self.suppress_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    fn suppress_for(&mut self, duration: Duration) {
+        self.suppress_until = Some(Instant::now() + duration);
+    }
+
+    // ------------------------------------------------------------- navigation
+
+    fn set_cwd(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if path == self.cwd {
+            self.reload(cx);
+            return;
+        }
+        self.cwd = path;
+        self.selected = 0;
+        self.pending_select = None;
+        self.error = None;
+        self.status.clear();
+        self.settings.last_dir = Some(self.cwd.clone());
+        self.settings.save();
+        self.reload(cx);
+    }
+
+    fn navigate_to(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if path == self.cwd {
+            self.reload(cx);
+            return;
+        }
+        if !path.is_dir() {
+            self.error = Some(format!(
+                "ディレクトリではありません: {}",
+                display_path(&path)
+            ));
+            cx.notify();
+            return;
+        }
+        self.history.visit(self.cwd.clone(), path.clone());
+        self.set_cwd(path, cx);
+    }
+
+    fn go_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(target) = self.history.go_back(self.cwd.clone()) {
+            if target.is_dir() {
+                self.set_cwd(target, cx);
+            } else {
+                self.status = format!("移動先が存在しません: {}", display_path(&target));
+                cx.notify();
+            }
+        }
+    }
+
+    fn go_forward(&mut self, cx: &mut Context<Self>) {
+        if let Some(target) = self.history.go_forward(self.cwd.clone()) {
+            if target.is_dir() {
+                self.set_cwd(target, cx);
+            } else {
+                self.status = format!("移動先が存在しません: {}", display_path(&target));
+                cx.notify();
+            }
+        }
+    }
+
+    fn go_parent(&mut self, cx: &mut Context<Self>) {
+        if let Some(parent) = parent_dir(&self.cwd) {
+            if parent != self.cwd {
+                self.navigate_to(parent, cx);
+            }
+        }
+    }
+
+    fn open_selected(&mut self, cx: &mut Context<Self>) {
+        self.open_index(self.selected, cx);
+    }
+
+    fn open_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(path) = self.entries.get(index).map(|entry| entry.path.clone()) else {
+            return;
+        };
+        self.open_path(path, cx);
+    }
+
+    /// Open a target by path. Resolved at click time (never captured by row
+    /// index) so a watcher-driven re-sort cannot redirect the action.
+    fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !path.exists() {
+            self.status = format!("対象が存在しません: {}", display_path(&path));
+            self.reload(cx);
+            return;
+        }
+        if path.is_dir() {
+            self.navigate_to(path, cx);
+        } else {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| display_path(&path));
+            cx.open_with_system(&path);
+            self.status = format!("{name} を既定のアプリで開きました");
+            cx.notify();
+        }
+    }
+
+    // -------------------------------------------------------------- selection
+
+    fn select(&mut self, index: usize, cx: &mut Context<Self>) {
+        let index = clamp_index(index, self.entries.len());
+        if self.selected != index || self.status.is_empty() {
+            self.selected = index;
+            if !self.entries.is_empty() {
+                self.scroll_handle
+                    .scroll_to_item(index, ScrollStrategy::Nearest);
+            }
+            cx.notify();
+        }
+    }
+
+    fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let next = step_selection(self.selected, self.entries.len(), delta);
+        self.select(next, cx);
+    }
+
+    fn select_first(&mut self, cx: &mut Context<Self>) {
+        self.select(first_index(self.entries.len()), cx);
+    }
+
+    fn select_last(&mut self, cx: &mut Context<Self>) {
+        self.select(last_index(self.entries.len()), cx);
+    }
+
+    fn selected_entry(&self) -> Option<&Entry> {
+        self.entries.get(self.selected)
+    }
+
+    // --------------------------------------------------------------- shortcuts
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        let key = keystroke.key.as_str();
+        let modifiers = &keystroke.modifiers;
+        if modifiers.control {
+            match (key, modifiers.shift) {
+                ("h", _) => self.toggle_hidden(cx),
+                ("r", _) => self.reload(cx),
+                ("n", true) => self.new_folder(cx),
+                ("q", _) => cx.quit(),
+                _ => {}
+            }
+            return;
+        }
+        if modifiers.alt {
+            match key {
+                "left" => self.go_back(cx),
+                "right" => self.go_forward(cx),
+                "up" => self.go_parent(cx),
+                _ => {}
+            }
+            return;
+        }
+        // Page step: how many 28px rows fit into the window viewport.
+        let page_step = {
+            let viewport_height = window.viewport_size().height.to_f64();
+            ((viewport_height - 140.0) / 28.0).floor().max(1.0) as isize
+        };
+        match key {
+            "up" => self.move_selection(-1, cx),
+            "down" => self.move_selection(1, cx),
+            "pageup" => self.move_selection(-page_step, cx),
+            "pagedown" => self.move_selection(page_step, cx),
+            "home" => self.select_first(cx),
+            "end" => self.select_last(cx),
+            "enter" => self.open_selected(cx),
+            "backspace" => self.go_parent(cx),
+            "f5" => self.reload(cx),
+            "delete" => self.trash_selected(window, cx),
+            _ => {}
+        }
+    }
+
+    // ------------------------------------------------------------------ actions
+
+    fn toggle_hidden(&mut self, cx: &mut Context<Self>) {
+        self.settings.show_hidden = !self.settings.show_hidden;
+        self.settings.save();
+        let keep = self.selected_entry().map(|entry| entry.path.clone());
+        self.rebuild_view(keep);
+        self.status = if self.settings.show_hidden {
+            "隠しファイルを表示しています".to_string()
+        } else {
+            "隠しファイルを非表示にしました".to_string()
+        };
+        cx.notify();
+    }
+
+    fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
+        let order = self.settings.sort.order().toggled(key);
+        self.settings.sort = SortSpec::from_order(order);
+        self.settings.save();
+        let keep = self.selected_entry().map(|entry| entry.path.clone());
+        self.rebuild_view(keep);
+        cx.notify();
+    }
+
+    /// Create `新しいフォルダ` (or ` (2)`, ` (3)`, ...) off the UI thread.
+    /// Name-collision probing and `create_dir` are both blocking I/O, so they
+    /// run on the background executor; the UI only updates afterwards.
+    fn new_folder(&mut self, cx: &mut Context<Self>) {
+        let dir = self.cwd.clone();
+        let expected_dir = dir.clone();
+        self.status = "フォルダを作成中…".to_string();
+        cx.notify();
+        let task = cx.background_spawn(async move { create_unique_folder(&dir) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(path) => {
+                        this.suppress_for(SELF_OP_SUPPRESS);
+                        let name = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if this.cwd == expected_dir {
+                            this.status = format!("フォルダを作成しました: {name}");
+                            this.pending_select = Some(path);
+                            this.reload(cx);
+                        } else {
+                            this.status = format!(
+                                "フォルダを作成しました: {}（別のフォルダを表示中）",
+                                display_path(&path)
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        this.error = Some(format!("フォルダを作成できません: {error}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn copy_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(display_path(&path)));
+        self.status = format!("パスをコピーしました: {}", display_path(&path));
+        cx.notify();
+    }
+
+    fn reveal(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !path.exists() {
+            self.status = format!("対象が存在しません: {}", display_path(&path));
+            self.reload(cx);
+            return;
+        }
+        cx.reveal_path(&path);
+        self.status = format!("ファイルマネージャで表示: {}", display_path(&path));
+        cx.notify();
+    }
+
+    fn trash_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.entries.get(self.selected) else {
+            return;
+        };
+        let path = entry.path.clone();
+        let name = entry.name.clone();
+        self.trash_path(path, name, window, cx);
+    }
+
+    /// Ask for confirmation, then move the target path to the system trash on
+    /// the background executor. The path is resolved by the caller at click
+    /// time, so a re-sorted list cannot redirect the deletion.
+    fn trash_path(
+        &mut self,
+        path: PathBuf,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !path.exists() {
+            self.status = format!("対象は既に存在しません: {}", display_path(&path));
+            self.reload(cx);
+            return;
+        }
+        let receiver = window.prompt(
+            PromptLevel::Warning,
+            &format!("「{name}」をゴミ箱へ移動しますか？"),
+            Some("システムのゴミ箱へ移動します（あとで元に戻せます）。"),
+            &["cancel", "ゴミ箱へ移動"],
+            cx,
+        );
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            let answer = receiver.await.unwrap_or(0);
+            if answer != 1 {
+                return;
+            }
+            let trashed = path.clone();
+            let result = background
+                .spawn(async move { trash::delete(&trashed) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.suppress_for(SELF_OP_SUPPRESS);
+                        this.status = format!("「{name}」をゴミ箱へ移動しました");
+                        this.all_entries.retain(|entry| entry.path != path);
+                        this.fingerprint = fingerprint(&this.all_entries);
+                        this.rebuild_view(None);
+                        this.reload(cx);
+                    }
+                    Err(error) => {
+                        this.error = Some(format!("ゴミ箱へ移動できません: {error}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    // ------------------------------------------------------------- context menu
+
+    /// Build the per-row context menu.
+    ///
+    /// The row **path** is captured when the menu is opened and every action is
+    /// resolved by path on click, so a watcher refresh that re-sorts the list
+    /// while the menu is open cannot make the action hit a different entry.
+    fn entry_menu(
+        entity: Entity<Self>,
+        path: PathBuf,
+        is_dir: bool,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let weak = entity.downgrade();
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| display_path(&path));
+        move |menu, _window, _menu_cx| {
+            let open_weak = weak.clone();
+            let reveal_weak = weak.clone();
+            let copy_weak = weak.clone();
+            let trash_weak = weak.clone();
+            let new_folder_weak = weak.clone();
+
+            let open_path = path.clone();
+            let reveal_path = path.clone();
+            let copy_path = path.clone();
+            let trash_path = path.clone();
+            let trash_name = name.clone();
+            let open_label = if is_dir {
+                "開く"
+            } else {
+                "既定のアプリで開く"
+            };
+
+            menu.item(
+                PopupMenuItem::new(open_label)
+                    .icon(Icon::new(IconName::ExternalLink))
+                    .on_click(move |_, _window, cx| {
+                        let target = open_path.clone();
+                        let _ = open_weak.update(cx, |this, cx| this.open_path(target, cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("ファイルマネージャで表示")
+                    .icon(Icon::new(IconName::FolderOpen))
+                    .on_click(move |_, _window, cx| {
+                        let target = reveal_path.clone();
+                        let _ = reveal_weak.update(cx, |this, cx| this.reveal(target, cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("パスをコピー")
+                    .icon(Icon::new(IconName::Copy))
+                    .on_click(move |_, _window, cx| {
+                        let target = copy_path.clone();
+                        let _ = copy_weak.update(cx, |this, cx| this.copy_path(target, cx));
+                    }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new("ゴミ箱へ移動")
+                    .icon(Icon::new(IconName::Trash))
+                    .on_click(move |_, _window, cx| {
+                        let target = trash_path.clone();
+                        let target_name = trash_name.clone();
+                        let _ = trash_weak.update_in(cx, |this, window, cx| {
+                            this.trash_path(target, target_name, window, cx);
+                        });
+                    }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new("新規フォルダ")
+                    .icon(Icon::new(IconName::FolderPlus))
+                    .on_click(move |_, _window, cx| {
+                        let _ = new_folder_weak.update(cx, |this, cx| this.new_folder(cx));
+                    }),
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------- render
+
+    fn sort_header_cell(
+        &self,
+        key: SortKey,
+        width: Option<f32>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let id = match key {
+            SortKey::Name => 30_001u64,
+            SortKey::Size => 30_002,
+            SortKey::Modified => 30_003,
+        };
+        let active = self.settings.sort.key == key;
+        let arrow = if active {
+            if self.settings.sort.dir.is_ascending() {
+                "▲"
+            } else {
+                "▼"
+            }
+        } else {
+            " "
+        };
+        let base = div()
+            .id(id)
+            .h_full()
+            .flex()
+            .items_center()
+            .px_2()
+            .cursor_pointer()
+            .text_color(if active { rgb(C_TEXT) } else { rgb(C_MUTED) })
+            .hover(|style| style.text_color(rgb(C_TEXT)));
+        let base = match width {
+            Some(width) => base.w(px(width)).text_right(),
+            None => base.flex_1(),
+        };
+        base.on_click(cx.listener(move |this, _event, window, cx| {
+            this.focus_handle.focus(window, cx);
+            this.set_sort(key, cx);
+        }))
+        .child(format!("{arrow} {}", key.label()))
+    }
+
+    fn sort_header(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .h(px(26.0))
+            .bg(rgb(C_MANTLE))
+            .border_b_1()
+            .border_color(rgb(C_SURFACE))
+            .text_xs()
+            .text_color(rgb(C_MUTED))
+            .child(div().w(px(18.0)))
+            .child(self.sort_header_cell(SortKey::Name, None, cx))
+            .child(self.sort_header_cell(SortKey::Size, Some(90.0), cx))
+            .child(self.sort_header_cell(SortKey::Modified, Some(150.0), cx))
+    }
+
+    fn overlay(&self) -> Option<Div> {
+        let (message, color) = if let Some(error) = &self.error {
+            (format!("エラー: {error}"), C_RED)
+        } else if self.loading {
+            ("読み込み中…".to_string(), C_MUTED)
+        } else if self.all_entries.is_empty() {
+            ("このフォルダは空です".to_string(), C_MUTED)
+        } else if self.entries.is_empty() {
+            (
+                format!(
+                    "隠しファイル {} 件を非表示にしています（Ctrl+H で表示）",
+                    self.all_entries.len()
+                ),
+                C_MUTED,
+            )
+        } else {
+            return None;
+        };
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .max_w(px(640.0))
+                        .px_4()
+                        .text_sm()
+                        .text_color(rgb(color))
+                        .child(message),
+                ),
+        )
+    }
+
+    fn list_row(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let entry = this.entries.get(index).cloned()?;
+        let selected = this.selected == index;
+        let is_dir = entry.is_dir;
+        let icon = icon_for_entry(&entry);
+        let icon_color = if entry.is_symlink {
+            C_MUTED
+        } else {
+            kind_color(kind_for_entry(&entry))
+        };
+
+        let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
+            this.focus_handle.focus(window, cx);
+            this.select(index, cx);
+            if event.click_count() >= 2 {
+                this.open_index(index, cx);
+            }
+        });
+        let right_click = cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+            this.focus_handle.focus(window, cx);
+            this.select(index, cx);
+        });
+        let entity = cx.entity();
+        let context_menu = Self::entry_menu(entity, entry.path.clone(), is_dir);
+
+        Some(
+            div()
+                .id(index)
+                .w_full()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .h(px(28.0))
+                .text_sm()
+                .bg(if selected {
+                    rgb(C_OVERLAY)
+                } else {
+                    rgb(C_BASE)
+                })
+                .cursor_pointer()
+                .hover(|style| {
+                    style.bg(if selected {
+                        rgb(C_OVERLAY)
+                    } else {
+                        rgb(0x252537)
+                    })
+                })
+                .on_click(click)
+                .on_mouse_down(MouseButton::Right, right_click)
+                .context_menu(context_menu)
+                .child(
+                    div()
+                        .w(px(18.0))
+                        .flex()
+                        .justify_center()
+                        .child(Icon::new(icon).text_color(rgb(icon_color))),
+                )
+                .child(div().flex_1().truncate().child(entry.name.clone()))
+                .child(
+                    div()
+                        .w(px(90.0))
+                        .text_xs()
+                        .text_right()
+                        .text_color(rgb(C_MUTED))
+                        .child(if entry.is_dir {
+                            "-".to_string()
+                        } else {
+                            human_size(entry.size)
+                        }),
+                )
+                .child(
+                    div()
+                        .w(px(150.0))
+                        .text_xs()
+                        .text_right()
+                        .text_color(rgb(C_MUTED))
+                        .child(human_datetime(entry.modified)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn sidebar(&self, cx: &mut Context<Self>) -> Div {
+        let mut sidebar = div()
+            .w(px(190.0))
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(C_MANTLE))
+            .border_r_1()
+            .border_color(rgb(C_SURFACE))
+            .py_2()
+            .child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("場所"),
+            );
+        // Cached places only: no `dirs::*_dir()` / `is_dir()` I/O in render.
+        for (index, place) in self.places.iter().enumerate() {
+            let existing = place.exists;
+            let active = place
+                .path
+                .as_ref()
+                .is_some_and(|target| target == &self.cwd);
+            let mut row = div()
+                .id(20_000 + index as u64)
+                .mx_2()
+                .px_2()
+                .h(px(30.0))
+                .rounded_md()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_sm()
+                .text_color(if existing { rgb(C_SUBTEXT) } else { rgb(C_DIM) })
+                .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                .child(Icon::new(place.icon))
+                .child(place.label);
+            if let Some(target) = place.path.clone().filter(|_| existing) {
+                row = row
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.navigate_to(target.clone(), cx);
+                    }));
+            }
+            sidebar = sidebar.child(row);
+        }
+        sidebar
+    }
+
+    fn toolbar(&self, cx: &mut Context<Self>) -> Div {
+        let mut breadcrumb = div()
+            .flex()
+            .items_center()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .gap_1()
+            .mx_2();
+        let segments = breadcrumb_segments(&self.cwd);
+        let last = segments.len().saturating_sub(1);
+        for (index, (label, path)) in segments.into_iter().enumerate() {
+            if index > 0 {
+                breadcrumb = breadcrumb.child(div().text_xs().text_color(rgb(C_DIM)).child("›"));
+            }
+            let is_last = index == last;
+            breadcrumb = breadcrumb.child(
+                div()
+                    .id(10_000 + index as u64)
+                    .px_1()
+                    .py_0p5()
+                    .rounded_sm()
+                    .text_sm()
+                    .truncate()
+                    .text_color(if is_last { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
+                    .when(is_last, |cell| cell.font_weight(FontWeight::SEMIBOLD))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.navigate_to(path.clone(), cx);
+                    }))
+                    .child(label),
+            );
+        }
+
+        let back = icon_button(
+            "nav-back",
+            IconName::ArrowLeft,
+            self.history.can_go_back(),
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.go_back(cx);
+            }),
+        );
+        let forward = icon_button(
+            "nav-forward",
+            IconName::ArrowRight,
+            self.history.can_go_forward(),
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.go_forward(cx);
+            }),
+        );
+        let up = icon_button(
+            "nav-up",
+            IconName::ArrowUp,
+            parent_dir(&self.cwd).is_some(),
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.go_parent(cx);
+            }),
+        );
+        let refresh = icon_button(
+            "refresh",
+            IconName::RefreshCw,
+            true,
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.reload(cx);
+            }),
+        );
+        let new_folder = icon_button(
+            "new-folder",
+            IconName::FolderPlus,
+            true,
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.new_folder(cx);
+            }),
+        );
+        let hidden_icon = if self.settings.show_hidden {
+            IconName::EyeOff
+        } else {
+            IconName::Eye
+        };
+        let toggle_hidden = icon_button(
+            "toggle-hidden",
+            hidden_icon,
+            true,
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.toggle_hidden(cx);
+            }),
+        );
+
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_3()
+            .py_1()
+            .bg(rgb(C_MANTLE))
+            .border_b_1()
+            .border_color(rgb(C_SURFACE))
+            .child(back)
+            .child(forward)
+            .child(up)
+            .child(refresh)
+            .child(breadcrumb)
+            .child(new_folder)
+            .child(toggle_hidden)
+    }
+
+    fn status_bar(&self) -> Div {
+        let hidden_count = self.all_entries.len().saturating_sub(self.entries.len());
+        let left = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .child(
+                div()
+                    .max_w(px(520.0))
+                    .truncate()
+                    .text_color(rgb(C_SUBTEXT))
+                    .child(display_path(&self.cwd)),
+            )
+            .child(div().text_color(rgb(C_DIM)).child("|"))
+            .child(format!("{} 件", self.entries.len()))
+            .child(
+                div()
+                    .text_color(rgb(C_MUTED))
+                    .child(match self.selected_entry() {
+                        Some(entry) if !self.entries.is_empty() => {
+                            format!("選択: {}", format_selected(entry))
+                        }
+                        _ => "選択なし".to_string(),
+                    }),
+            );
+        let right = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(if let Some(error) = &self.error {
+                div()
+                    .text_color(rgb(C_RED))
+                    .child(format!("エラー: {error}"))
+                    .into_any_element()
+            } else if self.loading {
+                div()
+                    .text_color(rgb(C_YELLOW))
+                    .child("読み込み中…")
+                    .into_any_element()
+            } else if !self.status.is_empty() {
+                div()
+                    .text_color(rgb(C_GREEN))
+                    .child(self.status.clone())
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            .child(if hidden_count > 0 && !self.settings.show_hidden {
+                div()
+                    .text_color(rgb(C_MUTED))
+                    .child(format!("隠し {hidden_count} 件"))
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            .child(if self.watcher.is_supported() {
+                div()
+                    .text_color(rgb(C_MUTED))
+                    .child(format!(
+                        "監視: {} ディレクトリ",
+                        self.watcher.watched_paths().len()
+                    ))
+                    .into_any_element()
+            } else {
+                div()
+                    .text_color(rgb(C_YELLOW))
+                    .child("監視: 無効")
+                    .into_any_element()
+            });
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .px_3()
+            .h(px(26.0))
+            .bg(rgb(C_MANTLE))
+            .border_t_1()
+            .border_color(rgb(C_SURFACE))
+            .text_xs()
+            .text_color(rgb(C_MUTED))
+            .child(left)
+            .child(right)
+    }
+}
+
+/// Toolbar button: Lucide icon inside a hoverable square.
+fn icon_button(
+    id: &'static str,
+    icon: IconName,
+    enabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(28.0))
+        .h(px(28.0))
+        .rounded_md()
+        .text_color(if enabled { rgb(C_TEXT) } else { rgb(C_DIM) })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(C_SURFACE)))
+                .on_click(on_click)
+        })
+        .child(Icon::new(icon))
+}
+
+impl Render for Explorer {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let header = self.sort_header(cx);
+
+        let list = uniform_list(
+            "explorer-list",
+            self.entries.len(),
+            cx.processor(
+                |this: &mut Self, range: std::ops::Range<usize>, _window, cx| {
+                    let mut rows = Vec::with_capacity(range.len());
+                    for index in range {
+                        if let Some(row) = Self::list_row(this, index, cx) {
+                            rows.push(row);
+                        }
+                    }
+                    rows
+                },
+            ),
+        )
+        .h_full()
+        .track_scroll(&self.scroll_handle);
+
+        let mut list_area = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .bg(rgb(C_BASE))
+            .child(list);
+        if let Some(overlay) = self.overlay() {
+            list_area = list_area.child(overlay);
+        }
+
+        let body = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .child(self.sidebar(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(header)
+                    .child(list_area),
+            );
+
+        div()
+            .id("explorer-root")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(C_BASE))
+            .text_color(rgb(C_TEXT))
+            .child(self.toolbar(cx))
+            .child(body)
+            .child(self.status_bar())
+    }
+}
+
+fn main() {
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    app.run(|cx: &mut App| {
+        gpui_kit::init(cx);
+        // Dark component theme so context menus / prompts match the app.
+        Theme::change(ThemeMode::Dark, None, cx);
+
+        cx.on_window_closed(|cx, _window_id| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+
+        let bounds = Bounds::centered(None, size(px(1100.0), px(700.0)), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: Some("GPUI File Explorer".into()),
+                ..Default::default()
+            }),
+            focus: true,
+            show: true,
+            app_id: Some("gpui-file-explorer".to_string()),
+            ..Default::default()
+        };
+
+        gpui_kit::open_window(options, cx, |window, cx| {
+            let view = cx.new(Explorer::new);
+            let focus_handle = view.read(cx).focus_handle.clone();
+            focus_handle.focus(window, cx);
+            view
+        })
+        .expect("failed to open window");
+
+        cx.activate(true);
+    });
+}
