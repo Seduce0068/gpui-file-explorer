@@ -13,6 +13,7 @@ mod settings;
 mod watcher;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
@@ -28,6 +29,7 @@ use crate::model::{
     human_age, human_datetime, human_size, last_index, parent_dir, read_entries, step_selection,
     visible_entries, Entry, SortKey, SortSpec,
 };
+use crate::ops::{CancelFlag, ConflictPolicy, OpStats};
 use crate::settings::Settings;
 use crate::watcher::DirWatcher;
 
@@ -80,6 +82,30 @@ fn format_selected(entry: &Entry) -> String {
     }
 }
 
+/// One-line result message for a completed copy/move operation.
+fn summarize_op(verb: &str, stats: &OpStats) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if stats.files > 0 {
+        parts.push(format!("{} ファイル", stats.files));
+    }
+    if stats.dirs > 0 {
+        parts.push(format!("{} フォルダ", stats.dirs));
+    }
+    if !stats.skipped.is_empty() {
+        parts.push(format!("{} 件スキップ", stats.skipped.len()));
+    }
+    let mut message = format!("{verb}しました");
+    if !parts.is_empty() {
+        message.push_str(&format!("（{}）", parts.join(" / ")));
+    }
+    if let Some(dest) = stats.created.first() {
+        if let Some(name) = dest.file_name() {
+            message.push_str(&format!(": {}", name.to_string_lossy()));
+        }
+    }
+    message
+}
+
 /// One sidebar "place".
 ///
 /// Paths are resolved **once** (at startup) and their existence re-checked only
@@ -118,6 +144,17 @@ fn build_places() -> Vec<Place> {
         .collect()
 }
 
+/// One entry on the internal cut/copy clipboard (P1: single selection).
+///
+/// The OS clipboard is deliberately not used for file cut/copy: its cut/copy
+/// semantics are platform-specific and it would overwrite whatever the user
+/// had copied. Paste resolves the source path at operation time.
+#[derive(Clone, Debug)]
+struct ClipboardSlot {
+    path: PathBuf,
+    cut: bool,
+}
+
 struct Explorer {
     settings: Settings,
     cwd: PathBuf,
@@ -145,6 +182,12 @@ struct Explorer {
     suppress_until: Option<Instant>,
     /// Cached sidebar places (resolved once; see [`Place`]).
     places: Vec<Place>,
+    /// Internal cut/copy clipboard (single entry in P1).
+    clipboard: Option<ClipboardSlot>,
+    /// Running paste operation; dropping the task cancels it.
+    op_task: Option<Task<()>>,
+    /// Cancellation flag of the running operation (Esc cancels).
+    op_cancel: Option<Arc<CancelFlag>>,
 }
 
 impl Explorer {
@@ -184,6 +227,9 @@ impl Explorer {
             watcher,
             suppress_until: None,
             places,
+            clipboard: None,
+            op_task: None,
+            op_cancel: None,
         };
 
         // Remember the directory we actually started in (also proves the
@@ -502,6 +548,9 @@ impl Explorer {
                 ("h", _) => self.toggle_hidden(cx),
                 ("r", _) => self.reload(cx),
                 ("n", true) => self.new_folder(cx),
+                ("c", false) => self.copy_selected(cx),
+                ("x", false) => self.cut_selected(cx),
+                ("v", false) => self.paste(cx),
                 ("q", _) => cx.quit(),
                 _ => {}
             }
@@ -532,6 +581,7 @@ impl Explorer {
             "backspace" => self.go_parent(cx),
             "f5" => self.reload(cx),
             "delete" => self.trash_selected(window, cx),
+            "escape" => self.cancel_op(cx),
             _ => {}
         }
     }
@@ -603,6 +653,140 @@ impl Explorer {
     fn copy_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(display_path(&path)));
         self.status = format!("パスをコピーしました: {}", display_path(&path));
+        cx.notify();
+    }
+
+    /// Remember the selected entry for a later paste (Ctrl+C).
+    fn copy_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.entries.get(self.selected) else {
+            return;
+        };
+        self.clipboard = Some(ClipboardSlot {
+            path: entry.path.clone(),
+            cut: false,
+        });
+        self.status = format!(
+            "コピーしました: {}（Ctrl+V で貼り付け）",
+            display_path(&entry.path)
+        );
+        cx.notify();
+    }
+
+    /// Remember the selected entry as a move source (Ctrl+X).
+    fn cut_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.entries.get(self.selected) else {
+            return;
+        };
+        self.clipboard = Some(ClipboardSlot {
+            path: entry.path.clone(),
+            cut: true,
+        });
+        self.status = format!(
+            "切り取りました: {}（Ctrl+V で移動）",
+            display_path(&entry.path)
+        );
+        cx.notify();
+    }
+
+    /// Cancel the running paste operation, if any (Esc).
+    fn cancel_op(&mut self, cx: &mut Context<Self>) {
+        let Some(cancel) = &self.op_cancel else {
+            return;
+        };
+        cancel.cancel();
+        self.status = "キャンセルしています…".to_string();
+        cx.notify();
+    }
+
+    /// Paste the internal clipboard into the current directory.
+    ///
+    /// Safety: the destination conflict policy is always
+    /// [`ConflictPolicy::Rename`], so an existing file is never overwritten.
+    /// The blocking copy/move runs on the background executor; the UI thread
+    /// only applies the result. `Esc` cancels cooperatively.
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        let Some(slot) = self.clipboard.clone() else {
+            self.status = "コピー/切り取りした項目がありません".to_string();
+            cx.notify();
+            return;
+        };
+        if self.op_task.is_some() {
+            self.status = "ファイル操作を実行中です（Esc でキャンセル）".to_string();
+            cx.notify();
+            return;
+        }
+
+        let src = slot.path.clone();
+        let cwd = self.cwd.clone();
+        if !src.exists() && !src.is_symlink() {
+            self.clipboard = None;
+            self.status = format!("対象が存在しません: {}", display_path(&src));
+            self.reload(cx);
+            return;
+        }
+        if slot.cut && src.parent() == Some(cwd.as_path()) {
+            self.status = "同じフォルダのため移動しません".to_string();
+            cx.notify();
+            return;
+        }
+
+        let cut = slot.cut;
+        let verb = if cut { "移動" } else { "コピー" };
+        self.status = format!("{verb}中…（Esc でキャンセル）");
+        cx.notify();
+
+        let cancel = Arc::new(CancelFlag::new());
+        self.op_cancel = Some(cancel.clone());
+        let task_cancel = cancel.clone();
+        let src_for_task = src.clone();
+        let cwd_for_task = cwd.clone();
+        let background = cx.background_spawn(async move {
+            if cut {
+                ops::move_entry(
+                    &src_for_task,
+                    &cwd_for_task,
+                    ConflictPolicy::Rename,
+                    &task_cancel,
+                    |_| {},
+                )
+            } else {
+                ops::copy_entry(
+                    &src_for_task,
+                    &cwd_for_task,
+                    ConflictPolicy::Rename,
+                    &task_cancel,
+                    |_| {},
+                )
+            }
+        });
+        let task = cx.spawn(async move |this, cx| {
+            let result = background.await;
+            let _ = this.update(cx, |this, cx| {
+                this.op_task = None;
+                this.op_cancel = None;
+                match result {
+                    Ok(stats) => {
+                        this.suppress_for(SELF_OP_SUPPRESS);
+                        if cut {
+                            this.clipboard = None;
+                        }
+                        if let Some(dest) = stats.created.first() {
+                            if dest.parent() == Some(this.cwd.as_path()) {
+                                this.pending_select = Some(dest.clone());
+                            }
+                        }
+                        this.status = summarize_op(verb, &stats);
+                        this.reload(cx);
+                    }
+                    Err(error) => {
+                        this.status = format!("{verb}できません: {error}");
+                        this.reload(cx);
+                    }
+                }
+                cx.notify();
+            });
+        });
+        self.op_task = Some(task);
         cx.notify();
     }
 
@@ -699,6 +883,9 @@ impl Explorer {
             let open_weak = weak.clone();
             let reveal_weak = weak.clone();
             let copy_weak = weak.clone();
+            let copy_sel_weak = weak.clone();
+            let cut_sel_weak = weak.clone();
+            let paste_weak = weak.clone();
             let trash_weak = weak.clone();
             let new_folder_weak = weak.clone();
 
@@ -735,6 +922,27 @@ impl Explorer {
                     .on_click(move |_, _window, cx| {
                         let target = copy_path.clone();
                         let _ = copy_weak.update(cx, |this, cx| this.copy_path(target, cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("コピー")
+                    .icon(Icon::new(IconName::ClipboardCopy))
+                    .on_click(move |_, _window, cx| {
+                        let _ = copy_sel_weak.update(cx, |this, cx| this.copy_selected(cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("切り取り")
+                    .icon(Icon::new(IconName::ClipboardMinus))
+                    .on_click(move |_, _window, cx| {
+                        let _ = cut_sel_weak.update(cx, |this, cx| this.cut_selected(cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("貼り付け")
+                    .icon(Icon::new(IconName::ClipboardPaste))
+                    .on_click(move |_, _window, cx| {
+                        let _ = paste_weak.update(cx, |this, cx| this.paste(cx));
                     }),
             )
             .separator()
@@ -1322,4 +1530,36 @@ fn main() {
 
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
+    // built-in `#[test]` attribute if pulled in via `use super::*`.
+    use super::summarize_op;
+    use crate::ops::OpStats;
+    use std::path::PathBuf;
+
+    #[test]
+    fn summarize_op_reports_files_dirs_and_skips() {
+        let stats = OpStats {
+            files: 3,
+            dirs: 1,
+            bytes: 42,
+            skipped: vec![PathBuf::from("/tmp/skip")],
+            created: vec![PathBuf::from("/tmp/dest")],
+        };
+        let message = summarize_op("コピー", &stats);
+        assert!(message.contains("コピーしました"), "{message}");
+        assert!(message.contains("3 ファイル"), "{message}");
+        assert!(message.contains("1 フォルダ"), "{message}");
+        assert!(message.contains("1 件スキップ"), "{message}");
+        assert!(message.ends_with(": dest"), "{message}");
+    }
+
+    #[test]
+    fn summarize_op_handles_empty_stats() {
+        let message = summarize_op("移動", &OpStats::default());
+        assert_eq!(message, "移動しました");
+    }
 }
