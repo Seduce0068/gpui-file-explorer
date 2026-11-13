@@ -17,6 +17,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
+use gpui_kit::component::button::Button;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{Icon, Theme, ThemeMode};
 use gpui_kit::prelude::*;
@@ -144,6 +146,17 @@ fn build_places() -> Vec<Place> {
         .collect()
 }
 
+/// Inline rename dialog state. Dropping it closes the dialog and drops the
+/// input subscription.
+struct RenameState {
+    target: PathBuf,
+    original: String,
+    input: Entity<InputState>,
+    /// Keeps the `InputEvent::PressEnter` subscription alive while open.
+    _subscription: Subscription,
+    error: Option<String>,
+}
+
 /// One entry on the internal cut/copy clipboard (P1: single selection).
 ///
 /// The OS clipboard is deliberately not used for file cut/copy: its cut/copy
@@ -188,6 +201,14 @@ struct Explorer {
     op_task: Option<Task<()>>,
     /// Cancellation flag of the running operation (Esc cancels).
     op_cancel: Option<Arc<CancelFlag>>,
+    /// Inline rename dialog (F2 / context menu). `None` when closed.
+    renaming: Option<RenameState>,
+    /// Set after a successful rename; the next render refocuses the list.
+    focus_list_on_next_render: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_RENAME=1` opens the rename dialog
+    /// for the first entry after the initial load (used for UI screenshots
+    /// where synthetic keyboard input is unavailable).
+    debug_open_rename_once: bool,
 }
 
 impl Explorer {
@@ -230,6 +251,9 @@ impl Explorer {
             clipboard: None,
             op_task: None,
             op_cancel: None,
+            renaming: None,
+            focus_list_on_next_render: false,
+            debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -540,6 +564,14 @@ impl Explorer {
     // --------------------------------------------------------------- shortcuts
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // While the rename dialog is open the text input owns most keys; only
+        // Escape is handled here (Enter arrives as `InputEvent::PressEnter`).
+        if self.renaming.is_some() {
+            if event.keystroke.key == "escape" {
+                self.cancel_rename(window, cx);
+            }
+            return;
+        }
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
         let modifiers = &keystroke.modifiers;
@@ -580,6 +612,7 @@ impl Explorer {
             "enter" => self.open_selected(cx),
             "backspace" => self.go_parent(cx),
             "f5" => self.reload(cx),
+            "f2" => self.start_rename(window, cx),
             "delete" => self.trash_selected(window, cx),
             "escape" => self.cancel_op(cx),
             _ => {}
@@ -790,6 +823,211 @@ impl Explorer {
         cx.notify();
     }
 
+    // ------------------------------------------------------------------ rename
+
+    /// Open the inline rename dialog for the selected entry (F2 / menu).
+    fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.renaming.is_some() {
+            return;
+        }
+        let Some(entry) = self.entries.get(self.selected) else {
+            return;
+        };
+        let target = entry.path.clone();
+        let original = entry.name.clone();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(original.clone()));
+        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.confirm_rename(cx);
+            }
+        });
+        let focus = input.read(cx).focus_handle(cx).clone();
+        focus.focus(window, cx);
+        self.renaming = Some(RenameState {
+            target,
+            original,
+            input,
+            _subscription: subscription,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    /// Validate the typed name and rename on the background executor.
+    ///
+    /// Safety: the new name is validated, an existing destination is rejected
+    /// before spawning, and the engine refuses to overwrite. On error the
+    /// dialog stays open and the original file is untouched.
+    fn confirm_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(rename) = self.renaming.as_ref() else {
+            return;
+        };
+        let value = rename.input.read(cx).value().to_string();
+        let target = rename.target.clone();
+        let original = rename.original.clone();
+        if value == original {
+            self.close_rename(cx);
+            return;
+        }
+        if let Err(error) = ops::validate_file_name(&value) {
+            self.set_rename_error(&error.to_string(), cx);
+            return;
+        }
+        let Some(parent) = target.parent().map(|parent| parent.to_path_buf()) else {
+            self.set_rename_error("親ディレクトリがありません", cx);
+            return;
+        };
+        let destination = parent.join(&value);
+        if destination.exists() {
+            self.set_rename_error(&format!("既に存在します: {}", destination.display()), cx);
+            return;
+        }
+
+        let background = cx.background_spawn(async move { ops::rename_entry(&target, &value) });
+        cx.spawn(async move |this, cx| {
+            let result = background.await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(new_path) => {
+                        this.suppress_for(SELF_OP_SUPPRESS);
+                        this.status = format!(
+                            "名前を変更しました: {} → {}",
+                            original,
+                            new_path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default()
+                        );
+                        this.pending_select = Some(new_path);
+                        this.close_rename(cx);
+                        this.reload(cx);
+                        this.restore_focus_next_frame();
+                    }
+                    Err(error) => {
+                        this.set_rename_error(&format!("変更できません: {error}"), cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.renaming.take().is_some() {
+            self.focus_handle.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn close_rename(&mut self, cx: &mut Context<Self>) {
+        if self.renaming.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn set_rename_error(&mut self, message: &str, cx: &mut Context<Self>) {
+        if let Some(rename) = &mut self.renaming {
+            rename.error = Some(message.to_string());
+        }
+        cx.notify();
+    }
+
+    /// Ask the next render to return keyboard focus to the list. The dialog's
+    /// input entity is gone after a successful rename, so focus would
+    /// otherwise be lost; scheduling from `render` is the only place where a
+    /// `Window` is available on the completion path.
+    fn restore_focus_next_frame(&mut self) {
+        self.focus_list_on_next_render = true;
+    }
+
+    /// Modal overlay for the rename dialog (backdrop + centered form).
+    fn rename_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let rename = self.renaming.as_ref()?;
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.cancel_rename(window, cx);
+                }),
+            );
+        let cancel = cx.listener(|this, _: &ClickEvent, window, cx| {
+            this.cancel_rename(window, cx);
+        });
+        let confirm = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.confirm_rename(cx);
+        });
+
+        let mut form = div()
+            .w(px(480.0))
+            .bg(rgb(C_SURFACE))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(C_OVERLAY))
+            .shadow_lg()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("名前変更"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(C_SUBTEXT))
+                    .truncate()
+                    .child(display_path(&rename.target)),
+            )
+            .child(Input::new(&rename.input).w_full());
+        if let Some(error) = &rename.error {
+            form = form.child(div().text_sm().text_color(rgb(C_RED)).child(error.clone()));
+        }
+        form = form.child(
+            div()
+                .flex()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("rename-cancel")
+                        .label("キャンセル")
+                        .on_click(cancel),
+                )
+                .child(
+                    Button::new("rename-confirm")
+                        .label("名前変更")
+                        .on_click(confirm),
+                ),
+        );
+        form = form.child(
+            div()
+                .text_xs()
+                .text_color(rgb(C_MUTED))
+                .child("Enter で確定 / Esc でキャンセル"),
+        );
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(form),
+        )
+    }
+
     fn reveal(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if !path.exists() {
             self.status = format!("対象が存在しません: {}", display_path(&path));
@@ -886,6 +1124,7 @@ impl Explorer {
             let copy_sel_weak = weak.clone();
             let cut_sel_weak = weak.clone();
             let paste_weak = weak.clone();
+            let rename_weak = weak.clone();
             let trash_weak = weak.clone();
             let new_folder_weak = weak.clone();
 
@@ -943,6 +1182,15 @@ impl Explorer {
                     .icon(Icon::new(IconName::ClipboardPaste))
                     .on_click(move |_, _window, cx| {
                         let _ = paste_weak.update(cx, |this, cx| this.paste(cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("名前変更")
+                    .icon(Icon::new(IconName::Pencil))
+                    .on_click(move |_, _window, cx| {
+                        let _ = rename_weak.update_in(cx, |this, window, cx| {
+                            this.start_rename(window, cx);
+                        });
                     }),
             )
             .separator()
@@ -1430,8 +1678,18 @@ fn icon_button(
 }
 
 impl Render for Explorer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.debug_open_rename_once && !self.entries.is_empty() && self.renaming.is_none() {
+            self.debug_open_rename_once = false;
+            self.start_rename(window, cx);
+        }
+        if self.focus_list_on_next_render {
+            self.focus_list_on_next_render = false;
+            let handle = self.focus_handle.clone();
+            window.on_next_frame(move |window, cx| handle.focus(window, cx));
+        }
         let header = self.sort_header(cx);
+        let rename_dialog = self.rename_dialog(cx);
 
         let list = uniform_list(
             "explorer-list",
@@ -1482,6 +1740,7 @@ impl Render for Explorer {
             .id("explorer-root")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1490,6 +1749,7 @@ impl Render for Explorer {
             .child(self.toolbar(cx))
             .child(body)
             .child(self.status_bar())
+            .children(rename_dialog)
     }
 }
 
