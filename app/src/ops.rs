@@ -228,6 +228,7 @@ fn copy_file_atomic(
     dest: &Path,
     cancel: &CancelFlag,
     stats: &mut OpStats,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<(), OpError> {
     let metadata = fs::metadata(src).map_err(|e| io_error(src, e))?;
     let parent = dest
@@ -243,6 +244,10 @@ fn copy_file_atomic(
         stats.files
     ));
 
+    // Report progress relative to the bytes copied by previous files, so the
+    // callback receives a monotonically increasing byte count for the whole
+    // operation.
+    let base_bytes = stats.bytes;
     let result = (|| -> Result<u64, OpError> {
         let mut input = fs::File::open(src).map_err(|e| io_error(src, e))?;
         let mut output = fs::File::create(&partial).map_err(|e| io_error(&partial, e))?;
@@ -260,6 +265,7 @@ fn copy_file_atomic(
                 .write_all(&buffer[..read])
                 .map_err(|e| io_error(&partial, e))?;
             total += read as u64;
+            progress(base_bytes + total);
         }
         output.flush().map_err(|e| io_error(&partial, e))?;
         // Best-effort durability; a failure here is not fatal for a UI copy.
@@ -302,7 +308,7 @@ fn copy_file_atomic(
     }
 
     stats.files += 1;
-    stats.bytes += bytes;
+    stats.bytes = base_bytes + bytes;
     Ok(())
 }
 
@@ -331,6 +337,7 @@ fn copy_recursive(
     dest: &Path,
     cancel: &CancelFlag,
     stats: &mut OpStats,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<(), OpError> {
     if cancel.is_cancelled() {
         return Err(OpError::Cancelled);
@@ -354,7 +361,7 @@ fn copy_recursive(
             let name = child.file_name().ok_or_else(|| {
                 OpError::InvalidTarget("子要素の名前を取得できません".to_string())
             })?;
-            copy_recursive(&child, &dest.join(name), cancel, stats)?;
+            copy_recursive(&child, &dest.join(name), cancel, stats, progress)?;
         }
         #[cfg(unix)]
         {
@@ -365,7 +372,7 @@ fn copy_recursive(
         return Ok(());
     }
     if metadata.is_file() {
-        return copy_file_atomic(src, dest, cancel, stats);
+        return copy_file_atomic(src, dest, cancel, stats, progress);
     }
     Err(OpError::Unsupported(format!(
         "特殊ファイルはコピーできません: {}",
@@ -383,6 +390,7 @@ pub fn copy_entry(
     cancel: &CancelFlag,
     mut on_progress: impl FnMut(u64),
 ) -> Result<OpStats, OpError> {
+    let progress: &mut dyn FnMut(u64) = &mut on_progress;
     if !src.exists() && !src.is_symlink() {
         return Err(OpError::NotFound(src.to_path_buf()));
     }
@@ -403,9 +411,9 @@ pub fn copy_entry(
     };
 
     let mut stats = OpStats::default();
-    copy_recursive(src, &dest, cancel, &mut stats)?;
+    copy_recursive(src, &dest, cancel, &mut stats, progress)?;
     stats.created.insert(0, dest);
-    on_progress(stats.bytes);
+    progress(stats.bytes);
     Ok(stats)
 }
 
@@ -474,7 +482,8 @@ pub fn move_entry(
             // EXDEV: cross-device link. Copy to the resolved destination first,
             // then delete the source only after a fully successful copy.
             let mut stats = OpStats::default();
-            if let Err(copy_err) = copy_recursive(src, &dest, cancel, &mut stats) {
+            let progress: &mut dyn FnMut(u64) = &mut on_progress;
+            if let Err(copy_err) = copy_recursive(src, &dest, cancel, &mut stats, progress) {
                 let _ = remove_entry_safe(&dest);
                 return Err(copy_err);
             }
@@ -684,6 +693,40 @@ mod tests {
                 .is_symlink());
             assert_eq!(fs::read_link(&link).unwrap(), Path::new("top.txt"));
         }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_reports_monotonic_byte_progress() {
+        let dir = scratch("progress");
+        let src = dir.join("big.bin");
+        let size = (COPY_CHUNK_SIZE * 3 + 7) as u64;
+        write(&src, &vec![1u8; size as usize]);
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let mut samples: Vec<u64> = Vec::new();
+        let stats = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |bytes| samples.push(bytes),
+        )
+        .unwrap();
+
+        assert!(!samples.is_empty(), "progress must be reported per chunk");
+        assert!(
+            samples.windows(2).all(|pair| pair[0] <= pair[1]),
+            "progress must be monotonic: {samples:?}"
+        );
+        assert_eq!(samples.last().copied(), Some(stats.bytes));
+        assert_eq!(stats.bytes, size);
+        assert_eq!(
+            fs::read(dest_dir.join("big.bin")).unwrap().len() as u64,
+            size
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
