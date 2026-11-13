@@ -71,6 +71,100 @@ pub fn read_entries(dir: &Path) -> Result<Vec<Entry>, String> {
     Ok(entries)
 }
 
+/// Multi-selection state, keyed by path so it survives reloads and re-sorting.
+///
+/// The list keeps a separate "focused" row index; this struct only tracks which
+/// paths are selected and the anchor used for shift-range selection.
+#[derive(Clone, Debug, Default)]
+pub struct Selection {
+    paths: Vec<PathBuf>,
+    anchor: Option<PathBuf>,
+}
+
+impl Selection {
+    pub fn paths(&self) -> &[PathBuf] {
+        &self.paths
+    }
+
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+
+    pub fn contains(&self, path: &Path) -> bool {
+        self.paths.iter().any(|selected| selected == path)
+    }
+
+    pub fn clear(&mut self) {
+        self.paths.clear();
+        self.anchor = None;
+    }
+
+    /// Replace the selection with a single path (plain click / arrow key).
+    pub fn select_single(&mut self, path: PathBuf) {
+        self.paths = vec![path.clone()];
+        self.anchor = Some(path);
+    }
+
+    /// Ctrl+click: add or remove one path; the anchor follows the click.
+    pub fn toggle(&mut self, path: PathBuf) {
+        if let Some(position) = self.paths.iter().position(|selected| selected == &path) {
+            self.paths.remove(position);
+            if self.anchor.as_deref() == Some(path.as_path()) {
+                self.anchor = self.paths.last().cloned();
+            }
+        } else {
+            self.paths.push(path.clone());
+            self.anchor = Some(path);
+        }
+    }
+
+    /// Shift+click / Shift+arrow: select the inclusive range between the
+    /// anchor and `target` in view order.
+    pub fn select_range(&mut self, entries: &[PathBuf], target: &Path) {
+        let Some(anchor) = self.anchor.clone() else {
+            self.select_single(target.to_path_buf());
+            return;
+        };
+        let Some(anchor_index) = entries.iter().position(|path| path == &anchor) else {
+            self.select_single(target.to_path_buf());
+            return;
+        };
+        let Some(target_index) = entries.iter().position(|path| path == target) else {
+            return;
+        };
+        let (start, end) = if anchor_index <= target_index {
+            (anchor_index, target_index)
+        } else {
+            (target_index, anchor_index)
+        };
+        self.paths = entries[start..=end].to_vec();
+    }
+
+    pub fn select_all(&mut self, entries: &[PathBuf]) {
+        self.paths = entries.to_vec();
+        if self.anchor.is_none() {
+            self.anchor = entries.first().cloned();
+        }
+    }
+
+    /// Drop paths that no longer exist in the current listing.
+    pub fn retain(&mut self, entries: &[PathBuf]) {
+        self.paths.retain(|path| entries.contains(path));
+        if let Some(anchor) = &self.anchor {
+            if !entries.contains(anchor) {
+                self.anchor = self.paths.first().cloned();
+            }
+        }
+        if self.paths.is_empty() {
+            self.anchor = None;
+        }
+    }
+}
+
 /// Which column the list is sorted by.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -699,5 +793,63 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::Selection;
+    use std::path::{Path, PathBuf};
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn single_and_toggle_selection() {
+        let mut selection = Selection::default();
+        selection.select_single(PathBuf::from("/a"));
+        assert_eq!(selection.len(), 1);
+        assert!(selection.contains(Path::new("/a")));
+
+        selection.toggle(PathBuf::from("/b"));
+        assert_eq!(selection.len(), 2);
+        assert!(selection.contains(Path::new("/b")));
+
+        selection.toggle(PathBuf::from("/a"));
+        assert_eq!(selection.len(), 1);
+        assert!(!selection.contains(Path::new("/a")));
+        assert!(selection.contains(Path::new("/b")));
+    }
+
+    #[test]
+    fn range_selection_uses_anchor() {
+        let entries = paths(&["/a", "/b", "/c", "/d"]);
+        let mut selection = Selection::default();
+        selection.select_single(PathBuf::from("/b"));
+        selection.select_range(&entries, Path::new("/d"));
+        assert_eq!(
+            selection.paths(),
+            &paths(&["/b", "/c", "/d"])[..],
+            "range must include both endpoints"
+        );
+
+        selection.select_range(&entries, Path::new("/a"));
+        assert_eq!(selection.paths(), &paths(&["/a", "/b"])[..]);
+    }
+
+    #[test]
+    fn select_all_and_retain() {
+        let entries = paths(&["/a", "/b", "/c"]);
+        let mut selection = Selection::default();
+        selection.select_all(&entries);
+        assert_eq!(selection.len(), 3);
+
+        let remaining = paths(&["/b", "/c", "/d"]);
+        selection.retain(&remaining);
+        assert_eq!(selection.paths(), &paths(&["/b", "/c"])[..]);
+
+        selection.retain(&[]);
+        assert!(selection.is_empty());
     }
 }
