@@ -38,7 +38,7 @@ use crate::model::{
 };
 use crate::mounts::MountPoint;
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
-use crate::search::{search_by_name, SearchOptions};
+use crate::search::{filter_results, search_by_name, SearchKind, SearchOptions};
 use crate::settings::{Settings, ViewMode as LayoutMode};
 use crate::tabs::{Tab, Tabs};
 use crate::watcher::DirWatcher;
@@ -238,6 +238,9 @@ struct Explorer {
     /// Recursive search state (active only while `view == Search`).
     search_input: Option<Entity<InputState>>,
     search_subscription: Option<Subscription>,
+    search_ext: Option<Entity<InputState>>,
+    search_ext_subscription: Option<Subscription>,
+    search_kind: SearchKind,
     search_query: String,
     search_task: Option<Task<()>>,
     search_cancel: Option<Arc<AtomicBool>>,
@@ -350,6 +353,9 @@ impl Explorer {
             trash_items: Vec::new(),
             search_input: None,
             search_subscription: None,
+            search_ext: None,
+            search_ext_subscription: None,
+            search_kind: SearchKind::All,
             search_query: String::new(),
             search_task: None,
             search_cancel: None,
@@ -1929,10 +1935,23 @@ impl Explorer {
                 this.run_search(cx);
             }
         });
+        let ext_input = cx.new(|cx| InputState::new(window, cx));
+        let ext_subscription =
+            cx.subscribe(
+                &ext_input,
+                |this, _input, event: &InputEvent, cx| match event {
+                    InputEvent::Change => this.apply_search_filter(cx),
+                    InputEvent::PressEnter { .. } => this.run_search(cx),
+                    _ => {}
+                },
+            );
         let focus = input.read(cx).focus_handle(cx).clone();
         focus.focus(window, cx);
         self.search_input = Some(input);
         self.search_subscription = Some(subscription);
+        self.search_ext = Some(ext_input);
+        self.search_ext_subscription = Some(ext_subscription);
+        self.search_kind = SearchKind::All;
         self.search_query.clear();
         self.search_generation = self.search_generation.wrapping_add(1);
         self.view = ViewMode::Search;
@@ -1986,20 +2005,25 @@ impl Explorer {
                 this.loading = false;
                 this.search_task = None;
                 this.search_cancel = None;
-                this.apply_search_results(entries);
-                this.status = format!("検索: 「{}」 {} 件", this.search_query, this.entries.len());
-                cx.notify();
+                this.all_entries = entries;
+                this.apply_search_filter(cx);
             });
         });
         self.search_task = Some(task);
     }
 
-    fn apply_search_results(&mut self, entries: Vec<Entry>) {
-        let paths: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
+    /// Recompute the visible search results from the last search's entries
+    /// (kind/extension filters). Does not re-run the search.
+    fn apply_search_filter(&mut self, cx: &mut Context<Self>) {
+        let extension = self
+            .search_ext
+            .as_ref()
+            .map(|input| input.read(cx).value().to_string());
+        let filtered = filter_results(&self.all_entries, self.search_kind, extension.as_deref());
+        let paths: Vec<PathBuf> = filtered.iter().map(|entry| entry.path.clone()).collect();
         self.selection.retain(&paths);
-        self.all_entries = entries;
-        self.entries = self.all_entries.clone();
-        self.fingerprint = fingerprint(&self.all_entries);
+        self.entries = filtered;
+        self.fingerprint = fingerprint(&self.entries);
         self.selected = 0;
         if self.selection.is_empty() {
             if let Some(entry) = self.entries.first() {
@@ -2008,6 +2032,8 @@ impl Explorer {
         }
         self.scroll_handle
             .scroll_to_item(0, ScrollStrategy::Nearest);
+        self.status = format!("検索: 「{}」 {} 件", self.search_query, self.entries.len());
+        cx.notify();
     }
 
     /// Drop search state without touching the current view (used when
@@ -2019,6 +2045,9 @@ impl Explorer {
         self.search_task.take();
         self.search_input = None;
         self.search_subscription = None;
+        self.search_ext = None;
+        self.search_ext_subscription = None;
+        self.search_kind = SearchKind::All;
         self.search_query.clear();
     }
 
@@ -2034,13 +2063,46 @@ impl Explorer {
         self.reload(cx);
     }
 
-    fn search_bar(&self) -> Option<Div> {
+    fn search_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
         let input = self.search_input.as_ref()?;
         let hint = if self.loading {
             "検索中…"
         } else {
             "Enter で検索 / Esc で閉じる"
         };
+        let mut kinds = div().flex().items_center().gap_1();
+        for (kind, label) in [
+            (SearchKind::All, "すべて"),
+            (SearchKind::Files, "ファイル"),
+            (SearchKind::Dirs, "フォルダ"),
+        ] {
+            let active = self.search_kind == kind;
+            kinds = kinds.child(
+                div()
+                    .id(("search-kind", kind as u64))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .when(active, |button| button.bg(rgb(C_SURFACE)))
+                    .text_color(if active { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
+                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        this.search_kind = kind;
+                        this.apply_search_filter(cx);
+                    })),
+            );
+        }
+        let extension_input = self.search_ext.as_ref().map(|ext| {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(div().text_xs().text_color(rgb(C_MUTED)).child("拡張子:"))
+                .child(div().w(px(110.0)).child(Input::new(ext)))
+        });
         Some(
             div()
                 .flex()
@@ -2053,6 +2115,8 @@ impl Explorer {
                 .border_color(rgb(C_SURFACE))
                 .child(div().text_sm().text_color(rgb(C_SUBTEXT)).child("検索:"))
                 .child(div().flex_1().child(Input::new(input)))
+                .child(kinds)
+                .children(extension_input)
                 .child(div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
         )
     }
@@ -3053,7 +3117,13 @@ impl Explorer {
             } else {
                 div().into_any_element()
             })
-            .child(if hidden_count > 0 && !self.settings.show_hidden {
+            .child(if self.view == ViewMode::Search && hidden_count > 0 {
+                // Search results were narrowed by the kind/extension filter.
+                div()
+                    .text_color(rgb(C_MUTED))
+                    .child(format!("除外 {hidden_count} 件"))
+                    .into_any_element()
+            } else if hidden_count > 0 && !self.settings.show_hidden {
                 div()
                     .text_color(rgb(C_MUTED))
                     .child(format!("隠し {hidden_count} 件"))
@@ -3191,6 +3261,20 @@ impl Render for Explorer {
             let query =
                 std::env::var("GPUI_FE_DEBUG_SEARCH_QUERY").unwrap_or_else(|_| "txt".to_string());
             self.open_search(window, cx);
+            if let Ok(kind) = std::env::var("GPUI_FE_DEBUG_SEARCH_KIND") {
+                self.search_kind = match kind.as_str() {
+                    "files" => SearchKind::Files,
+                    "dirs" => SearchKind::Dirs,
+                    _ => SearchKind::All,
+                };
+            }
+            if let Ok(extension) = std::env::var("GPUI_FE_DEBUG_SEARCH_EXT") {
+                if let Some(ext) = self.search_ext.clone() {
+                    ext.update(cx, |state, cx| {
+                        state.set_value(extension.clone(), window, cx);
+                    });
+                }
+            }
             if let Some(input) = self.search_input.clone() {
                 input.update(cx, |state, cx| {
                     state.set_value(query.clone(), window, cx);
@@ -3199,7 +3283,7 @@ impl Render for Explorer {
             self.run_search(cx);
         }
         let tab_bar = self.tab_bar(cx);
-        let search_bar = self.search_bar();
+        let search_bar = self.search_bar(cx);
         let rename_dialog = self.rename_dialog(cx);
 
         let grid_mode = self.settings.view == LayoutMode::Icons;
