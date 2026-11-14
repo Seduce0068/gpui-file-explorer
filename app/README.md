@@ -85,6 +85,7 @@ cd app
 | `Ctrl+T` / `Ctrl+W` | タブを開く（現在のディレクトリ）/ アクティブタブを閉じる（最後の1枚は不可） |
 | `Ctrl+D` | 現在のディレクトリをブックマークに追加 / 解除 |
 | `Ctrl+I` | 選択項目のプロパティ（読み取り専用） |
+| `F1` | キーボードショートカット一覧（ヘルプ） |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 次のタブ / 前のタブ（循環） |
 | `Home` / `End` | 先頭 / 末尾を選択 |
 | `Enter` | 選択項目を開く（ディレクトリ→移動、ファイル→既定アプリ） |
@@ -198,6 +199,7 @@ cd app
   - ゴミ箱・検索ビューでのドロップ、操作実行中のドロップは拒否
 - [x] **安全側の明文化**: `#![forbid(unsafe_code)]` を app 本体と `build.rs` に適用。
   ツールバーの詳細/グリッド切替ボタンにアクティブ表示を追加
+- [x] **キーボードヘルプ（F1）**: ショートカット一覧をオーバーレイ表示（スクロール可、`F1`/`Esc`/閉じるで終了）
 - [x] **空状態・ローディング表示**: 読み込み中 / 空ディレクトリ / ゴミ箱が空 / 検索0件 /
   絞り込みで全件除外 / 隠しファイル全件、を中央にメッセージ + 補足ヒントで表示
   （例: 空フォルダでは「ここにファイルをドロップするとコピーできます」）
@@ -352,6 +354,7 @@ bash packaging/linux/build-deb.sh
   `GPUI_FE_DEBUG_SEARCH_EXT` / `GPUI_FE_DEBUG_SEARCH_MODE`（検索・絞り込み・内容検索）、
   `GPUI_FE_DEBUG_TABS=1`（タブ）、
   `GPUI_FE_DEBUG_RECENT=1`（最近）、`GPUI_FE_DEBUG_BOOKMARKS=1`（ブックマーク）、`GPUI_FE_DEBUG_PROPERTIES=1`（プロパティ）、
+  `GPUI_FE_DEBUG_HELP=1`（ヘルプ）、
   `GPUI_FE_DEBUG_DROP_PATH=<file>` + `GPUI_FE_DEBUG_DROP_TARGET=<folder>`（外部ドロップ相当を1回実行）
   の開発用フックがあります。
 - 現状の削除は従来どおり `trash` のみで、完全削除はありません。

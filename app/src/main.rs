@@ -197,6 +197,70 @@ fn empty_state_message(
     None
 }
 
+/// Keyboard shortcuts shown by the F1 help overlay.
+const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "ナビゲーション",
+        &[
+            ("Enter", "選択項目を開く"),
+            ("Alt+← / Alt+→", "戻る / 進む"),
+            ("Alt+↑ / Backspace", "親ディレクトリへ"),
+            ("Home / End", "先頭 / 末尾へ"),
+            ("PageUp / PageDown", "ページ単位で移動"),
+        ],
+    ),
+    (
+        "選択",
+        &[
+            ("Ctrl+A", "全選択"),
+            ("Shift+↑↓", "範囲選択"),
+            ("Ctrl+クリック / Shift+クリック", "追加選択 / 範囲選択"),
+        ],
+    ),
+    (
+        "ファイル操作",
+        &[
+            (
+                "Ctrl+C / Ctrl+X / Ctrl+V",
+                "コピー / 切り取り / 貼り付け（常に別名保存）",
+            ),
+            ("F2", "名前変更"),
+            ("Delete", "ゴミ箱へ移動（完全削除なし）"),
+            ("Ctrl+Shift+N", "新規フォルダ"),
+            (
+                "ドラッグ&ドロップ",
+                "OS からコピー / フォルダ行へコピー / OS へドラッグ",
+            ),
+        ],
+    ),
+    (
+        "表示",
+        &[
+            ("Ctrl+1 / Ctrl+2", "詳細リスト / アイコングリッド"),
+            ("Ctrl+H", "隠しファイルの表示切替"),
+            ("Ctrl+R / F5", "再読込"),
+            ("Ctrl+F", "検索（名前 / 内容）"),
+            ("Ctrl+I", "プロパティ"),
+        ],
+    ),
+    (
+        "タブ・ブックマーク",
+        &[
+            ("Ctrl+T / Ctrl+W", "タブを開く / 閉じる"),
+            ("Ctrl+Tab / Ctrl+Shift+Tab", "次のタブ / 前のタブ"),
+            ("Ctrl+D", "現在のディレクトリをブックマーク"),
+        ],
+    ),
+    (
+        "その他",
+        &[
+            ("F1", "このヘルプ"),
+            ("Esc", "キャンセル / ダイアログを閉じる"),
+            ("Ctrl+Q", "終了"),
+        ],
+    ),
+];
+
 /// One sidebar "place".
 ///
 /// Paths are resolved **once** (at startup) and their existence re-checked only
@@ -348,6 +412,8 @@ struct Explorer {
     renaming: Option<RenameState>,
     /// Read-only properties dialog state.
     properties: Option<PropsState>,
+    /// Whether the F1 keyboard help overlay is open.
+    help_open: bool,
     /// Set after a successful rename; the next render refocuses the list.
     focus_list_on_next_render: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_RENAME=1` opens the rename dialog
@@ -376,6 +442,8 @@ struct Explorer {
     /// Development-only hook: `GPUI_FE_DEBUG_PROPERTIES=1` opens the
     /// properties dialog for the first entry once after loading.
     debug_properties_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_HELP=1` opens the help overlay.
+    debug_help_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_TABS=1` opens extra tabs once
     /// after startup (tab bar screenshot).
     debug_tabs_once: bool,
@@ -463,6 +531,7 @@ impl Explorer {
             op_progress: None,
             renaming: None,
             properties: None,
+            help_open: false,
             focus_list_on_next_render: false,
             debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
             debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
@@ -472,6 +541,7 @@ impl Explorer {
             debug_grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
             debug_search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
             debug_properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
+            debug_help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
             debug_tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
             debug_drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
             debug_drop_target: std::env::var("GPUI_FE_DEBUG_DROP_TARGET").ok(),
@@ -1204,6 +1274,18 @@ impl Explorer {
             }
             return;
         }
+        if event.keystroke.key == "f1" {
+            self.help_open = !self.help_open;
+            cx.notify();
+            return;
+        }
+        if self.help_open {
+            if event.keystroke.key == "escape" {
+                self.help_open = false;
+                cx.notify();
+            }
+            return;
+        }
         if self.properties.is_some() {
             if event.keystroke.key == "escape" {
                 self.close_properties(cx);
@@ -1704,6 +1786,107 @@ impl Explorer {
             self.status = format!("{missing} 件は存在しないためスキップします");
         }
         self.run_transfer(destination, existing, false, cx);
+    }
+
+    // -------------------------------------------------------------------- help
+
+    /// F1 keyboard-help overlay (read-only).
+    fn help_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.help_open {
+            return None;
+        }
+        let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.help_open = false;
+            cx.notify();
+        });
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.help_open = false;
+                    cx.notify();
+                }),
+            );
+        let mut list = div()
+            .id("help-list")
+            .flex()
+            .flex_col()
+            .gap_3()
+            .max_h(px(500.0))
+            .overflow_y_scroll();
+        for (section, shortcuts) in HELP_SECTIONS {
+            list = list.child(div().text_xs().text_color(rgb(C_MUTED)).child(*section));
+            for (key, description) in *shortcuts {
+                list = list.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .w(px(230.0))
+                                .text_sm()
+                                .text_color(rgb(C_TEXT))
+                                .child(*key),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_sm()
+                                .text_color(rgb(C_SUBTEXT))
+                                .child(*description),
+                        ),
+                );
+            }
+        }
+        let body = div()
+            .w(px(720.0))
+            .bg(rgb(C_SURFACE))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(C_OVERLAY))
+            .shadow_lg()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("キーボードショートカット"),
+            )
+            .child(list)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(C_MUTED))
+                            .child("F1 / Esc で閉じる（一覧はスクロールできます）"),
+                    )
+                    .child(Button::new("help-close").label("閉じる").on_click(close)),
+            );
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(body),
+        )
     }
 
     // -------------------------------------------------------------- properties
@@ -3723,8 +3906,13 @@ impl Render for Explorer {
         }
         let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar(cx);
+        if self.debug_help_once {
+            self.debug_help_once = false;
+            self.help_open = true;
+        }
         let rename_dialog = self.rename_dialog(cx);
         let properties_dialog = self.properties_dialog(cx);
+        let help_dialog = self.help_dialog(cx);
 
         let grid_mode = self.settings.view == LayoutMode::Icons;
         // Column headers only make sense in the details list.
@@ -3809,6 +3997,7 @@ impl Render for Explorer {
             .child(self.status_bar())
             .children(rename_dialog)
             .children(properties_dialog)
+            .children(help_dialog)
     }
 }
 
@@ -3909,6 +4098,26 @@ mod tests {
         assert!(message.contains("1 フォルダ"), "{message}");
         assert!(message.contains("1 件スキップ"), "{message}");
         assert!(message.ends_with(": dest"), "{message}");
+    }
+
+    #[test]
+    fn help_sections_are_well_formed() {
+        use super::HELP_SECTIONS;
+        assert!(HELP_SECTIONS.len() >= 4);
+        let mut total = 0usize;
+        for (section, shortcuts) in HELP_SECTIONS {
+            assert!(!section.is_empty());
+            assert!(!shortcuts.is_empty(), "empty section {section}");
+            for (key, description) in *shortcuts {
+                assert!(!key.is_empty());
+                assert!(!description.is_empty());
+                total += 1;
+            }
+        }
+        assert!(
+            total >= 20,
+            "expected a useful number of shortcuts, got {total}"
+        );
     }
 
     #[test]
