@@ -358,10 +358,12 @@ bash packaging/linux/build-deb.sh
   `GPUI_FE_DEBUG_TABS=1`（タブ）、
   `GPUI_FE_DEBUG_RECENT=1`（最近）、`GPUI_FE_DEBUG_BOOKMARKS=1`（ブックマーク）、`GPUI_FE_DEBUG_PROPERTIES=1`（プロパティ）、
   `GPUI_FE_DEBUG_HELP=1`（ヘルプ）、`GPUI_FE_DEBUG_PROPERTIES_SIZE=1`（ディレクトリサイズ計算）、
+  `GPUI_FE_DEBUG_SORT=kind`（種類ソート）、
   `GPUI_FE_DEBUG_DROP_PATH=<file>` + `GPUI_FE_DEBUG_DROP_TARGET=<folder>`（外部ドロップ相当を1回実行）
   の開発用フックがあります。
 - 現状の削除は従来どおり `trash` のみで、完全削除はありません。
-- ソートはヘッダクリックのみ（ツールバーにソート UI は無し）。
+- ソートはヘッダクリックのみ（ツールバーにソート UI は無し）。キーは名前 / **種類** / サイズ / 更新日時で、
+  「種類」列はフォルダ・リンク・拡張子を表示します（拡張子は小文字）。
 - ファイル名の非 UTF-8 バイト列は lossy 変換されます。
 - 監視はカレントディレクトリと親の**非再帰**のみ。深い子孫は監視しません。
 - 自己操作の抑制は時間ベース（1.5 秒）。まれに外部の同期的変更を
