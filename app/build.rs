@@ -16,6 +16,8 @@
 //! On hosts where the development package is installed the symlink is absent
 //! and the build script does nothing; the default linker search path applies.
 
+#![forbid(unsafe_code)]
+
 use std::path::PathBuf;
 
 fn main() {
