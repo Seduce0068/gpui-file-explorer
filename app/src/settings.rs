@@ -27,6 +27,8 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const MAX_RECENT_DIRS: usize = 10;
 /// Maximum number of bookmarked directories.
 pub const MAX_BOOKMARKS: usize = 50;
+/// Maximum number of remembered search queries.
+pub const MAX_RECENT_SEARCHES: usize = 10;
 
 /// List view mode: the detailed list or the icon grid. Persisted in
 /// `settings.json` as `"details"` / `"icons"`.
@@ -55,6 +57,8 @@ pub struct Settings {
     pub tabs: Vec<PathBuf>,
     /// Index of the active tab in `tabs` (clamped when restoring).
     pub active_tab: usize,
+    /// Recently used search queries, most recent first (bounded).
+    pub recent_searches: Vec<String>,
 }
 
 impl Default for Settings {
@@ -69,6 +73,7 @@ impl Default for Settings {
             bookmarks: Vec::new(),
             tabs: Vec::new(),
             active_tab: 0,
+            recent_searches: Vec::new(),
         }
     }
 }
@@ -110,6 +115,17 @@ impl Settings {
             self.bookmarks.remove(0);
         }
         true
+    }
+
+    /// Remember a search query (trimmed, de-duplicated, bounded).
+    pub fn record_search(&mut self, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            return;
+        }
+        self.recent_searches.retain(|existing| existing != query);
+        self.recent_searches.insert(0, query.to_string());
+        self.recent_searches.truncate(MAX_RECENT_SEARCHES);
     }
 
     /// Load settings, falling back to defaults for a missing/corrupt file.
@@ -450,5 +466,42 @@ mod tab_settings_tests {
         let loaded: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(loaded.tabs, settings.tabs);
         assert_eq!(loaded.active_tab, 1);
+    }
+}
+
+#[cfg(test)]
+mod search_history_tests {
+    use super::{Settings, MAX_RECENT_SEARCHES};
+
+    #[test]
+    fn records_searches_newest_first_and_deduped() {
+        let mut settings = Settings::default();
+        settings.record_search("  TODO ");
+        settings.record_search("rs");
+        settings.record_search("TODO");
+        assert_eq!(
+            settings.recent_searches,
+            vec!["TODO".to_string(), "rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn search_history_is_bounded() {
+        let mut settings = Settings::default();
+        for index in 0..(MAX_RECENT_SEARCHES + 3) {
+            settings.record_search(&format!("query-{index}"));
+        }
+        assert_eq!(settings.recent_searches.len(), MAX_RECENT_SEARCHES);
+        assert_eq!(
+            settings.recent_searches[0],
+            format!("query-{}", MAX_RECENT_SEARCHES + 2)
+        );
+    }
+
+    #[test]
+    fn empty_search_is_ignored() {
+        let mut settings = Settings::default();
+        settings.record_search("   ");
+        assert!(settings.recent_searches.is_empty());
     }
 }
