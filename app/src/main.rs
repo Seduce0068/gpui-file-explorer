@@ -308,6 +308,9 @@ struct Explorer {
     /// Development-only hook: `GPUI_FE_DEBUG_DROP_PATH=<file>` feeds one path
     /// through the external-drop handler once (no OS drag needed).
     debug_drop_path: Option<String>,
+    /// Development-only hook: `GPUI_FE_DEBUG_DROP_TARGET=<folder name>` sends
+    /// the debug drop to that folder instead of the current directory.
+    debug_drop_target: Option<String>,
 }
 
 impl Explorer {
@@ -382,6 +385,7 @@ impl Explorer {
             debug_search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
             debug_tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
             debug_drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
+            debug_drop_target: std::env::var("GPUI_FE_DEBUG_DROP_TARGET").ok(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -1351,17 +1355,27 @@ impl Explorer {
             return;
         }
 
-        self.run_transfer(paths, cut, cx);
+        self.run_transfer(cwd.clone(), paths, cut, cx);
     }
 
-    /// Copy (`cut == false`) or move (`cut == true`) `paths` into the current
-    /// directory on the background executor.
+    /// Copy (`cut == false`) or move (`cut == true`) `paths` into `destination`
+    /// on the background executor.
     ///
     /// Safety: destinations always use [`ConflictPolicy::Rename`], so an
     /// existing file is never overwritten; `Esc` cancels cooperatively.
-    fn run_transfer(&mut self, paths: Vec<PathBuf>, cut: bool, cx: &mut Context<Self>) {
-        let cwd = self.cwd.clone();
+    fn run_transfer(
+        &mut self,
+        destination: PathBuf,
+        paths: Vec<PathBuf>,
+        cut: bool,
+        cx: &mut Context<Self>,
+    ) {
         let verb = if cut { "移動" } else { "コピー" };
+        let target_prefix = if destination == self.cwd {
+            String::new()
+        } else {
+            format!("「{}」へ ", display_path(&destination))
+        };
         self.status = format!("{verb}中…（Esc でキャンセル）");
         cx.notify();
 
@@ -1405,7 +1419,8 @@ impl Explorer {
         .detach();
 
         let task_cancel = cancel.clone();
-        let cwd_for_task = cwd.clone();
+        let destination_for_task = destination.clone();
+        let destination_for_ui = destination.clone();
         let progress_tx_for_task = progress_tx.clone();
         let background = cx.background_spawn(async move {
             let total_bytes = ops::total_bytes(&paths);
@@ -1427,7 +1442,7 @@ impl Explorer {
                 let result = if cut {
                     ops::move_entry(
                         &path,
-                        &cwd_for_task,
+                        &destination_for_task,
                         ConflictPolicy::Rename,
                         &task_cancel,
                         &mut progress,
@@ -1435,7 +1450,7 @@ impl Explorer {
                 } else {
                     ops::copy_entry(
                         &path,
-                        &cwd_for_task,
+                        &destination_for_task,
                         ConflictPolicy::Rename,
                         &task_cancel,
                         &mut progress,
@@ -1486,11 +1501,13 @@ impl Explorer {
                     this.clipboard = None;
                 }
                 if let Some(dest) = first_created {
-                    if dest.parent() == Some(this.cwd.as_path()) {
+                    if destination_for_ui == this.cwd
+                        && dest.parent() == Some(destination_for_ui.as_path())
+                    {
                         this.pending_select = Some(dest);
                     }
                 }
-                this.status = status;
+                this.status = format!("{target_prefix}{status}");
                 this.reload(cx);
                 cx.notify();
             });
@@ -1500,12 +1517,23 @@ impl Explorer {
     }
 
     /// Copy files/directories dropped from the OS into the current directory.
+    fn drop_external(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.drop_external_into(self.cwd.clone(), paths, cx);
+    }
+
+    /// Copy OS-dropped paths into `destination` (current directory, or the
+    /// folder row they were dropped on).
     ///
     /// Safety: a drop is always a **copy** (never a move) and uses the same
     /// `ConflictPolicy::Rename` pipeline as paste, so nothing is overwritten.
     /// Drops are ignored in the trash/search views and while another
-    /// operation is running.
-    fn drop_external(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    /// operation is running; the destination must be an existing directory.
+    fn drop_external_into(
+        &mut self,
+        destination: PathBuf,
+        paths: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         if self.view != ViewMode::Directory {
             self.status = "ドロップはディレクトリ表示でのみ使えます".to_string();
             cx.notify();
@@ -1516,17 +1544,29 @@ impl Explorer {
             cx.notify();
             return;
         }
+        if !destination.is_dir() {
+            self.status = "ドロップ先のフォルダが見つかりません".to_string();
+            cx.notify();
+            return;
+        }
         let mut existing: Vec<PathBuf> = Vec::new();
         let mut missing = 0usize;
+        let mut same = 0usize;
         for path in paths {
-            if path.exists() || path.is_symlink() {
-                existing.push(path);
-            } else {
+            if !path.exists() && !path.is_symlink() {
                 missing += 1;
+                continue;
             }
+            if path == destination {
+                same += 1;
+                continue;
+            }
+            existing.push(path);
         }
         if existing.is_empty() {
-            self.status = if missing > 0 {
+            self.status = if same > 0 {
+                "同じフォルダのためコピーしません".to_string()
+            } else if missing > 0 {
                 "ドロップされた項目が見つかりません".to_string()
             } else {
                 "ドロップされた項目がありません".to_string()
@@ -1537,7 +1577,7 @@ impl Explorer {
         if missing > 0 {
             self.status = format!("{missing} 件は存在しないためスキップします");
         }
-        self.run_transfer(existing, false, cx);
+        self.run_transfer(destination, existing, false, cx);
     }
 
     // ------------------------------------------------------------------ rename
@@ -2366,6 +2406,11 @@ impl Explorer {
         };
         let drag_paths = batch_paths.clone();
         let drag_out = this.view == ViewMode::Directory;
+        let drop_target = if drag_out && is_dir && !entry.is_symlink {
+            Some(entry.path.clone())
+        } else {
+            None
+        };
         let context_menu: MenuBuilder = if this.view == ViewMode::Trash {
             Box::new(Self::trash_entry_menu(entity, batch_paths))
         } else {
@@ -2411,6 +2456,13 @@ impl Explorer {
                                 paths.iter().map(|path| (path.clone(), path.is_dir())),
                             )))
                         })
+                })
+                .when_some(drop_target, |row, target| {
+                    row.on_drop::<ExternalPaths>(cx.listener(
+                        move |this, paths: &ExternalPaths, _window, cx| {
+                            this.drop_external_into(target.clone(), paths.paths().to_vec(), cx);
+                        },
+                    ))
                 })
                 .context_menu(context_menu)
                 .child(
@@ -2530,6 +2582,11 @@ impl Explorer {
         };
         let drag_paths = batch_paths.clone();
         let drag_out = this.view == ViewMode::Directory;
+        let drop_target = if drag_out && is_dir && !entry.is_symlink {
+            Some(entry.path.clone())
+        } else {
+            None
+        };
         let context_menu: MenuBuilder = if this.view == ViewMode::Trash {
             Box::new(Self::trash_entry_menu(entity, batch_paths))
         } else {
@@ -2576,6 +2633,13 @@ impl Explorer {
                                 paths.iter().map(|path| (path.clone(), path.is_dir())),
                             )))
                         })
+                })
+                .when_some(drop_target, |cell, target| {
+                    cell.on_drop::<ExternalPaths>(cx.listener(
+                        move |this, paths: &ExternalPaths, _window, cx| {
+                            this.drop_external_into(target.clone(), paths.paths().to_vec(), cx);
+                        },
+                    ))
                 })
                 .context_menu(context_menu)
                 .child(
@@ -3095,8 +3159,22 @@ impl Render for Explorer {
             let handle = self.focus_handle.clone();
             window.on_next_frame(move |window, cx| handle.focus(window, cx));
         }
-        if let Some(path) = self.debug_drop_path.take() {
-            self.drop_external(vec![PathBuf::from(path)], cx);
+        if !self.loading {
+            if let Some(path) = self.debug_drop_path.take() {
+                let source = PathBuf::from(path);
+                let target = self.debug_drop_target.take().and_then(|name| {
+                    self.entries
+                        .iter()
+                        .find(|entry| entry.name == name && entry.is_dir)
+                        .map(|entry| entry.path.clone())
+                });
+                match target {
+                    Some(directory) => {
+                        self.drop_external_into(directory, vec![source], cx);
+                    }
+                    None => self.drop_external(vec![source], cx),
+                }
+            }
         }
         if self.debug_tabs_once && self.view == ViewMode::Directory && !self.loading {
             self.debug_tabs_once = false;
