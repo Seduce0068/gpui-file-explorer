@@ -326,10 +326,16 @@ struct PropsState {
     name: String,
     path: PathBuf,
     kind: &'static str,
+    is_dir: bool,
     size: Option<u64>,
     modified: Option<SystemTime>,
     permissions: Option<String>,
     symlink_target: Option<PathBuf>,
+    /// Directory size calculation (read-only, background, cancelable).
+    size_loading: bool,
+    dir_size: Option<ops::DirStats>,
+    size_task: Option<Task<()>>,
+    size_cancel: Option<Arc<CancelFlag>>,
 }
 
 /// Boxed context-menu builder, used where the trash and directory views need
@@ -444,6 +450,9 @@ struct Explorer {
     debug_properties_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_HELP=1` opens the help overlay.
     debug_help_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_PROPERTIES_SIZE=1` starts the
+    /// directory size calculation after opening the properties dialog.
+    debug_properties_size: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_TABS=1` opens extra tabs once
     /// after startup (tab bar screenshot).
     debug_tabs_once: bool,
@@ -555,6 +564,7 @@ impl Explorer {
             debug_search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
             debug_properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
             debug_help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
+            debug_properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
             debug_tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
             debug_drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
             debug_drop_target: std::env::var("GPUI_FE_DEBUG_DROP_TARGET").ok(),
@@ -1965,10 +1975,15 @@ impl Explorer {
             name,
             path,
             kind,
+            is_dir: link_metadata.is_dir(),
             size,
             modified,
             permissions,
             symlink_target,
+            size_loading: false,
+            dir_size: None,
+            size_task: None,
+            size_cancel: None,
         });
         cx.notify();
     }
@@ -1986,8 +2001,51 @@ impl Explorer {
     }
 
     fn close_properties(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self
+            .properties
+            .as_mut()
+            .and_then(|props| props.size_cancel.take())
+        {
+            cancel.cancel();
+        }
         self.properties = None;
         cx.notify();
+    }
+
+    /// Calculate a directory's recursive size on the background executor.
+    /// Read-only; symlinks are not followed; closing the dialog cancels it.
+    fn start_dir_size(&mut self, cx: &mut Context<Self>) {
+        let Some(props) = self.properties.as_ref() else {
+            return;
+        };
+        if !props.is_dir || props.size_loading {
+            return;
+        }
+        let path = props.path.clone();
+        let cancel = Arc::new(CancelFlag::new());
+        if let Some(props) = self.properties.as_mut() {
+            props.size_loading = true;
+            props.dir_size = None;
+            props.size_cancel = Some(cancel.clone());
+        }
+        cx.notify();
+        let background = cx.background_spawn(async move { ops::dir_stats(&path, &cancel) });
+        let task = cx.spawn(async move |this, cx| {
+            let stats = background.await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(props) = this.properties.as_mut() else {
+                    return;
+                };
+                props.size_loading = false;
+                props.size_task = None;
+                props.size_cancel = None;
+                props.dir_size = Some(stats);
+                cx.notify();
+            });
+        });
+        if let Some(props) = self.properties.as_mut() {
+            props.size_task = Some(task);
+        }
     }
 
     /// Read-only properties dialog.
@@ -2049,7 +2107,37 @@ impl Explorer {
             .child(row("名前", props.name.clone()))
             .child(row("パス", display_path(&props.path)))
             .child(row("種類", props.kind.to_string()));
-        if let Some(size) = props.size {
+        if props.is_dir {
+            let value = if props.size_loading {
+                "計算中…".to_string()
+            } else if let Some(stats) = props.dir_size {
+                format!(
+                    "{}（{} ファイル / {} フォルダ）",
+                    human_size(stats.bytes),
+                    stats.files,
+                    stats.dirs
+                )
+            } else {
+                "-".to_string()
+            };
+            let calculate = cx.listener(|this, _: &ClickEvent, _window, cx| {
+                this.start_dir_size(cx);
+            });
+            form = form
+                .child(row("サイズ", value))
+                .child(div().flex().justify_end().child(if props.size_loading {
+                    div()
+                        .text_xs()
+                        .text_color(rgb(C_MUTED))
+                        .child("サイズを計算中…（Esc で中止）")
+                        .into_any_element()
+                } else {
+                    Button::new("props-size")
+                        .label("サイズを計算")
+                        .on_click(calculate)
+                        .into_any_element()
+                }));
+        } else if let Some(size) = props.size {
             form = form.child(row(
                 "サイズ",
                 format!("{}（{size} バイト）", human_size(size)),
@@ -3867,6 +3955,9 @@ impl Render for Explorer {
                 self.debug_properties_once = false;
                 let path = self.entries[0].path.clone();
                 self.open_properties(path, cx);
+                if self.debug_properties_size {
+                    self.start_dir_size(cx);
+                }
             }
             if let Some(path) = self.debug_drop_path.take() {
                 let source = PathBuf::from(path);

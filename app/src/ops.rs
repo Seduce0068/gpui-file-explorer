@@ -447,6 +447,53 @@ pub fn total_bytes(paths: &[PathBuf]) -> u64 {
     paths.iter().map(|path| total_bytes_of(path)).sum()
 }
 
+/// Aggregate statistics for a directory tree (read-only).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirStats {
+    pub files: u64,
+    pub dirs: u64,
+    pub bytes: u64,
+}
+
+/// Walk `root` and count files/directories/bytes without following symlinks.
+///
+/// - symlinks are counted as one file with 0 bytes (never followed),
+/// - unreadable directories/entries are skipped,
+/// - `cancel` is checked per entry; a cancelled walk returns partial stats.
+pub fn dir_stats(root: &Path, cancel: &CancelFlag) -> DirStats {
+    let mut stats = DirStats::default();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let Ok(reader) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in reader.flatten() {
+            if cancel.is_cancelled() {
+                return stats;
+            }
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                stats.files += 1;
+                continue;
+            }
+            if metadata.is_dir() {
+                stats.dirs += 1;
+                stack.push(path);
+            } else if metadata.is_file() {
+                stats.files += 1;
+                stats.bytes += metadata.len();
+            }
+        }
+    }
+    stats
+}
+
 fn total_bytes_of(path: &Path) -> u64 {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return 0;
@@ -897,6 +944,80 @@ mod tests {
             "symlink target must survive"
         );
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod dir_stats_tests {
+    use super::{dir_stats, CancelFlag};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-dirstats-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(path: &PathBuf, bytes: usize) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, vec![b'x'; bytes]).unwrap();
+    }
+
+    #[test]
+    fn counts_files_dirs_and_bytes() {
+        let dir = scratch("counts");
+        write(&dir.join("a.txt"), 5);
+        write(&dir.join("sub/b.txt"), 7);
+        write(&dir.join("sub/deeper/c.txt"), 11);
+
+        let stats = dir_stats(&dir, &CancelFlag::new());
+        assert_eq!(stats.files, 3);
+        assert_eq!(stats.dirs, 2);
+        assert_eq!(stats.bytes, 23);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn symlinks_are_counted_but_not_followed() {
+        let dir = scratch("symlink");
+        write(&dir.join("real.txt"), 4);
+        write(&dir.join("outside/secret.txt"), 9);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
+            std::os::unix::fs::symlink(dir.join("outside"), dir.join("link-dir")).unwrap();
+        }
+
+        let stats = dir_stats(&dir, &CancelFlag::new());
+        // real.txt + outside/secret.txt + 2 symlinks; link-dir is not followed.
+        assert_eq!(stats.files, 4);
+        assert_eq!(stats.dirs, 1); // outside (direct child), not link-dir
+        assert_eq!(stats.bytes, 13);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancellation_returns_early() {
+        let dir = scratch("cancel");
+        write(&dir.join("a.txt"), 1);
+        let cancel = CancelFlag::new();
+        cancel.cancel();
+        let stats = dir_stats(&dir, &cancel);
+        assert_eq!(stats, super::DirStats::default());
         let _ = fs::remove_dir_all(&dir);
     }
 }
