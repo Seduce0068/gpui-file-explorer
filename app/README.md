@@ -84,6 +84,7 @@ cd app
 | `Ctrl+F` | 検索バーを開く（ディレクトリ表示のみ）。`Enter` で再帰検索、`Esc` で閉じる |
 | `Ctrl+T` / `Ctrl+W` | タブを開く（現在のディレクトリ）/ アクティブタブを閉じる（最後の1枚は不可） |
 | `Ctrl+D` | 現在のディレクトリをブックマークに追加 / 解除 |
+| `Ctrl+I` | 選択項目のプロパティ（読み取り専用） |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 次のタブ / 前のタブ（循環） |
 | `Home` / `End` | 先頭 / 末尾を選択 |
 | `Enter` | 選択項目を開く（ディレクトリ→移動、ファイル→既定アプリ） |
@@ -197,6 +198,8 @@ cd app
   - ゴミ箱・検索ビューでのドロップ、操作実行中のドロップは拒否
 - [x] **安全側の明文化**: `#![forbid(unsafe_code)]` を app 本体と `build.rs` に適用。
   ツールバーの詳細/グリッド切替ボタンにアクティブ表示を追加
+- [x] **プロパティ表示**: `Ctrl+I` / 右クリック「プロパティ」。名前・パス・種類・サイズ・更新日時・
+  パーミッション（Unix）・symlink リンク先を**読み取り専用**で表示。`Esc` / 背景クリック / 閉じるで終了
 - [x] **ブックマーク**: `Ctrl+D` で現在のディレクトリを登録/解除（最大 50 件、設定に保存）。
   サイドバー「ブックマーク」からワンクリックで移動。存在しないものは再読込時に除去
 - [x] **最近使った場所**: 移動したディレクトリを最大 10 件まで設定に保存し、サイドバー「最近」に表示。
@@ -345,7 +348,7 @@ bash packaging/linux/build-deb.sh
   `GPUI_FE_DEBUG_SEARCH=1` + `GPUI_FE_DEBUG_SEARCH_QUERY` / `GPUI_FE_DEBUG_SEARCH_KIND` /
   `GPUI_FE_DEBUG_SEARCH_EXT` / `GPUI_FE_DEBUG_SEARCH_MODE`（検索・絞り込み・内容検索）、
   `GPUI_FE_DEBUG_TABS=1`（タブ）、
-  `GPUI_FE_DEBUG_RECENT=1`（最近）、`GPUI_FE_DEBUG_BOOKMARKS=1`（ブックマーク）、
+  `GPUI_FE_DEBUG_RECENT=1`（最近）、`GPUI_FE_DEBUG_BOOKMARKS=1`（ブックマーク）、`GPUI_FE_DEBUG_PROPERTIES=1`（プロパティ）、
   `GPUI_FE_DEBUG_DROP_PATH=<file>` + `GPUI_FE_DEBUG_DROP_TARGET=<folder>`（外部ドロップ相当を1回実行）
   の開発用フックがあります。
 - 現状の削除は従来どおり `trash` のみで、完全削除はありません。
@@ -371,6 +374,8 @@ bash packaging/linux/build-deb.sh
 - ボリューム一覧は **Linux（/proc/mounts）のみ**。空き容量・リムーバブルメディアの
   ホットプラグ検知・Windows/macOS のドライブ列挙は未対応です（macOS/Windows では
   「ドライブ」セクションが出ません）。
+- プロパティは**開いた時点のスナップショット**（読み取り専用）です。ディレクトリの合計サイズ、
+  再帰的な項目数、所有者/グループ名は表示しません。パーミッション表示は Unix のみです。
 - ブックマークはディレクトリのみ（最大 50 件）。サイドバーの行には削除ボタンが無く、
   そのディレクトリへ移動して `Ctrl+D` を押すと解除できます。存在しないパスは再読込時に消えます。
 - タブバーは**ディレクトリ表示のみ**（ゴミ箱・検索中は非表示）。タブごとに履歴は保持しますが、

@@ -168,6 +168,18 @@ impl Selection {
     }
 }
 
+/// Render Unix permission bits (`mode & 0o777`) as `rwxr-xr-x`.
+pub fn permissions_string(mode: u32) -> String {
+    let mut out = String::with_capacity(9);
+    for shift in [6u32, 3, 0] {
+        let bits = (mode >> shift) & 0o7;
+        out.push(if bits & 0o4 != 0 { 'r' } else { '-' });
+        out.push(if bits & 0o2 != 0 { 'w' } else { '-' });
+        out.push(if bits & 0o1 != 0 { 'x' } else { '-' });
+    }
+    out
+}
+
 /// Number of icon-grid columns that fit into `available_width` when each cell
 /// needs at least `min_cell_width` pixels.
 pub fn grid_columns(available_width: f32, min_cell_width: f32) -> usize {
@@ -896,5 +908,19 @@ mod grid_tests {
         assert_eq!(grid_row_count(5, 4), 2);
         assert_eq!(grid_row_count(8, 4), 2);
         assert_eq!(grid_row_count(5, 0), 0);
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::permissions_string;
+
+    #[test]
+    fn renders_common_modes() {
+        assert_eq!(permissions_string(0o755), "rwxr-xr-x");
+        assert_eq!(permissions_string(0o644), "rw-r--r--");
+        assert_eq!(permissions_string(0o600), "rw-------");
+        assert_eq!(permissions_string(0o000), "---------");
+        assert_eq!(permissions_string(0o777), "rwxrwxrwx");
     }
 }
