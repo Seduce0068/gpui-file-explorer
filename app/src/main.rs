@@ -9,11 +9,13 @@ mod history;
 mod icons;
 mod model;
 mod ops;
+mod search;
 mod settings;
 mod trash_view;
 mod watcher;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,6 +35,7 @@ use crate::model::{
     read_entries, step_selection, visible_entries, Entry, Selection, SortKey, SortSpec,
 };
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
+use crate::search::{search_by_name, SearchOptions};
 use crate::settings::{Settings, ViewMode as LayoutMode};
 use crate::watcher::DirWatcher;
 
@@ -85,6 +88,17 @@ fn format_selected(entry: &Entry) -> String {
     }
 }
 
+/// Name shown for a row. Search results show their path relative to the
+/// search root so duplicates in different folders are distinguishable.
+fn display_name_for(entry: &Entry, view: ViewMode, root: &std::path::Path) -> String {
+    if view == ViewMode::Search {
+        if let Ok(relative) = entry.path.strip_prefix(root) {
+            return relative.display().to_string();
+        }
+    }
+    entry.name.clone()
+}
+
 /// One-line result message for a completed copy/move operation.
 fn summarize_op(verb: &str, stats: &OpStats) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -114,6 +128,7 @@ fn summarize_op(verb: &str, stats: &OpStats) -> String {
 enum ViewMode {
     Directory,
     Trash,
+    Search,
 }
 
 /// One sidebar "place".
@@ -206,6 +221,13 @@ struct Explorer {
     view: ViewMode,
     /// Trash items backing the virtual listing (empty in directory view).
     trash_items: Vec<trash::TrashItem>,
+    /// Recursive search state (active only while `view == Search`).
+    search_input: Option<Entity<InputState>>,
+    search_subscription: Option<Subscription>,
+    search_query: String,
+    search_task: Option<Task<()>>,
+    search_cancel: Option<Arc<AtomicBool>>,
+    search_generation: u64,
     history: History,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
@@ -256,6 +278,10 @@ struct Explorer {
     /// Development-only hook: `GPUI_FE_DEBUG_GRID=1` switches to the icon grid
     /// view once after startup (screenshot).
     debug_grid_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_SEARCH=1` runs a search after the
+    /// first load; the query comes from `GPUI_FE_DEBUG_SEARCH_QUERY` (default
+    /// `txt`). Used for search screenshots.
+    debug_search_once: bool,
 }
 
 impl Explorer {
@@ -283,6 +309,12 @@ impl Explorer {
             selection: Selection::default(),
             view: ViewMode::Directory,
             trash_items: Vec::new(),
+            search_input: None,
+            search_subscription: None,
+            search_query: String::new(),
+            search_task: None,
+            search_cancel: None,
+            search_generation: 0,
             history: History::new(),
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
@@ -308,6 +340,7 @@ impl Explorer {
             debug_restore_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH_RESTORE").is_some(),
             debug_progress_once: std::env::var_os("GPUI_FE_DEBUG_PROGRESS").is_some(),
             debug_grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
+            debug_search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -327,6 +360,12 @@ impl Explorer {
     /// on the GPUI background executor; the result is applied on the
     /// foreground executor only if it still belongs to the latest generation.
     fn reload(&mut self, cx: &mut Context<Self>) {
+        // Search results are their own listing; reloading the cwd while the
+        // search bar is open would replace them. The view is switched back to
+        // Directory before `reload` when leaving search.
+        if self.view == ViewMode::Search {
+            return;
+        }
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.loading = true;
@@ -445,6 +484,7 @@ impl Explorer {
             self.reload(cx);
             return;
         }
+        self.clear_search();
         self.view = ViewMode::Trash;
         self.selection.clear();
         self.selected = 0;
@@ -520,10 +560,10 @@ impl Explorer {
     }
 
     fn update_watcher(&mut self) {
-        let dirs = if self.view == ViewMode::Trash {
-            Vec::new()
-        } else {
+        let dirs = if self.view == ViewMode::Directory {
             self.watched_dirs()
+        } else {
+            Vec::new()
         };
         self.watcher.watch(&dirs);
     }
@@ -546,7 +586,7 @@ impl Explorer {
     fn reconcile(&mut self, cx: &mut Context<Self>) {
         // The trash view has its own listing; the directory reconcile must not
         // overwrite it with the current directory contents.
-        if self.loading || self.view == ViewMode::Trash {
+        if self.loading || self.view != ViewMode::Directory {
             return;
         }
         let generation = self.generation;
@@ -576,7 +616,7 @@ impl Explorer {
                 while watch_rx.try_recv().is_ok() {}
                 let updated = this.update(cx, |this, cx| {
                     if this.is_suppressed()
-                        || this.view == ViewMode::Trash
+                        || this.view != ViewMode::Directory
                         || this.op_cancel.is_some()
                     {
                         return;
@@ -617,6 +657,7 @@ impl Explorer {
     // ------------------------------------------------------------- navigation
 
     fn set_cwd(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.clear_search();
         self.view = ViewMode::Directory;
         if path == self.cwd {
             self.reload(cx);
@@ -633,6 +674,7 @@ impl Explorer {
     }
 
     fn navigate_to(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.clear_search();
         self.view = ViewMode::Directory;
         if path == self.cwd {
             self.reload(cx);
@@ -837,6 +879,12 @@ impl Explorer {
             }
             return;
         }
+        if self.view == ViewMode::Search {
+            if event.keystroke.key == "escape" {
+                self.close_search(cx);
+            }
+            return;
+        }
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
         let modifiers = &keystroke.modifiers;
@@ -844,6 +892,7 @@ impl Explorer {
             match (key, modifiers.shift) {
                 ("h", _) => self.toggle_hidden(cx),
                 ("a", false) => self.select_all(cx),
+                ("f", false) => self.open_search(window, cx),
                 ("1", false) => self.set_view(LayoutMode::Details, cx),
                 ("2", false) => self.set_view(LayoutMode::Icons, cx),
                 ("r", _) => self.reload(cx),
@@ -1560,6 +1609,156 @@ impl Explorer {
         .detach();
     }
 
+    // ------------------------------------------------------------------- search
+
+    /// Open the search bar (Ctrl+F). Only available from the directory view.
+    fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view == ViewMode::Search {
+            if let Some(input) = &self.search_input {
+                let focus = input.read(cx).focus_handle(cx).clone();
+                focus.focus(window, cx);
+            }
+            return;
+        }
+        if self.view != ViewMode::Directory {
+            self.status = "検索はディレクトリ表示でのみ使えます".to_string();
+            cx.notify();
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx));
+        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.run_search(cx);
+            }
+        });
+        let focus = input.read(cx).focus_handle(cx).clone();
+        focus.focus(window, cx);
+        self.search_input = Some(input);
+        self.search_subscription = Some(subscription);
+        self.search_query.clear();
+        self.search_generation = self.search_generation.wrapping_add(1);
+        self.view = ViewMode::Search;
+        self.selection.clear();
+        self.selected = 0;
+        self.status = "検索語を入力して Enter（Esc で閉じる）".to_string();
+        self.update_watcher();
+        cx.notify();
+    }
+
+    /// Recursive search on the background executor (Enter in the search bar).
+    fn run_search(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = self.search_input.clone() else {
+            return;
+        };
+        let query = input.read(cx).value().trim().to_string();
+        if query.is_empty() {
+            self.status = "検索語が空です".to_string();
+            cx.notify();
+            return;
+        }
+        self.search_query = query.clone();
+        self.search_generation = self.search_generation.wrapping_add(1);
+        let generation = self.search_generation;
+        if let Some(cancel) = self.search_cancel.take() {
+            cancel.store(true, Ordering::SeqCst);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.search_cancel = Some(cancel.clone());
+        self.search_task.take();
+        self.loading = true;
+        self.status = format!("検索中…「{query}」");
+        cx.notify();
+
+        let root = self.cwd.clone();
+        let options = SearchOptions {
+            include_hidden: self.settings.show_hidden,
+            ..Default::default()
+        };
+        let cancel_for_task = cancel.clone();
+        let background =
+            cx.background_spawn(
+                async move { search_by_name(&root, &query, options, &cancel_for_task) },
+            );
+        let task = cx.spawn(async move |this, cx| {
+            let entries = background.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.search_generation != generation {
+                    return;
+                }
+                this.loading = false;
+                this.search_task = None;
+                this.search_cancel = None;
+                this.apply_search_results(entries);
+                this.status = format!("検索: 「{}」 {} 件", this.search_query, this.entries.len());
+                cx.notify();
+            });
+        });
+        self.search_task = Some(task);
+    }
+
+    fn apply_search_results(&mut self, entries: Vec<Entry>) {
+        let paths: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
+        self.selection.retain(&paths);
+        self.all_entries = entries;
+        self.entries = self.all_entries.clone();
+        self.fingerprint = fingerprint(&self.all_entries);
+        self.selected = 0;
+        if self.selection.is_empty() {
+            if let Some(entry) = self.entries.first() {
+                self.selection.select_single(entry.path.clone());
+            }
+        }
+        self.scroll_handle
+            .scroll_to_item(0, ScrollStrategy::Nearest);
+    }
+
+    /// Drop search state without touching the current view (used when
+    /// navigating away).
+    fn clear_search(&mut self) {
+        if let Some(cancel) = self.search_cancel.take() {
+            cancel.store(true, Ordering::SeqCst);
+        }
+        self.search_task.take();
+        self.search_input = None;
+        self.search_subscription = None;
+        self.search_query.clear();
+    }
+
+    fn close_search(&mut self, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Search {
+            return;
+        }
+        self.clear_search();
+        self.view = ViewMode::Directory;
+        self.selection.clear();
+        self.selected = 0;
+        self.status.clear();
+        self.reload(cx);
+    }
+
+    fn search_bar(&self) -> Option<Div> {
+        let input = self.search_input.as_ref()?;
+        let hint = if self.loading {
+            "検索中…"
+        } else {
+            "Enter で検索 / Esc で閉じる"
+        };
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .bg(rgb(C_MANTLE))
+                .border_b_1()
+                .border_color(rgb(C_SURFACE))
+                .child(div().text_sm().text_color(rgb(C_SUBTEXT)).child("検索:"))
+                .child(div().flex_1().child(Input::new(input)))
+                .child(div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
+        )
+    }
+
     // ------------------------------------------------------------------- trash
 
     fn restore_selected(&mut self, cx: &mut Context<Self>) {
@@ -1857,6 +2056,7 @@ impl Explorer {
 
     fn list_row(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
+        let display_name = display_name_for(&entry, this.view, &this.cwd);
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
@@ -1952,7 +2152,7 @@ impl Explorer {
                         .justify_center()
                         .child(Icon::new(icon).text_color(rgb(icon_color))),
                 )
-                .child(div().flex_1().truncate().child(entry.name.clone()))
+                .child(div().flex_1().truncate().child(display_name))
                 .child(
                     div()
                         .w(px(90.0))
@@ -2013,6 +2213,7 @@ impl Explorer {
 
     fn grid_cell(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
+        let display_name = display_name_for(&entry, this.view, &this.cwd);
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
@@ -2110,7 +2311,7 @@ impl Explorer {
                         .text_xs()
                         .text_center()
                         .truncate()
-                        .child(entry.name.clone()),
+                        .child(display_name),
                 )
                 .into_any_element(),
         )
@@ -2537,6 +2738,19 @@ impl Render for Explorer {
             let handle = self.focus_handle.clone();
             window.on_next_frame(move |window, cx| handle.focus(window, cx));
         }
+        if self.debug_search_once && self.view == ViewMode::Directory && !self.loading {
+            self.debug_search_once = false;
+            let query =
+                std::env::var("GPUI_FE_DEBUG_SEARCH_QUERY").unwrap_or_else(|_| "txt".to_string());
+            self.open_search(window, cx);
+            if let Some(input) = self.search_input.clone() {
+                input.update(cx, |state, cx| {
+                    state.set_value(query.clone(), window, cx);
+                });
+            }
+            self.run_search(cx);
+        }
+        let search_bar = self.search_bar();
         let rename_dialog = self.rename_dialog(cx);
 
         let grid_mode = self.settings.view == LayoutMode::Icons;
@@ -2613,6 +2827,7 @@ impl Render for Explorer {
             .bg(rgb(C_BASE))
             .text_color(rgb(C_TEXT))
             .child(self.toolbar(cx))
+            .children(search_bar)
             .child(body)
             .child(self.status_bar())
             .children(rename_dialog)
