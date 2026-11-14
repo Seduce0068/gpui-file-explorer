@@ -23,6 +23,8 @@ use crate::model::SortSpec;
 pub const APP_DIR: &str = "gpui-file-explorer";
 /// Current settings schema version.
 pub const SCHEMA_VERSION: u32 = 1;
+/// Maximum number of remembered recent directories.
+pub const MAX_RECENT_DIRS: usize = 10;
 
 /// List view mode: the detailed list or the icon grid. Persisted in
 /// `settings.json` as `"details"` / `"icons"`.
@@ -43,6 +45,8 @@ pub struct Settings {
     pub sort: SortSpec,
     pub show_hidden: bool,
     pub view: ViewMode,
+    /// Recently visited directories, most recent first (bounded).
+    pub recent_dirs: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -53,6 +57,7 @@ impl Default for Settings {
             sort: SortSpec::default(),
             show_hidden: false,
             view: ViewMode::Details,
+            recent_dirs: Vec::new(),
         }
     }
 }
@@ -62,6 +67,16 @@ impl Settings {
     /// on Linux.
     pub fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|dir| dir.join(APP_DIR).join("settings.json"))
+    }
+
+    /// Remember `path` as the most recent directory (de-duplicated, bounded).
+    pub fn record_recent(&mut self, path: &std::path::Path) {
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        self.recent_dirs.retain(|existing| existing != path);
+        self.recent_dirs.insert(0, path.to_path_buf());
+        self.recent_dirs.truncate(MAX_RECENT_DIRS);
     }
 
     /// Load settings, falling back to defaults for a missing/corrupt file.
@@ -287,5 +302,44 @@ mod tests {
         if let Some(path) = Settings::config_path() {
             assert!(path.ends_with(Path::new(APP_DIR).join("settings.json")));
         }
+    }
+}
+
+#[cfg(test)]
+mod recent_tests {
+    use super::{Settings, MAX_RECENT_DIRS};
+    use std::path::PathBuf;
+
+    fn p(value: &str) -> PathBuf {
+        PathBuf::from(value)
+    }
+
+    #[test]
+    fn record_recent_dedupes_and_orders() {
+        let mut settings = Settings::default();
+        settings.record_recent(&p("/a"));
+        settings.record_recent(&p("/b"));
+        settings.record_recent(&p("/a"));
+        assert_eq!(settings.recent_dirs, vec![p("/a"), p("/b")]);
+    }
+
+    #[test]
+    fn record_recent_is_bounded() {
+        let mut settings = Settings::default();
+        for index in 0..(MAX_RECENT_DIRS + 5) {
+            settings.record_recent(&p(&format!("/dir-{index}")));
+        }
+        assert_eq!(settings.recent_dirs.len(), MAX_RECENT_DIRS);
+        assert_eq!(
+            settings.recent_dirs[0],
+            p(&format!("/dir-{}", MAX_RECENT_DIRS + 4))
+        );
+    }
+
+    #[test]
+    fn record_recent_ignores_empty_path() {
+        let mut settings = Settings::default();
+        settings.record_recent(&p(""));
+        assert!(settings.recent_dirs.is_empty());
     }
 }

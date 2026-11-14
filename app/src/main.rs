@@ -265,6 +265,8 @@ struct Explorer {
     mounts: Vec<MountPoint>,
     /// Open tabs (always at least one); the active tab mirrors `cwd`/`history`.
     tabs: Tabs,
+    /// Existing recent directories (pruned on reload; never probed in render).
+    recent: Vec<PathBuf>,
     /// Internal cut/copy clipboard (single entry in P1).
     clipboard: Option<ClipboardSlot>,
     /// Running paste operation; dropping the task cancels it.
@@ -315,6 +317,15 @@ impl Explorer {
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("/"));
 
+        let mut settings = settings;
+        if std::env::var_os("GPUI_FE_DEBUG_RECENT").is_some() {
+            settings.record_recent(&start_dir);
+            if let Some(home) = dirs::home_dir() {
+                settings.record_recent(&home);
+            }
+            settings.record_recent(&PathBuf::from("/"));
+        }
+
         let (watch_tx, watch_rx) = async_channel::unbounded::<()>();
         let watcher = DirWatcher::new(move || {
             let _ = watch_tx.try_send(());
@@ -352,6 +363,7 @@ impl Explorer {
             places,
             mounts: mounts::list_mounts(),
             tabs,
+            recent: Vec::new(),
             clipboard: None,
             op_task: None,
             op_cancel: None,
@@ -397,6 +409,7 @@ impl Explorer {
         self.error = None;
         self.refresh_places();
         self.refresh_mounts();
+        self.refresh_recent();
         self.update_watcher();
         if self.view == ViewMode::Trash {
             self.reload_trash(cx);
@@ -606,6 +619,13 @@ impl Explorer {
         }
     }
 
+    /// Re-check which recent directories still exist. Called from `reload`
+    /// only — never from render.
+    fn refresh_recent(&mut self) {
+        self.settings.recent_dirs.retain(|path| path.is_dir());
+        self.recent = self.settings.recent_dirs.clone();
+    }
+
     /// Re-read the mount list. Called from `reload` only — never from render.
     fn refresh_mounts(&mut self) {
         self.mounts = mounts::list_mounts();
@@ -704,6 +724,7 @@ impl Explorer {
         self.error = None;
         self.status.clear();
         self.settings.last_dir = Some(self.cwd.clone());
+        self.settings.record_recent(&self.cwd);
         self.settings.save();
         self.reload(cx);
     }
@@ -845,6 +866,7 @@ impl Explorer {
         self.error = None;
         self.status.clear();
         self.settings.last_dir = Some(self.cwd.clone());
+        self.settings.record_recent(&self.cwd);
         self.settings.save();
         self.tabs.sync(self.cwd.clone(), self.history.clone());
         self.reload(cx);
@@ -2561,6 +2583,44 @@ impl Explorer {
                     }));
             }
             sidebar = sidebar.child(row);
+        }
+        let recent = &self.recent;
+        if !recent.is_empty() {
+            sidebar = sidebar.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("最近"),
+            );
+            for (index, path) in recent.iter().enumerate() {
+                let active = self.view == ViewMode::Directory && path == &self.cwd;
+                let label = tab_label(path);
+                let target = path.clone();
+                sidebar = sidebar.child(
+                    div()
+                        .id(31_000 + index as u64)
+                        .mx_2()
+                        .px_2()
+                        .h(px(30.0))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(rgb(C_SUBTEXT))
+                        .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(C_SURFACE)))
+                        .on_click(cx.listener(move |this, _event, window, cx| {
+                            this.focus_handle.focus(window, cx);
+                            this.navigate_to(target.clone(), cx);
+                        }))
+                        .child(Icon::new(IconName::Clock))
+                        .child(div().min_w_0().truncate().child(label)),
+                );
+            }
         }
         if !self.mounts.is_empty() {
             sidebar = sidebar.child(
