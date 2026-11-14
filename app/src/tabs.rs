@@ -104,6 +104,28 @@ impl Tabs {
         Some(self.tabs[self.active].clone())
     }
 
+    /// Move the active tab one position to the left. Returns `false` when it
+    /// is already the first tab.
+    pub fn move_active_left(&mut self) -> bool {
+        if self.active == 0 {
+            return false;
+        }
+        self.tabs.swap(self.active, self.active - 1);
+        self.active -= 1;
+        true
+    }
+
+    /// Move the active tab one position to the right. Returns `false` when it
+    /// is already the last tab.
+    pub fn move_active_right(&mut self) -> bool {
+        if self.active + 1 >= self.tabs.len() {
+            return false;
+        }
+        self.tabs.swap(self.active, self.active + 1);
+        self.active += 1;
+        true
+    }
+
     /// Activate the next tab (wrapping around).
     pub fn next(&mut self) -> Tab {
         self.active = (self.active + 1) % self.tabs.len();
@@ -187,6 +209,33 @@ mod tests {
         assert_eq!(tabs.active_index(), 0);
 
         assert!(Tabs::from_paths(Vec::new(), 0).is_none());
+    }
+
+    #[test]
+    fn moving_tabs_reorders_and_keeps_active() {
+        let mut tabs = Tabs::new(p("/a"));
+        tabs.new_tab(p("/b"));
+        tabs.new_tab(p("/c"));
+        // active = /c (index 2)
+        assert!(tabs.move_active_left());
+        let order: Vec<_> = tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
+        assert_eq!(order, vec![p("/a"), p("/c"), p("/b")]);
+        assert_eq!(tabs.active_index(), 1);
+        assert_eq!(tabs.active().cwd, p("/c"));
+
+        assert!(tabs.move_active_right());
+        let order: Vec<_> = tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
+        assert_eq!(order, vec![p("/a"), p("/b"), p("/c")]);
+        assert_eq!(tabs.active_index(), 2);
+        assert!(!tabs.move_active_right());
+    }
+
+    #[test]
+    fn moving_a_single_tab_is_a_noop() {
+        let mut tabs = Tabs::new(p("/a"));
+        assert!(!tabs.move_active_left());
+        assert!(!tabs.move_active_right());
+        assert_eq!(tabs.active_index(), 0);
     }
 
     #[test]
