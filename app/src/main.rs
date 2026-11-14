@@ -467,6 +467,13 @@ struct Explorer {
 impl Explorer {
     fn new(cx: &mut Context<Self>) -> Self {
         let mut settings = Settings::load();
+        if std::env::var("GPUI_FE_DEBUG_SORT").is_ok_and(|value| value == "kind") {
+            settings.sort = SortSpec {
+                key: SortKey::Kind,
+                dir: crate::model::SortDir::Asc,
+                dirs_first: true,
+            };
+        }
         // Restore the tabs from the previous session, dropping directories that
         // disappeared. The active tab's directory becomes the start directory.
         let saved_tabs: Vec<PathBuf> = settings
@@ -2977,6 +2984,7 @@ impl Explorer {
     ) -> Stateful<Div> {
         let id = match key {
             SortKey::Name => 30_001u64,
+            SortKey::Kind => 30_004,
             SortKey::Size => 30_002,
             SortKey::Modified => 30_003,
         };
@@ -3024,6 +3032,7 @@ impl Explorer {
             .text_color(rgb(C_MUTED))
             .child(div().w(px(18.0)))
             .child(self.sort_header_cell(SortKey::Name, None, cx))
+            .child(self.sort_header_cell(SortKey::Kind, Some(90.0), cx))
             .child(self.sort_header_cell(SortKey::Size, Some(90.0), cx))
             .child(self.sort_header_cell(SortKey::Modified, Some(150.0), cx))
     }
@@ -3187,6 +3196,18 @@ impl Explorer {
                         .child(Icon::new(icon).text_color(rgb(icon_color))),
                 )
                 .child(div().flex_1().truncate().child(display_name))
+                .child(
+                    div()
+                        .w(px(90.0))
+                        .text_xs()
+                        .truncate()
+                        .text_color(rgb(C_MUTED))
+                        .child(if this.view == ViewMode::Trash {
+                            "—".to_string()
+                        } else {
+                            model::kind_label(&entry)
+                        }),
+                )
                 .child(
                     div()
                         .w(px(90.0))

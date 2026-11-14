@@ -203,6 +203,7 @@ pub fn grid_row_count(items: usize, columns: usize) -> usize {
 pub enum SortKey {
     #[default]
     Name,
+    Kind,
     Size,
     Modified,
 }
@@ -211,6 +212,7 @@ impl SortKey {
     pub fn label(self) -> &'static str {
         match self {
             SortKey::Name => "名前",
+            SortKey::Kind => "種類",
             SortKey::Size => "サイズ",
             SortKey::Modified => "更新日時",
         }
@@ -247,7 +249,7 @@ impl SortOrder {
         } else {
             Self {
                 key,
-                ascending: key == SortKey::Name,
+                ascending: matches!(key, SortKey::Name | SortKey::Kind),
             }
         }
     }
@@ -255,6 +257,43 @@ impl SortOrder {
 
 pub fn is_hidden_name(name: &str) -> bool {
     name.starts_with('.')
+}
+
+/// Lower-case extension of a file name (without the dot), or an empty string
+/// when there is no extension.
+fn extension_of(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
+            extension.to_lowercase()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Human-readable kind label for the list's "種類" column.
+pub fn kind_label(entry: &Entry) -> String {
+    if entry.is_dir {
+        return "フォルダ".to_string();
+    }
+    if entry.is_symlink {
+        return "リンク".to_string();
+    }
+    let extension = extension_of(&entry.name);
+    if extension.is_empty() {
+        "—".to_string()
+    } else {
+        extension
+    }
+}
+
+/// Primary comparison key for `SortKey::Kind`: files sort by extension, and
+/// directories all share the same key (their name is the tie-breaker).
+fn kind_sort_key(entry: &Entry) -> String {
+    if entry.is_dir {
+        String::new()
+    } else {
+        extension_of(&entry.name)
+    }
 }
 
 /// Filter hidden entries and sort, producing the list that is displayed.
@@ -284,6 +323,7 @@ pub fn sort_entries(entries: &mut Vec<Entry>, order: SortOrder) {
     let cmp = |a: &Entry, b: &Entry| {
         let primary = match order.key {
             SortKey::Name => compare_names(&a.name, &b.name),
+            SortKey::Kind => kind_sort_key(a).cmp(&kind_sort_key(b)),
             SortKey::Size => a.size.cmp(&b.size),
             // `None` (unreadable timestamp) sorts before any timestamp.
             SortKey::Modified => a.modified.cmp(&b.modified),
@@ -529,8 +569,8 @@ mod tests {
     use super::{
         breadcrumb_segments, clamp_index, compare_names, create_unique_folder, display_path,
         fingerprint, first_index, human_age, human_datetime, human_size, is_hidden_name,
-        last_index, read_entries, sort_entries, step_selection, unique_child_name, visible_entries,
-        Entry, SortDir, SortKey, SortOrder, SortSpec,
+        kind_label, last_index, read_entries, sort_entries, step_selection, unique_child_name,
+        visible_entries, Entry, SortDir, SortKey, SortOrder, SortSpec,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -654,6 +694,49 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["big", "small", "mid"]
         );
+    }
+
+    #[test]
+    fn sort_by_kind_uses_extension_then_name() {
+        let mut entries = vec![
+            entry("b.txt", false, 0, 0),
+            entry("a.rs", false, 0, 0),
+            entry("noext", false, 0, 0),
+            entry("zeta.txt", false, 0, 0),
+            entry("docs", true, 0, 0),
+        ];
+        sort_entries(
+            &mut entries,
+            SortOrder {
+                key: SortKey::Kind,
+                ascending: true,
+            },
+        );
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.clone()).collect();
+        assert_eq!(names, vec!["docs", "noext", "a.rs", "b.txt", "zeta.txt"]);
+
+        let mut entries = vec![entry("b.txt", false, 0, 0), entry("a.rs", false, 0, 0)];
+        sort_entries(
+            &mut entries,
+            SortOrder {
+                key: SortKey::Kind,
+                ascending: false,
+            },
+        );
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.clone()).collect();
+        assert_eq!(names, vec!["b.txt", "a.rs"]);
+    }
+
+    #[test]
+    fn kind_labels_cover_dirs_links_and_extensions() {
+        let mut file = entry("photo.PNG", false, 0, 0);
+        assert_eq!(kind_label(&file), "png");
+        file.name = "noext".to_string();
+        assert_eq!(kind_label(&file), "—");
+        file.is_symlink = true;
+        assert_eq!(kind_label(&file), "リンク");
+        let dir = entry("docs", true, 0, 0);
+        assert_eq!(kind_label(&dir), "フォルダ");
     }
 
     #[test]
