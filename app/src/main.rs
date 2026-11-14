@@ -8,6 +8,7 @@
 mod history;
 mod icons;
 mod model;
+mod mounts;
 mod ops;
 mod search;
 mod settings;
@@ -34,6 +35,7 @@ use crate::model::{
     grid_columns, grid_row_count, human_age, human_datetime, human_size, last_index, parent_dir,
     read_entries, step_selection, visible_entries, Entry, Selection, SortKey, SortSpec,
 };
+use crate::mounts::MountPoint;
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use crate::search::{search_by_name, SearchOptions};
 use crate::settings::{Settings, ViewMode as LayoutMode};
@@ -247,6 +249,8 @@ struct Explorer {
     suppress_until: Option<Instant>,
     /// Cached sidebar places (resolved once; see [`Place`]).
     places: Vec<Place>,
+    /// Visible mount points (Linux: /proc/mounts). Refreshed on reload only.
+    mounts: Vec<MountPoint>,
     /// Internal cut/copy clipboard (single entry in P1).
     clipboard: Option<ClipboardSlot>,
     /// Running paste operation; dropping the task cancels it.
@@ -328,6 +332,7 @@ impl Explorer {
             watcher,
             suppress_until: None,
             places,
+            mounts: mounts::list_mounts(),
             clipboard: None,
             op_task: None,
             op_cancel: None,
@@ -371,6 +376,7 @@ impl Explorer {
         self.loading = true;
         self.error = None;
         self.refresh_places();
+        self.refresh_mounts();
         self.update_watcher();
         if self.view == ViewMode::Trash {
             self.reload_trash(cx);
@@ -578,6 +584,11 @@ impl Explorer {
                 place.exists = place.path.as_ref().is_some_and(|target| target.is_dir());
             }
         }
+    }
+
+    /// Re-read the mount list. Called from `reload` only — never from render.
+    fn refresh_mounts(&mut self) {
+        self.mounts = mounts::list_mounts();
     }
 
     /// 10-second reconciliation: re-read the directory in the background and
@@ -2380,6 +2391,47 @@ impl Explorer {
                     }));
             }
             sidebar = sidebar.child(row);
+        }
+        if !self.mounts.is_empty() {
+            sidebar = sidebar.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("ドライブ"),
+            );
+            for (index, mount) in self.mounts.iter().enumerate() {
+                let active = self.view == ViewMode::Directory && mount.path == self.cwd;
+                let label = if mount.path == std::path::Path::new("/") {
+                    "ルート (/)".to_string()
+                } else {
+                    mount.path.display().to_string()
+                };
+                let target = mount.path.clone();
+                sidebar = sidebar.child(
+                    div()
+                        .id(30_000 + index as u64)
+                        .mx_2()
+                        .px_2()
+                        .h(px(30.0))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(rgb(C_SUBTEXT))
+                        .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(C_SURFACE)))
+                        .on_click(cx.listener(move |this, _event, window, cx| {
+                            this.focus_handle.focus(window, cx);
+                            this.navigate_to(target.clone(), cx);
+                        }))
+                        .child(Icon::new(IconName::HardDrive))
+                        .child(div().min_w_0().truncate().child(label)),
+                );
+            }
         }
         sidebar
     }
