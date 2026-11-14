@@ -182,8 +182,10 @@ cd app
   タブバーのクリック・「+」・「×」）。タブごとに**カレントディレクトリと戻る/進む履歴**を保持し、
   切替時に保存/復元。最後の1枚は閉じられません
 - [x] **ドラッグ&ドロップ**:
-  - OS（Dolphin 等）からウィンドウへファイル/フォルダをドロップすると、**カレントディレクトリへコピー**。
-    常にコピー（移動しない）・`ConflictPolicy::Rename` で**上書きしない**・`Esc` でキャンセル
+  - OS（Dolphin 等）からウィンドウへファイル/フォルダをドロップすると**コピー**。
+    フォルダ行/セルへドロップした場合は**そのフォルダへ**、それ以外はカレントディレクトリへ。
+    常にコピー（移動しない）・`ConflictPolicy::Rename` で**上書きしない**・`Esc` でキャンセル。
+    symlink フォルダはドロップ先にできません（安全側）
   - 行/セルを OS へドラッグすると外部ファイルドラッグとして渡す（選択全体を対象、ディレクトリ情報付き）
   - ゴミ箱・検索ビューでのドロップ、操作実行中のドロップは拒否
 - [x] **最近使った場所**: 移動したディレクトリを最大 10 件まで設定に保存し、サイドバー「最近」に表示。
@@ -327,7 +329,7 @@ bash packaging/linux/build-deb.sh
   同様に `GPUI_FE_DEBUG_SELECT_ALL=1`（全選択）、`GPUI_FE_DEBUG_TRASH=1`（ゴミ箱ビュー）、
   `GPUI_FE_DEBUG_TRASH_RESTORE=1`（最初の項目を復元）、`GPUI_FE_DEBUG_GRID=1`（グリッド）、
   `GPUI_FE_DEBUG_SEARCH=1` + `GPUI_FE_DEBUG_SEARCH_QUERY`（検索）、`GPUI_FE_DEBUG_TABS=1`（タブ）、
-  `GPUI_FE_DEBUG_RECENT=1`（最近）、`GPUI_FE_DEBUG_DROP_PATH=<file>`（外部ドロップ相当を1回実行）
+  `GPUI_FE_DEBUG_RECENT=1`（最近）、`GPUI_FE_DEBUG_DROP_PATH=<file>` + `GPUI_FE_DEBUG_DROP_TARGET=<folder>`（外部ドロップ相当を1回実行）
   の開発用フックがあります。
 - 現状の削除は従来どおり `trash` のみで、完全削除はありません。
 - ソートはヘッダクリックのみ（ツールバーにソート UI は無し）。
@@ -352,8 +354,8 @@ bash packaging/linux/build-deb.sh
 - 「最近」は全タブ共通の最大 10 件で、存在しないディレクトリは再読込時に消えます。
   タブごとの履歴はタブ側で保持します。
 - ドラッグ&ドロップの**実操作 E2E は未検証**です（Wayland への合成入力ツールが無いため）。
-  ドロップ受信パイプラインは `GPUI_FE_DEBUG_DROP_PATH` で検証済み（コピー・選択・再読込）。
-  ドロップ先は**カレントディレクトリのみ**（行ごとのフォルダ指定は未対応）。
+  ドロップ受信パイプラインは `GPUI_FE_DEBUG_DROP_PATH` / `GPUI_FE_DEBUG_DROP_TARGET` で検証済み
+  （カレント/フォルダ指定コピー・選択・再読込）。
 - クロスプラットフォーム設計ですが、Windows/macOS でのビルド・実行は未検証です。
 - **ブラウザ（wasm）では動作しません**。GPUI の Web バックエンド自体は存在しますが、
   本アプリは `std::fs` / `notify` / `trash` / OS ダイアログに依存しています。
