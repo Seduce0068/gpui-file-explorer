@@ -5,6 +5,8 @@
 //! See `../README.md` for build/run instructions, key bindings and known
 //! limitations, and `../PROGRESS.md` for the implementation log.
 
+#![forbid(unsafe_code)]
+
 mod history;
 mod icons;
 mod model;
@@ -2955,19 +2957,21 @@ impl Explorer {
                 this.reload(cx);
             }),
         );
-        let view_details = icon_button(
+        let view_details = icon_button_active(
             "view-details",
             IconName::List,
             true,
+            self.settings.view == LayoutMode::Details,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.set_view(LayoutMode::Details, cx);
             }),
         );
-        let view_grid = icon_button(
+        let view_grid = icon_button_active(
             "view-grid",
             IconName::LayoutGrid,
             true,
+            self.settings.view == LayoutMode::Icons,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.set_view(LayoutMode::Icons, cx);
@@ -3168,6 +3172,34 @@ impl Explorer {
 }
 
 /// Toolbar button: Lucide icon inside a hoverable square.
+/// Toolbar button that shows a persistent active state (e.g. the current
+/// list/grid layout).
+fn icon_button_active(
+    id: &'static str,
+    icon: IconName,
+    enabled: bool,
+    active: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(28.0))
+        .h(px(28.0))
+        .rounded_md()
+        .when(active, |button| button.bg(rgb(C_SURFACE)))
+        .text_color(if enabled { rgb(C_TEXT) } else { rgb(C_DIM) })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(C_SURFACE)))
+                .on_click(on_click)
+        })
+        .child(Icon::new(icon))
+}
+
 fn icon_button(
     id: &'static str,
     icon: IconName,
