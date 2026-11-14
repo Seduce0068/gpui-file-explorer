@@ -44,6 +44,7 @@ pub fn entries_from_items(items: &[trash::TrashItem]) -> Vec<Entry> {
                 is_symlink: false,
                 size: 0,
                 modified,
+                match_line: None,
             }
         })
         .collect();

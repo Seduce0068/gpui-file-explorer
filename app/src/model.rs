@@ -23,6 +23,8 @@ pub struct Entry {
     pub is_symlink: bool,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    /// 1-based line number of the first content match (content search only).
+    pub match_line: Option<u32>,
 }
 
 impl Entry {
@@ -53,6 +55,7 @@ impl Entry {
             is_symlink,
             size,
             modified,
+            match_line: None,
         })
     }
 }
@@ -533,6 +536,7 @@ mod tests {
             is_symlink: false,
             size,
             modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified_secs)),
+            match_line: None,
         }
     }
 

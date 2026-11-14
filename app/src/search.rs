@@ -99,6 +99,7 @@ fn entry_for(path: &Path, name: &str) -> Entry {
             .map(|metadata| metadata.len())
             .unwrap_or(0),
         modified: metadata.and_then(|metadata| metadata.modified().ok()),
+        match_line: None,
     }
 }
 
@@ -157,6 +158,131 @@ pub fn search_by_name(
             }
             if is_dir_without_following && depth < options.max_depth {
                 stack.push((path, depth + 1));
+            }
+        }
+    }
+
+    matches.sort_by(|left, right| left.path.cmp(&right.path));
+    matches
+}
+
+/// Search mode: match file names or file contents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchMode {
+    #[default]
+    Name,
+    Content,
+}
+
+/// Limits for [`search_contents`].
+#[derive(Clone, Copy, Debug)]
+pub struct ContentSearchOptions {
+    pub max_results: usize,
+    pub max_depth: usize,
+    pub include_hidden: bool,
+    /// Files larger than this are skipped (no partial reads).
+    pub max_file_size: u64,
+}
+
+impl Default for ContentSearchOptions {
+    fn default() -> Self {
+        Self {
+            max_results: 500,
+            max_depth: 24,
+            include_hidden: false,
+            max_file_size: 1024 * 1024,
+        }
+    }
+}
+
+/// Return the 1-based line number of the first line containing `needle`
+/// (case-insensitive), or `None` when the file has no match.
+fn first_matching_line(text: &str, needle: &str) -> Option<u32> {
+    text.lines()
+        .position(|line| line.to_lowercase().contains(needle))
+        .map(|index| (index + 1) as u32)
+}
+
+/// Recursively search file **contents** for `query` (case-insensitive).
+///
+/// Safety/conservatism:
+/// - symlinks are skipped entirely (no reading through links),
+/// - files larger than `max_file_size` are skipped,
+/// - files containing a NUL byte in the first 8 KiB are treated as binary,
+/// - hidden entries follow `include_hidden`, unreadable entries are skipped,
+/// - results and depth are capped, cancellation is checked per entry.
+pub fn search_contents(
+    root: &Path,
+    query: &str,
+    options: ContentSearchOptions,
+    cancel: &AtomicBool,
+) -> Vec<Entry> {
+    let needle = query.to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    let mut matches: Vec<Entry> = Vec::new();
+    let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+
+    while let Some((dir, depth)) = stack.pop() {
+        if cancel.load(Ordering::SeqCst) || matches.len() >= options.max_results {
+            break;
+        }
+        let Ok(reader) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut children: Vec<PathBuf> = reader
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect();
+        children.sort();
+
+        for path in children {
+            if cancel.load(Ordering::SeqCst) || matches.len() >= options.max_results {
+                break;
+            }
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            if is_hidden_name(&name) && !options.include_hidden {
+                continue;
+            }
+            let Ok(link_metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let is_symlink = link_metadata.file_type().is_symlink();
+            if is_symlink {
+                // Never read through symlinks in content search.
+                continue;
+            }
+            if link_metadata.is_dir() {
+                if depth < options.max_depth {
+                    stack.push((path, depth + 1));
+                }
+                continue;
+            }
+            if !link_metadata.is_file() || link_metadata.len() > options.max_file_size {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if bytes.iter().take(8 * 1024).any(|byte| *byte == 0) {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            if let Some(line) = first_matching_line(&text, &needle) {
+                let mut entry = entry_for(&path, &name);
+                entry.match_line = Some(line);
+                matches.push(entry);
+                if matches.len() >= options.max_results {
+                    break;
+                }
             }
         }
     }
@@ -315,6 +441,7 @@ mod filter_tests {
             is_symlink: false,
             size: 0,
             modified: None,
+            match_line: None,
         }
     }
 
@@ -372,5 +499,128 @@ mod filter_tests {
             vec!["file.rs"]
         );
         assert!(filter_results(&entries, SearchKind::Dirs, Some("txt")).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod content_tests {
+    use super::{search_contents, ContentSearchOptions};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-content-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(path: &PathBuf, bytes: &[u8]) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn finds_content_with_line_numbers() {
+        let dir = scratch("lines");
+        write(&dir.join("a.txt"), b"alpha\nbeta TARGET\ngamma\n");
+        write(&dir.join("sub/b.txt"), b"nothing here\n");
+        write(&dir.join("sub/c.txt"), b"TARGET first line\n");
+
+        let found = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions::default(),
+            &AtomicBool::new(false),
+        );
+        let names: Vec<_> = found.iter().map(|entry| entry.name.clone()).collect();
+        assert_eq!(names, vec!["a.txt", "c.txt"]);
+        assert_eq!(found[0].match_line, Some(2));
+        assert_eq!(found[1].match_line, Some(1));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skips_binary_and_oversized_files() {
+        let dir = scratch("binary");
+        write(&dir.join("binary.bin"), b"TARGET\0\0\0");
+        write(&dir.join("big.txt"), b"TARGET but too big");
+        write(&dir.join("ok.txt"), b"TARGET ok");
+
+        let options = ContentSearchOptions {
+            max_file_size: 10,
+            ..Default::default()
+        };
+        let found = search_contents(&dir, "target", options, &AtomicBool::new(false));
+        let names: Vec<_> = found.iter().map(|entry| entry.name.clone()).collect();
+        assert_eq!(names, vec!["ok.txt"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skips_symlinks_and_hidden_entries() {
+        let dir = scratch("symlink");
+        write(&dir.join("real.txt"), b"TARGET real");
+        write(&dir.join(".hidden.txt"), b"TARGET hidden");
+        write(&dir.join(".hidden-dir/inside.txt"), b"TARGET hidden dir");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
+
+        let found = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions::default(),
+            &AtomicBool::new(false),
+        );
+        let names: Vec<_> = found.iter().map(|entry| entry.name.clone()).collect();
+        assert_eq!(names, vec!["real.txt"]);
+
+        let options = ContentSearchOptions {
+            include_hidden: true,
+            ..Default::default()
+        };
+        let found = search_contents(&dir, "target", options, &AtomicBool::new(false));
+        let mut names: Vec<_> = found.iter().map(|entry| entry.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec![".hidden.txt", "inside.txt", "real.txt"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn respects_max_results() {
+        let dir = scratch("limit");
+        for index in 0..5 {
+            write(&dir.join(format!("f{index}.txt")), b"TARGET");
+        }
+        let options = ContentSearchOptions {
+            max_results: 2,
+            ..Default::default()
+        };
+        let found = search_contents(&dir, "target", options, &AtomicBool::new(false));
+        assert_eq!(found.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancellation_returns_early() {
+        let dir = scratch("cancel");
+        write(&dir.join("a.txt"), b"TARGET");
+        let cancel = AtomicBool::new(true);
+        let found = search_contents(&dir, "target", ContentSearchOptions::default(), &cancel);
+        assert!(found.is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -180,6 +180,10 @@ cd app
   `Esc` でキャンセル・終了。結果はルートからの相対パスで表示
   - **絞り込み**: 「すべて / ファイル / フォルダ」の種別ボタンと、拡張子入力（例 `rs`）。
     どちらも再検索せず、取得済みの結果をクライアント側で絞り込みます
+  - **内容検索**: 「名前 / 内容」ボタンでモード切替。内容検索はファイル中身を
+    大小文字無視で検索し、最初に一致した行番号を表示（例 `src/main.rs:12`）。
+    1 ファイル 1 MiB まで・NUL を含むバイナリは除外・symlink は読まない・
+    最大 500 件 / 深さ 24・`Esc` でキャンセル
   - [x] **タブ**: 複数ディレクトリをタブで保持（`Ctrl+T` / `Ctrl+W` / `Ctrl+Tab`、
   タブバーのクリック・「+」・「×」）。タブごとに**カレントディレクトリと戻る/進む履歴**を保持し、
   切替時に保存/復元。最後の1枚は閉じられません
@@ -336,7 +340,8 @@ bash packaging/linux/build-deb.sh
   同様に `GPUI_FE_DEBUG_SELECT_ALL=1`（全選択）、`GPUI_FE_DEBUG_TRASH=1`（ゴミ箱ビュー）、
   `GPUI_FE_DEBUG_TRASH_RESTORE=1`（最初の項目を復元）、`GPUI_FE_DEBUG_GRID=1`（グリッド）、
   `GPUI_FE_DEBUG_SEARCH=1` + `GPUI_FE_DEBUG_SEARCH_QUERY` / `GPUI_FE_DEBUG_SEARCH_KIND` /
-  `GPUI_FE_DEBUG_SEARCH_EXT`（検索・絞り込み）、`GPUI_FE_DEBUG_TABS=1`（タブ）、
+  `GPUI_FE_DEBUG_SEARCH_EXT` / `GPUI_FE_DEBUG_SEARCH_MODE`（検索・絞り込み・内容検索）、
+  `GPUI_FE_DEBUG_TABS=1`（タブ）、
   `GPUI_FE_DEBUG_RECENT=1`（最近）、`GPUI_FE_DEBUG_DROP_PATH=<file>` + `GPUI_FE_DEBUG_DROP_TARGET=<folder>`（外部ドロップ相当を1回実行）
   の開発用フックがあります。
 - 現状の削除は従来どおり `trash` のみで、完全削除はありません。
@@ -356,6 +361,9 @@ bash packaging/linux/build-deb.sh
   行った場合、結果一覧は操作後に自動更新されないため、再検索が必要です。
   種別・拡張子の絞り込みは**取得済み結果に対する後段フィルタ**で、拡張子は名前の
   末尾一致（大小文字無視）です。
+- 内容検索は**読み取り専用**で、正規表現・単語境界・全行表示は未対応です。
+  1 ファイル 1 MiB を超えるファイル、先頭 8 KiB に NUL を含むファイル、
+  symlink は検索対象外です。行番号は最初の一致行のみ表示します。
 - ボリューム一覧は **Linux（/proc/mounts）のみ**。空き容量・リムーバブルメディアの
   ホットプラグ検知・Windows/macOS のドライブ列挙は未対応です（macOS/Windows では
   「ドライブ」セクションが出ません）。
