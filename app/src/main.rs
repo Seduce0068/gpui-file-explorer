@@ -248,6 +248,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+T / Ctrl+W", "タブを開く / 閉じる"),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "次のタブ / 前のタブ"),
+            ("Ctrl+Shift+PageUp / PageDown", "タブを左 / 右へ移動"),
             ("Ctrl+D", "現在のディレクトリをブックマーク"),
         ],
     ),
@@ -453,6 +454,9 @@ struct Explorer {
     /// Development-only hook: `GPUI_FE_DEBUG_PROPERTIES_SIZE=1` starts the
     /// directory size calculation after opening the properties dialog.
     debug_properties_size: bool,
+    /// True when a development hook is active; debug sessions must not persist
+    /// tab state into the user's real settings file.
+    debug_ephemeral: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_TABS=1` opens extra tabs once
     /// after startup (tab bar screenshot).
     debug_tabs_once: bool,
@@ -572,6 +576,20 @@ impl Explorer {
             debug_properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
             debug_help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
             debug_properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
+            debug_ephemeral: [
+                "GPUI_FE_DEBUG_TABS",
+                "GPUI_FE_DEBUG_RECENT",
+                "GPUI_FE_DEBUG_BOOKMARKS",
+                "GPUI_FE_DEBUG_SEARCH",
+                "GPUI_FE_DEBUG_GRID",
+                "GPUI_FE_DEBUG_PROPERTIES",
+                "GPUI_FE_DEBUG_PROPERTIES_SIZE",
+                "GPUI_FE_DEBUG_HELP",
+                "GPUI_FE_DEBUG_DROP_PATH",
+                "GPUI_FE_DEBUG_SORT",
+            ]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some()),
             debug_tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
             debug_drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
             debug_drop_target: std::env::var("GPUI_FE_DEBUG_DROP_TARGET").ok(),
@@ -941,6 +959,9 @@ impl Explorer {
     /// Mirror the open tabs and the active index into settings (the caller
     /// saves the settings file).
     fn persist_tabs(&mut self) {
+        if self.debug_ephemeral {
+            return;
+        }
         self.tabs.sync(self.cwd.clone(), self.history.clone());
         self.settings.tabs = self.tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
         self.settings.active_tab = self.tabs.active_index();
@@ -1013,6 +1034,26 @@ impl Explorer {
         self.sync_active_tab();
         let tab = self.tabs.prev();
         self.load_tab(tab, cx);
+    }
+
+    fn move_tab_left(&mut self, cx: &mut Context<Self>) {
+        self.sync_active_tab();
+        if self.tabs.move_active_left() {
+            self.persist_tabs();
+            self.settings.save();
+            self.status = "タブを左へ移動しました".to_string();
+            cx.notify();
+        }
+    }
+
+    fn move_tab_right(&mut self, cx: &mut Context<Self>) {
+        self.sync_active_tab();
+        if self.tabs.move_active_right() {
+            self.persist_tabs();
+            self.settings.save();
+            self.status = "タブを右へ移動しました".to_string();
+            cx.notify();
+        }
     }
 
     /// Horizontal tab bar (directory view only).
@@ -1351,6 +1392,8 @@ impl Explorer {
                 ("w", false) => self.close_tab(cx),
                 ("tab", false) => self.next_tab(cx),
                 ("tab", true) => self.prev_tab(cx),
+                ("pageup", true) => self.move_tab_left(cx),
+                ("pagedown", true) => self.move_tab_right(cx),
                 ("1", false) => self.set_view(LayoutMode::Details, cx),
                 ("2", false) => self.set_view(LayoutMode::Icons, cx),
                 ("r", _) => self.reload(cx),
@@ -4005,6 +4048,9 @@ impl Render for Explorer {
             self.tabs.new_tab(PathBuf::from("/"));
             let tab = self.tabs.active().clone();
             self.load_tab(tab, cx);
+            if std::env::var("GPUI_FE_DEBUG_TAB_MOVE").is_ok_and(|value| value == "left") {
+                self.move_tab_left(cx);
+            }
         }
         if self.debug_search_once && self.view == ViewMode::Directory && !self.loading {
             self.debug_search_once = false;
