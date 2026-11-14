@@ -512,6 +512,10 @@ impl Explorer {
             }
             settings.toggle_bookmark(&PathBuf::from("/"));
         }
+        if std::env::var_os("GPUI_FE_DEBUG_SEARCH_HISTORY").is_some() {
+            settings.recent_searches =
+                vec!["TODO".to_string(), "rs".to_string(), "config".to_string()];
+        }
 
         let (watch_tx, watch_rx) = async_channel::unbounded::<()>();
         let watcher = DirWatcher::new(move || {
@@ -587,6 +591,8 @@ impl Explorer {
                 "GPUI_FE_DEBUG_HELP",
                 "GPUI_FE_DEBUG_DROP_PATH",
                 "GPUI_FE_DEBUG_SORT",
+                "GPUI_FE_DEBUG_SEARCH_HISTORY",
+                "GPUI_FE_DEBUG_TAB_MOVE",
             ]
             .iter()
             .any(|name| std::env::var_os(name).is_some()),
@@ -2666,6 +2672,10 @@ impl Explorer {
                 this.search_cancel = None;
                 this.all_entries = entries;
                 this.apply_search_filter(cx);
+                this.settings.record_search(&this.search_query);
+                if !this.debug_ephemeral {
+                    this.settings.save();
+                }
             });
         });
         self.search_task = Some(task);
@@ -2816,6 +2826,54 @@ impl Explorer {
                 .children(extension_input)
                 .child(div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
         )
+    }
+
+    /// Chips with recent search queries, shown while the query field is empty.
+    fn search_history_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let input = self.search_input.as_ref()?;
+        if !input.read(cx).value().is_empty() || self.settings.recent_searches.is_empty() {
+            return None;
+        }
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .bg(rgb(C_MANTLE))
+            .border_b_1()
+            .border_color(rgb(C_SURFACE))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("最近の検索:"),
+            );
+        for query in self.settings.recent_searches.iter().take(8) {
+            let value = query.clone();
+            row = row.child(
+                div()
+                    .id(format!("search-history-{value}"))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_md()
+                    .bg(rgb(C_BASE))
+                    .text_xs()
+                    .text_color(rgb(C_SUBTEXT))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                    .child(value.clone())
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        if let Some(input) = this.search_input.clone() {
+                            input.update(cx, |state, cx| {
+                                state.set_value(value.clone(), window, cx);
+                            });
+                        }
+                        this.run_search(cx);
+                    })),
+            );
+        }
+        Some(row)
     }
 
     // ------------------------------------------------------------------- trash
@@ -4086,6 +4144,7 @@ impl Render for Explorer {
         }
         let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar(cx);
+        let search_history_bar = self.search_history_bar(cx);
         if self.debug_help_once {
             self.debug_help_once = false;
             self.help_open = true;
@@ -4173,6 +4232,7 @@ impl Render for Explorer {
             .child(self.toolbar(cx))
             .children(tab_bar)
             .children(search_bar)
+            .children(search_history_bar)
             .child(body)
             .child(self.status_bar())
             .children(rename_dialog)
