@@ -37,6 +37,18 @@ impl Tabs {
         }
     }
 
+    /// Restore tabs from persisted directories. Returns `None` when the list
+    /// is empty (callers fall back to a single default tab). The active index
+    /// is clamped into range.
+    pub fn from_paths(paths: Vec<PathBuf>, active: usize) -> Option<Self> {
+        if paths.is_empty() {
+            return None;
+        }
+        let tabs: Vec<Tab> = paths.into_iter().map(Tab::new).collect();
+        let active = active.min(tabs.len() - 1);
+        Some(Self { tabs, active })
+    }
+
     pub fn len(&self) -> usize {
         self.tabs.len()
     }
@@ -162,6 +174,19 @@ mod tests {
         assert_eq!(next.cwd, p("/b"));
         assert_eq!(tabs.len(), 2);
         assert_eq!(tabs.active_index(), 1);
+    }
+
+    #[test]
+    fn from_paths_restores_and_clamps_active() {
+        let tabs = Tabs::from_paths(vec![p("/a"), p("/b"), p("/c")], 1).expect("tabs");
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(tabs.active_index(), 1);
+        assert_eq!(tabs.active().cwd, p("/b"));
+
+        let tabs = Tabs::from_paths(vec![p("/a")], 99).expect("tabs");
+        assert_eq!(tabs.active_index(), 0);
+
+        assert!(Tabs::from_paths(Vec::new(), 0).is_none());
     }
 
     #[test]
