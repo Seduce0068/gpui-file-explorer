@@ -40,7 +40,10 @@ use crate::model::{
 };
 use crate::mounts::MountPoint;
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
-use crate::search::{filter_results, search_by_name, SearchKind, SearchOptions};
+use crate::search::{
+    filter_results, search_by_name, search_contents, ContentSearchOptions, SearchKind, SearchMode,
+    SearchOptions,
+};
 use crate::settings::{Settings, ViewMode as LayoutMode};
 use crate::tabs::{Tab, Tabs};
 use crate::watcher::DirWatcher;
@@ -243,6 +246,7 @@ struct Explorer {
     search_ext: Option<Entity<InputState>>,
     search_ext_subscription: Option<Subscription>,
     search_kind: SearchKind,
+    search_mode: SearchMode,
     search_query: String,
     search_task: Option<Task<()>>,
     search_cancel: Option<Arc<AtomicBool>>,
@@ -358,6 +362,7 @@ impl Explorer {
             search_ext: None,
             search_ext_subscription: None,
             search_kind: SearchKind::All,
+            search_mode: SearchMode::Name,
             search_query: String::new(),
             search_task: None,
             search_cancel: None,
@@ -1954,6 +1959,7 @@ impl Explorer {
         self.search_ext = Some(ext_input);
         self.search_ext_subscription = Some(ext_subscription);
         self.search_kind = SearchKind::All;
+        self.search_mode = SearchMode::Name;
         self.search_query.clear();
         self.search_generation = self.search_generation.wrapping_add(1);
         self.view = ViewMode::Search;
@@ -1989,15 +1995,31 @@ impl Explorer {
         cx.notify();
 
         let root = self.cwd.clone();
-        let options = SearchOptions {
-            include_hidden: self.settings.show_hidden,
-            ..Default::default()
-        };
+        let include_hidden = self.settings.show_hidden;
+        let mode = self.search_mode;
         let cancel_for_task = cancel.clone();
-        let background =
-            cx.background_spawn(
-                async move { search_by_name(&root, &query, options, &cancel_for_task) },
-            );
+        let background = cx.background_spawn(async move {
+            match mode {
+                SearchMode::Name => search_by_name(
+                    &root,
+                    &query,
+                    SearchOptions {
+                        include_hidden,
+                        ..Default::default()
+                    },
+                    &cancel_for_task,
+                ),
+                SearchMode::Content => search_contents(
+                    &root,
+                    &query,
+                    ContentSearchOptions {
+                        include_hidden,
+                        ..Default::default()
+                    },
+                    &cancel_for_task,
+                ),
+            }
+        });
         let task = cx.spawn(async move |this, cx| {
             let entries = background.await;
             let _ = this.update(cx, |this, cx| {
@@ -2034,7 +2056,16 @@ impl Explorer {
         }
         self.scroll_handle
             .scroll_to_item(0, ScrollStrategy::Nearest);
-        self.status = format!("検索: 「{}」 {} 件", self.search_query, self.entries.len());
+        let mode_label = if self.search_mode == SearchMode::Content {
+            "（内容）"
+        } else {
+            ""
+        };
+        self.status = format!(
+            "検索{mode_label}: 「{}」 {} 件",
+            self.search_query,
+            self.entries.len()
+        );
         cx.notify();
     }
 
@@ -2050,6 +2081,7 @@ impl Explorer {
         self.search_ext = None;
         self.search_ext_subscription = None;
         self.search_kind = SearchKind::All;
+        self.search_mode = SearchMode::Name;
         self.search_query.clear();
     }
 
@@ -2072,6 +2104,33 @@ impl Explorer {
         } else {
             "Enter で検索 / Esc で閉じる"
         };
+        let mut modes = div().flex().items_center().gap_1();
+        for (mode, label) in [(SearchMode::Name, "名前"), (SearchMode::Content, "内容")] {
+            let active = self.search_mode == mode;
+            modes = modes.child(
+                div()
+                    .id(("search-mode", mode as u64))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .when(active, |button| button.bg(rgb(C_SURFACE)))
+                    .text_color(if active { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
+                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        if this.search_mode == mode {
+                            return;
+                        }
+                        this.search_mode = mode;
+                        if mode == SearchMode::Content {
+                            this.search_kind = SearchKind::All;
+                        }
+                        this.run_search(cx);
+                    })),
+            );
+        }
         let mut kinds = div().flex().items_center().gap_1();
         for (kind, label) in [
             (SearchKind::All, "すべて"),
@@ -2117,7 +2176,8 @@ impl Explorer {
                 .border_color(rgb(C_SURFACE))
                 .child(div().text_sm().text_color(rgb(C_SUBTEXT)).child("検索:"))
                 .child(div().flex_1().child(Input::new(input)))
-                .child(kinds)
+                .child(modes)
+                .children((self.search_mode == SearchMode::Name).then_some(kinds))
                 .children(extension_input)
                 .child(div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
         )
@@ -2421,6 +2481,10 @@ impl Explorer {
     fn list_row(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
         let display_name = display_name_for(&entry, this.view, &this.cwd);
+        let display_name = match entry.match_line {
+            Some(line) if this.view == ViewMode::Search => format!("{display_name}:{line}"),
+            _ => display_name,
+        };
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
@@ -2600,6 +2664,10 @@ impl Explorer {
     fn grid_cell(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
         let display_name = display_name_for(&entry, this.view, &this.cwd);
+        let display_name = match entry.match_line {
+            Some(line) if this.view == ViewMode::Search => format!("{display_name}:{line}"),
+            _ => display_name,
+        };
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
@@ -3293,6 +3361,12 @@ impl Render for Explorer {
             let query =
                 std::env::var("GPUI_FE_DEBUG_SEARCH_QUERY").unwrap_or_else(|_| "txt".to_string());
             self.open_search(window, cx);
+            if let Ok(mode) = std::env::var("GPUI_FE_DEBUG_SEARCH_MODE") {
+                if mode == "content" {
+                    self.search_mode = SearchMode::Content;
+                    self.search_kind = SearchKind::All;
+                }
+            }
             if let Ok(kind) = std::env::var("GPUI_FE_DEBUG_SEARCH_KIND") {
                 self.search_kind = match kind.as_str() {
                     "files" => SearchKind::Files,
