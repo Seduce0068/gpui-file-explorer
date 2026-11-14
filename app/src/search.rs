@@ -20,6 +20,46 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::model::{is_hidden_name, Entry};
 
+/// Kind filter applied to search results without re-running the search.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchKind {
+    #[default]
+    All,
+    Files,
+    Dirs,
+}
+
+impl SearchKind {
+    pub fn matches(self, entry: &Entry) -> bool {
+        match self {
+            SearchKind::All => true,
+            SearchKind::Files => !entry.is_dir,
+            SearchKind::Dirs => entry.is_dir,
+        }
+    }
+}
+
+/// Filter already-collected search results by kind and optional extension.
+/// The extension is case-insensitive and may be given with or without a
+/// leading dot (`rs`, `.rs`); an empty extension means "no extension filter".
+pub fn filter_results(entries: &[Entry], kind: SearchKind, extension: Option<&str>) -> Vec<Entry> {
+    let extension = extension
+        .map(|value| value.trim().trim_start_matches('.').to_lowercase())
+        .filter(|value| !value.is_empty());
+    entries
+        .iter()
+        .filter(|entry| kind.matches(entry))
+        .filter(|entry| match &extension {
+            Some(extension) => entry
+                .name
+                .to_lowercase()
+                .ends_with(&format!(".{extension}")),
+            None => true,
+        })
+        .cloned()
+        .collect()
+}
+
 /// Limits and filtering options for [`search_by_name`].
 #[derive(Clone, Copy, Debug)]
 pub struct SearchOptions {
@@ -258,5 +298,79 @@ mod tests {
         let found = search_by_name(&dir, "txt", SearchOptions::default(), &cancel);
         assert!(found.is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::{filter_results, SearchKind};
+    use crate::model::Entry;
+    use std::path::PathBuf;
+
+    fn entry(name: &str, is_dir: bool) -> Entry {
+        Entry {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/root/{name}")),
+            is_dir,
+            is_symlink: false,
+            size: 0,
+            modified: None,
+        }
+    }
+
+    fn names(entries: &[Entry]) -> Vec<String> {
+        entries.iter().map(|entry| entry.name.clone()).collect()
+    }
+
+    #[test]
+    fn filters_by_kind() {
+        let entries = vec![
+            entry("a.txt", false),
+            entry("docs", true),
+            entry("b.rs", false),
+        ];
+        assert_eq!(
+            names(&filter_results(&entries, SearchKind::All, None)).len(),
+            3
+        );
+        assert_eq!(
+            names(&filter_results(&entries, SearchKind::Files, None)),
+            vec!["a.txt", "b.rs"]
+        );
+        assert_eq!(
+            names(&filter_results(&entries, SearchKind::Dirs, None)),
+            vec!["docs"]
+        );
+    }
+
+    #[test]
+    fn filters_by_extension_case_insensitively() {
+        let entries = vec![
+            entry("a.TXT", false),
+            entry("b.rs", false),
+            entry("c.rs.bak", false),
+        ];
+        assert_eq!(
+            names(&filter_results(&entries, SearchKind::All, Some("txt"))),
+            vec!["a.TXT"]
+        );
+        assert_eq!(
+            names(&filter_results(&entries, SearchKind::All, Some(".RS"))),
+            vec!["b.rs"]
+        );
+        assert_eq!(
+            names(&filter_results(&entries, SearchKind::All, Some(""))).len(),
+            3
+        );
+    }
+
+    #[test]
+    fn combines_kind_and_extension() {
+        let entries = vec![entry("dir.rs", true), entry("file.rs", false)];
+        assert_eq!(
+            names(&filter_results(&entries, SearchKind::Files, Some("rs"))),
+            vec!["file.rs"]
+        );
+        assert!(filter_results(&entries, SearchKind::Dirs, Some("txt")).is_empty());
     }
 }
