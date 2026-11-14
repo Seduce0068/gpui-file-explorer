@@ -168,6 +168,40 @@ impl Selection {
     }
 }
 
+/// Resolve a path typed into the location bar (Ctrl+L).
+///
+/// - empty/whitespace -> error,
+/// - `~` and `~/...` expand to `home` (only when `home` is known),
+/// - relative paths resolve against `cwd`,
+/// - absolute paths are used as-is (no shell expansion or `~user` support).
+pub fn resolve_location_input(
+    cwd: &std::path::Path,
+    input: &str,
+    home: Option<&std::path::Path>,
+) -> Result<PathBuf, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err("パスが空です".to_string());
+    }
+    if input == "~" {
+        return home
+            .map(|home| home.to_path_buf())
+            .ok_or_else(|| "ホームディレクトリが分かりません".to_string());
+    }
+    if let Some(rest) = input.strip_prefix("~/") {
+        let Some(home) = home else {
+            return Err("ホームディレクトリが分かりません".to_string());
+        };
+        return Ok(home.join(rest));
+    }
+    let path = PathBuf::from(input);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(cwd.join(path))
+    }
+}
+
 /// Render Unix permission bits (`mode & 0o777`) as `rwxr-xr-x`.
 pub fn permissions_string(mode: u32) -> String {
     let mut out = String::with_capacity(9);
@@ -1005,5 +1039,62 @@ mod permission_tests {
         assert_eq!(permissions_string(0o600), "rw-------");
         assert_eq!(permissions_string(0o000), "---------");
         assert_eq!(permissions_string(0o777), "rwxrwxrwx");
+    }
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::resolve_location_input;
+    use std::path::{Path, PathBuf};
+
+    fn cwd() -> PathBuf {
+        PathBuf::from("/work/dir")
+    }
+
+    fn home() -> PathBuf {
+        PathBuf::from("/home/user")
+    }
+
+    #[test]
+    fn empty_input_is_rejected() {
+        assert!(resolve_location_input(&cwd(), "   ", Some(&home())).is_err());
+    }
+
+    #[test]
+    fn absolute_paths_are_used_as_is() {
+        assert_eq!(
+            resolve_location_input(&cwd(), "/tmp", Some(&home())).unwrap(),
+            PathBuf::from("/tmp")
+        );
+    }
+
+    #[test]
+    fn relative_paths_resolve_against_cwd() {
+        assert_eq!(
+            resolve_location_input(&cwd(), "sub/../x", Some(&home())).unwrap(),
+            PathBuf::from("/work/dir/sub/../x")
+        );
+    }
+
+    #[test]
+    fn tilde_expands_to_home() {
+        assert_eq!(
+            resolve_location_input(&cwd(), "~", Some(&home())).unwrap(),
+            home()
+        );
+        assert_eq!(
+            resolve_location_input(&cwd(), "~/docs", Some(&home())).unwrap(),
+            Path::new("/home/user/docs")
+        );
+        assert!(resolve_location_input(&cwd(), "~/docs", None).is_err());
+        assert!(resolve_location_input(&cwd(), "~", None).is_err());
+    }
+
+    #[test]
+    fn other_tilde_forms_are_literal() {
+        assert_eq!(
+            resolve_location_input(&cwd(), "~user", Some(&home())).unwrap(),
+            PathBuf::from("/work/dir/~user")
+        );
     }
 }

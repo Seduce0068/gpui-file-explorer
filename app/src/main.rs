@@ -36,7 +36,8 @@ use crate::icons::{icon_for_entry, kind_for_entry, FileKind};
 use crate::model::{
     breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
     grid_columns, grid_row_count, human_age, human_datetime, human_size, last_index, parent_dir,
-    read_entries, step_selection, visible_entries, Entry, Selection, SortKey, SortSpec,
+    read_entries, resolve_location_input, step_selection, visible_entries, Entry, Selection,
+    SortKey, SortSpec,
 };
 use crate::mounts::MountPoint;
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
@@ -203,6 +204,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "ナビゲーション",
         &[
             ("Enter", "選択項目を開く"),
+            ("Ctrl+L", "パスを直接入力して移動"),
             ("Alt+← / Alt+→", "戻る / 進む"),
             ("Alt+↑ / Backspace", "親ディレクトリへ"),
             ("Home / End", "先頭 / 末尾へ"),
@@ -322,6 +324,14 @@ struct RenameState {
     error: Option<String>,
 }
 
+/// Location bar (Ctrl+L): a path input with validation error.
+struct LocationState {
+    input: Entity<InputState>,
+    /// Keeps the `InputEvent::PressEnter` subscription alive while open.
+    _subscription: Subscription,
+    error: Option<String>,
+}
+
 /// Snapshot of a file/directory for the read-only properties dialog.
 struct PropsState {
     name: String,
@@ -421,6 +431,8 @@ struct Explorer {
     properties: Option<PropsState>,
     /// Whether the F1 keyboard help overlay is open.
     help_open: bool,
+    /// Path input opened with Ctrl+L.
+    location: Option<LocationState>,
     /// Set after a successful rename; the next render refocuses the list.
     focus_list_on_next_render: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_RENAME=1` opens the rename dialog
@@ -451,6 +463,8 @@ struct Explorer {
     debug_properties_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_HELP=1` opens the help overlay.
     debug_help_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_LOCATION=1` opens the Ctrl+L bar.
+    debug_location_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_PROPERTIES_SIZE=1` starts the
     /// directory size calculation after opening the properties dialog.
     debug_properties_size: bool,
@@ -569,6 +583,7 @@ impl Explorer {
             renaming: None,
             properties: None,
             help_open: false,
+            location: None,
             focus_list_on_next_render: false,
             debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
             debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
@@ -579,6 +594,7 @@ impl Explorer {
             debug_search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
             debug_properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
             debug_help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
+            debug_location_once: std::env::var_os("GPUI_FE_DEBUG_LOCATION").is_some(),
             debug_properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
             debug_ephemeral: [
                 "GPUI_FE_DEBUG_TABS",
@@ -593,6 +609,7 @@ impl Explorer {
                 "GPUI_FE_DEBUG_SORT",
                 "GPUI_FE_DEBUG_SEARCH_HISTORY",
                 "GPUI_FE_DEBUG_TAB_MOVE",
+                "GPUI_FE_DEBUG_LOCATION",
             ]
             .iter()
             .any(|name| std::env::var_os(name).is_some()),
@@ -1372,6 +1389,12 @@ impl Explorer {
             }
             return;
         }
+        if self.location.is_some() {
+            if event.keystroke.key == "escape" {
+                self.close_location(cx);
+            }
+            return;
+        }
         if self.properties.is_some() {
             if event.keystroke.key == "escape" {
                 self.close_properties(cx);
@@ -1394,6 +1417,7 @@ impl Explorer {
                 ("d", false) => self.toggle_current_bookmark(cx),
                 ("f", false) => self.open_search(window, cx),
                 ("i", false) => self.open_selected_properties(cx),
+                ("l", false) => self.open_location(window, cx),
                 ("t", false) => self.new_tab(cx),
                 ("w", false) => self.close_tab(cx),
                 ("tab", false) => self.next_tab(cx),
@@ -1874,6 +1898,102 @@ impl Explorer {
             self.status = format!("{missing} 件は存在しないためスキップします");
         }
         self.run_transfer(destination, existing, false, cx);
+    }
+
+    // ---------------------------------------------------------------- location
+
+    /// Open the Ctrl+L location bar with the current path prefilled.
+    fn open_location(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Directory {
+            self.status = "パス入力はディレクトリ表示でのみ使えます".to_string();
+            cx.notify();
+            return;
+        }
+        if let Some(location) = &self.location {
+            let focus = location.input.read(cx).focus_handle(cx).clone();
+            focus.focus(window, cx);
+            return;
+        }
+        let value = display_path(&self.cwd);
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
+        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.confirm_location(cx);
+            }
+        });
+        let focus = input.read(cx).focus_handle(cx).clone();
+        focus.focus(window, cx);
+        self.location = Some(LocationState {
+            input,
+            _subscription: subscription,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    fn close_location(&mut self, cx: &mut Context<Self>) {
+        self.location = None;
+        self.focus_list_on_next_render = true;
+        cx.notify();
+    }
+
+    fn confirm_location(&mut self, cx: &mut Context<Self>) {
+        let Some(location) = self.location.as_ref() else {
+            return;
+        };
+        let value = location.input.read(cx).value().to_string();
+        let home = dirs::home_dir();
+        let resolved = match resolve_location_input(&self.cwd, &value, home.as_deref()) {
+            Ok(path) => path,
+            Err(error) => {
+                self.set_location_error(error, cx);
+                return;
+            }
+        };
+        if !resolved.is_dir() {
+            self.set_location_error(
+                format!("ディレクトリではありません: {}", display_path(&resolved)),
+                cx,
+            );
+            return;
+        }
+        self.location = None;
+        self.focus_list_on_next_render = true;
+        self.navigate_to(resolved, cx);
+    }
+
+    fn set_location_error(&mut self, error: String, cx: &mut Context<Self>) {
+        if let Some(location) = self.location.as_mut() {
+            location.error = Some(error);
+        }
+        cx.notify();
+    }
+
+    /// Path input bar shown while Ctrl+L is open.
+    fn location_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let location = self.location.as_ref()?;
+        let mut bar = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .bg(rgb(C_MANTLE))
+            .border_b_1()
+            .border_color(rgb(C_SURFACE))
+            .child(div().text_sm().text_color(rgb(C_SUBTEXT)).child("パス:"))
+            .child(div().flex_1().child(Input::new(&location.input)))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("Enter で移動 / Esc で閉じる"),
+            );
+        if let Some(error) = &location.error {
+            bar = bar.child(div().text_xs().text_color(rgb(C_RED)).child(error.clone()));
+        }
+        let _ = cx;
+        Some(bar)
     }
 
     // -------------------------------------------------------------------- help
@@ -4145,9 +4265,14 @@ impl Render for Explorer {
         let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar(cx);
         let search_history_bar = self.search_history_bar(cx);
+        let location_bar = self.location_bar(cx);
         if self.debug_help_once {
             self.debug_help_once = false;
             self.help_open = true;
+        }
+        if self.debug_location_once && !self.loading {
+            self.debug_location_once = false;
+            self.open_location(window, cx);
         }
         let rename_dialog = self.rename_dialog(cx);
         let properties_dialog = self.properties_dialog(cx);
@@ -4233,6 +4358,7 @@ impl Render for Explorer {
             .children(tab_bar)
             .children(search_bar)
             .children(search_history_bar)
+            .children(location_bar)
             .child(body)
             .child(self.status_bar())
             .children(rename_dialog)
