@@ -12,6 +12,7 @@ mod icons;
 mod model;
 mod mounts;
 mod ops;
+mod preview;
 mod search;
 mod settings;
 mod tabs;
@@ -243,6 +244,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+R / F5", "再読込"),
             ("Ctrl+F", "検索（名前 / 内容）"),
             ("Ctrl+I", "プロパティ"),
+            ("Space / F3", "テキストプレビュー"),
         ],
     ),
     (
@@ -330,6 +332,17 @@ struct LocationState {
     /// Keeps the `InputEvent::PressEnter` subscription alive while open.
     _subscription: Subscription,
     error: Option<String>,
+}
+
+/// Read-only text preview (Space / F3).
+struct PreviewState {
+    title: String,
+    loading: bool,
+    text: Option<String>,
+    error: Option<String>,
+    truncated: bool,
+    size: u64,
+    task: Option<Task<()>>,
 }
 
 /// Snapshot of a file/directory for the read-only properties dialog.
@@ -433,6 +446,8 @@ struct Explorer {
     help_open: bool,
     /// Path input opened with Ctrl+L.
     location: Option<LocationState>,
+    /// Text preview overlay (Space / F3).
+    preview: Option<PreviewState>,
     /// Set after a successful rename; the next render refocuses the list.
     focus_list_on_next_render: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_RENAME=1` opens the rename dialog
@@ -465,6 +480,8 @@ struct Explorer {
     debug_help_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_LOCATION=1` opens the Ctrl+L bar.
     debug_location_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_PREVIEW=1` previews the first file.
+    debug_preview_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_PROPERTIES_SIZE=1` starts the
     /// directory size calculation after opening the properties dialog.
     debug_properties_size: bool,
@@ -584,6 +601,7 @@ impl Explorer {
             properties: None,
             help_open: false,
             location: None,
+            preview: None,
             focus_list_on_next_render: false,
             debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
             debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
@@ -595,6 +613,7 @@ impl Explorer {
             debug_properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
             debug_help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
             debug_location_once: std::env::var_os("GPUI_FE_DEBUG_LOCATION").is_some(),
+            debug_preview_once: std::env::var_os("GPUI_FE_DEBUG_PREVIEW").is_some(),
             debug_properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
             debug_ephemeral: [
                 "GPUI_FE_DEBUG_TABS",
@@ -610,6 +629,7 @@ impl Explorer {
                 "GPUI_FE_DEBUG_SEARCH_HISTORY",
                 "GPUI_FE_DEBUG_TAB_MOVE",
                 "GPUI_FE_DEBUG_LOCATION",
+                "GPUI_FE_DEBUG_PREVIEW",
             ]
             .iter()
             .any(|name| std::env::var_os(name).is_some()),
@@ -1395,6 +1415,15 @@ impl Explorer {
             }
             return;
         }
+        if self.preview.is_some() {
+            if event.keystroke.key == "escape"
+                || event.keystroke.key == "space"
+                || event.keystroke.key == "f3"
+            {
+                self.close_preview(cx);
+            }
+            return;
+        }
         if self.properties.is_some() {
             if event.keystroke.key == "escape" {
                 self.close_properties(cx);
@@ -1481,6 +1510,7 @@ impl Explorer {
             "enter" => self.open_selected(cx),
             "backspace" => self.go_parent(cx),
             "f5" => self.reload(cx),
+            "space" | "f3" => self.open_preview_selected(cx),
             "f2" => {
                 if self.view == ViewMode::Trash {
                     self.status = "ゴミ箱ビューでは名前を変更できません".to_string();
@@ -1898,6 +1928,179 @@ impl Explorer {
             self.status = format!("{missing} 件は存在しないためスキップします");
         }
         self.run_transfer(destination, existing, false, cx);
+    }
+
+    // ----------------------------------------------------------------- preview
+
+    fn open_preview_selected(&mut self, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Directory {
+            self.status = "プレビューはディレクトリ表示でのみ使えます".to_string();
+            cx.notify();
+            return;
+        }
+        let Some(entry) = self.entries.get(self.selected) else {
+            return;
+        };
+        if entry.is_dir {
+            self.status = "フォルダはプレビューできません".to_string();
+            cx.notify();
+            return;
+        }
+        if entry.is_symlink {
+            self.status = "シンボリックリンクはプレビューできません".to_string();
+            cx.notify();
+            return;
+        }
+        let path = entry.path.clone();
+        let title = entry.name.clone();
+        self.open_preview(path, title, cx);
+    }
+
+    /// Read a text preview on the background executor (bounded, read-only).
+    fn open_preview(&mut self, path: PathBuf, title: String, cx: &mut Context<Self>) {
+        self.preview = Some(PreviewState {
+            title,
+            loading: true,
+            text: None,
+            error: None,
+            truncated: false,
+            size: 0,
+            task: None,
+        });
+        cx.notify();
+        let background =
+            cx.background_spawn(
+                async move { preview::read_preview(&path, preview::MAX_PREVIEW_BYTES) },
+            );
+        let task = cx.spawn(async move |this, cx| {
+            let result = background.await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(preview) = this.preview.as_mut() else {
+                    return;
+                };
+                preview.loading = false;
+                preview.task = None;
+                match result {
+                    Ok(read) => {
+                        preview.text = Some(read.text);
+                        preview.truncated = read.truncated;
+                        preview.size = read.size;
+                    }
+                    Err(error) => preview.error = Some(error),
+                }
+                cx.notify();
+            });
+        });
+        if let Some(preview) = self.preview.as_mut() {
+            preview.task = Some(task);
+        }
+    }
+
+    fn close_preview(&mut self, cx: &mut Context<Self>) {
+        self.preview = None;
+        self.focus_list_on_next_render = true;
+        cx.notify();
+    }
+
+    /// Read-only preview overlay with a scrollable text area.
+    fn preview_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let preview = self.preview.as_ref()?;
+        let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.close_preview(cx);
+        });
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.close_preview(cx);
+                }),
+            );
+        let meta = if preview.loading {
+            "読み込み中…".to_string()
+        } else if let Some(error) = &preview.error {
+            error.clone()
+        } else if preview.truncated {
+            format!(
+                "{}（先頭 {} のみ表示）",
+                human_size(preview.size),
+                human_size(preview::MAX_PREVIEW_BYTES)
+            )
+        } else {
+            human_size(preview.size)
+        };
+        let body_text = preview.text.clone().unwrap_or_default();
+        let mut panel = div()
+            .id("preview-dialog")
+            .w(px(820.0))
+            .max_h(px(620.0))
+            .bg(rgb(C_SURFACE))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(C_OVERLAY))
+            .shadow_lg()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .truncate()
+                            .child(preview.title.clone()),
+                    )
+                    .child(div().text_xs().text_color(rgb(C_MUTED)).child(meta)),
+            );
+        if preview.text.is_some() {
+            panel = panel.child(
+                div()
+                    .id("preview-text")
+                    .max_h(px(480.0))
+                    .overflow_y_scroll()
+                    .bg(rgb(C_BASE))
+                    .rounded_md()
+                    .p_3()
+                    .font_family("monospace")
+                    .text_xs()
+                    .text_color(rgb(C_TEXT))
+                    .child(body_text),
+            );
+        }
+        panel = panel.child(
+            div()
+                .flex()
+                .justify_end()
+                .child(Button::new("preview-close").label("閉じる").on_click(close)),
+        );
+        panel = panel.child(
+            div()
+                .text_xs()
+                .text_color(rgb(C_MUTED))
+                .child("Space / F3 / Esc で閉じる（読み取り専用）"),
+        );
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(panel),
+        )
     }
 
     // ---------------------------------------------------------------- location
@@ -4274,9 +4477,22 @@ impl Render for Explorer {
             self.debug_location_once = false;
             self.open_location(window, cx);
         }
+        if self.debug_preview_once && !self.loading && !self.entries.is_empty() {
+            self.debug_preview_once = false;
+            if let Some(entry) = self
+                .entries
+                .iter()
+                .find(|entry| !entry.is_dir && !entry.is_symlink)
+            {
+                let path = entry.path.clone();
+                let title = entry.name.clone();
+                self.open_preview(path, title, cx);
+            }
+        }
         let rename_dialog = self.rename_dialog(cx);
         let properties_dialog = self.properties_dialog(cx);
         let help_dialog = self.help_dialog(cx);
+        let preview_dialog = self.preview_dialog(cx);
 
         let grid_mode = self.settings.view == LayoutMode::Icons;
         // Column headers only make sense in the details list.
@@ -4364,6 +4580,7 @@ impl Render for Explorer {
             .children(rename_dialog)
             .children(properties_dialog)
             .children(help_dialog)
+            .children(preview_dialog)
     }
 }
 
