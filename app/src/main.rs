@@ -457,15 +457,26 @@ struct Explorer {
 
 impl Explorer {
     fn new(cx: &mut Context<Self>) -> Self {
-        let settings = Settings::load();
-        let start_dir = startup_dir()
-            .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        let mut settings = Settings::load();
+        // Restore the tabs from the previous session, dropping directories that
+        // disappeared. The active tab's directory becomes the start directory.
+        let saved_tabs: Vec<PathBuf> = settings
+            .tabs
+            .iter()
             .filter(|path| path.is_dir())
-            .or_else(|| settings.last_dir.clone())
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(|| PathBuf::from("/"));
-
-        let mut settings = settings;
+            .cloned()
+            .collect();
+        let start_dir = if saved_tabs.is_empty() {
+            startup_dir()
+                .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+                .filter(|path| path.is_dir())
+                .or_else(|| settings.last_dir.clone())
+                .or_else(dirs::home_dir)
+                .unwrap_or_else(|| PathBuf::from("/"))
+        } else {
+            let index = settings.active_tab.min(saved_tabs.len() - 1);
+            saved_tabs[index].clone()
+        };
         if std::env::var_os("GPUI_FE_DEBUG_RECENT").is_some() {
             settings.record_recent(&start_dir);
             if let Some(home) = dirs::home_dir() {
@@ -488,7 +499,9 @@ impl Explorer {
         });
 
         let places = build_places();
-        let tabs = Tabs::new(start_dir.clone());
+        let tabs = Tabs::from_paths(saved_tabs, settings.active_tab)
+            .unwrap_or_else(|| Tabs::new(start_dir.clone()));
+        let history = tabs.active().history.clone();
         let mut this = Self {
             settings,
             cwd: start_dir,
@@ -508,7 +521,7 @@ impl Explorer {
             search_task: None,
             search_cancel: None,
             search_generation: 0,
-            history: History::new(),
+            history,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
             loading: true,
@@ -908,6 +921,14 @@ impl Explorer {
         self.tabs.sync(self.cwd.clone(), self.history.clone());
     }
 
+    /// Mirror the open tabs and the active index into settings (the caller
+    /// saves the settings file).
+    fn persist_tabs(&mut self) {
+        self.tabs.sync(self.cwd.clone(), self.history.clone());
+        self.settings.tabs = self.tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
+        self.settings.active_tab = self.tabs.active_index();
+    }
+
     /// Load a tab's directory/history into the explorer.
     fn load_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.clear_search();
@@ -921,6 +942,7 @@ impl Explorer {
         self.status.clear();
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
+        self.persist_tabs();
         self.settings.save();
         self.reload(cx);
     }
@@ -1063,8 +1085,8 @@ impl Explorer {
         self.status.clear();
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
+        self.persist_tabs();
         self.settings.save();
-        self.tabs.sync(self.cwd.clone(), self.history.clone());
         self.reload(cx);
     }
 
