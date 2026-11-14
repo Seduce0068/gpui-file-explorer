@@ -25,6 +25,8 @@ pub const APP_DIR: &str = "gpui-file-explorer";
 pub const SCHEMA_VERSION: u32 = 1;
 /// Maximum number of remembered recent directories.
 pub const MAX_RECENT_DIRS: usize = 10;
+/// Maximum number of bookmarked directories.
+pub const MAX_BOOKMARKS: usize = 50;
 
 /// List view mode: the detailed list or the icon grid. Persisted in
 /// `settings.json` as `"details"` / `"icons"`.
@@ -47,6 +49,8 @@ pub struct Settings {
     pub view: ViewMode,
     /// Recently visited directories, most recent first (bounded).
     pub recent_dirs: Vec<PathBuf>,
+    /// Bookmarked directories, in insertion order (bounded).
+    pub bookmarks: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -58,6 +62,7 @@ impl Default for Settings {
             show_hidden: false,
             view: ViewMode::Details,
             recent_dirs: Vec::new(),
+            bookmarks: Vec::new(),
         }
     }
 }
@@ -77,6 +82,28 @@ impl Settings {
         self.recent_dirs.retain(|existing| existing != path);
         self.recent_dirs.insert(0, path.to_path_buf());
         self.recent_dirs.truncate(MAX_RECENT_DIRS);
+    }
+
+    /// Whether `path` is bookmarked.
+    pub fn is_bookmarked(&self, path: &std::path::Path) -> bool {
+        self.bookmarks.iter().any(|bookmark| bookmark == path)
+    }
+
+    /// Add or remove `path` from the bookmarks. Returns `true` when it was
+    /// added, `false` when it was removed (or the path was empty).
+    pub fn toggle_bookmark(&mut self, path: &std::path::Path) -> bool {
+        if path.as_os_str().is_empty() {
+            return false;
+        }
+        if let Some(index) = self.bookmarks.iter().position(|bookmark| bookmark == path) {
+            self.bookmarks.remove(index);
+            return false;
+        }
+        self.bookmarks.push(path.to_path_buf());
+        if self.bookmarks.len() > MAX_BOOKMARKS {
+            self.bookmarks.remove(0);
+        }
+        true
     }
 
     /// Load settings, falling back to defaults for a missing/corrupt file.
@@ -341,5 +368,53 @@ mod recent_tests {
         let mut settings = Settings::default();
         settings.record_recent(&p(""));
         assert!(settings.recent_dirs.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod bookmark_tests {
+    use super::{Settings, MAX_BOOKMARKS};
+    use std::path::PathBuf;
+
+    fn p(value: &str) -> PathBuf {
+        PathBuf::from(value)
+    }
+
+    #[test]
+    fn toggle_adds_and_removes() {
+        let mut settings = Settings::default();
+        assert!(settings.toggle_bookmark(&p("/a")));
+        assert!(settings.is_bookmarked(&p("/a")));
+        assert!(!settings.toggle_bookmark(&p("/a")));
+        assert!(!settings.is_bookmarked(&p("/a")));
+        assert!(settings.bookmarks.is_empty());
+    }
+
+    #[test]
+    fn toggle_keeps_insertion_order_and_dedupes() {
+        let mut settings = Settings::default();
+        settings.toggle_bookmark(&p("/b"));
+        settings.toggle_bookmark(&p("/a"));
+        settings.toggle_bookmark(&p("/b"));
+        assert_eq!(settings.bookmarks, vec![p("/a")]);
+        settings.toggle_bookmark(&p("/b"));
+        assert_eq!(settings.bookmarks, vec![p("/a"), p("/b")]);
+    }
+
+    #[test]
+    fn bookmarks_are_bounded() {
+        let mut settings = Settings::default();
+        for index in 0..(MAX_BOOKMARKS + 5) {
+            settings.toggle_bookmark(&p(&format!("/dir-{index}")));
+        }
+        assert_eq!(settings.bookmarks.len(), MAX_BOOKMARKS);
+        assert_eq!(settings.bookmarks[0], p("/dir-5"));
+    }
+
+    #[test]
+    fn empty_path_is_ignored() {
+        let mut settings = Settings::default();
+        assert!(!settings.toggle_bookmark(&p("")));
+        assert!(settings.bookmarks.is_empty());
     }
 }
