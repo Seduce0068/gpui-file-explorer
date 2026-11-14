@@ -51,6 +51,10 @@ pub struct Settings {
     pub recent_dirs: Vec<PathBuf>,
     /// Bookmarked directories, in insertion order (bounded).
     pub bookmarks: Vec<PathBuf>,
+    /// Directories of the tabs that were open at exit.
+    pub tabs: Vec<PathBuf>,
+    /// Index of the active tab in `tabs` (clamped when restoring).
+    pub active_tab: usize,
 }
 
 impl Default for Settings {
@@ -63,6 +67,8 @@ impl Default for Settings {
             view: ViewMode::Details,
             recent_dirs: Vec::new(),
             bookmarks: Vec::new(),
+            tabs: Vec::new(),
+            active_tab: 0,
         }
     }
 }
@@ -416,5 +422,33 @@ mod bookmark_tests {
         let mut settings = Settings::default();
         assert!(!settings.toggle_bookmark(&p("")));
         assert!(settings.bookmarks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tab_settings_tests {
+    use super::Settings;
+    use std::path::PathBuf;
+
+    #[test]
+    fn tabs_default_to_empty() {
+        let settings = Settings::default();
+        assert!(settings.tabs.is_empty());
+        assert_eq!(settings.active_tab, 0);
+    }
+
+    #[test]
+    fn tabs_roundtrip_through_json() {
+        let settings = Settings {
+            tabs: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            active_tab: 1,
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(text.contains("\"tabs\""));
+        assert!(text.contains("\"active_tab\":1"));
+        let loaded: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(loaded.tabs, settings.tabs);
+        assert_eq!(loaded.active_tab, 1);
     }
 }
