@@ -85,6 +85,16 @@ bash packaging/linux/build-deb.sh --skip-build
 - 配布パッケージは Linux amd64 の DEB のみ（署名・AppImage/Flatpak・Windows/macOS は未対応）
 - 詳細は [app/README.md](app/README.md) の「既知の制限」
 
+## WASM / ブラウザ対応
+
+- 現試作は**デスクトップ専用**です（`std::fs` / `notify` / `trash` / OS ダイアログを使用）。
+- GPUI 自体には Web バックエンド（`gpui-pre-web`）があり、`gpui-pre` + `gpui-pre-platform` を
+  `default-features = false` にすれば **stable で wasm32 にコンパイル可能**（検証済み）。
+  ただし `gpui-kit` の既定 feature は nightly 必須の `wasm_thread` を有効にします。
+- ブラウザで動かすには File System Access API / OPFS への FS 抽象化、監視のポーリング化、
+  ゴミ箱・OS 統合の代替が必要で、別フロントエンド相当の作業です。
+- 詳細と検証ログ: [notes/wasm-browser-notes.md](notes/wasm-browser-notes.md)
+
 ## ライセンス
 
 本リポジトリのコード・文書は **GNU Affero General Public License v3.0 or later**

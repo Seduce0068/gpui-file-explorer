@@ -328,6 +328,9 @@ bash packaging/linux/build-deb.sh
   辿りません。上限（2000 件 / 深さ 24）に達すると打ち切ります。検索結果から削除・リネームを
   行った場合、結果一覧は操作後に自動更新されないため、再検索が必要です。
 - クロスプラットフォーム設計ですが、Windows/macOS でのビルド・実行は未検証です。
+- **ブラウザ（wasm）では動作しません**。GPUI の Web バックエンド自体は存在しますが、
+  本アプリは `std::fs` / `notify` / `trash` / OS ダイアログに依存しています。
+  調査と移植案は [../notes/wasm-browser-notes.md](../notes/wasm-browser-notes.md) を参照。
 
 ## 設計（DESIGN.md）からの差分
 
