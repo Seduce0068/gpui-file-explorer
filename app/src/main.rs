@@ -150,6 +150,53 @@ enum ViewMode {
     Search,
 }
 
+/// Message + optional hint shown in the middle of the list area when there is
+/// nothing to render (or an error/loading state is active).
+fn empty_state_message(
+    view: ViewMode,
+    loading: bool,
+    error: Option<&str>,
+    all_entries: usize,
+    entries: usize,
+) -> Option<(String, Option<String>)> {
+    if let Some(error) = error {
+        return Some((format!("エラー: {error}"), None));
+    }
+    if loading {
+        return Some(("読み込み中…".to_string(), None));
+    }
+    if all_entries == 0 {
+        return Some(match view {
+            ViewMode::Trash => (
+                "ゴミ箱は空です".to_string(),
+                Some("削除した項目はここに表示されます（完全削除は未対応）".to_string()),
+            ),
+            ViewMode::Search => (
+                "一致する項目がありません".to_string(),
+                Some("検索語や絞り込みを変更してください".to_string()),
+            ),
+            ViewMode::Directory => (
+                "このフォルダは空です".to_string(),
+                Some("ここにファイルをドロップするとコピーできます".to_string()),
+            ),
+        });
+    }
+    if entries == 0 {
+        return Some(if view == ViewMode::Search {
+            (
+                "絞り込みで全て除外されました".to_string(),
+                Some("種別や拡張子の条件を変更してください".to_string()),
+            )
+        } else {
+            (
+                format!("隠しファイル {all_entries} 件を非表示にしています（Ctrl+H で表示）"),
+                None,
+            )
+        });
+    }
+    None
+}
+
 /// One sidebar "place".
 ///
 /// Paths are resolved **once** (at startup) and their existence re-checked only
@@ -2689,30 +2736,14 @@ impl Explorer {
     }
 
     fn overlay(&self) -> Option<Div> {
-        let (message, color) = if let Some(error) = &self.error {
-            (format!("エラー: {error}"), C_RED)
-        } else if self.loading {
-            ("読み込み中…".to_string(), C_MUTED)
-        } else if self.all_entries.is_empty() {
-            (
-                if self.view == ViewMode::Trash {
-                    "ゴミ箱は空です".to_string()
-                } else {
-                    "このフォルダは空です".to_string()
-                },
-                C_MUTED,
-            )
-        } else if self.entries.is_empty() {
-            (
-                format!(
-                    "隠しファイル {} 件を非表示にしています（Ctrl+H で表示）",
-                    self.all_entries.len()
-                ),
-                C_MUTED,
-            )
-        } else {
-            return None;
-        };
+        let (message, hint) = empty_state_message(
+            self.view,
+            self.loading,
+            self.error.as_deref(),
+            self.all_entries.len(),
+            self.entries.len(),
+        )?;
+        let color = if self.error.is_some() { C_RED } else { C_MUTED };
         Some(
             div()
                 .absolute()
@@ -2726,9 +2757,14 @@ impl Explorer {
                     div()
                         .max_w(px(640.0))
                         .px_4()
-                        .text_sm()
-                        .text_color(rgb(color))
-                        .child(message),
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_1()
+                        .child(div().text_sm().text_color(rgb(color)).child(message))
+                        .children(
+                            hint.map(|hint| div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
+                        ),
                 ),
         )
     }
@@ -3873,6 +3909,40 @@ mod tests {
         assert!(message.contains("1 フォルダ"), "{message}");
         assert!(message.contains("1 件スキップ"), "{message}");
         assert!(message.ends_with(": dest"), "{message}");
+    }
+
+    #[test]
+    fn empty_state_covers_all_views() {
+        use super::empty_state_message;
+        use super::ViewMode;
+
+        let (title, hint) = empty_state_message(ViewMode::Directory, false, None, 0, 0).unwrap();
+        assert_eq!(title, "このフォルダは空です");
+        assert!(hint.unwrap().contains("ドロップ"));
+
+        let (title, hint) = empty_state_message(ViewMode::Search, false, None, 0, 0).unwrap();
+        assert_eq!(title, "一致する項目がありません");
+        assert!(hint.unwrap().contains("検索語"));
+
+        let (title, hint) = empty_state_message(ViewMode::Search, false, None, 5, 0).unwrap();
+        assert_eq!(title, "絞り込みで全て除外されました");
+        assert!(hint.unwrap().contains("拡張子"));
+
+        let (title, hint) = empty_state_message(ViewMode::Trash, false, None, 0, 0).unwrap();
+        assert_eq!(title, "ゴミ箱は空です");
+        assert!(hint.unwrap().contains("完全削除"));
+
+        let (title, _) = empty_state_message(ViewMode::Directory, false, None, 5, 0).unwrap();
+        assert!(title.contains("隠しファイル 5 件"));
+
+        let (title, _) = empty_state_message(ViewMode::Directory, true, None, 0, 0).unwrap();
+        assert_eq!(title, "読み込み中…");
+
+        let (title, _) =
+            empty_state_message(ViewMode::Directory, false, Some("読めません"), 0, 0).unwrap();
+        assert_eq!(title, "エラー: 読めません");
+
+        assert!(empty_state_message(ViewMode::Directory, false, None, 3, 2).is_none());
     }
 
     #[test]
