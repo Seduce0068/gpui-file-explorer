@@ -21,7 +21,7 @@ mod watcher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::Button;
@@ -210,6 +210,17 @@ struct RenameState {
     error: Option<String>,
 }
 
+/// Snapshot of a file/directory for the read-only properties dialog.
+struct PropsState {
+    name: String,
+    path: PathBuf,
+    kind: &'static str,
+    size: Option<u64>,
+    modified: Option<SystemTime>,
+    permissions: Option<String>,
+    symlink_target: Option<PathBuf>,
+}
+
 /// Boxed context-menu builder, used where the trash and directory views need
 /// different menus for the same row.
 type MenuBuilder = Box<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
@@ -288,6 +299,8 @@ struct Explorer {
     op_progress: Option<(u64, u64)>,
     /// Inline rename dialog (F2 / context menu). `None` when closed.
     renaming: Option<RenameState>,
+    /// Read-only properties dialog state.
+    properties: Option<PropsState>,
     /// Set after a successful rename; the next render refocuses the list.
     focus_list_on_next_render: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_RENAME=1` opens the rename dialog
@@ -313,6 +326,9 @@ struct Explorer {
     /// first load; the query comes from `GPUI_FE_DEBUG_SEARCH_QUERY` (default
     /// `txt`). Used for search screenshots.
     debug_search_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_PROPERTIES=1` opens the
+    /// properties dialog for the first entry once after loading.
+    debug_properties_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_TABS=1` opens extra tabs once
     /// after startup (tab bar screenshot).
     debug_tabs_once: bool,
@@ -399,6 +415,7 @@ impl Explorer {
             op_cancel: None,
             op_progress: None,
             renaming: None,
+            properties: None,
             focus_list_on_next_render: false,
             debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
             debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
@@ -407,6 +424,7 @@ impl Explorer {
             debug_progress_once: std::env::var_os("GPUI_FE_DEBUG_PROGRESS").is_some(),
             debug_grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
             debug_search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
+            debug_properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
             debug_tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
             debug_drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
             debug_drop_target: std::env::var("GPUI_FE_DEBUG_DROP_TARGET").ok(),
@@ -1139,6 +1157,12 @@ impl Explorer {
             }
             return;
         }
+        if self.properties.is_some() {
+            if event.keystroke.key == "escape" {
+                self.close_properties(cx);
+            }
+            return;
+        }
         if self.view == ViewMode::Search {
             if event.keystroke.key == "escape" {
                 self.close_search(cx);
@@ -1154,6 +1178,7 @@ impl Explorer {
                 ("a", false) => self.select_all(cx),
                 ("d", false) => self.toggle_current_bookmark(cx),
                 ("f", false) => self.open_search(window, cx),
+                ("i", false) => self.open_selected_properties(cx),
                 ("t", false) => self.new_tab(cx),
                 ("w", false) => self.close_tab(cx),
                 ("tab", false) => self.next_tab(cx),
@@ -1632,6 +1657,185 @@ impl Explorer {
             self.status = format!("{missing} 件は存在しないためスキップします");
         }
         self.run_transfer(destination, existing, false, cx);
+    }
+
+    // -------------------------------------------------------------- properties
+
+    /// Open the read-only properties dialog for `path`.
+    ///
+    /// Metadata is read once here (never from render). Symlinks are inspected
+    /// with `symlink_metadata` and their target with `read_link`.
+    fn open_properties(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let link_metadata = std::fs::symlink_metadata(&path);
+        let Ok(link_metadata) = link_metadata else {
+            self.status = format!("対象が存在しません: {}", display_path(&path));
+            self.reload(cx);
+            return;
+        };
+        let is_symlink = link_metadata.file_type().is_symlink();
+        let metadata = std::fs::metadata(&path)
+            .ok()
+            .or(Some(link_metadata.clone()));
+        let kind = if is_symlink {
+            "シンボリックリンク"
+        } else if link_metadata.is_dir() {
+            "フォルダ"
+        } else {
+            "ファイル"
+        };
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| display_path(&path));
+        let size = if link_metadata.is_dir() {
+            None
+        } else {
+            metadata.as_ref().map(|metadata| metadata.len())
+        };
+        let modified = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok());
+        #[cfg(unix)]
+        let permissions = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata
+                .as_ref()
+                .map(|metadata| model::permissions_string(metadata.permissions().mode() & 0o777))
+        };
+        #[cfg(not(unix))]
+        let permissions: Option<String> = None;
+        let symlink_target = if is_symlink {
+            std::fs::read_link(&path).ok()
+        } else {
+            None
+        };
+        self.properties = Some(PropsState {
+            name,
+            path,
+            kind,
+            size,
+            modified,
+            permissions,
+            symlink_target,
+        });
+        cx.notify();
+    }
+
+    fn open_selected_properties(&mut self, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Directory {
+            self.status = "プロパティはディレクトリ表示でのみ表示できます".to_string();
+            cx.notify();
+            return;
+        }
+        let Some(entry) = self.entries.get(self.selected) else {
+            return;
+        };
+        self.open_properties(entry.path.clone(), cx);
+    }
+
+    fn close_properties(&mut self, cx: &mut Context<Self>) {
+        self.properties = None;
+        cx.notify();
+    }
+
+    /// Read-only properties dialog.
+    fn properties_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let props = self.properties.as_ref()?;
+        let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.close_properties(cx);
+        });
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.close_properties(cx);
+                }),
+            );
+        let row = |label: &'static str, value: String| {
+            div()
+                .flex()
+                .gap_3()
+                .items_start()
+                .child(
+                    div()
+                        .w(px(96.0))
+                        .text_xs()
+                        .text_color(rgb(C_MUTED))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(rgb(C_TEXT))
+                        .child(value),
+                )
+        };
+        let mut form = div()
+            .w(px(560.0))
+            .bg(rgb(C_SURFACE))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(C_OVERLAY))
+            .shadow_lg()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("プロパティ"),
+            )
+            .child(row("名前", props.name.clone()))
+            .child(row("パス", display_path(&props.path)))
+            .child(row("種類", props.kind.to_string()));
+        if let Some(size) = props.size {
+            form = form.child(row(
+                "サイズ",
+                format!("{}（{size} バイト）", human_size(size)),
+            ));
+        } else {
+            form = form.child(row("サイズ", "-".to_string()));
+        }
+        form = form.child(row("更新日時", human_datetime(props.modified)));
+        if let Some(permissions) = &props.permissions {
+            form = form.child(row("パーミッション", permissions.clone()));
+        }
+        if let Some(target) = &props.symlink_target {
+            form = form.child(row("リンク先", display_path(target)));
+        }
+        form = form.child(
+            div()
+                .flex()
+                .justify_end()
+                .child(Button::new("props-close").label("閉じる").on_click(close)),
+        );
+        form = form.child(
+            div()
+                .text_xs()
+                .text_color(rgb(C_MUTED))
+                .child("Esc で閉じる（読み取り専用）"),
+        );
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(form),
+        )
     }
 
     // ------------------------------------------------------------------ rename
@@ -2292,6 +2496,7 @@ impl Explorer {
             let open_weak = weak.clone();
             let reveal_weak = weak.clone();
             let copy_weak = weak.clone();
+            let props_weak = weak.clone();
             let copy_sel_weak = weak.clone();
             let cut_sel_weak = weak.clone();
             let paste_weak = weak.clone();
@@ -2302,6 +2507,7 @@ impl Explorer {
             let open_path = path.clone();
             let reveal_path = path.clone();
             let copy_path = path.clone();
+            let props_path = path.clone();
             let trash_paths = batch_paths.clone();
             let open_label = if is_dir {
                 "開く"
@@ -2331,6 +2537,14 @@ impl Explorer {
                     .on_click(move |_, _window, cx| {
                         let target = copy_path.clone();
                         let _ = copy_weak.update(cx, |this, cx| this.copy_path(target, cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("プロパティ")
+                    .icon(Icon::new(IconName::Info))
+                    .on_click(move |_, _window, cx| {
+                        let target = props_path.clone();
+                        let _ = props_weak.update(cx, |this, cx| this.open_properties(target, cx));
                     }),
             )
             .item(
@@ -3408,6 +3622,11 @@ impl Render for Explorer {
             window.on_next_frame(move |window, cx| handle.focus(window, cx));
         }
         if !self.loading {
+            if self.debug_properties_once && !self.loading && !self.entries.is_empty() {
+                self.debug_properties_once = false;
+                let path = self.entries[0].path.clone();
+                self.open_properties(path, cx);
+            }
             if let Some(path) = self.debug_drop_path.take() {
                 let source = PathBuf::from(path);
                 let target = self.debug_drop_target.take().and_then(|name| {
@@ -3469,6 +3688,7 @@ impl Render for Explorer {
         let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar(cx);
         let rename_dialog = self.rename_dialog(cx);
+        let properties_dialog = self.properties_dialog(cx);
 
         let grid_mode = self.settings.view == LayoutMode::Icons;
         // Column headers only make sense in the details list.
@@ -3552,6 +3772,7 @@ impl Render for Explorer {
             .child(body)
             .child(self.status_bar())
             .children(rename_dialog)
+            .children(properties_dialog)
     }
 }
 
