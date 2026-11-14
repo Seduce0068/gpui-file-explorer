@@ -276,6 +276,8 @@ struct Explorer {
     tabs: Tabs,
     /// Existing recent directories (pruned on reload; never probed in render).
     recent: Vec<PathBuf>,
+    /// Existing bookmarked directories (pruned on reload; never probed in render).
+    bookmarks: Vec<PathBuf>,
     /// Internal cut/copy clipboard (single entry in P1).
     clipboard: Option<ClipboardSlot>,
     /// Running paste operation; dropping the task cancels it.
@@ -340,6 +342,14 @@ impl Explorer {
             }
             settings.record_recent(&PathBuf::from("/"));
         }
+        if std::env::var_os("GPUI_FE_DEBUG_BOOKMARKS").is_some() {
+            settings.bookmarks.clear();
+            settings.toggle_bookmark(&start_dir);
+            if let Some(home) = dirs::home_dir() {
+                settings.toggle_bookmark(&home);
+            }
+            settings.toggle_bookmark(&PathBuf::from("/"));
+        }
 
         let (watch_tx, watch_rx) = async_channel::unbounded::<()>();
         let watcher = DirWatcher::new(move || {
@@ -383,6 +393,7 @@ impl Explorer {
             mounts: mounts::list_mounts(),
             tabs,
             recent: Vec::new(),
+            bookmarks: Vec::new(),
             clipboard: None,
             op_task: None,
             op_cancel: None,
@@ -431,6 +442,7 @@ impl Explorer {
         self.refresh_places();
         self.refresh_mounts();
         self.refresh_recent();
+        self.refresh_bookmarks();
         self.update_watcher();
         if self.view == ViewMode::Trash {
             self.reload_trash(cx);
@@ -645,6 +657,34 @@ impl Explorer {
     fn refresh_recent(&mut self) {
         self.settings.recent_dirs.retain(|path| path.is_dir());
         self.recent = self.settings.recent_dirs.clone();
+    }
+
+    /// Re-check which bookmarks still exist. Called from `reload` only — never
+    /// from render.
+    fn refresh_bookmarks(&mut self) {
+        self.settings.bookmarks.retain(|path| path.is_dir());
+        self.bookmarks = self.settings.bookmarks.clone();
+    }
+
+    /// Toggle a bookmark for the current directory (Ctrl+D).
+    fn toggle_current_bookmark(&mut self, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Directory {
+            self.status = "ブックマークはディレクトリ表示でのみ操作できます".to_string();
+            cx.notify();
+            return;
+        }
+        let path = self.cwd.clone();
+        let was_bookmarked = self.settings.is_bookmarked(&path);
+        let added = self.settings.toggle_bookmark(&path);
+        debug_assert_eq!(added, !was_bookmarked);
+        self.settings.save();
+        self.refresh_bookmarks();
+        self.status = if added {
+            format!("ブックマークに追加しました: {}", display_path(&path))
+        } else {
+            format!("ブックマークを解除しました: {}", display_path(&path))
+        };
+        cx.notify();
     }
 
     /// Re-read the mount list. Called from `reload` only — never from render.
@@ -1112,6 +1152,7 @@ impl Explorer {
             match (key, modifiers.shift) {
                 ("h", _) => self.toggle_hidden(cx),
                 ("a", false) => self.select_all(cx),
+                ("d", false) => self.toggle_current_bookmark(cx),
                 ("f", false) => self.open_search(window, cx),
                 ("t", false) => self.new_tab(cx),
                 ("w", false) => self.close_tab(cx),
@@ -2856,6 +2897,43 @@ impl Explorer {
                     }));
             }
             sidebar = sidebar.child(row);
+        }
+        if !self.bookmarks.is_empty() {
+            sidebar = sidebar.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("ブックマーク"),
+            );
+            for (index, path) in self.bookmarks.iter().enumerate() {
+                let active = self.view == ViewMode::Directory && path == &self.cwd;
+                let label = tab_label(path);
+                let target = path.clone();
+                sidebar = sidebar.child(
+                    div()
+                        .id(32_000 + index as u64)
+                        .mx_2()
+                        .px_2()
+                        .h(px(30.0))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(rgb(C_SUBTEXT))
+                        .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(C_SURFACE)))
+                        .on_click(cx.listener(move |this, _event, window, cx| {
+                            this.focus_handle.focus(window, cx);
+                            this.navigate_to(target.clone(), cx);
+                        }))
+                        .child(Icon::new(IconName::Star))
+                        .child(div().min_w_0().truncate().child(label)),
+                );
+            }
         }
         let recent = &self.recent;
         if !recent.is_empty() {
