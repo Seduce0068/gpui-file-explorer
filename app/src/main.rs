@@ -12,6 +12,7 @@ mod mounts;
 mod ops;
 mod search;
 mod settings;
+mod tabs;
 mod trash_view;
 mod watcher;
 
@@ -39,6 +40,7 @@ use crate::mounts::MountPoint;
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use crate::search::{search_by_name, SearchOptions};
 use crate::settings::{Settings, ViewMode as LayoutMode};
+use crate::tabs::{Tab, Tabs};
 use crate::watcher::DirWatcher;
 
 // Catppuccin Mocha-ish palette.
@@ -99,6 +101,16 @@ fn display_name_for(entry: &Entry, view: ViewMode, root: &std::path::Path) -> St
         }
     }
     entry.name.clone()
+}
+
+/// Label for a tab: the directory's last component, or "ルート" for `/`.
+fn tab_label(path: &std::path::Path) -> String {
+    if path == std::path::Path::new("/") {
+        return "ルート".to_string();
+    }
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| display_path(path))
 }
 
 /// One-line result message for a completed copy/move operation.
@@ -251,6 +263,8 @@ struct Explorer {
     places: Vec<Place>,
     /// Visible mount points (Linux: /proc/mounts). Refreshed on reload only.
     mounts: Vec<MountPoint>,
+    /// Open tabs (always at least one); the active tab mirrors `cwd`/`history`.
+    tabs: Tabs,
     /// Internal cut/copy clipboard (single entry in P1).
     clipboard: Option<ClipboardSlot>,
     /// Running paste operation; dropping the task cancels it.
@@ -286,6 +300,9 @@ struct Explorer {
     /// first load; the query comes from `GPUI_FE_DEBUG_SEARCH_QUERY` (default
     /// `txt`). Used for search screenshots.
     debug_search_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_TABS=1` opens extra tabs once
+    /// after startup (tab bar screenshot).
+    debug_tabs_once: bool,
 }
 
 impl Explorer {
@@ -304,6 +321,7 @@ impl Explorer {
         });
 
         let places = build_places();
+        let tabs = Tabs::new(start_dir.clone());
         let mut this = Self {
             settings,
             cwd: start_dir,
@@ -333,6 +351,7 @@ impl Explorer {
             suppress_until: None,
             places,
             mounts: mounts::list_mounts(),
+            tabs,
             clipboard: None,
             op_task: None,
             op_cancel: None,
@@ -346,6 +365,7 @@ impl Explorer {
             debug_progress_once: std::env::var_os("GPUI_FE_DEBUG_PROGRESS").is_some(),
             debug_grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
             debug_search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
+            debug_tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -665,6 +685,151 @@ impl Explorer {
         self.suppress_until = Some(Instant::now() + duration);
     }
 
+    // -------------------------------------------------------------------- tabs
+
+    /// Persist the current directory/history into the active tab.
+    fn sync_active_tab(&mut self) {
+        self.tabs.sync(self.cwd.clone(), self.history.clone());
+    }
+
+    /// Load a tab's directory/history into the explorer.
+    fn load_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        self.clear_search();
+        self.view = ViewMode::Directory;
+        self.cwd = tab.cwd;
+        self.history = tab.history;
+        self.selection.clear();
+        self.selected = 0;
+        self.pending_select = None;
+        self.error = None;
+        self.status.clear();
+        self.settings.last_dir = Some(self.cwd.clone());
+        self.settings.save();
+        self.reload(cx);
+    }
+
+    fn switch_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index == self.tabs.active_index() {
+            return;
+        }
+        self.sync_active_tab();
+        if let Some(tab) = self.tabs.activate(index) {
+            self.load_tab(tab, cx);
+        }
+    }
+
+    fn new_tab(&mut self, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Directory {
+            self.status = "タブはディレクトリ表示でのみ操作できます".to_string();
+            cx.notify();
+            return;
+        }
+        self.sync_active_tab();
+        self.tabs.new_tab(self.cwd.clone());
+        let tab = self.tabs.active().clone();
+        self.load_tab(tab, cx);
+    }
+
+    fn close_tab(&mut self, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Directory {
+            self.status = "タブはディレクトリ表示でのみ操作できます".to_string();
+            cx.notify();
+            return;
+        }
+        if self.tabs.len() <= 1 {
+            self.status = "最後のタブは閉じられません".to_string();
+            cx.notify();
+            return;
+        }
+        self.sync_active_tab();
+        if let Some(tab) = self.tabs.close_active() {
+            self.load_tab(tab, cx);
+        }
+    }
+
+    fn next_tab(&mut self, cx: &mut Context<Self>) {
+        self.sync_active_tab();
+        let tab = self.tabs.next();
+        self.load_tab(tab, cx);
+    }
+
+    fn prev_tab(&mut self, cx: &mut Context<Self>) {
+        self.sync_active_tab();
+        let tab = self.tabs.prev();
+        self.load_tab(tab, cx);
+    }
+
+    /// Horizontal tab bar (directory view only).
+    fn tab_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.view != ViewMode::Directory {
+            return None;
+        }
+        let mut bar = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_3()
+            .py_1()
+            .bg(rgb(C_BASE))
+            .border_b_1()
+            .border_color(rgb(C_SURFACE))
+            .overflow_hidden();
+        for (index, tab) in self.tabs.tabs().iter().enumerate() {
+            let active = index == self.tabs.active_index();
+            let label = tab_label(&tab.cwd);
+            let mut item = div()
+                .id(("tab", index))
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .text_sm()
+                .cursor_pointer()
+                .when(active, |item| item.bg(rgb(C_SURFACE)))
+                .text_color(if active { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
+                .hover(|style| style.bg(rgb(C_SURFACE)))
+                .on_click(cx.listener(move |this, _event, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                    this.switch_tab(index, cx);
+                }))
+                .child(div().max_w(px(160.0)).truncate().child(label));
+            if active {
+                item = item.child(
+                    div()
+                        .id("tab-close")
+                        .px_1()
+                        .rounded_md()
+                        .hover(|style| style.bg(rgb(C_OVERLAY)))
+                        .child("×")
+                        .on_click(cx.listener(|this, _event, window, cx| {
+                            this.focus_handle.focus(window, cx);
+                            this.close_tab(cx);
+                        })),
+                );
+            }
+            bar = bar.child(item);
+        }
+        bar = bar.child(
+            div()
+                .id("tab-new")
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .text_sm()
+                .text_color(rgb(C_SUBTEXT))
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(C_SURFACE)))
+                .child("+")
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                    this.new_tab(cx);
+                })),
+        );
+        Some(bar)
+    }
+
     // ------------------------------------------------------------- navigation
 
     fn set_cwd(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -681,6 +846,7 @@ impl Explorer {
         self.status.clear();
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.save();
+        self.tabs.sync(self.cwd.clone(), self.history.clone());
         self.reload(cx);
     }
 
@@ -904,6 +1070,10 @@ impl Explorer {
                 ("h", _) => self.toggle_hidden(cx),
                 ("a", false) => self.select_all(cx),
                 ("f", false) => self.open_search(window, cx),
+                ("t", false) => self.new_tab(cx),
+                ("w", false) => self.close_tab(cx),
+                ("tab", false) => self.next_tab(cx),
+                ("tab", true) => self.prev_tab(cx),
                 ("1", false) => self.set_view(LayoutMode::Details, cx),
                 ("2", false) => self.set_view(LayoutMode::Icons, cx),
                 ("r", _) => self.reload(cx),
@@ -2790,6 +2960,16 @@ impl Render for Explorer {
             let handle = self.focus_handle.clone();
             window.on_next_frame(move |window, cx| handle.focus(window, cx));
         }
+        if self.debug_tabs_once && self.view == ViewMode::Directory && !self.loading {
+            self.debug_tabs_once = false;
+            self.sync_active_tab();
+            if let Some(home) = dirs::home_dir() {
+                self.tabs.new_tab(home);
+            }
+            self.tabs.new_tab(PathBuf::from("/"));
+            let tab = self.tabs.active().clone();
+            self.load_tab(tab, cx);
+        }
         if self.debug_search_once && self.view == ViewMode::Directory && !self.loading {
             self.debug_search_once = false;
             let query =
@@ -2802,6 +2982,7 @@ impl Render for Explorer {
             }
             self.run_search(cx);
         }
+        let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar();
         let rename_dialog = self.rename_dialog(cx);
 
@@ -2879,6 +3060,7 @@ impl Render for Explorer {
             .bg(rgb(C_BASE))
             .text_color(rgb(C_TEXT))
             .child(self.toolbar(cx))
+            .children(tab_bar)
             .children(search_bar)
             .child(body)
             .child(self.status_bar())
