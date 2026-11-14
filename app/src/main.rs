@@ -305,6 +305,9 @@ struct Explorer {
     /// Development-only hook: `GPUI_FE_DEBUG_TABS=1` opens extra tabs once
     /// after startup (tab bar screenshot).
     debug_tabs_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_DROP_PATH=<file>` feeds one path
+    /// through the external-drop handler once (no OS drag needed).
+    debug_drop_path: Option<String>,
 }
 
 impl Explorer {
@@ -378,6 +381,7 @@ impl Explorer {
             debug_grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
             debug_search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
             debug_tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
+            debug_drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -1315,7 +1319,6 @@ impl Explorer {
 
         let cwd = self.cwd.clone();
         let cut = slot.cut;
-        let verb = if cut { "移動" } else { "コピー" };
 
         // Drop missing sources and same-directory cut sources; keep the rest.
         let mut missing: Vec<PathBuf> = Vec::new();
@@ -1348,6 +1351,17 @@ impl Explorer {
             return;
         }
 
+        self.run_transfer(paths, cut, cx);
+    }
+
+    /// Copy (`cut == false`) or move (`cut == true`) `paths` into the current
+    /// directory on the background executor.
+    ///
+    /// Safety: destinations always use [`ConflictPolicy::Rename`], so an
+    /// existing file is never overwritten; `Esc` cancels cooperatively.
+    fn run_transfer(&mut self, paths: Vec<PathBuf>, cut: bool, cx: &mut Context<Self>) {
+        let cwd = self.cwd.clone();
+        let verb = if cut { "移動" } else { "コピー" };
         self.status = format!("{verb}中…（Esc でキャンセル）");
         cx.notify();
 
@@ -1483,6 +1497,47 @@ impl Explorer {
         });
         self.op_task = Some(task);
         cx.notify();
+    }
+
+    /// Copy files/directories dropped from the OS into the current directory.
+    ///
+    /// Safety: a drop is always a **copy** (never a move) and uses the same
+    /// `ConflictPolicy::Rename` pipeline as paste, so nothing is overwritten.
+    /// Drops are ignored in the trash/search views and while another
+    /// operation is running.
+    fn drop_external(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.view != ViewMode::Directory {
+            self.status = "ドロップはディレクトリ表示でのみ使えます".to_string();
+            cx.notify();
+            return;
+        }
+        if self.op_task.is_some() {
+            self.status = "ファイル操作を実行中です（Esc でキャンセル）".to_string();
+            cx.notify();
+            return;
+        }
+        let mut existing: Vec<PathBuf> = Vec::new();
+        let mut missing = 0usize;
+        for path in paths {
+            if path.exists() || path.is_symlink() {
+                existing.push(path);
+            } else {
+                missing += 1;
+            }
+        }
+        if existing.is_empty() {
+            self.status = if missing > 0 {
+                "ドロップされた項目が見つかりません".to_string()
+            } else {
+                "ドロップされた項目がありません".to_string()
+            };
+            cx.notify();
+            return;
+        }
+        if missing > 0 {
+            self.status = format!("{missing} 件は存在しないためスキップします");
+        }
+        self.run_transfer(existing, false, cx);
     }
 
     // ------------------------------------------------------------------ rename
@@ -2309,6 +2364,8 @@ impl Explorer {
         } else {
             vec![entry.path.clone()]
         };
+        let drag_paths = batch_paths.clone();
+        let drag_out = this.view == ViewMode::Directory;
         let context_menu: MenuBuilder = if this.view == ViewMode::Trash {
             Box::new(Self::trash_entry_menu(entity, batch_paths))
         } else {
@@ -2347,6 +2404,14 @@ impl Explorer {
                 })
                 .on_click(click)
                 .on_mouse_down(MouseButton::Right, right_click)
+                .when(drag_out, |row| {
+                    row.on_drag(drag_paths, |_paths, _, _, cx| cx.new(|_| Empty))
+                        .external_drag_payload(|paths: &Vec<PathBuf>, _window, _cx| {
+                            Some(ExternalDragPayload::Files(FileDragPaths::new(
+                                paths.iter().map(|path| (path.clone(), path.is_dir())),
+                            )))
+                        })
+                })
                 .context_menu(context_menu)
                 .child(
                     div()
@@ -2463,6 +2528,8 @@ impl Explorer {
         } else {
             vec![entry.path.clone()]
         };
+        let drag_paths = batch_paths.clone();
+        let drag_out = this.view == ViewMode::Directory;
         let context_menu: MenuBuilder = if this.view == ViewMode::Trash {
             Box::new(Self::trash_entry_menu(entity, batch_paths))
         } else {
@@ -2502,6 +2569,14 @@ impl Explorer {
                 })
                 .on_click(click)
                 .on_mouse_down(MouseButton::Right, right_click)
+                .when(drag_out, |cell| {
+                    cell.on_drag(drag_paths, |_paths, _, _, cx| cx.new(|_| Empty))
+                        .external_drag_payload(|paths: &Vec<PathBuf>, _window, _cx| {
+                            Some(ExternalDragPayload::Files(FileDragPaths::new(
+                                paths.iter().map(|path| (path.clone(), path.is_dir())),
+                            )))
+                        })
+                })
                 .context_menu(context_menu)
                 .child(
                     div()
@@ -3020,6 +3095,9 @@ impl Render for Explorer {
             let handle = self.focus_handle.clone();
             window.on_next_frame(move |window, cx| handle.focus(window, cx));
         }
+        if let Some(path) = self.debug_drop_path.take() {
+            self.drop_external(vec![PathBuf::from(path)], cx);
+        }
         if self.debug_tabs_once && self.view == ViewMode::Directory && !self.loading {
             self.debug_tabs_once = false;
             self.sync_active_tab();
@@ -3089,7 +3167,10 @@ impl Render for Explorer {
             .flex()
             .flex_col()
             .bg(rgb(C_BASE))
-            .child(list);
+            .child(list)
+            .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                this.drop_external(paths.paths().to_vec(), cx);
+            }));
         if let Some(overlay) = self.overlay() {
             list_area = list_area.child(overlay);
         }
