@@ -339,8 +339,8 @@ struct PreviewState {
     title: String,
     loading: bool,
     text: Option<String>,
-    /// Decoded image bytes plus their format (image preview only).
-    image: Option<(ImageFormat, Vec<u8>)>,
+    /// Ready-to-render image (content-sniffed format + bytes).
+    image: Option<preview::ImageBytes>,
     error: Option<String>,
     truncated: bool,
     size: u64,
@@ -484,6 +484,10 @@ struct Explorer {
     debug_location_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_PREVIEW=1` previews the first file.
     debug_preview_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_PREVIEW_REPORT=1` prints the
+    /// preview outcome (kind/format/size or error) once, for verification
+    /// without taking screenshots.
+    debug_preview_report: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_PROPERTIES_SIZE=1` starts the
     /// directory size calculation after opening the properties dialog.
     debug_properties_size: bool,
@@ -616,6 +620,7 @@ impl Explorer {
             debug_help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
             debug_location_once: std::env::var_os("GPUI_FE_DEBUG_LOCATION").is_some(),
             debug_preview_once: std::env::var_os("GPUI_FE_DEBUG_PREVIEW").is_some(),
+            debug_preview_report: std::env::var_os("GPUI_FE_DEBUG_PREVIEW_REPORT").is_some(),
             debug_properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
             debug_ephemeral: [
                 "GPUI_FE_DEBUG_TABS",
@@ -632,6 +637,7 @@ impl Explorer {
                 "GPUI_FE_DEBUG_TAB_MOVE",
                 "GPUI_FE_DEBUG_LOCATION",
                 "GPUI_FE_DEBUG_PREVIEW",
+                "GPUI_FE_DEBUG_PREVIEW_REPORT",
             ]
             .iter()
             .any(|name| std::env::var_os(name).is_some()),
@@ -1976,8 +1982,10 @@ impl Explorer {
         cx.notify();
         let background = cx.background_spawn(async move {
             match image_format {
-                Some(format) => preview::read_image_preview(&path, preview::MAX_IMAGE_BYTES)
-                    .map(|bytes| (Some((format, bytes)), None)),
+                Some(format) => {
+                    preview::read_image_preview(&path, format, preview::MAX_IMAGE_BYTES)
+                        .map(|image| (Some(image), None))
+                }
                 None => {
                     let read = preview::read_preview(&path, preview::MAX_PREVIEW_BYTES)?;
                     Ok((None, Some(read)))
@@ -1992,10 +2000,29 @@ impl Explorer {
                 };
                 preview.loading = false;
                 preview.task = None;
+                if this.debug_preview_report {
+                    match &result {
+                        Ok((Some(image), _)) => eprintln!(
+                            "preview-report: ok kind=image format={:?} bytes={}",
+                            image.format,
+                            image.bytes.len()
+                        ),
+                        Ok((None, Some(read))) => eprintln!(
+                            "preview-report: ok kind=text bytes={} truncated={} chars={}",
+                            read.size,
+                            read.truncated,
+                            read.text.chars().count()
+                        ),
+                        Ok((None, None)) => {
+                            eprintln!("preview-report: ok kind=unknown")
+                        }
+                        Err(error) => eprintln!("preview-report: error {error}"),
+                    }
+                }
                 match result {
                     Ok((image, text)) => {
-                        if let Some((_, bytes)) = &image {
-                            preview.size = bytes.len() as u64;
+                        if let Some(image) = &image {
+                            preview.size = image.bytes.len() as u64;
                         }
                         preview.image = image;
                         if let Some(read) = text {
@@ -2078,9 +2105,18 @@ impl Explorer {
                             .truncate()
                             .child(preview.title.clone()),
                     )
-                    .child(div().text_xs().text_color(rgb(C_MUTED)).child(meta)),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if preview.error.is_some() {
+                                rgb(C_RED)
+                            } else {
+                                rgb(C_MUTED)
+                            })
+                            .child(meta),
+                    ),
             );
-        if let Some((format, bytes)) = &preview.image {
+        if let Some(image) = &preview.image {
             panel = panel.child(
                 div()
                     .id("preview-image")
@@ -2093,8 +2129,8 @@ impl Explorer {
                     .p_3()
                     .child(
                         gpui_kit::img(std::sync::Arc::new(gpui_kit::Image::from_bytes(
-                            *format,
-                            bytes.clone(),
+                            image.format,
+                            image.bytes.clone(),
                         )))
                         .max_h(px(440.0))
                         .max_w(px(740.0)),
