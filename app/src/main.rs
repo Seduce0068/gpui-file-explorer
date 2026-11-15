@@ -44,8 +44,8 @@ use crate::model::{
 use crate::mounts::MountPoint;
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use crate::search::{
-    filter_results, search_by_name, search_contents, ContentSearchOptions, SearchKind, SearchMode,
-    SearchOptions,
+    filter_results, merge_search_results, search_by_name, search_contents, search_roots,
+    ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
 };
 use crate::settings::{Settings, ViewMode as LayoutMode};
 use crate::tabs::{Tab, Tabs};
@@ -408,6 +408,7 @@ struct Explorer {
     search_ext_subscription: Option<Subscription>,
     search_kind: SearchKind,
     search_mode: SearchMode,
+    search_scope: SearchScope,
     search_query: String,
     search_task: Option<Task<()>>,
     search_cancel: Option<Arc<AtomicBool>>,
@@ -597,6 +598,7 @@ impl Explorer {
             search_ext_subscription: None,
             search_kind: SearchKind::All,
             search_mode: SearchMode::Name,
+            search_scope: SearchScope::Current,
             search_query: String::new(),
             search_task: None,
             search_cancel: None,
@@ -650,6 +652,7 @@ impl Explorer {
                 "GPUI_FE_DEBUG_RECENT",
                 "GPUI_FE_DEBUG_BOOKMARKS",
                 "GPUI_FE_DEBUG_SEARCH",
+                "GPUI_FE_DEBUG_SEARCH_SCOPE",
                 "GPUI_FE_DEBUG_GRID",
                 "GPUI_FE_DEBUG_PROPERTIES",
                 "GPUI_FE_DEBUG_PROPERTIES_SIZE",
@@ -3509,6 +3512,7 @@ impl Explorer {
         self.search_ext_subscription = Some(ext_subscription);
         self.search_kind = SearchKind::All;
         self.search_mode = SearchMode::Name;
+        self.search_scope = SearchScope::Current;
         self.search_query.clear();
         self.search_generation = self.search_generation.wrapping_add(1);
         self.view = ViewMode::Search;
@@ -3543,31 +3547,55 @@ impl Explorer {
         self.status = format!("検索中…「{query}」");
         cx.notify();
 
-        let root = self.cwd.clone();
         let include_hidden = self.settings.show_hidden;
         let mode = self.search_mode;
+        let scope = self.search_scope;
+        let tab_paths: Vec<PathBuf> = self.tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
+        let bookmarks = self.bookmarks.clone();
+        let cwd = self.cwd.clone();
+        let roots = search_roots(scope, &cwd, &tab_paths, &bookmarks);
         let cancel_for_task = cancel.clone();
         let background = cx.background_spawn(async move {
-            match mode {
-                SearchMode::Name => search_by_name(
-                    &root,
-                    &query,
-                    SearchOptions {
-                        include_hidden,
-                        ..Default::default()
-                    },
-                    &cancel_for_task,
-                ),
-                SearchMode::Content => search_contents(
-                    &root,
-                    &query,
-                    ContentSearchOptions {
-                        include_hidden,
-                        ..Default::default()
-                    },
-                    &cancel_for_task,
-                ),
+            let global_cap = 2_000usize;
+            let mut batches = Vec::with_capacity(roots.len());
+            let mut total = 0usize;
+            for root in &roots {
+                if cancel_for_task.load(std::sync::atomic::Ordering::SeqCst) || total >= global_cap
+                {
+                    break;
+                }
+                let remaining = global_cap.saturating_sub(total);
+                let per_root_cap = if roots.len() <= 1 {
+                    global_cap
+                } else {
+                    remaining.clamp(1, 500)
+                };
+                let batch = match mode {
+                    SearchMode::Name => search_by_name(
+                        root,
+                        &query,
+                        SearchOptions {
+                            include_hidden,
+                            max_results: per_root_cap,
+                            ..Default::default()
+                        },
+                        &cancel_for_task,
+                    ),
+                    SearchMode::Content => search_contents(
+                        root,
+                        &query,
+                        ContentSearchOptions {
+                            include_hidden,
+                            max_results: per_root_cap,
+                            ..Default::default()
+                        },
+                        &cancel_for_task,
+                    ),
+                };
+                total += batch.len();
+                batches.push(batch);
             }
+            merge_search_results(batches, global_cap)
         });
         let task = cx.spawn(async move |this, cx| {
             let entries = background.await;
@@ -3614,8 +3642,12 @@ impl Explorer {
         } else {
             ""
         };
+        let scope_label = match self.search_scope {
+            SearchScope::Current => String::new(),
+            scope => format!("・{}", scope.label()),
+        };
         self.status = format!(
-            "検索{mode_label}: 「{}」 {} 件",
+            "検索{mode_label}{scope_label}: 「{}」 {} 件",
             self.search_query,
             self.entries.len()
         );
@@ -3635,6 +3667,7 @@ impl Explorer {
         self.search_ext_subscription = None;
         self.search_kind = SearchKind::All;
         self.search_mode = SearchMode::Name;
+        self.search_scope = SearchScope::Current;
         self.search_query.clear();
     }
 
@@ -3680,6 +3713,34 @@ impl Explorer {
                         if mode == SearchMode::Content {
                             this.search_kind = SearchKind::All;
                         }
+                        this.run_search(cx);
+                    })),
+            );
+        }
+        let mut scopes = div().flex().items_center().gap_1();
+        for scope in [
+            SearchScope::Current,
+            SearchScope::OpenTabs,
+            SearchScope::Bookmarks,
+        ] {
+            let active = self.search_scope == scope;
+            scopes = scopes.child(
+                div()
+                    .id(("search-scope", scope as u64))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .when(active, |button| button.bg(rgb(C_SURFACE)))
+                    .text_color(if active { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
+                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .child(scope.label())
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        if this.search_scope == scope {
+                            return;
+                        }
+                        this.search_scope = scope;
                         this.run_search(cx);
                     })),
             );
@@ -3730,6 +3791,7 @@ impl Explorer {
                 .child(div().text_sm().text_color(rgb(C_SUBTEXT)).child("検索:"))
                 .child(div().flex_1().child(Input::new(input)))
                 .child(modes)
+                .child(scopes)
                 .children((self.search_mode == SearchMode::Name).then_some(kinds))
                 .children(extension_input)
                 .child(div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
@@ -5092,6 +5154,13 @@ impl Render for Explorer {
                     "files" => SearchKind::Files,
                     "dirs" => SearchKind::Dirs,
                     _ => SearchKind::All,
+                };
+            }
+            if let Ok(scope) = std::env::var("GPUI_FE_DEBUG_SEARCH_SCOPE") {
+                self.search_scope = match scope.as_str() {
+                    "tabs" => SearchScope::OpenTabs,
+                    "bookmarks" => SearchScope::Bookmarks,
+                    _ => SearchScope::Current,
                 };
             }
             if let Ok(extension) = std::env::var("GPUI_FE_DEBUG_SEARCH_EXT") {
