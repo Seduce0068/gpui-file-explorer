@@ -38,11 +38,66 @@ pub fn image_format_for_name(name: &str) -> Option<ImageFormat> {
     }
 }
 
+/// An image ready to render: the format that matches the **content**, plus the
+/// bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageBytes {
+    pub format: ImageFormat,
+    pub bytes: Vec<u8>,
+}
+
+/// Detect an image format from the file's leading bytes (magic numbers).
+///
+/// This is deliberately content-based: a file whose extension lies about its
+/// contents is still classified correctly, so the renderer never receives
+/// bytes in the wrong format (which would fail asynchronously in GPUI and leave
+/// the preview stuck on "loading").
+pub fn sniff_image_format(bytes: &[u8]) -> Option<ImageFormat> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return Some(ImageFormat::Png);
+    }
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some(ImageFormat::Jpeg);
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some(ImageFormat::Gif);
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some(ImageFormat::Webp);
+    }
+    if bytes.starts_with(b"BM") {
+        return Some(ImageFormat::Bmp);
+    }
+    if bytes.starts_with(&[b'I', b'I', 0x2a, 0x00]) || bytes.starts_with(&[b'M', b'M', 0x00, 0x2a])
+    {
+        return Some(ImageFormat::Tiff);
+    }
+    if bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        return Some(ImageFormat::Ico);
+    }
+    if bytes.len() >= 2 && bytes[0] == b'P' && matches!(bytes[1], b'1'..=b'6') {
+        return Some(ImageFormat::Pnm);
+    }
+    // SVG is text; look for the root element in the first KiB (it may follow an
+    // XML declaration or comments).
+    let head = &bytes[..bytes.len().min(1024)];
+    if let Ok(text) = std::str::from_utf8(head) {
+        if text.contains("<svg") {
+            return Some(ImageFormat::Svg);
+        }
+    }
+    None
+}
+
 /// Read an image file for preview, at most `max_bytes`.
 ///
 /// Safety: symlinks and non-files are refused, and the file size is checked
 /// before reading so a huge image is never loaded into memory.
-pub fn read_image_preview(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
+pub fn read_image_preview(
+    path: &Path,
+    expected: ImageFormat,
+    max_bytes: u64,
+) -> Result<ImageBytes, String> {
     let link_metadata =
         std::fs::symlink_metadata(path).map_err(|error| format!("読めません: {error}"))?;
     if link_metadata.file_type().is_symlink() {
@@ -57,7 +112,15 @@ pub fn read_image_preview(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String
             crate::model::human_size(max_bytes)
         ));
     }
-    std::fs::read(path).map_err(|error| format!("読み取りに失敗しました: {error}"))
+    let bytes = std::fs::read(path).map_err(|error| format!("読み取りに失敗しました: {error}"))?;
+    match sniff_image_format(&bytes) {
+        // Trust the content over the extension when they disagree.
+        Some(format) => Ok(ImageBytes { format, bytes }),
+        None => Err(format!(
+            "画像として読み取れません（拡張子は .{} ですが中身が一致しません）",
+            expected.extension()
+        )),
+    }
 }
 
 /// Result of reading a text preview.
@@ -98,7 +161,7 @@ pub fn read_preview(path: &Path, max_bytes: u64) -> Result<Preview, String> {
 
 #[cfg(test)]
 mod image_tests {
-    use super::{image_format_for_name, read_image_preview, MAX_IMAGE_BYTES};
+    use super::{image_format_for_name, read_image_preview, sniff_image_format, MAX_IMAGE_BYTES};
     use gpui_kit::ImageFormat;
     use std::fs;
     use std::path::PathBuf;
@@ -128,16 +191,81 @@ mod image_tests {
         assert_eq!(image_format_for_name("noextension"), None);
     }
 
+    const PNG_HEADER: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+    #[test]
+    fn sniffs_magic_numbers() {
+        assert_eq!(sniff_image_format(&PNG_HEADER), Some(ImageFormat::Png));
+        assert_eq!(
+            sniff_image_format(&[0xff, 0xd8, 0xff, 0xe0]),
+            Some(ImageFormat::Jpeg)
+        );
+        assert_eq!(sniff_image_format(b"GIF89a..."), Some(ImageFormat::Gif));
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0, 0, 0, 0]);
+        webp.extend_from_slice(b"WEBP");
+        assert_eq!(sniff_image_format(&webp), Some(ImageFormat::Webp));
+        assert_eq!(sniff_image_format(b"BM....."), Some(ImageFormat::Bmp));
+        assert_eq!(
+            sniff_image_format(&[b'I', b'I', 0x2a, 0x00]),
+            Some(ImageFormat::Tiff)
+        );
+        assert_eq!(
+            sniff_image_format(&[0x00, 0x00, 0x01, 0x00]),
+            Some(ImageFormat::Ico)
+        );
+        assert_eq!(
+            sniff_image_format(
+                b"P6
+1 1
+255
+"
+            ),
+            Some(ImageFormat::Pnm)
+        );
+        assert_eq!(
+            sniff_image_format(br#"<?xml version="1.0"?><svg xmlns="..."></svg>"#),
+            Some(ImageFormat::Svg)
+        );
+        assert_eq!(sniff_image_format(b"hello world"), None);
+        assert_eq!(sniff_image_format(b""), None);
+    }
+
+    #[test]
+    fn content_wins_over_a_wrong_extension() {
+        let dir = scratch("mismatch");
+        // A PNG that claims to be a .jpg.
+        let path = dir.join("actually-png.jpg");
+        fs::write(&path, PNG_HEADER).unwrap();
+        let read = read_image_preview(&path, ImageFormat::Jpeg, MAX_IMAGE_BYTES).unwrap();
+        assert_eq!(read.format, ImageFormat::Png);
+        assert_eq!(read.bytes.len(), 8);
+
+        // A text file that claims to be an image.
+        let fake = dir.join("not-an-image.png");
+        fs::write(&fake, b"just text, no magic").unwrap();
+        assert!(read_image_preview(&fake, ImageFormat::Png, MAX_IMAGE_BYTES).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn reads_within_limit_and_rejects_oversized() {
         let dir = scratch("limit");
         let path = dir.join("a.png");
-        fs::write(&path, [0x89, b'P', b'N', b'G', 0, 1, 2, 3]).unwrap();
-        assert_eq!(read_image_preview(&path, MAX_IMAGE_BYTES).unwrap().len(), 8);
+        fs::write(&path, PNG_HEADER).unwrap();
+        assert_eq!(
+            read_image_preview(&path, ImageFormat::Png, MAX_IMAGE_BYTES)
+                .unwrap()
+                .bytes
+                .len(),
+            8
+        );
 
         let big = dir.join("big.png");
-        fs::write(&big, vec![0u8; 64]).unwrap();
-        assert!(read_image_preview(&big, 8).is_err());
+        let mut bytes = PNG_HEADER.to_vec();
+        bytes.extend(std::iter::repeat_n(0u8, 56));
+        fs::write(&big, bytes).unwrap();
+        assert!(read_image_preview(&big, ImageFormat::Png, 8).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -145,14 +273,16 @@ mod image_tests {
     fn refuses_symlinks_and_missing_files() {
         let dir = scratch("types");
         let file = dir.join("real.png");
-        fs::write(&file, [1, 2, 3]).unwrap();
+        fs::write(&file, PNG_HEADER).unwrap();
         #[cfg(unix)]
         {
             let link = dir.join("link.png");
             std::os::unix::fs::symlink(&file, &link).unwrap();
-            assert!(read_image_preview(&link, MAX_IMAGE_BYTES).is_err());
+            assert!(read_image_preview(&link, ImageFormat::Png, MAX_IMAGE_BYTES).is_err());
         }
-        assert!(read_image_preview(&dir.join("nope.png"), MAX_IMAGE_BYTES).is_err());
+        assert!(
+            read_image_preview(&dir.join("nope.png"), ImageFormat::Png, MAX_IMAGE_BYTES).is_err()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
