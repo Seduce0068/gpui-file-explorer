@@ -5505,4 +5505,61 @@ mod tests {
         let message = summarize_op("移動", &OpStats::default());
         assert_eq!(message, "移動しました");
     }
+
+    #[test]
+    fn display_name_for_search_prefers_matching_roots_then_full_path() {
+        use super::{display_name_for, ViewMode};
+        use crate::model::Entry;
+
+        let cwd = PathBuf::from("/work/project");
+        let other_root = PathBuf::from("/data/shared");
+        let roots = vec![cwd.clone(), other_root.clone()];
+
+        let in_cwd = Entry {
+            name: "main.rs".to_string(),
+            path: PathBuf::from("/work/project/src/main.rs"),
+            is_dir: false,
+            is_symlink: false,
+            size: 1,
+            modified: None,
+            match_line: None,
+        };
+        assert_eq!(
+            display_name_for(&in_cwd, ViewMode::Search, &cwd, &roots),
+            "src/main.rs"
+        );
+
+        let in_other_root = Entry {
+            name: "notes.txt".to_string(),
+            path: PathBuf::from("/data/shared/docs/notes.txt"),
+            is_dir: false,
+            is_symlink: false,
+            size: 1,
+            modified: None,
+            match_line: None,
+        };
+        assert_eq!(
+            display_name_for(&in_other_root, ViewMode::Search, &cwd, &roots),
+            "docs/notes.txt"
+        );
+
+        let outside = Entry {
+            name: "outside.txt".to_string(),
+            path: PathBuf::from("/elsewhere/outside.txt"),
+            is_dir: false,
+            is_symlink: false,
+            size: 1,
+            modified: None,
+            match_line: None,
+        };
+        assert_eq!(
+            display_name_for(&outside, ViewMode::Search, &cwd, &roots),
+            "/elsewhere/outside.txt"
+        );
+
+        assert_eq!(
+            display_name_for(&in_other_root, ViewMode::Directory, &cwd, &roots),
+            "notes.txt"
+        );
+    }
 }
