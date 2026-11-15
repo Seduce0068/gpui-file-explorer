@@ -3569,8 +3569,6 @@ impl Explorer {
         self.search_cancel = Some(cancel.clone());
         self.search_task.take();
         self.loading = true;
-        self.status = format!("検索中…「{query}」");
-        cx.notify();
 
         let include_hidden = self.settings.show_hidden;
         let mode = self.search_mode;
@@ -3580,6 +3578,13 @@ impl Explorer {
         let cwd = self.cwd.clone();
         let roots = search_roots(scope, &cwd, &tab_paths, &bookmarks);
         self.search_active_roots = roots.clone();
+        let scope_count = if scope == SearchScope::Current {
+            String::new()
+        } else {
+            format!("（{} 箇所）", roots.len())
+        };
+        self.status = format!("検索中…「{query}」{scope_count}");
+        cx.notify();
         let cancel_for_task = cancel.clone();
         let background = cx.background_spawn(async move {
             let global_cap = 2_000usize;
@@ -3670,7 +3675,14 @@ impl Explorer {
         };
         let scope_label = match self.search_scope {
             SearchScope::Current => String::new(),
-            scope => format!("・{}", scope.label()),
+            scope => {
+                let count = self.search_active_roots.len();
+                if count > 0 {
+                    format!("・{}（{} 箇所）", scope.label(), count)
+                } else {
+                    format!("・{}", scope.label())
+                }
+            }
         };
         self.status = format!(
             "検索{mode_label}{scope_label}: 「{}」 {} 件",
