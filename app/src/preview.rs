@@ -14,8 +14,51 @@
 use std::io::Read;
 use std::path::Path;
 
-/// Default maximum number of bytes read for a preview.
+use gpui_kit::ImageFormat;
+
+/// Default maximum number of bytes read for a text preview.
 pub const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
+/// Maximum image size loaded for an image preview (8 MiB).
+pub const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Image format guessed from a file name extension.
+pub fn image_format_for_name(name: &str) -> Option<ImageFormat> {
+    let extension = name.rsplit_once('.').map(|(_, extension)| extension)?;
+    match extension.to_ascii_lowercase().as_str() {
+        "png" => Some(ImageFormat::Png),
+        "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
+        "webp" => Some(ImageFormat::Webp),
+        "gif" => Some(ImageFormat::Gif),
+        "svg" => Some(ImageFormat::Svg),
+        "bmp" => Some(ImageFormat::Bmp),
+        "tif" | "tiff" => Some(ImageFormat::Tiff),
+        "ico" => Some(ImageFormat::Ico),
+        "pbm" | "ppm" | "pgm" | "pnm" => Some(ImageFormat::Pnm),
+        _ => None,
+    }
+}
+
+/// Read an image file for preview, at most `max_bytes`.
+///
+/// Safety: symlinks and non-files are refused, and the file size is checked
+/// before reading so a huge image is never loaded into memory.
+pub fn read_image_preview(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
+    let link_metadata =
+        std::fs::symlink_metadata(path).map_err(|error| format!("読めません: {error}"))?;
+    if link_metadata.file_type().is_symlink() {
+        return Err("シンボリックリンクはプレビューできません".to_string());
+    }
+    if !link_metadata.is_file() {
+        return Err("ファイルではありません".to_string());
+    }
+    if link_metadata.len() > max_bytes {
+        return Err(format!(
+            "画像が大きすぎます（上限 {}）",
+            crate::model::human_size(max_bytes)
+        ));
+    }
+    std::fs::read(path).map_err(|error| format!("読み取りに失敗しました: {error}"))
+}
 
 /// Result of reading a text preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +94,67 @@ pub fn read_preview(path: &Path, max_bytes: u64) -> Result<Preview, String> {
         truncated: size > max_bytes,
         size,
     })
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::{image_format_for_name, read_image_preview, MAX_IMAGE_BYTES};
+    use gpui_kit::ImageFormat;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-image-preview-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn detects_formats_case_insensitively() {
+        assert_eq!(image_format_for_name("a.PNG"), Some(ImageFormat::Png));
+        assert_eq!(image_format_for_name("a.jpeg"), Some(ImageFormat::Jpeg));
+        assert_eq!(image_format_for_name("a.JpG"), Some(ImageFormat::Jpeg));
+        assert_eq!(image_format_for_name("a.svg"), Some(ImageFormat::Svg));
+        assert_eq!(image_format_for_name("a.tiff"), Some(ImageFormat::Tiff));
+        assert_eq!(image_format_for_name("a.txt"), None);
+        assert_eq!(image_format_for_name("noextension"), None);
+    }
+
+    #[test]
+    fn reads_within_limit_and_rejects_oversized() {
+        let dir = scratch("limit");
+        let path = dir.join("a.png");
+        fs::write(&path, [0x89, b'P', b'N', b'G', 0, 1, 2, 3]).unwrap();
+        assert_eq!(read_image_preview(&path, MAX_IMAGE_BYTES).unwrap().len(), 8);
+
+        let big = dir.join("big.png");
+        fs::write(&big, vec![0u8; 64]).unwrap();
+        assert!(read_image_preview(&big, 8).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refuses_symlinks_and_missing_files() {
+        let dir = scratch("types");
+        let file = dir.join("real.png");
+        fs::write(&file, [1, 2, 3]).unwrap();
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.png");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert!(read_image_preview(&link, MAX_IMAGE_BYTES).is_err());
+        }
+        assert!(read_image_preview(&dir.join("nope.png"), MAX_IMAGE_BYTES).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
