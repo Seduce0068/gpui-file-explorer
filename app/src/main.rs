@@ -433,6 +433,8 @@ struct Explorer {
     search_scope: SearchScope,
     search_query: String,
     search_active_roots: Vec<PathBuf>,
+    /// True when a non-current scope had no valid roots and we searched cwd.
+    search_fell_back_to_cwd: bool,
     search_task: Option<Task<()>>,
     search_cancel: Option<Arc<AtomicBool>>,
     search_generation: u64,
@@ -624,6 +626,7 @@ impl Explorer {
             search_scope: SearchScope::Current,
             search_query: String::new(),
             search_active_roots: Vec::new(),
+            search_fell_back_to_cwd: false,
             search_task: None,
             search_cancel: None,
             search_generation: 0,
@@ -3539,6 +3542,7 @@ impl Explorer {
         self.search_scope = SearchScope::Current;
         self.search_query.clear();
         self.search_active_roots.clear();
+        self.search_fell_back_to_cwd = false;
         self.search_generation = self.search_generation.wrapping_add(1);
         self.view = ViewMode::Search;
         self.selection.clear();
@@ -3576,14 +3580,20 @@ impl Explorer {
         let tab_paths: Vec<PathBuf> = self.tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
         let bookmarks = self.bookmarks.clone();
         let cwd = self.cwd.clone();
-        let roots = search_roots(scope, &cwd, &tab_paths, &bookmarks);
+        let resolved = search_roots(scope, &cwd, &tab_paths, &bookmarks);
+        let roots = resolved.roots;
         self.search_active_roots = roots.clone();
-        let scope_count = if scope == SearchScope::Current {
-            String::new()
+        self.search_fell_back_to_cwd = resolved.fell_back_to_cwd;
+        if resolved.fell_back_to_cwd {
+            self.status = format!(
+                "検索中…「{query}」（{}に有効な場所がないため現在のフォルダ）",
+                scope.label()
+            );
+        } else if scope == SearchScope::Current {
+            self.status = format!("検索中…「{query}」");
         } else {
-            format!("（{} 箇所）", roots.len())
-        };
-        self.status = format!("検索中…「{query}」{scope_count}");
+            self.status = format!("検索中…「{query}」（{} 箇所）", roots.len());
+        }
         cx.notify();
         let cancel_for_task = cancel.clone();
         let background = cx.background_spawn(async move {
@@ -3676,11 +3686,15 @@ impl Explorer {
         let scope_label = match self.search_scope {
             SearchScope::Current => String::new(),
             scope => {
-                let count = self.search_active_roots.len();
-                if count > 0 {
-                    format!("・{}（{} 箇所）", scope.label(), count)
+                if self.search_fell_back_to_cwd {
+                    format!("・{}（現在のフォルダ）", scope.label())
                 } else {
-                    format!("・{}", scope.label())
+                    let count = self.search_active_roots.len();
+                    if count > 0 {
+                        format!("・{}（{} 箇所）", scope.label(), count)
+                    } else {
+                        format!("・{}", scope.label())
+                    }
                 }
             }
         };
@@ -3708,6 +3722,7 @@ impl Explorer {
         self.search_scope = SearchScope::Current;
         self.search_query.clear();
         self.search_active_roots.clear();
+        self.search_fell_back_to_cwd = false;
     }
 
     fn close_search(&mut self, cx: &mut Context<Self>) {
