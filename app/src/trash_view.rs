@@ -26,6 +26,31 @@ pub fn restore(items: Vec<trash::TrashItem>) -> Result<(), String> {
     trash::os_limited::restore_all(items).map_err(|error| error.to_string())
 }
 
+/// Restore the trashed items identified by `(original path, trash id)`.
+///
+/// Undo uses the trash **id** to find the exact item, so an unrelated item that
+/// happens to share the original path is never restored. Items that are no
+/// longer in the trash are reported as missing. Returns `(restored, missing)`.
+pub fn restore_by_id(entries: &[(std::path::PathBuf, String)]) -> Result<(usize, usize), String> {
+    let items = list()?;
+    let mut to_restore: Vec<trash::TrashItem> = Vec::new();
+    let mut missing = 0usize;
+    for (_path, id) in entries {
+        match items
+            .iter()
+            .find(|item| item.id.to_string_lossy() == id.as_str())
+        {
+            Some(item) => to_restore.push(item.clone()),
+            None => missing += 1,
+        }
+    }
+    let restored = to_restore.len();
+    if restored > 0 {
+        trash::os_limited::restore_all(to_restore).map_err(|error| error.to_string())?;
+    }
+    Ok((restored, missing))
+}
+
 /// Map trash items to list rows (newest first). The `path` is the trash id, so
 /// selection works without touching real files.
 pub fn entries_from_items(items: &[trash::TrashItem]) -> Vec<Entry> {
@@ -88,5 +113,33 @@ mod tests {
     fn negative_timestamps_map_to_none() {
         let entries = entries_from_items(&[item("/trash/info/x.trashinfo", "x", "/home/u", -1)]);
         assert_eq!(entries[0].modified, None);
+    }
+}
+
+#[cfg(test)]
+mod restore_by_id_tests {
+    use super::restore_by_id;
+
+    #[test]
+    fn unknown_ids_are_reported_as_missing() {
+        // A non-existent id must not restore anything and must not error.
+        let result = restore_by_id(&[(
+            std::path::PathBuf::from("/definitely/not/in/trash.txt"),
+            "definitely-not-a-real-trash-id".to_string(),
+        )]);
+        // A system without a usable trash directory is acceptable in CI.
+        if let Ok((restored, missing)) = result {
+            assert_eq!(restored, 0);
+            assert_eq!(missing, 1);
+        }
+    }
+
+    #[test]
+    fn empty_input_is_a_noop() {
+        let result = restore_by_id(&[]);
+        if let Ok((restored, missing)) = result {
+            assert_eq!(restored, 0);
+            assert_eq!(missing, 0);
+        }
     }
 }
