@@ -5572,6 +5572,14 @@ mod tests {
             "/elsewhere/outside.txt"
         );
 
+        let nested_parent = PathBuf::from("/data");
+        let nested_child = PathBuf::from("/data/shared");
+        let nested_roots = vec![cwd.clone(), nested_parent, nested_child];
+        assert_eq!(
+            display_name_for(&in_other_root, ViewMode::Search, &cwd, &nested_roots),
+            "docs/notes.txt"
+        );
+
         assert_eq!(
             display_name_for(&in_other_root, ViewMode::Directory, &cwd, &roots),
             "notes.txt"
