@@ -90,7 +90,7 @@
 | ゴミ箱ビュー（復元/完全削除） | × | × | ◎ | | `trash::list/restore_all/purge_all`（fs-notes §5.2） |
 | OS ネイティブアイコン | × | × | ◎ | | Linux: freedesktop-icons（fs-notes §3） |
 | 画像サムネイル | × | × | ◎ | | `img(PathBuf)` で可能（api-notes §7.2）。非同期+LRU |
-| 再帰検索（名前） | × | × | ◎ | | `ignore` 並列 walker（fs-notes §8） |
+| 再帰検索（名前/複数ルート） | ○ | ◎ | ◎ | 単一実装 | `std::fs` walker（symlink 非追跡・上限付き）、範囲: 現在/タブ/ブックマーク |
 | ボリューム/空き容量 | × | × | ◎ | | `sysinfo` Disks（fs-notes §4） |
 | タブ / 複数ウィンドウ | × | × | △ | ◎ | まず 1 ウィンドウ 1 状態（ADR-002） |
 | OS からの D&D（取り込み） | × | × | △ | ◎ | `on_drop::<ExternalPaths>`（api-notes §4.2） |
