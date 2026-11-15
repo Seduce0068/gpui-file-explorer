@@ -174,6 +174,80 @@ pub enum SearchMode {
     Content,
 }
 
+/// Where to search from when a query is entered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchScope {
+    /// Search only the current directory.
+    #[default]
+    Current,
+    /// Search every open tab's directory.
+    OpenTabs,
+    /// Search every bookmarked directory.
+    Bookmarks,
+}
+
+impl SearchScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchScope::Current => "現在のフォルダ",
+            SearchScope::OpenTabs => "開いているタブ",
+            SearchScope::Bookmarks => "ブックマーク",
+        }
+    }
+}
+
+/// Collect unique existing directory roots for a scope.
+pub fn search_roots(
+    scope: SearchScope,
+    cwd: &Path,
+    tabs: &[PathBuf],
+    bookmarks: &[PathBuf],
+) -> Vec<PathBuf> {
+    use std::collections::HashSet;
+    let candidates: Vec<PathBuf> = match scope {
+        SearchScope::Current => vec![cwd.to_path_buf()],
+        SearchScope::OpenTabs => tabs.to_vec(),
+        SearchScope::Bookmarks => bookmarks.to_vec(),
+    };
+    let mut seen = HashSet::new();
+    let mut roots = Vec::new();
+    for path in candidates {
+        if !path.is_dir() {
+            continue;
+        }
+        // canonicalize best-effort for dedupe; fall back to original path
+        let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen.insert(key) {
+            roots.push(path);
+        }
+    }
+    if roots.is_empty() {
+        // Keep a safe fallback so a search still runs somewhere meaningful.
+        roots.push(cwd.to_path_buf());
+    }
+    roots
+}
+
+/// Merge per-root search results into one list, de-duplicated by path and
+/// capped globally. Input batches are assumed to be sorted by path.
+pub fn merge_search_results(batches: Vec<Vec<Entry>>, max_total: usize) -> Vec<Entry> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut merged = Vec::new();
+    for batch in batches {
+        for entry in batch {
+            if merged.len() >= max_total {
+                return merged;
+            }
+            if seen.insert(entry.path.clone()) {
+                merged.push(entry);
+            }
+        }
+    }
+    merged.sort_by(|left, right| left.path.cmp(&right.path));
+    merged
+}
+
 /// Limits for [`search_contents`].
 #[derive(Clone, Copy, Debug)]
 pub struct ContentSearchOptions {
@@ -622,5 +696,76 @@ mod content_tests {
         let found = search_contents(&dir, "target", ContentSearchOptions::default(), &cancel);
         assert!(found.is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-scope-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn search_roots_dedupes_and_filters_missing() {
+        let dir = scratch("roots");
+        let a = dir.join("a");
+        let b = dir.join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let missing = dir.join("missing");
+        let roots = search_roots(
+            SearchScope::OpenTabs,
+            &dir,
+            &[a.clone(), b.clone(), a.clone(), missing],
+            &[],
+        );
+        assert_eq!(roots, vec![a, b]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_roots_falls_back_to_cwd_when_empty() {
+        let dir = scratch("fallback");
+        let roots = search_roots(SearchScope::Bookmarks, &dir, &[], &[]);
+        assert_eq!(roots, vec![dir.clone()]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_search_results_dedupes_by_path_and_caps() {
+        let p1 = PathBuf::from("/tmp/a");
+        let p2 = PathBuf::from("/tmp/b");
+        let e = |path: &PathBuf| Entry {
+            name: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            path: path.clone(),
+            is_dir: false,
+            is_symlink: false,
+            size: 0,
+            modified: None,
+            match_line: None,
+        };
+        let merged = merge_search_results(vec![vec![e(&p1), e(&p2)], vec![e(&p1)]], 10);
+        let paths: Vec<_> = merged.iter().map(|entry| entry.path.clone()).collect();
+        assert_eq!(paths, vec![p1.clone(), p2.clone()]);
+        let capped = merge_search_results(vec![vec![e(&p1), e(&p2)]], 1);
+        assert_eq!(capped.len(), 1);
     }
 }
