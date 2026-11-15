@@ -240,6 +240,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "Ctrl+Z / Ctrl+Shift+Z",
                 "元に戻す / やり直す（名前変更・ゴミ箱のみ）",
             ),
+            ("Ctrl+Shift+U", "操作の履歴を表示"),
         ],
     ),
     (
@@ -458,6 +459,8 @@ struct Explorer {
     preview: Option<PreviewState>,
     /// Bounded undo/redo stack for reversible operations (rename, trash).
     undo: UndoStack,
+    /// Whether the undo-history overlay (Ctrl+Shift+H) is open.
+    undo_history_open: bool,
     /// Set after a successful rename; the next render refocuses the list.
     focus_list_on_next_render: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_RENAME=1` opens the rename dialog
@@ -492,6 +495,9 @@ struct Explorer {
     debug_location_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_PREVIEW=1` previews the first file.
     debug_preview_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_UNDO_HISTORY=1` opens the undo
+    /// history overlay once after startup.
+    debug_undo_history_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_UNDO=rename|trash` performs one
     /// reversible operation and immediately undoes it, printing each step to
     /// stderr (deterministic verification of the undo engine against the real
@@ -622,6 +628,7 @@ impl Explorer {
             location: None,
             preview: None,
             undo: UndoStack::new(),
+            undo_history_open: false,
             focus_list_on_next_render: false,
             debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
             debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
@@ -636,6 +643,7 @@ impl Explorer {
             debug_preview_once: std::env::var_os("GPUI_FE_DEBUG_PREVIEW").is_some(),
             debug_preview_report: std::env::var_os("GPUI_FE_DEBUG_PREVIEW_REPORT").is_some(),
             debug_undo: std::env::var("GPUI_FE_DEBUG_UNDO").ok(),
+            debug_undo_history_once: std::env::var_os("GPUI_FE_DEBUG_UNDO_HISTORY").is_some(),
             debug_properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
             debug_ephemeral: [
                 "GPUI_FE_DEBUG_TABS",
@@ -654,6 +662,7 @@ impl Explorer {
                 "GPUI_FE_DEBUG_PREVIEW",
                 "GPUI_FE_DEBUG_PREVIEW_REPORT",
                 "GPUI_FE_DEBUG_UNDO",
+                "GPUI_FE_DEBUG_UNDO_HISTORY",
             ]
             .iter()
             .any(|name| std::env::var_os(name).is_some()),
@@ -1439,6 +1448,13 @@ impl Explorer {
             }
             return;
         }
+        if self.undo_history_open {
+            if event.keystroke.key == "escape" {
+                self.undo_history_open = false;
+                cx.notify();
+            }
+            return;
+        }
         if self.preview.is_some() {
             if event.keystroke.key == "escape"
                 || event.keystroke.key == "space"
@@ -1473,6 +1489,10 @@ impl Explorer {
                 ("l", false) => self.open_location(window, cx),
                 ("z", false) => self.undo_last(cx),
                 ("z", true) => self.redo_last(cx),
+                ("u", true) => {
+                    self.undo_history_open = !self.undo_history_open;
+                    cx.notify();
+                }
                 ("t", false) => self.new_tab(cx),
                 ("w", false) => self.close_tab(cx),
                 ("tab", false) => self.next_tab(cx),
@@ -1957,6 +1977,165 @@ impl Explorer {
     }
 
     // ------------------------------------------------------------------ undo
+
+    /// Overlay listing what can still be undone/redone (read-only).
+    fn undo_history_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.undo_history_open {
+            return None;
+        }
+        let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.undo_history_open = false;
+            cx.notify();
+        });
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.undo_history_open = false;
+                    cx.notify();
+                }),
+            );
+        let mut body = div()
+            .id("undo-history")
+            .w(px(720.0))
+            .bg(rgb(C_SURFACE))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(C_OVERLAY))
+            .shadow_lg()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("操作の履歴"),
+            );
+        let undo_actions = self.undo.undo_actions();
+        let redo_actions = self.undo.redo_actions();
+        if undo_actions.is_empty() && redo_actions.is_empty() {
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(C_MUTED))
+                    .child("元に戻せる操作はありません（名前変更とゴミ箱のみ記録します）"),
+            );
+        }
+        if !undo_actions.is_empty() {
+            body = body.child(div().text_xs().text_color(rgb(C_MUTED)).child(format!(
+                "元に戻せる操作（{} 件・新しい順）",
+                undo_actions.len()
+            )));
+            for action in &undo_actions {
+                body = body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(120.0))
+                                .text_sm()
+                                .text_color(rgb(C_TEXT))
+                                .child(action.label()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(rgb(C_SUBTEXT))
+                                .child(Self::undo_action_detail(action)),
+                        ),
+                );
+            }
+        }
+        if !redo_actions.is_empty() {
+            body = body.child(div().text_xs().text_color(rgb(C_MUTED)).child(format!(
+                "やり直せる操作（{} 件・新しい順）",
+                redo_actions.len()
+            )));
+            for action in &redo_actions {
+                body = body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(120.0))
+                                .text_sm()
+                                .text_color(rgb(C_TEXT))
+                                .child(action.label()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(rgb(C_SUBTEXT))
+                                .child(Self::undo_action_detail(action)),
+                        ),
+                );
+            }
+        }
+        body = body.child(
+            div().flex().justify_end().child(
+                Button::new("undo-history-close")
+                    .label("閉じる")
+                    .on_click(close),
+            ),
+        );
+        body = body.child(
+            div()
+                .text_xs()
+                .text_color(rgb(C_MUTED))
+                .child("Ctrl+Shift+U / Esc で閉じる（読み取り専用）"),
+        );
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(body),
+        )
+    }
+
+    /// One-line description of an undoable action.
+    fn undo_action_detail(action: &UndoAction) -> String {
+        match action {
+            UndoAction::Rename { from, to } => format!(
+                "{} → {}",
+                from.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| display_path(from)),
+                to.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| display_path(to)),
+            ),
+            UndoAction::Trash { items } => {
+                if items.len() == 1 {
+                    display_path(&items[0].0)
+                } else {
+                    format!("{} 件", items.len())
+                }
+            }
+        }
+    }
 
     /// Development hook: exercise a reversible operation and its undo.
     fn run_debug_undo(&mut self, mode: &str, cx: &mut Context<Self>) {
@@ -3681,6 +3860,7 @@ impl Explorer {
             let trash_weak = weak.clone();
             let new_folder_weak = weak.clone();
             let undo_weak = weak.clone();
+            let history_weak = weak.clone();
 
             let open_path = path.clone();
             let reveal_path = path.clone();
@@ -3715,6 +3895,16 @@ impl Explorer {
                     .on_click(move |_, _window, cx| {
                         let target = copy_path.clone();
                         let _ = copy_weak.update(cx, |this, cx| this.copy_path(target, cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("操作の履歴")
+                    .icon(Icon::new(IconName::Clock))
+                    .on_click(move |_, _window, cx| {
+                        let _ = history_weak.update(cx, |this, cx| {
+                            this.undo_history_open = true;
+                            cx.notify();
+                        });
                     }),
             )
             .item(
@@ -4589,7 +4779,7 @@ impl Explorer {
             .child(toggle_hidden)
     }
 
-    fn status_bar(&self) -> Div {
+    fn status_bar(&self, cx: &mut Context<Self>) -> Div {
         let hidden_count = self.all_entries.len().saturating_sub(self.entries.len());
         let left = div()
             .flex()
@@ -4707,12 +4897,19 @@ impl Explorer {
                 div().into_any_element()
             } else {
                 div()
+                    .id("undo-counter")
                     .text_color(rgb(C_MUTED))
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(rgb(C_TEXT)))
                     .child(format!(
                         "元に戻す {} / やり直す {}",
                         self.undo.undo_len(),
                         self.undo.redo_len()
                     ))
+                    .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        this.undo_history_open = true;
+                        cx.notify();
+                    }))
                     .into_any_element()
             })
             .child(if self.view == ViewMode::Trash {
@@ -4923,6 +5120,10 @@ impl Render for Explorer {
             self.debug_location_once = false;
             self.open_location(window, cx);
         }
+        if self.debug_undo_history_once && !self.loading {
+            self.debug_undo_history_once = false;
+            self.undo_history_open = true;
+        }
         if self.debug_undo.is_some() && !self.loading && !self.entries.is_empty() {
             let mode = self.debug_undo.take().unwrap_or_default();
             self.run_debug_undo(&mode, cx);
@@ -4943,6 +5144,7 @@ impl Render for Explorer {
         let properties_dialog = self.properties_dialog(cx);
         let help_dialog = self.help_dialog(cx);
         let preview_dialog = self.preview_dialog(cx);
+        let undo_history_dialog = self.undo_history_dialog(cx);
 
         let grid_mode = self.settings.view == LayoutMode::Icons;
         // Column headers only make sense in the details list.
@@ -5026,11 +5228,12 @@ impl Render for Explorer {
             .children(search_history_bar)
             .children(location_bar)
             .child(body)
-            .child(self.status_bar())
+            .child(self.status_bar(cx))
             .children(rename_dialog)
             .children(properties_dialog)
             .children(help_dialog)
             .children(preview_dialog)
+            .children(undo_history_dialog)
     }
 }
 

@@ -92,6 +92,16 @@ impl UndoStack {
         }
     }
 
+    /// Snapshot of the undo stack, newest first (for the history overlay).
+    pub fn undo_actions(&self) -> Vec<UndoAction> {
+        self.undo.iter().rev().cloned().collect()
+    }
+
+    /// Snapshot of the redo stack, newest first (for the history overlay).
+    pub fn redo_actions(&self) -> Vec<UndoAction> {
+        self.redo.iter().rev().cloned().collect()
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -185,6 +195,24 @@ mod tests {
         assert_eq!(action.label(), "ゴミ箱へ移動");
         assert_eq!(rename("/a", "/b").len(), 1);
         assert_eq!(rename("/a", "/b").label(), "名前変更");
+    }
+
+    #[test]
+    fn snapshots_list_newest_first() {
+        let mut stack = UndoStack::new();
+        stack.push(rename("/a", "/b"));
+        stack.push(rename("/b", "/c"));
+        let undo = stack.undo_actions();
+        assert_eq!(undo.len(), 2);
+        assert_eq!(undo[0], rename("/b", "/c"));
+        assert_eq!(undo[1], rename("/a", "/b"));
+
+        let action = stack.pop_undo().unwrap();
+        stack.push_redo(action);
+        let redo = stack.redo_actions();
+        assert_eq!(redo.len(), 1);
+        assert_eq!(redo[0], rename("/b", "/c"));
+        assert!(stack.undo_actions().len() == 1);
     }
 
     #[test]
