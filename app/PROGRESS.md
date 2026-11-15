@@ -10,7 +10,7 @@
 | 項目 | 状態 |
 |---|---|
 | `cargo build` | ✅ 警告 0 |
-| `cargo test` | ✅ 36 passed / 0 failed（約 0.4s） |
+| `cargo test` | ✅ 132 passed / 0 failed（約 0.4s、2026-11-16 時点） |
 | Wayland 実行 + KWin D-Bus 確認 | ✅ ネイティブ Wayland、stderr 0 行 |
 | スクリーンショット（XDG portal） | ✅ `screenshot/window-crop.png` |
 | ファイル監視の実証 | ✅ 起動中に bash で作成 → 約2秒で一覧反映（`screenshot/watcher-refresh-crop.png`） |

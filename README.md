@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 36 tests
+cargo test           # 132 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -47,9 +47,9 @@ cargo test           # 36 tests
 > `notes/` は元の開発ワークスペース（`work/gpui-file-explorer/`）で作成した調査記録です。
 > 一部に `work/gpui-file-explorer/...` や `security-review/Argus`（リポジトリ外）への参照が残っています。
 
-## 試作の検証結果（2026-11-11 実機）
+## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-16 更新）
 
-- `cargo build` 警告 0 / `cargo test` **36 passed / 0 failed**
+- `cargo build` 警告 0 / `cargo test` **132 passed / 0 failed**（2026-11-16 時点。初回実機検証時は 36 件）
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
 - 起動中に外部からファイル作成 → 一覧が自動更新（14→15 件）
