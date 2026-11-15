@@ -42,7 +42,7 @@ cargo test           # 132 tests
 | [notes/](notes/) | 一次調査ノート（GPUI API 棚卸し・エコシステム・OS/FS 差分）と独立検証レポート |
 | [scripts/dev-setup.sh](scripts/dev-setup.sh) | `libxkbcommon-x11` 開発ファイル欠如時のローカル symlink 作成（システム変更なし） |
 | [packaging/linux/](packaging/linux/) | Linux DEB ビルド（`build-deb.sh`、`.desktop`、hicolor アイコン）。root 不要・ホストへインストールしない |
-| [.github/workflows/ci.yml](.github/workflows/ci.yml) | 個人リポジトリ共通の Rust ゲート（`Seduce0068/workflows@v1`）へ委譲 |
+| [.github/workflows/ci.yml](.github/workflows/ci.yml) | 個人リポジトリ共通の Rust ゲート（`Seduce0068/workflows@v1`）へ委譲。`app/` に加え `extra_gates` で独立プロジェクト `poc/` も fmt/check/test/clippy を検証 |
 
 > `notes/` は元の開発ワークスペース（`work/gpui-file-explorer/`）で作成した調査記録です。
 > 一部に `work/gpui-file-explorer/...` や `security-review/Argus`（リポジトリ外）への参照が残っています。
@@ -108,3 +108,13 @@ bash packaging/linux/build-deb.sh --skip-build
 （本リポジトリがそのソースです）。依存クレートはそれぞれのライセンスに従います
 （gpui 系 Apache-2.0、Lucide ISC、notify CC0-1.0 ほか）。詳細は
 [NOTICE.md](NOTICE.md) と [app/NOTICE.md](app/NOTICE.md) を参照してください。
+
+## CI の検証範囲（2026-11-16 追記）
+
+`.github/workflows/ci.yml` は `Seduce0068/workflows/.github/workflows/rust-gates.yml@v1` に委譲し、
+`app/` で fmt → check → test → clippy → `cargo audit` を実行する。
+`poc/` はルート `Cargo.toml` を持たない別プロジェクトのため共有ワークフローの対象外だったので、
+`extra_gates` で `poc/` の fmt / check(`--locked`) / test(`--locked`) / clippy(`-D warnings`) を追加した。
+
+- 検証（Runtime Proof）: 追加ゲートを含む CI が **success**（run 43734742786、12分22秒）。
+- ローカルでも同一コマンド列の再現を確認（`app/` を cwd に `bash -e` で実行、poc 4 tests pass）。
