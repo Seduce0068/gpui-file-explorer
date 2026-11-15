@@ -103,11 +103,33 @@ fn format_selected(entry: &Entry) -> String {
 
 /// Name shown for a row. Search results show their path relative to the
 /// search root so duplicates in different folders are distinguishable.
-fn display_name_for(entry: &Entry, view: ViewMode, root: &std::path::Path) -> String {
+/// For multi-root searches, fall back to another matching root or the full path.
+fn display_name_for(
+    entry: &Entry,
+    view: ViewMode,
+    root: &std::path::Path,
+    search_roots: &[PathBuf],
+) -> String {
     if view == ViewMode::Search {
         if let Ok(relative) = entry.path.strip_prefix(root) {
             return relative.display().to_string();
         }
+        let mut best: Option<String> = None;
+        for search_root in search_roots {
+            if let Ok(relative) = entry.path.strip_prefix(search_root) {
+                let text = relative.display().to_string();
+                if best
+                    .as_ref()
+                    .is_none_or(|current| text.len() < current.len())
+                {
+                    best = Some(text);
+                }
+            }
+        }
+        if let Some(relative) = best {
+            return relative;
+        }
+        return entry.path.display().to_string();
     }
     entry.name.clone()
 }
@@ -410,6 +432,7 @@ struct Explorer {
     search_mode: SearchMode,
     search_scope: SearchScope,
     search_query: String,
+    search_active_roots: Vec<PathBuf>,
     search_task: Option<Task<()>>,
     search_cancel: Option<Arc<AtomicBool>>,
     search_generation: u64,
@@ -600,6 +623,7 @@ impl Explorer {
             search_mode: SearchMode::Name,
             search_scope: SearchScope::Current,
             search_query: String::new(),
+            search_active_roots: Vec::new(),
             search_task: None,
             search_cancel: None,
             search_generation: 0,
@@ -3514,6 +3538,7 @@ impl Explorer {
         self.search_mode = SearchMode::Name;
         self.search_scope = SearchScope::Current;
         self.search_query.clear();
+        self.search_active_roots.clear();
         self.search_generation = self.search_generation.wrapping_add(1);
         self.view = ViewMode::Search;
         self.selection.clear();
@@ -3554,6 +3579,7 @@ impl Explorer {
         let bookmarks = self.bookmarks.clone();
         let cwd = self.cwd.clone();
         let roots = search_roots(scope, &cwd, &tab_paths, &bookmarks);
+        self.search_active_roots = roots.clone();
         let cancel_for_task = cancel.clone();
         let background = cx.background_spawn(async move {
             let global_cap = 2_000usize;
@@ -3669,6 +3695,7 @@ impl Explorer {
         self.search_mode = SearchMode::Name;
         self.search_scope = SearchScope::Current;
         self.search_query.clear();
+        self.search_active_roots.clear();
     }
 
     fn close_search(&mut self, cx: &mut Context<Self>) {
@@ -4163,7 +4190,8 @@ impl Explorer {
 
     fn list_row(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
-        let display_name = display_name_for(&entry, this.view, &this.cwd);
+        let display_name =
+            display_name_for(&entry, this.view, &this.cwd, &this.search_active_roots);
         let display_name = match entry.match_line {
             Some(line) if this.view == ViewMode::Search => format!("{display_name}:{line}"),
             _ => display_name,
@@ -4358,7 +4386,8 @@ impl Explorer {
 
     fn grid_cell(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
-        let display_name = display_name_for(&entry, this.view, &this.cwd);
+        let display_name =
+            display_name_for(&entry, this.view, &this.cwd, &this.search_active_roots);
         let display_name = match entry.match_line {
             Some(line) if this.view == ViewMode::Search => format!("{display_name}:{line}"),
             _ => display_name,
