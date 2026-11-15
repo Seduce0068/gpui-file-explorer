@@ -17,6 +17,7 @@ mod search;
 mod settings;
 mod tabs;
 mod trash_view;
+mod undo;
 mod watcher;
 
 use std::path::PathBuf;
@@ -48,6 +49,7 @@ use crate::search::{
 };
 use crate::settings::{Settings, ViewMode as LayoutMode};
 use crate::tabs::{Tab, Tabs};
+use crate::undo::{UndoAction, UndoStack};
 use crate::watcher::DirWatcher;
 
 // Catppuccin Mocha-ish palette.
@@ -233,6 +235,10 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             (
                 "ドラッグ&ドロップ",
                 "OS からコピー / フォルダ行へコピー / OS へドラッグ",
+            ),
+            (
+                "Ctrl+Z / Ctrl+Shift+Z",
+                "元に戻す / やり直す（名前変更・ゴミ箱のみ）",
             ),
         ],
     ),
@@ -450,6 +456,8 @@ struct Explorer {
     location: Option<LocationState>,
     /// Text preview overlay (Space / F3).
     preview: Option<PreviewState>,
+    /// Bounded undo/redo stack for reversible operations (rename, trash).
+    undo: UndoStack,
     /// Set after a successful rename; the next render refocuses the list.
     focus_list_on_next_render: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_RENAME=1` opens the rename dialog
@@ -484,6 +492,11 @@ struct Explorer {
     debug_location_once: bool,
     /// Development-only hook: `GPUI_FE_DEBUG_PREVIEW=1` previews the first file.
     debug_preview_once: bool,
+    /// Development-only hook: `GPUI_FE_DEBUG_UNDO=rename|trash` performs one
+    /// reversible operation and immediately undoes it, printing each step to
+    /// stderr (deterministic verification of the undo engine against the real
+    /// filesystem).
+    debug_undo: Option<String>,
     /// Development-only hook: `GPUI_FE_DEBUG_PREVIEW_REPORT=1` prints the
     /// preview outcome (kind/format/size or error) once, for verification
     /// without taking screenshots.
@@ -608,6 +621,7 @@ impl Explorer {
             help_open: false,
             location: None,
             preview: None,
+            undo: UndoStack::new(),
             focus_list_on_next_render: false,
             debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
             debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
@@ -621,6 +635,7 @@ impl Explorer {
             debug_location_once: std::env::var_os("GPUI_FE_DEBUG_LOCATION").is_some(),
             debug_preview_once: std::env::var_os("GPUI_FE_DEBUG_PREVIEW").is_some(),
             debug_preview_report: std::env::var_os("GPUI_FE_DEBUG_PREVIEW_REPORT").is_some(),
+            debug_undo: std::env::var("GPUI_FE_DEBUG_UNDO").ok(),
             debug_properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
             debug_ephemeral: [
                 "GPUI_FE_DEBUG_TABS",
@@ -638,6 +653,7 @@ impl Explorer {
                 "GPUI_FE_DEBUG_LOCATION",
                 "GPUI_FE_DEBUG_PREVIEW",
                 "GPUI_FE_DEBUG_PREVIEW_REPORT",
+                "GPUI_FE_DEBUG_UNDO",
             ]
             .iter()
             .any(|name| std::env::var_os(name).is_some()),
@@ -1455,6 +1471,8 @@ impl Explorer {
                 ("f", false) => self.open_search(window, cx),
                 ("i", false) => self.open_selected_properties(cx),
                 ("l", false) => self.open_location(window, cx),
+                ("z", false) => self.undo_last(cx),
+                ("z", true) => self.redo_last(cx),
                 ("t", false) => self.new_tab(cx),
                 ("w", false) => self.close_tab(cx),
                 ("tab", false) => self.next_tab(cx),
@@ -1936,6 +1954,300 @@ impl Explorer {
             self.status = format!("{missing} 件は存在しないためスキップします");
         }
         self.run_transfer(destination, existing, false, cx);
+    }
+
+    // ------------------------------------------------------------------ undo
+
+    /// Development hook: exercise a reversible operation and its undo.
+    fn run_debug_undo(&mut self, mode: &str, cx: &mut Context<Self>) {
+        let Some(entry) = self.entries.iter().find(|entry| !entry.is_dir).cloned() else {
+            eprintln!("undo-report: no file to operate on");
+            return;
+        };
+        match mode {
+            "trash" => {
+                let path = entry.path.clone();
+                match trash::delete(&path) {
+                    Ok(()) => {
+                        let recorded = trash_view::list()
+                            .ok()
+                            .and_then(|items| {
+                                items
+                                    .iter()
+                                    .find(|item| item.original_path() == path)
+                                    .map(|item| {
+                                        vec![(path.clone(), item.id.to_string_lossy().into_owned())]
+                                    })
+                            })
+                            .unwrap_or_default();
+                        eprintln!(
+                            "undo-report: trashed {} recorded={}",
+                            path.display(),
+                            recorded.len()
+                        );
+                        if !recorded.is_empty() {
+                            self.undo.push(UndoAction::Trash { items: recorded });
+                            self.undo_last(cx);
+                        }
+                    }
+                    Err(error) => eprintln!("undo-report: trash failed: {error}"),
+                }
+            }
+            _ => {
+                let from = entry.path.clone();
+                let name = format!("{}.renamed-by-debug", entry.name);
+                match ops::rename_entry(&from, &name) {
+                    Ok(to) => {
+                        eprintln!(
+                            "undo-report: renamed {} -> {}",
+                            from.display(),
+                            to.display()
+                        );
+                        self.undo.push(UndoAction::Rename {
+                            from: from.clone(),
+                            to: to.clone(),
+                        });
+                        self.undo_last(cx);
+                    }
+                    Err(error) => eprintln!("undo-report: rename failed: {error}"),
+                }
+            }
+        }
+    }
+
+    /// Undo the most recent reversible operation (Ctrl+Z).
+    ///
+    /// Only rename and trash are undoable; copy/move are not, because undoing
+    /// them would delete data the user may have already changed.
+    fn undo_last(&mut self, cx: &mut Context<Self>) {
+        if self.op_task.is_some() {
+            self.status = "ファイル操作を実行中です（Esc でキャンセル）".to_string();
+            cx.notify();
+            return;
+        }
+        let Some(action) = self.undo.pop_undo() else {
+            self.status = "元に戻せる操作がありません".to_string();
+            cx.notify();
+            return;
+        };
+        let label = action.label();
+        let affected = action.len();
+        match action {
+            UndoAction::Rename { from, to } => {
+                let target = from.clone();
+                let current = to.clone();
+                let name = from
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if !current.exists() {
+                    self.status =
+                        format!("元に戻せません: {} が存在しません", display_path(&current));
+                    cx.notify();
+                    return;
+                }
+                if target.exists() {
+                    self.status =
+                        format!("元に戻せません: {} が既に存在します", display_path(&target));
+                    cx.notify();
+                    return;
+                }
+                let rename_source = current.clone();
+                let background =
+                    cx.background_spawn(async move { ops::rename_entry(&rename_source, &name) });
+                let action_for_redo = UndoAction::Rename { from, to: current };
+                cx.spawn(async move |this, cx| {
+                    let result = background.await;
+                    let _ = this.update(cx, |this, cx| {
+                        match result {
+                            Ok(restored) => {
+                                this.suppress_for(SELF_OP_SUPPRESS);
+                                this.undo.push_redo(action_for_redo);
+                                eprintln!(
+                                    "undo-report: rename undone, restored={}",
+                                    restored.display()
+                                );
+                                this.status = format!(
+                                    "{label}を元に戻しました（{affected} 件）: {}",
+                                    display_path(&restored)
+                                );
+                                this.pending_select = Some(restored);
+                                this.reload(cx);
+                            }
+                            Err(error) => {
+                                this.undo.push_undo(action_for_redo);
+                                this.status = format!("元に戻せません: {error}");
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            UndoAction::Trash { items } => {
+                let count = items.len();
+                let action_for_redo = UndoAction::Trash {
+                    items: items.clone(),
+                };
+                let background =
+                    cx.background_spawn(async move { trash_view::restore_by_id(&items) });
+                cx.spawn(async move |this, cx| {
+                    let result = background.await;
+                    let _ = this.update(cx, |this, cx| {
+                        match result {
+                            Ok((restored, missing)) => {
+                                this.suppress_for(SELF_OP_SUPPRESS);
+                                if restored > 0 {
+                                    this.undo.push_redo(action_for_redo);
+                                } else {
+                                    this.undo.push_undo(action_for_redo);
+                                }
+                                eprintln!(
+                                    "undo-report: trash undone, restored={restored} missing={missing}"
+                                );
+                                this.status = if missing == 0 {
+                                    format!("{label}を元に戻しました（{restored} 件）")
+                                } else {
+                                    format!(
+                                        "{label}を元に戻しました（{restored} 件、{missing} 件はゴミ箱にありません）"
+                                    )
+                                };
+                                this.reload(cx);
+                            }
+                            Err(error) => {
+                                this.undo.push_undo(action_for_redo);
+                                this.status = format!("元に戻せません: {error}");
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+                let _ = count;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Redo the most recently undone operation (Ctrl+Shift+Z).
+    fn redo_last(&mut self, cx: &mut Context<Self>) {
+        if self.op_task.is_some() {
+            self.status = "ファイル操作を実行中です（Esc でキャンセル）".to_string();
+            cx.notify();
+            return;
+        }
+        let Some(action) = self.undo.pop_redo() else {
+            self.status = "やり直せる操作がありません".to_string();
+            cx.notify();
+            return;
+        };
+        let label = action.label();
+        match action {
+            UndoAction::Rename { from, to } => {
+                // Redo performs the rename again: from -> to.
+                let current = from.clone();
+                let name = to
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let action_for_undo = UndoAction::Rename {
+                    from: from.clone(),
+                    to: to.clone(),
+                };
+                let background =
+                    cx.background_spawn(async move { ops::rename_entry(&current, &name) });
+                cx.spawn(async move |this, cx| {
+                    let result = background.await;
+                    let _ = this.update(cx, |this, cx| {
+                        match result {
+                            Ok(redone) => {
+                                this.suppress_for(SELF_OP_SUPPRESS);
+                                this.undo.push_undo(action_for_undo);
+                                this.status =
+                                    format!("{label}をやり直しました: {}", display_path(&redone));
+                                this.pending_select = Some(redone);
+                                this.reload(cx);
+                            }
+                            Err(error) => {
+                                this.undo.push_redo(action_for_undo);
+                                this.status = format!("やり直せません: {error}");
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            UndoAction::Trash { items } => {
+                // Redo means trashing the restored paths again; look them up by
+                // path and send them back to the trash.
+                let paths: Vec<PathBuf> = items
+                    .iter()
+                    .map(|(path, _)| path.clone())
+                    .filter(|path| path.exists() || path.is_symlink())
+                    .collect();
+                if paths.is_empty() {
+                    self.undo.push_redo(UndoAction::Trash { items });
+                    self.status = "やり直せません: 対象が存在しません".to_string();
+                    cx.notify();
+                    return;
+                }
+                let action_for_undo = UndoAction::Trash {
+                    items: items.clone(),
+                };
+                let background = cx.background_spawn(async move {
+                    let mut trashed: Vec<PathBuf> = Vec::new();
+                    let mut failures = 0usize;
+                    for path in paths {
+                        match trash::delete(&path) {
+                            Ok(()) => trashed.push(path),
+                            Err(_) => failures += 1,
+                        }
+                    }
+                    (trashed, failures)
+                });
+                cx.spawn(async move |this, cx| {
+                    let result = background.await;
+                    let _ = this.update(cx, |this, cx| {
+                        let (trashed, failures) = result;
+                        if trashed.is_empty() {
+                            this.undo.push_redo(action_for_undo);
+                            this.status = "やり直せません".to_string();
+                        } else {
+                            this.suppress_for(SELF_OP_SUPPRESS);
+                            if let Ok(items) = trash_view::list() {
+                                let recorded: Vec<(PathBuf, String)> = trashed
+                                    .iter()
+                                    .filter_map(|path| {
+                                        items.iter().find(|item| item.original_path() == *path).map(
+                                            |item| {
+                                                (
+                                                    path.clone(),
+                                                    item.id.to_string_lossy().into_owned(),
+                                                )
+                                            },
+                                        )
+                                    })
+                                    .collect();
+                                this.undo.push_undo(UndoAction::Trash { items: recorded });
+                            }
+                            this.status = if failures == 0 {
+                                format!("{label}をやり直しました（{} 件）", trashed.len())
+                            } else {
+                                format!(
+                                    "{label}をやり直しました（{} 件、{failures} 件失敗）",
+                                    trashed.len()
+                                )
+                            };
+                            this.reload(cx);
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+        }
+        cx.notify();
     }
 
     // ----------------------------------------------------------------- preview
@@ -2691,13 +3003,20 @@ impl Explorer {
             return;
         }
 
-        let background = cx.background_spawn(async move { ops::rename_entry(&target, &value) });
+        let rename_source = target.clone();
+        let background =
+            cx.background_spawn(async move { ops::rename_entry(&rename_source, &value) });
+        let rename_original = target;
         cx.spawn(async move |this, cx| {
             let result = background.await;
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(new_path) => {
                         this.suppress_for(SELF_OP_SUPPRESS);
+                        this.undo.push(UndoAction::Rename {
+                            from: rename_original,
+                            to: new_path.clone(),
+                        });
                         this.status = format!(
                             "名前を変更しました: {} → {}",
                             original,
@@ -2946,6 +3265,19 @@ impl Explorer {
                         message.push_str(&format!("（{} 件失敗）", failures.len()));
                     }
                     this.status = message;
+                    if let Ok(items) = trash_view::list() {
+                        let recorded: Vec<(PathBuf, String)> = trashed
+                            .iter()
+                            .filter_map(|path| {
+                                items.iter().find(|item| item.original_path() == *path).map(
+                                    |item| (path.clone(), item.id.to_string_lossy().into_owned()),
+                                )
+                            })
+                            .collect();
+                        if !recorded.is_empty() {
+                            this.undo.push(UndoAction::Trash { items: recorded });
+                        }
+                    }
                     this.all_entries
                         .retain(|entry| !trashed.contains(&entry.path));
                     this.fingerprint = fingerprint(&this.all_entries);
@@ -3348,6 +3680,7 @@ impl Explorer {
             let rename_weak = weak.clone();
             let trash_weak = weak.clone();
             let new_folder_weak = weak.clone();
+            let undo_weak = weak.clone();
 
             let open_path = path.clone();
             let reveal_path = path.clone();
@@ -3382,6 +3715,13 @@ impl Explorer {
                     .on_click(move |_, _window, cx| {
                         let target = copy_path.clone();
                         let _ = copy_weak.update(cx, |this, cx| this.copy_path(target, cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("元に戻す")
+                    .icon(Icon::new(IconName::Undo2))
+                    .on_click(move |_, _window, cx| {
+                        let _ = undo_weak.update(cx, |this, cx| this.undo_last(cx));
                     }),
             )
             .item(
@@ -4165,6 +4505,24 @@ impl Explorer {
                 this.reload(cx);
             }),
         );
+        let undo_button = icon_button(
+            "undo",
+            IconName::Undo2,
+            self.undo.can_undo(),
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.undo_last(cx);
+            }),
+        );
+        let redo_button = icon_button(
+            "redo",
+            IconName::Redo2,
+            self.undo.can_redo(),
+            cx.listener(|this, _event, window, cx| {
+                this.focus_handle.focus(window, cx);
+                this.redo_last(cx);
+            }),
+        );
         let view_details = icon_button_active(
             "view-details",
             IconName::List,
@@ -4222,6 +4580,8 @@ impl Explorer {
             .child(forward)
             .child(up)
             .child(refresh)
+            .child(undo_button)
+            .child(redo_button)
             .child(view_details)
             .child(view_grid)
             .child(breadcrumb)
@@ -4342,6 +4702,18 @@ impl Explorer {
                     .into_any_element()
             } else {
                 div().into_any_element()
+            })
+            .child(if self.undo.undo_len() + self.undo.redo_len() == 0 {
+                div().into_any_element()
+            } else {
+                div()
+                    .text_color(rgb(C_MUTED))
+                    .child(format!(
+                        "元に戻す {} / やり直す {}",
+                        self.undo.undo_len(),
+                        self.undo.redo_len()
+                    ))
+                    .into_any_element()
             })
             .child(if self.view == ViewMode::Trash {
                 div()
@@ -4550,6 +4922,10 @@ impl Render for Explorer {
         if self.debug_location_once && !self.loading {
             self.debug_location_once = false;
             self.open_location(window, cx);
+        }
+        if self.debug_undo.is_some() && !self.loading && !self.entries.is_empty() {
+            let mode = self.debug_undo.take().unwrap_or_default();
+            self.run_debug_undo(&mode, cx);
         }
         if self.debug_preview_once && !self.loading && !self.entries.is_empty() {
             self.debug_preview_once = false;
