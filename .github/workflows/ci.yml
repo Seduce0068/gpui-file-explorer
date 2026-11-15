@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # 個人リポジトリ共通の再利用可能ワークフロー（rust-gates.yml）へ委譲する。
-# ゲート: fmt → check → test → clippy → cargo audit。
+# ゲート: fmt → check → test → clippy → cargo audit → poc/ の追加ゲート。
 # GPUI 系のビルドに必要な Linux 開発パッケージのみ導入する。
 name: CI
 
@@ -33,3 +33,11 @@ jobs:
         libwayland-dev
         libx11-xcb-dev
       audit: true
+      # poc/ は app/ とは別の Cargo プロジェクト（ルート Cargo.toml なし）のため、
+      # 共有ワークフローの gates（working_directory: app）では検証されない。
+      # extra_gates は working_directory で実行されるので poc/ へ移動して回す。
+      extra_gates: |
+        (cd ../poc && cargo fmt --all -- --check)
+        (cd ../poc && cargo check --all-targets --locked)
+        (cd ../poc && cargo test --all-targets --locked)
+        (cd ../poc && cargo clippy --all-targets --locked -- -D warnings)
