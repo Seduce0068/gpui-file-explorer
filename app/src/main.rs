@@ -339,6 +339,8 @@ struct PreviewState {
     title: String,
     loading: bool,
     text: Option<String>,
+    /// Decoded image bytes plus their format (image preview only).
+    image: Option<(ImageFormat, Vec<u8>)>,
     error: Option<String>,
     truncated: bool,
     size: u64,
@@ -1956,22 +1958,32 @@ impl Explorer {
         self.open_preview(path, title, cx);
     }
 
-    /// Read a text preview on the background executor (bounded, read-only).
+    /// Read a text or image preview on the background executor (bounded,
+    /// read-only). Known image extensions load as an image, everything else
+    /// as text.
     fn open_preview(&mut self, path: PathBuf, title: String, cx: &mut Context<Self>) {
+        let image_format = preview::image_format_for_name(&title);
         self.preview = Some(PreviewState {
             title,
             loading: true,
             text: None,
+            image: None,
             error: None,
             truncated: false,
             size: 0,
             task: None,
         });
         cx.notify();
-        let background =
-            cx.background_spawn(
-                async move { preview::read_preview(&path, preview::MAX_PREVIEW_BYTES) },
-            );
+        let background = cx.background_spawn(async move {
+            match image_format {
+                Some(format) => preview::read_image_preview(&path, preview::MAX_IMAGE_BYTES)
+                    .map(|bytes| (Some((format, bytes)), None)),
+                None => {
+                    let read = preview::read_preview(&path, preview::MAX_PREVIEW_BYTES)?;
+                    Ok((None, Some(read)))
+                }
+            }
+        });
         let task = cx.spawn(async move |this, cx| {
             let result = background.await;
             let _ = this.update(cx, |this, cx| {
@@ -1981,10 +1993,16 @@ impl Explorer {
                 preview.loading = false;
                 preview.task = None;
                 match result {
-                    Ok(read) => {
-                        preview.text = Some(read.text);
-                        preview.truncated = read.truncated;
-                        preview.size = read.size;
+                    Ok((image, text)) => {
+                        if let Some((_, bytes)) = &image {
+                            preview.size = bytes.len() as u64;
+                        }
+                        preview.image = image;
+                        if let Some(read) = text {
+                            preview.truncated = read.truncated;
+                            preview.size = read.size;
+                            preview.text = Some(read.text);
+                        }
                     }
                     Err(error) => preview.error = Some(error),
                 }
@@ -2062,7 +2080,27 @@ impl Explorer {
                     )
                     .child(div().text_xs().text_color(rgb(C_MUTED)).child(meta)),
             );
-        if preview.text.is_some() {
+        if let Some((format, bytes)) = &preview.image {
+            panel = panel.child(
+                div()
+                    .id("preview-image")
+                    .max_h(px(480.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgb(C_BASE))
+                    .rounded_md()
+                    .p_3()
+                    .child(
+                        gpui_kit::img(std::sync::Arc::new(gpui_kit::Image::from_bytes(
+                            *format,
+                            bytes.clone(),
+                        )))
+                        .max_h(px(440.0))
+                        .max_w(px(740.0)),
+                    ),
+            );
+        } else if preview.text.is_some() {
             panel = panel.child(
                 div()
                     .id("preview-text")
