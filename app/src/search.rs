@@ -196,13 +196,21 @@ impl SearchScope {
     }
 }
 
+/// Resolved search roots for a scope, including whether the search fell back
+/// to the current directory because no valid scoped roots were available.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchRoots {
+    pub roots: Vec<PathBuf>,
+    pub fell_back_to_cwd: bool,
+}
+
 /// Collect unique existing directory roots for a scope.
 pub fn search_roots(
     scope: SearchScope,
     cwd: &Path,
     tabs: &[PathBuf],
     bookmarks: &[PathBuf],
-) -> Vec<PathBuf> {
+) -> SearchRoots {
     use std::collections::HashSet;
     let candidates: Vec<PathBuf> = match scope {
         SearchScope::Current => vec![cwd.to_path_buf()],
@@ -223,9 +231,16 @@ pub fn search_roots(
     }
     if roots.is_empty() {
         // Keep a safe fallback so a search still runs somewhere meaningful.
-        roots.push(cwd.to_path_buf());
+        SearchRoots {
+            roots: vec![cwd.to_path_buf()],
+            fell_back_to_cwd: scope != SearchScope::Current,
+        }
+    } else {
+        SearchRoots {
+            roots,
+            fell_back_to_cwd: false,
+        }
     }
-    roots
 }
 
 /// Merge per-root search results into one list, de-duplicated by path and
@@ -727,21 +742,32 @@ mod scope_tests {
         fs::create_dir_all(&a).unwrap();
         fs::create_dir_all(&b).unwrap();
         let missing = dir.join("missing");
-        let roots = search_roots(
+        let resolved = search_roots(
             SearchScope::OpenTabs,
             &dir,
             &[a.clone(), b.clone(), a.clone(), missing],
             &[],
         );
-        assert_eq!(roots, vec![a, b]);
+        assert_eq!(resolved.roots, vec![a, b]);
+        assert!(!resolved.fell_back_to_cwd);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn search_roots_falls_back_to_cwd_when_empty() {
         let dir = scratch("fallback");
-        let roots = search_roots(SearchScope::Bookmarks, &dir, &[], &[]);
-        assert_eq!(roots, vec![dir.clone()]);
+        let resolved = search_roots(SearchScope::Bookmarks, &dir, &[], &[]);
+        assert_eq!(resolved.roots, vec![dir.clone()]);
+        assert!(resolved.fell_back_to_cwd);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_roots_current_scope_is_not_marked_as_fallback() {
+        let dir = scratch("current");
+        let resolved = search_roots(SearchScope::Current, &dir, &[], &[]);
+        assert_eq!(resolved.roots, vec![dir.clone()]);
+        assert!(!resolved.fell_back_to_cwd);
         let _ = fs::remove_dir_all(&dir);
     }
 
