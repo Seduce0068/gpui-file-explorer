@@ -118,3 +118,17 @@ bash packaging/linux/build-deb.sh --skip-build
 
 - 検証（Runtime Proof）: 追加ゲートを含む CI が **success**（run 43734742786、12分22秒）。
 - ローカルでも同一コマンド列の再現を確認（`app/` を cwd に `bash -e` で実行、poc 4 tests pass）。
+
+### ローカル検証ループ
+
+CI と同じ範囲を手元で回すスクリプトを用意しています。
+
+```bash
+bash scripts/check.sh            # app + poc の fmt/check/test/clippy + cargo audit
+bash scripts/check.sh --fast     # cargo audit を省略（RustSec DB が引けない環境向け）
+bash scripts/check.sh --app      # app/ のみ
+bash scripts/check.sh --poc      # poc/ のみ
+```
+
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 132 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
