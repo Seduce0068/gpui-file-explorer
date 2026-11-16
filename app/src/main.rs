@@ -5158,8 +5158,12 @@ fn icon_button(
         .child(Icon::new(icon))
 }
 
-impl Render for Explorer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Explorer {
+    /// Development hooks evaluated before the bar elements are built.
+    ///
+    /// Each hook clears its own flag, so it fires once per activation. Kept
+    /// out of `render()` so the drawing path stays readable.
+    fn apply_startup_hooks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.debug.open_trash_once && self.view == ViewMode::Directory {
             self.debug.open_trash_once = false;
             self.enter_trash(cx);
@@ -5272,10 +5276,10 @@ impl Render for Explorer {
             }
             self.run_search(cx);
         }
-        let tab_bar = self.tab_bar(cx);
-        let search_bar = self.search_bar(cx);
-        let search_history_bar = self.search_history_bar(cx);
-        let location_bar = self.location_bar(cx);
+    }
+
+    /// Development hooks evaluated after the bars and before the dialogs.
+    fn apply_overlay_hooks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.debug.help_once {
             self.debug.help_once = false;
             self.help_open = true;
@@ -5304,6 +5308,17 @@ impl Render for Explorer {
                 self.open_preview(path, title, cx);
             }
         }
+    }
+}
+
+impl Render for Explorer {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.apply_startup_hooks(window, cx);
+        let tab_bar = self.tab_bar(cx);
+        let search_bar = self.search_bar(cx);
+        let search_history_bar = self.search_history_bar(cx);
+        let location_bar = self.location_bar(cx);
+        self.apply_overlay_hooks(window, cx);
         let rename_dialog = self.rename_dialog(cx);
         let properties_dialog = self.properties_dialog(cx);
         let help_dialog = self.help_dialog(cx);
