@@ -355,7 +355,7 @@ bash packaging/linux/build-deb.sh
   `version` は現状 1 固定で、未知の version は警告を出して v1 として
   読み込みます（ダウングレード検出は未実装）。
 - 起動時 `canonicalize` / 各所の単発 `is_dir()`（起動・ナビゲーション時のみ）は
-  同期実行です（影響はマイクロ秒級。DESIGN §4.4 の厳密適用は P1）。
+  同期実行です（影響はマイクロ秒級。DESIGN §4.4 の厳密適用は今後の改善候補）。
 - `Window::prompt` のダイアログ表示中に別の prompt を開かない保証はありません
   （GPS の再入制約に依存。失敗時はキャンセル扱いで安全側）。
 - `SortSpec.dirs_first` は将来互換のため保存していますが、P0 は常に
