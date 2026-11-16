@@ -114,12 +114,23 @@ compute_depends() {
   local -a found=()
   while IFS= read -r lib; do
     [ -n "${lib}" ] || continue
+    # Only absolute paths from the dynamic loader are plausible library names.
+    # Reject relative paths, symlinks with spaces already split, and anything
+    # outside the usual library directories before asking dpkg about it.
+    case "${lib}" in
+      /lib/*|/usr/lib/*|/lib64/*|/usr/lib64/*) ;;
+      *) continue ;;
+    esac
+    [ -e "${lib}" ] || continue
     # `dpkg -S` can print localized diversion lines first (e.g. for
     # ld-linux); only accept lines that start with a package name.
     pkg_name="$(dpkg -S "${lib}" 2>/dev/null \
       | grep -E '^[a-z0-9][a-z0-9+.-]*(:[a-z0-9-]+)?: ' \
       | head -n1 | cut -d: -f1 || true)"
-    [ -n "${pkg_name}" ] && found+=("${pkg_name}")
+    case "${pkg_name}" in
+      ''|*[!a-z0-9+.-]*) continue ;;
+    esac
+    found+=("${pkg_name}")
   done < <(ldd "${elf}" 2>/dev/null | awk '/=> \// {print $3} /^\t\/.*\.so/ {print $1}')
   found+=("libvulkan1")
   printf '%s\n' "${found[@]}" | sort -u | paste -sd, - | sed 's/,/, /g'
