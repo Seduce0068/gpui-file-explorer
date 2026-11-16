@@ -1939,6 +1939,17 @@ impl Explorer {
                 this.op_task = None;
                 this.op_cancel = None;
                 this.op_progress = None;
+                let error_text = first_error
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                eprintln!(
+                    "gpui-file-explorer: op={verb} files={} dirs={} bytes={} skipped={} error={error_text}",
+                    stats.files,
+                    stats.dirs,
+                    stats.bytes,
+                    stats.skipped.len()
+                );
                 let succeeded = stats.files + stats.dirs > 0;
                 let status = match first_error {
                     Some(OpError::Cancelled) => "キャンセルしました".to_string(),
@@ -2399,6 +2410,10 @@ impl Explorer {
                             Ok(redone) => {
                                 this.suppress_for(SELF_OP_SUPPRESS);
                                 this.undo.push_undo(action_for_undo);
+                                eprintln!(
+                                    "gpui-file-explorer: op=redo action=rename path={}",
+                                    display_path(&redone)
+                                );
                                 this.status =
                                     format!("{label}をやり直しました: {}", display_path(&redone));
                                 this.pending_select = Some(redone);
@@ -2446,6 +2461,11 @@ impl Explorer {
                     let result = background.await;
                     let _ = this.update(cx, |this, cx| {
                         let (trashed, failures) = result;
+                        eprintln!(
+                            "gpui-file-explorer: op=redo action=trash items={} failures={}",
+                            trashed.len(),
+                            failures
+                        );
                         if trashed.is_empty() {
                             this.undo.push_redo(action_for_undo);
                             this.status = "やり直せません".to_string();
@@ -3249,6 +3269,10 @@ impl Explorer {
                 match result {
                     Ok(new_path) => {
                         this.suppress_for(SELF_OP_SUPPRESS);
+                        eprintln!(
+                            "gpui-file-explorer: op=rename path={}",
+                            display_path(&new_path)
+                        );
                         this.undo.push(UndoAction::Rename {
                             from: rename_original,
                             to: new_path.clone(),
