@@ -1209,6 +1209,15 @@ mod tests {
 
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn create_unique_folder_reports_missing_parent() {
+        let dir = scratch_dir("create-missing-parent");
+        let _ = fs::remove_dir_all(&dir);
+        let missing = dir.join("no-such-parent");
+        let error = create_unique_folder(&missing).expect_err("missing parent must fail");
+        assert!(error.contains("no-such-parent"), "unexpected: {error}");
+    }
 }
 
 #[cfg(test)]
