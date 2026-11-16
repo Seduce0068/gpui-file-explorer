@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T05:23:44+09:00
+verified: 2026-11-17T05:26:57+09:00
 status: complete
 ---
 
