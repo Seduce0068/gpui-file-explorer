@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T03:22:52+09:00
+verified: 2026-11-17T03:25:37+09:00
 status: complete
 ---
 
@@ -231,6 +231,8 @@ status: complete
   返すパッケージ名も文字種で検証。`bash -n` / `shellcheck` 通過、
   実 DEB ビルドで `Depends` が従来どおり生成されることを確認。
 
+- 最終コードでのフル DEB ビルド（2026-11-17T03:24+09:00）が成功し、
+  展開したバイナリが `--version` で `gpui-file-explorer 0.1.0` を返すことを確認。
 - `gpui-file-explorer.desktop`（追加改善）: `Exec` に `%f` を追加し、
   ファイルマネージャーからフォルダを引数として渡せるようにした。
   `desktop-file-validate` 通過、DEB 展開後の `.desktop` にも反映確認。
