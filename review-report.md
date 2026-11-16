@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T04:42:26+09:00
+verified: 2026-11-17T04:46:57+09:00
 status: complete
 ---
 
@@ -362,6 +362,7 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
 - `cargo test --release --all-targets --locked`（`app/`、
   2026-11-17T02:20+09:00）: **151 passed / 0 failed**。
   debug / release の双方で同一結果（過去の検証は 150 件時点）。
+  再確認（2026-11-17T04:46+09:00）: **161 passed / 0 failed**。
 - `cargo test --all-targets --locked`（`app/`、2026-11-16T22:51:56+09:00）:
   **132 passed / 0 failed / 0 ignored**
 - `cargo audit`（`app/`、同日時）: **exit 0**、
