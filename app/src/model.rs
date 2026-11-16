@@ -1232,6 +1232,25 @@ mod selection_tests {
     }
 
     #[test]
+    fn range_selection_without_usable_anchor_falls_back_to_single() {
+        let entries = paths(&["/a", "/b"]);
+        let mut selection = Selection::default();
+        // No anchor yet: selecting a range behaves like a single selection.
+        selection.select_range(&entries, Path::new("/b"));
+        assert_eq!(selection.paths(), &paths(&["/b"])[..]);
+
+        // An anchor outside the visible entries also falls back.
+        let mut outside = Selection::default();
+        outside.select_single(PathBuf::from("/gone"));
+        outside.select_range(&entries, Path::new("/a"));
+        assert_eq!(outside.paths(), &paths(&["/a"])[..]);
+
+        // An unknown target leaves the existing selection untouched.
+        outside.select_range(&entries, Path::new("/missing"));
+        assert_eq!(outside.paths(), &paths(&["/a"])[..]);
+    }
+
+    #[test]
     fn select_all_and_retain() {
         let entries = paths(&["/a", "/b", "/c"]);
         let mut selection = Selection::default();
