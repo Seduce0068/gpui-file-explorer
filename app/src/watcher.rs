@@ -291,6 +291,16 @@ mod tests {
             normalize_events(&Ok(vec![debounced(EventKind::Access(AccessKind::Any))])).is_empty(),
             "access events must be ignored"
         );
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(EventKind::Modify(ModifyKind::Name(
+                notify_debouncer_full::notify::event::RenameMode::Any
+            )))])),
+            vec![FsEvent::Rescan]
+        );
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(EventKind::Any)])),
+            vec![FsEvent::Rescan]
+        );
     }
 
     #[test]
