@@ -408,6 +408,24 @@ struct ClipboardSlot {
     cut: bool,
 }
 
+/// Recursive search state, grouped so `Explorer` keeps a manageable field list.
+#[derive(Default)]
+struct SearchState {
+    input: Option<Entity<InputState>>,
+    subscription: Option<Subscription>,
+    ext: Option<Entity<InputState>>,
+    ext_subscription: Option<Subscription>,
+    kind: SearchKind,
+    mode: SearchMode,
+    scope: SearchScope,
+    query: String,
+    active_roots: Vec<PathBuf>,
+    fell_back_to_cwd: bool,
+    task: Option<Task<()>>,
+    cancel: Option<Arc<AtomicBool>>,
+    generation: u64,
+}
+
 /// Development-only screenshot / deterministic smoke-test hooks.
 ///
 /// Every field is driven by a `GPUI_FE_DEBUG_*` environment variable. Keeping
@@ -452,20 +470,7 @@ struct Explorer {
     /// Trash items backing the virtual listing (empty in directory view).
     trash_items: Vec<trash::TrashItem>,
     /// Recursive search state (active only while `view == Search`).
-    search_input: Option<Entity<InputState>>,
-    search_subscription: Option<Subscription>,
-    search_ext: Option<Entity<InputState>>,
-    search_ext_subscription: Option<Subscription>,
-    search_kind: SearchKind,
-    search_mode: SearchMode,
-    search_scope: SearchScope,
-    search_query: String,
-    search_active_roots: Vec<PathBuf>,
-    /// True when a non-current scope had no valid roots and we searched cwd.
-    search_fell_back_to_cwd: bool,
-    search_task: Option<Task<()>>,
-    search_cancel: Option<Arc<AtomicBool>>,
-    search_generation: u64,
+    search: SearchState,
     history: History,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
@@ -588,19 +593,7 @@ impl Explorer {
             selection: Selection::default(),
             view: ViewMode::Directory,
             trash_items: Vec::new(),
-            search_input: None,
-            search_subscription: None,
-            search_ext: None,
-            search_ext_subscription: None,
-            search_kind: SearchKind::All,
-            search_mode: SearchMode::Name,
-            search_scope: SearchScope::Current,
-            search_query: String::new(),
-            search_active_roots: Vec::new(),
-            search_fell_back_to_cwd: false,
-            search_task: None,
-            search_cancel: None,
-            search_generation: 0,
+            search: SearchState::default(),
             history,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
@@ -3538,7 +3531,7 @@ impl Explorer {
     /// Open the search bar (Ctrl+F). Only available from the directory view.
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.view == ViewMode::Search {
-            if let Some(input) = &self.search_input {
+            if let Some(input) = &self.search.input {
                 let focus = input.read(cx).focus_handle(cx).clone();
                 focus.focus(window, cx);
             }
@@ -3567,17 +3560,17 @@ impl Explorer {
             );
         let focus = input.read(cx).focus_handle(cx).clone();
         focus.focus(window, cx);
-        self.search_input = Some(input);
-        self.search_subscription = Some(subscription);
-        self.search_ext = Some(ext_input);
-        self.search_ext_subscription = Some(ext_subscription);
-        self.search_kind = SearchKind::All;
-        self.search_mode = SearchMode::Name;
-        self.search_scope = SearchScope::Current;
-        self.search_query.clear();
-        self.search_active_roots.clear();
-        self.search_fell_back_to_cwd = false;
-        self.search_generation = self.search_generation.wrapping_add(1);
+        self.search.input = Some(input);
+        self.search.subscription = Some(subscription);
+        self.search.ext = Some(ext_input);
+        self.search.ext_subscription = Some(ext_subscription);
+        self.search.kind = SearchKind::All;
+        self.search.mode = SearchMode::Name;
+        self.search.scope = SearchScope::Current;
+        self.search.query.clear();
+        self.search.active_roots.clear();
+        self.search.fell_back_to_cwd = false;
+        self.search.generation = self.search.generation.wrapping_add(1);
         self.view = ViewMode::Search;
         self.selection.clear();
         self.selected = 0;
@@ -3588,7 +3581,7 @@ impl Explorer {
 
     /// Recursive search on the background executor (Enter in the search bar).
     fn run_search(&mut self, cx: &mut Context<Self>) {
-        let Some(input) = self.search_input.clone() else {
+        let Some(input) = self.search.input.clone() else {
             return;
         };
         let query = input.read(cx).value().trim().to_string();
@@ -3597,27 +3590,27 @@ impl Explorer {
             cx.notify();
             return;
         }
-        self.search_query = query.clone();
-        self.search_generation = self.search_generation.wrapping_add(1);
-        let generation = self.search_generation;
-        if let Some(cancel) = self.search_cancel.take() {
+        self.search.query = query.clone();
+        self.search.generation = self.search.generation.wrapping_add(1);
+        let generation = self.search.generation;
+        if let Some(cancel) = self.search.cancel.take() {
             cancel.store(true, Ordering::SeqCst);
         }
         let cancel = Arc::new(AtomicBool::new(false));
-        self.search_cancel = Some(cancel.clone());
-        self.search_task.take();
+        self.search.cancel = Some(cancel.clone());
+        self.search.task.take();
         self.loading = true;
 
         let include_hidden = self.settings.show_hidden;
-        let mode = self.search_mode;
-        let scope = self.search_scope;
+        let mode = self.search.mode;
+        let scope = self.search.scope;
         let tab_paths: Vec<PathBuf> = self.tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
         let bookmarks = self.bookmarks.clone();
         let cwd = self.cwd.clone();
         let resolved = search_roots(scope, &cwd, &tab_paths, &bookmarks);
         let roots = resolved.roots;
-        self.search_active_roots = roots.clone();
-        self.search_fell_back_to_cwd = resolved.fell_back_to_cwd;
+        self.search.active_roots = roots.clone();
+        self.search.fell_back_to_cwd = resolved.fell_back_to_cwd;
         if resolved.fell_back_to_cwd {
             self.status = format!(
                 "検索中…「{query}」（{}に有効な場所がないため現在のフォルダ）",
@@ -3675,31 +3668,32 @@ impl Explorer {
         let task = cx.spawn(async move |this, cx| {
             let entries = background.await;
             let _ = this.update(cx, |this, cx| {
-                if this.search_generation != generation {
+                if this.search.generation != generation {
                     return;
                 }
                 this.loading = false;
-                this.search_task = None;
-                this.search_cancel = None;
+                this.search.task = None;
+                this.search.cancel = None;
                 this.all_entries = entries;
                 this.apply_search_filter(cx);
-                this.settings.record_search(&this.search_query);
+                this.settings.record_search(&this.search.query);
                 if !this.debug.ephemeral {
                     this.settings.save();
                 }
             });
         });
-        self.search_task = Some(task);
+        self.search.task = Some(task);
     }
 
     /// Recompute the visible search results from the last search's entries
     /// (kind/extension filters). Does not re-run the search.
     fn apply_search_filter(&mut self, cx: &mut Context<Self>) {
         let extension = self
-            .search_ext
+            .search
+            .ext
             .as_ref()
             .map(|input| input.read(cx).value().to_string());
-        let filtered = filter_results(&self.all_entries, self.search_kind, extension.as_deref());
+        let filtered = filter_results(&self.all_entries, self.search.kind, extension.as_deref());
         let paths: Vec<PathBuf> = filtered.iter().map(|entry| entry.path.clone()).collect();
         self.selection.retain(&paths);
         self.entries = filtered;
@@ -3712,18 +3706,18 @@ impl Explorer {
         }
         self.scroll_handle
             .scroll_to_item(0, ScrollStrategy::Nearest);
-        let mode_label = if self.search_mode == SearchMode::Content {
+        let mode_label = if self.search.mode == SearchMode::Content {
             "（内容）"
         } else {
             ""
         };
-        let scope_label = match self.search_scope {
+        let scope_label = match self.search.scope {
             SearchScope::Current => String::new(),
             scope => {
-                if self.search_fell_back_to_cwd {
+                if self.search.fell_back_to_cwd {
                     format!("・{}（現在のフォルダ）", scope.label())
                 } else {
-                    let count = self.search_active_roots.len();
+                    let count = self.search.active_roots.len();
                     if count > 0 {
                         format!("・{}（{} 箇所）", scope.label(), count)
                     } else {
@@ -3734,7 +3728,7 @@ impl Explorer {
         };
         self.status = format!(
             "検索{mode_label}{scope_label}: 「{}」 {} 件",
-            self.search_query,
+            self.search.query,
             self.entries.len()
         );
         cx.notify();
@@ -3743,20 +3737,20 @@ impl Explorer {
     /// Drop search state without touching the current view (used when
     /// navigating away).
     fn clear_search(&mut self) {
-        if let Some(cancel) = self.search_cancel.take() {
+        if let Some(cancel) = self.search.cancel.take() {
             cancel.store(true, Ordering::SeqCst);
         }
-        self.search_task.take();
-        self.search_input = None;
-        self.search_subscription = None;
-        self.search_ext = None;
-        self.search_ext_subscription = None;
-        self.search_kind = SearchKind::All;
-        self.search_mode = SearchMode::Name;
-        self.search_scope = SearchScope::Current;
-        self.search_query.clear();
-        self.search_active_roots.clear();
-        self.search_fell_back_to_cwd = false;
+        self.search.task.take();
+        self.search.input = None;
+        self.search.subscription = None;
+        self.search.ext = None;
+        self.search.ext_subscription = None;
+        self.search.kind = SearchKind::All;
+        self.search.mode = SearchMode::Name;
+        self.search.scope = SearchScope::Current;
+        self.search.query.clear();
+        self.search.active_roots.clear();
+        self.search.fell_back_to_cwd = false;
     }
 
     fn close_search(&mut self, cx: &mut Context<Self>) {
@@ -3772,7 +3766,7 @@ impl Explorer {
     }
 
     fn search_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let input = self.search_input.as_ref()?;
+        let input = self.search.input.as_ref()?;
         let hint = if self.loading {
             "検索中…"
         } else {
@@ -3780,7 +3774,7 @@ impl Explorer {
         };
         let mut modes = div().flex().items_center().gap_1();
         for (mode, label) in [(SearchMode::Name, "名前"), (SearchMode::Content, "内容")] {
-            let active = self.search_mode == mode;
+            let active = self.search.mode == mode;
             modes = modes.child(
                 div()
                     .id(("search-mode", mode as u64))
@@ -3794,12 +3788,12 @@ impl Explorer {
                     .hover(|style| style.bg(rgb(C_SURFACE)))
                     .child(label)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        if this.search_mode == mode {
+                        if this.search.mode == mode {
                             return;
                         }
-                        this.search_mode = mode;
+                        this.search.mode = mode;
                         if mode == SearchMode::Content {
-                            this.search_kind = SearchKind::All;
+                            this.search.kind = SearchKind::All;
                         }
                         this.run_search(cx);
                     })),
@@ -3811,7 +3805,7 @@ impl Explorer {
             SearchScope::OpenTabs,
             SearchScope::Bookmarks,
         ] {
-            let active = self.search_scope == scope;
+            let active = self.search.scope == scope;
             scopes = scopes.child(
                 div()
                     .id(("search-scope", scope as u64))
@@ -3825,10 +3819,10 @@ impl Explorer {
                     .hover(|style| style.bg(rgb(C_SURFACE)))
                     .child(scope.label())
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        if this.search_scope == scope {
+                        if this.search.scope == scope {
                             return;
                         }
-                        this.search_scope = scope;
+                        this.search.scope = scope;
                         this.run_search(cx);
                     })),
             );
@@ -3839,7 +3833,7 @@ impl Explorer {
             (SearchKind::Files, "ファイル"),
             (SearchKind::Dirs, "フォルダ"),
         ] {
-            let active = self.search_kind == kind;
+            let active = self.search.kind == kind;
             kinds = kinds.child(
                 div()
                     .id(("search-kind", kind as u64))
@@ -3853,12 +3847,12 @@ impl Explorer {
                     .hover(|style| style.bg(rgb(C_SURFACE)))
                     .child(label)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.search_kind = kind;
+                        this.search.kind = kind;
                         this.apply_search_filter(cx);
                     })),
             );
         }
-        let extension_input = self.search_ext.as_ref().map(|ext| {
+        let extension_input = self.search.ext.as_ref().map(|ext| {
             div()
                 .flex()
                 .items_center()
@@ -3880,7 +3874,7 @@ impl Explorer {
                 .child(div().flex_1().child(Input::new(input)))
                 .child(modes)
                 .child(scopes)
-                .children((self.search_mode == SearchMode::Name).then_some(kinds))
+                .children((self.search.mode == SearchMode::Name).then_some(kinds))
                 .children(extension_input)
                 .child(div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
         )
@@ -3888,7 +3882,7 @@ impl Explorer {
 
     /// Chips with recent search queries, shown while the query field is empty.
     fn search_history_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let input = self.search_input.as_ref()?;
+        let input = self.search.input.as_ref()?;
         if !input.read(cx).value().is_empty() || self.settings.recent_searches.is_empty() {
             return None;
         }
@@ -3922,7 +3916,7 @@ impl Explorer {
                     .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
                     .child(value.clone())
                     .on_click(cx.listener(move |this, _event, window, cx| {
-                        if let Some(input) = this.search_input.clone() {
+                        if let Some(input) = this.search.input.clone() {
                             input.update(cx, |state, cx| {
                                 state.set_value(value.clone(), window, cx);
                             });
@@ -4252,7 +4246,7 @@ impl Explorer {
     fn list_row(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
         let display_name =
-            display_name_for(&entry, this.view, &this.cwd, &this.search_active_roots);
+            display_name_for(&entry, this.view, &this.cwd, &this.search.active_roots);
         let display_name = match entry.match_line {
             Some(line) if this.view == ViewMode::Search => format!("{display_name}:{line}"),
             _ => display_name,
@@ -4448,7 +4442,7 @@ impl Explorer {
     fn grid_cell(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
         let display_name =
-            display_name_for(&entry, this.view, &this.cwd, &this.search_active_roots);
+            display_name_for(&entry, this.view, &this.cwd, &this.search.active_roots);
         let display_name = match entry.match_line {
             Some(line) if this.view == ViewMode::Search => format!("{display_name}:{line}"),
             _ => display_name,
@@ -5235,32 +5229,32 @@ impl Render for Explorer {
             self.open_search(window, cx);
             if let Ok(mode) = std::env::var("GPUI_FE_DEBUG_SEARCH_MODE") {
                 if mode == "content" {
-                    self.search_mode = SearchMode::Content;
-                    self.search_kind = SearchKind::All;
+                    self.search.mode = SearchMode::Content;
+                    self.search.kind = SearchKind::All;
                 }
             }
             if let Ok(kind) = std::env::var("GPUI_FE_DEBUG_SEARCH_KIND") {
-                self.search_kind = match kind.as_str() {
+                self.search.kind = match kind.as_str() {
                     "files" => SearchKind::Files,
                     "dirs" => SearchKind::Dirs,
                     _ => SearchKind::All,
                 };
             }
             if let Ok(scope) = std::env::var("GPUI_FE_DEBUG_SEARCH_SCOPE") {
-                self.search_scope = match scope.as_str() {
+                self.search.scope = match scope.as_str() {
                     "tabs" => SearchScope::OpenTabs,
                     "bookmarks" => SearchScope::Bookmarks,
                     _ => SearchScope::Current,
                 };
             }
             if let Ok(extension) = std::env::var("GPUI_FE_DEBUG_SEARCH_EXT") {
-                if let Some(ext) = self.search_ext.clone() {
+                if let Some(ext) = self.search.ext.clone() {
                     ext.update(cx, |state, cx| {
                         state.set_value(extension.clone(), window, cx);
                     });
                 }
             }
-            if let Some(input) = self.search_input.clone() {
+            if let Some(input) = self.search.input.clone() {
                 input.update(cx, |state, cx| {
                     state.set_value(query.clone(), window, cx);
                 });
