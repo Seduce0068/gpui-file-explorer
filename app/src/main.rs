@@ -2335,7 +2335,6 @@ impl Explorer {
                 .detach();
             }
             UndoAction::Trash { items } => {
-                let count = items.len();
                 let action_for_redo = UndoAction::Trash {
                     items: items.clone(),
                 };
@@ -2373,7 +2372,6 @@ impl Explorer {
                     });
                 })
                 .detach();
-                let _ = count;
             }
         }
         cx.notify();
@@ -2826,7 +2824,7 @@ impl Explorer {
     }
 
     /// Path input bar shown while Ctrl+L is open.
-    fn location_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn location_bar(&self) -> Option<Div> {
         let location = self.location.as_ref()?;
         let mut bar = div()
             .flex()
@@ -2848,7 +2846,6 @@ impl Explorer {
         if let Some(error) = &location.error {
             bar = bar.child(div().text_xs().text_color(rgb(C_RED)).child(error.clone()));
         }
-        let _ = cx;
         Some(bar)
     }
 
@@ -5387,7 +5384,7 @@ impl Render for Explorer {
         let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar(cx);
         let search_history_bar = self.search_history_bar(cx);
-        let location_bar = self.location_bar(cx);
+        let location_bar = self.location_bar();
         self.apply_overlay_hooks(window, cx);
         let rename_dialog = self.rename_dialog(cx);
         let properties_dialog = self.properties_dialog(cx);
