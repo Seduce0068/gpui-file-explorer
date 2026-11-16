@@ -106,7 +106,7 @@
 
 ## 2026-11-17 追記（P1 完了・クロスレビュー対応）
 
-- `cargo test`: **159 passed / 0 failed**。`cargo audit`: exit 0
+- `cargo test`: **160 passed / 0 failed**。`cargo audit`: exit 0
   （allowed warnings 8 件、修正済み CVE なし）。
 - P1 機能（grid / rename / copy-move / tabs / search / volumes /
   multi-select / preview / bookmark / undo ほか）は実装済み。
