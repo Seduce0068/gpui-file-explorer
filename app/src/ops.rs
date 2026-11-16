@@ -48,7 +48,10 @@ impl CancelFlag {
 }
 
 /// What to do when the destination name already exists.
-#[allow(dead_code)] // Fail/Skip are part of the engine API; the P1 UI uses Rename.
+///
+/// The UI always uses `Rename`; `Fail` and `Skip` are kept as part of the
+/// engine API and exercised by the ops unit tests.
+#[cfg_attr(not(test), expect(dead_code, reason = "engine API; used in ops tests"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictPolicy {
     /// Abort with [`OpError::AlreadyExists`] (safest default).
@@ -128,7 +131,6 @@ fn io_error(path: &Path, err: std::io::Error) -> OpError {
 
 /// Validate a single file name (not a path): no separators, no `.`/`..`,
 /// no NUL byte, and no characters that Windows reserves.
-#[allow(dead_code)] // rename UI lands in the next change
 pub fn validate_file_name(name: &str) -> Result<(), OpError> {
     if name.is_empty() {
         return Err(OpError::InvalidTarget("名前が空です".to_string()));
@@ -609,7 +611,6 @@ pub fn move_entry(
 /// Rename `src` to `new_name` in its current directory. Refuses to overwrite
 /// an existing entry. Case-only renames go through a temporary name so they
 /// work on case-insensitive filesystems too.
-#[allow(dead_code)] // rename UI lands in the next change
 pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
     validate_file_name(new_name)?;
     if !src.exists() {
