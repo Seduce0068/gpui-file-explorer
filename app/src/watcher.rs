@@ -204,6 +204,56 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_rename_events() {
+        use notify_debouncer_full::notify::event::{Event, EventKind, ModifyKind, RenameMode};
+        use notify_debouncer_full::DebouncedEvent;
+        use std::time::Instant;
+
+        let from = PathBuf::from("/tmp/from.txt");
+        let to = PathBuf::from("/tmp/to.txt");
+        let debounced = |kind: EventKind, paths: Vec<PathBuf>| DebouncedEvent {
+            event: Event {
+                kind,
+                paths,
+                attrs: Default::default(),
+            },
+            time: Instant::now(),
+        };
+        let rename = |mode| EventKind::Modify(ModifyKind::Name(mode));
+
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(
+                rename(RenameMode::Both),
+                vec![from.clone(), to.clone()]
+            )])),
+            vec![FsEvent::Renamed {
+                from: Some(from.clone()),
+                to: Some(to.clone()),
+            }]
+        );
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(
+                rename(RenameMode::From),
+                vec![from.clone()]
+            )])),
+            vec![FsEvent::Renamed {
+                from: Some(from),
+                to: None,
+            }]
+        );
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(
+                rename(RenameMode::To),
+                vec![to.clone()]
+            )])),
+            vec![FsEvent::Renamed {
+                from: None,
+                to: Some(to),
+            }]
+        );
+    }
+
+    #[test]
     fn rewatching_same_set_is_a_noop() {
         let dir = scratch("same");
         let _ = fs::remove_dir_all(&dir);
