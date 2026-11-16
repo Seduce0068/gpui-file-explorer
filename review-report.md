@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T04:51:36+09:00
+verified: 2026-11-17T04:58:21+09:00
 status: complete
 ---
 
@@ -339,6 +339,11 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
   -D clippy::undocumented_unsafe_blocks`（2026-11-17T03:11+09:00）:
   警告なし。`app/src/main.rs` と `app/build.rs` に
   `#![forbid(unsafe_code)]` を確認（AGENTS.md §15 の unsafe 禁止を具現化）。
+- クロスコンパイル（2026-11-17T04:56+09:00）:
+  `x86_64-pc-windows-msvc` は check 成功（Windows の rename 仕様差も修正済み）。
+  `aarch64-apple-darwin` は上流 `gpui-pre-apple` のビルドスクリプトが
+  `stitched_shaders.metal` を生成できず失敗。当リポジトリのコードではなく
+  上流のクロスビルド制約で、README の「macOS 実機ビルド未検証」と整合。
 - `cargo tarpaulin --locked --out Stdout --exclude-files 'target/*'`
   （2026-11-17T03:05+09:00）: データ層のカバレッジを改善。
   `model.rs` 270/301 → 287/301、`ops.rs` 212/284 → 222/284、
