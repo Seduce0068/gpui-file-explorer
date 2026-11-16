@@ -287,6 +287,10 @@ mod image_tests {
         fs::write(&path, PNG_HEADER).unwrap(); // exactly 8 bytes
         let read = read_image_preview(&path, ImageFormat::Png, 8).unwrap();
         assert_eq!(read.bytes.len(), 8);
+        // One byte below the real size trips the post-read guard even though
+        // `metadata.len()` reported 8 (which passed the pre-read check).
+        let error = read_image_preview(&path, ImageFormat::Png, 7).unwrap_err();
+        assert!(error.contains("画像が大きすぎます"), "{error}");
         let _ = fs::remove_dir_all(&dir);
     }
 
