@@ -3579,6 +3579,19 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Per-root result cap for a multi-root search.
+    ///
+    /// Every root gets the same share so an early root cannot starve later
+    /// ones; `merge_search_results` applies the global cap afterwards. A
+    /// single root keeps the full global budget.
+    fn per_root_cap(global_cap: usize, root_count: usize) -> usize {
+        if root_count <= 1 {
+            global_cap
+        } else {
+            global_cap.div_ceil(root_count).clamp(1, 500)
+        }
+    }
+
     /// Recursive search on the background executor (Enter in the search bar).
     fn run_search(&mut self, cx: &mut Context<Self>) {
         let Some(input) = self.search.input.clone() else {
@@ -3593,6 +3606,9 @@ impl Explorer {
         self.search.query = query.clone();
         self.search.generation = self.search.generation.wrapping_add(1);
         let generation = self.search.generation;
+        // Three layers guard against a stale result: the cooperative flag
+        // stops the background walk, dropping the task discards its callback,
+        // and the generation guard rejects anything still in flight.
         if let Some(cancel) = self.search.cancel.take() {
             cancel.store(true, Ordering::SeqCst);
         }
@@ -3632,12 +3648,7 @@ impl Explorer {
                 {
                     break;
                 }
-                let remaining = global_cap.saturating_sub(total);
-                let per_root_cap = if roots.len() <= 1 {
-                    global_cap
-                } else {
-                    remaining.clamp(1, 500)
-                };
+                let per_root_cap = Self::per_root_cap(global_cap, roots.len());
                 let batch = match mode {
                     SearchMode::Name => search_by_name(
                         root,
@@ -5468,7 +5479,7 @@ fn main() {
 mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
-    use super::summarize_op;
+    use super::{summarize_op, Explorer};
     use crate::ops::OpStats;
     use std::path::PathBuf;
 
@@ -5612,5 +5623,15 @@ mod tests {
             display_name_for(&in_other_root, ViewMode::Directory, &cwd, &roots),
             "notes.txt"
         );
+    }
+
+    #[test]
+    fn per_root_cap_is_fair_across_roots() {
+        assert_eq!(Explorer::per_root_cap(2000, 0), 2000);
+        assert_eq!(Explorer::per_root_cap(2000, 1), 2000);
+        assert_eq!(Explorer::per_root_cap(2000, 2), 500);
+        assert_eq!(Explorer::per_root_cap(2000, 4), 500);
+        assert_eq!(Explorer::per_root_cap(2000, 10), 200);
+        assert_eq!(Explorer::per_root_cap(2000, 100), 20);
     }
 }
