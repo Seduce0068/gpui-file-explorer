@@ -844,6 +844,14 @@ mod tests {
     }
 
     #[test]
+    fn sort_key_labels_are_japanese() {
+        assert_eq!(SortKey::Name.label(), "名前");
+        assert_eq!(SortKey::Kind.label(), "種類");
+        assert_eq!(SortKey::Size.label(), "サイズ");
+        assert_eq!(SortKey::Modified.label(), "更新日時");
+    }
+
+    #[test]
     fn hidden_filter_drops_dotfiles_only() {
         assert!(is_hidden_name(".bashrc"));
         assert!(!is_hidden_name("bashrc"));
