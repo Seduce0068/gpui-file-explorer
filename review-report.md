@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T03:12:31+09:00
+verified: 2026-11-17T03:22:52+09:00
 status: complete
 ---
 
@@ -182,6 +182,8 @@ status: complete
   表示・ソート用の `name_text`（lossy キャッシュ）を追加。
   非 UTF-8 ファイル名が I/O で失われないことを Unix テストで
   検証（144 passed）。`sort_key` の事前計算も後続で実装済み。
+  さらに `ops::unique_path` も `&OsStr` 受け取りに変更し、
+  競合リネーム時の `(N)` 付与で生バイトを保持（158 passed）。
 - `model.rs:27-28`（解消済み）: `Entry.match_line` を削除し、
   `search::SearchResult { entry, match_line }` へ分離。Explorer は
   `search_lines: HashMap<PathBuf, u32>` で行番号を保持し、
