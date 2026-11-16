@@ -74,6 +74,32 @@ pub fn read_entries(dir: &Path) -> Result<Vec<Entry>, String> {
     Ok(entries)
 }
 
+/// Build an [`Entry`] for a single path, used by watcher updates and search.
+///
+/// Symlinks are flagged from `symlink_metadata` while their target is followed
+/// for size/time so symlinked directories remain enterable.
+pub fn entry_for_path(path: &Path) -> Option<Entry> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    if name.is_empty() {
+        return None;
+    }
+    let link_metadata = std::fs::symlink_metadata(path).ok()?;
+    let is_symlink = link_metadata.file_type().is_symlink();
+    let metadata = std::fs::metadata(path).ok().or(Some(link_metadata));
+    let is_dir = metadata.as_ref().is_some_and(|meta| meta.is_dir());
+    let size = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+    let modified = metadata.and_then(|meta| meta.modified().ok());
+    Some(Entry {
+        name,
+        path: path.to_path_buf(),
+        is_dir,
+        is_symlink,
+        size,
+        modified,
+        match_line: None,
+    })
+}
+
 /// Multi-selection state, keyed by path so it survives reloads and re-sorting.
 ///
 /// The list keeps a separate "focused" row index; this struct only tracks which

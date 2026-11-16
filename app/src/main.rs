@@ -50,7 +50,7 @@ use crate::search::{
 use crate::settings::{Settings, ViewMode as LayoutMode};
 use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
-use crate::watcher::DirWatcher;
+use crate::watcher::{DirWatcher, FsEvent};
 
 // Catppuccin Mocha-ish palette.
 const C_BASE: u32 = 0x1e1e2e;
@@ -599,9 +599,9 @@ impl Explorer {
                 vec!["TODO".to_string(), "rs".to_string(), "config".to_string()];
         }
 
-        let (watch_tx, watch_rx) = async_channel::unbounded::<()>();
-        let watcher = DirWatcher::new(move || {
-            let _ = watch_tx.try_send(());
+        let (watch_tx, watch_rx) = async_channel::unbounded::<Vec<FsEvent>>();
+        let watcher = DirWatcher::new(move |events| {
+            let _ = watch_tx.try_send(events);
         });
 
         let places = build_places();
@@ -1010,11 +1010,18 @@ impl Explorer {
     }
 
     /// Watcher events arrive on a background thread; this foreground loop
-    /// coalesces bursts and refreshes the listing.
-    fn spawn_watch_loop(&self, watch_rx: async_channel::Receiver<()>, cx: &mut Context<Self>) {
+    /// coalesces bursts and applies incremental updates where possible.
+    fn spawn_watch_loop(
+        &self,
+        watch_rx: async_channel::Receiver<Vec<FsEvent>>,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
-            while watch_rx.recv().await.is_ok() {
-                while watch_rx.try_recv().is_ok() {}
+            while let Ok(events) = watch_rx.recv().await {
+                let mut batch = vec![events];
+                while let Ok(more) = watch_rx.try_recv() {
+                    batch.push(more);
+                }
                 let updated = this.update(cx, |this, cx| {
                     if this.is_suppressed()
                         || this.view != ViewMode::Directory
@@ -1022,8 +1029,61 @@ impl Explorer {
                     {
                         return;
                     }
-                    this.status = "変更を検出しました".to_string();
-                    this.reload(cx);
+                    let batch: Vec<FsEvent> = batch.into_iter().flatten().collect();
+                    if batch
+                        .iter()
+                        .any(|event| matches!(event, FsEvent::Rescan | FsEvent::Renamed { .. }))
+                    {
+                        this.status = "変更を検出しました".to_string();
+                        this.reload(cx);
+                        return;
+                    }
+                    let keep = this.selected_entry().map(|entry| entry.path.clone());
+                    let mut changed = false;
+                    for event in batch {
+                        match event {
+                            FsEvent::Removed(paths) => {
+                                for path in paths {
+                                    let before = this.all_entries.len();
+                                    this.all_entries.retain(|entry| entry.path != path);
+                                    changed |= this.all_entries.len() != before;
+                                }
+                            }
+                            FsEvent::Created(paths) | FsEvent::Modified(paths) => {
+                                for path in paths {
+                                    // Parent watches also report changes above cwd.
+                                    if path.parent() != Some(this.cwd.as_path()) {
+                                        continue;
+                                    }
+                                    if let Some(entry) = crate::model::entry_for_path(&path) {
+                                        if let Some(slot) = this
+                                            .all_entries
+                                            .iter_mut()
+                                            .find(|entry| entry.path == path)
+                                        {
+                                            *slot = entry;
+                                        } else {
+                                            this.all_entries.push(entry);
+                                        }
+                                    } else {
+                                        this.all_entries.retain(|entry| entry.path != path);
+                                    }
+                                    changed = true;
+                                }
+                            }
+                            FsEvent::Rescan | FsEvent::Renamed { .. } => {
+                                this.status = "変更を検出しました".to_string();
+                                this.reload(cx);
+                                return;
+                            }
+                        }
+                    }
+                    if changed {
+                        this.fingerprint = fingerprint(&this.all_entries);
+                        this.rebuild_view(keep);
+                        this.status = "変更を検出しました".to_string();
+                        cx.notify();
+                    }
                 });
                 if updated.is_err() {
                     break;
