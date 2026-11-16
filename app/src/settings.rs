@@ -144,8 +144,11 @@ impl Settings {
         let Ok(mut settings) = serde_json::from_str::<Settings>(&text) else {
             // Keep the broken file for debugging (DESIGN.md §8.1) instead of
             // failing to start.
-            let backup =
-                path.with_extension(format!("json.broken-{}", chrono::Utc::now().timestamp()));
+            let backup = path.with_extension(format!(
+                "json.broken-{}-{}",
+                chrono::Utc::now().timestamp_millis(),
+                std::process::id()
+            ));
             let _ = std::fs::rename(path, backup);
             return Self::default();
         };
@@ -204,7 +207,7 @@ impl Settings {
             std::fs::create_dir_all(parent)?;
         }
         let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        let tmp = path.with_extension("json.tmp");
+        let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
