@@ -21,6 +21,8 @@ pub struct Entry {
     pub name: std::ffi::OsString,
     /// Display/sort form of `name` (`to_string_lossy`). Cached on construction.
     pub name_text: String,
+    /// Precomputed lowercase form of `name_text` for case-insensitive sorting.
+    pub sort_key: String,
     pub path: PathBuf,
     pub is_dir: bool,
     pub is_symlink: bool,
@@ -40,6 +42,7 @@ impl Entry {
             return None;
         }
         let name_text = name.to_string_lossy().into_owned();
+        let sort_key = name_text.to_lowercase();
         // `symlink_metadata` does not follow symlinks; `metadata` does. We use
         // the former for the symlink flag and the latter for dir-ness/size so
         // symlinked directories stay enterable.
@@ -55,6 +58,7 @@ impl Entry {
         Some(Entry {
             name,
             name_text,
+            sort_key,
             path,
             is_dir,
             is_symlink,
@@ -89,6 +93,7 @@ pub fn entry_for_path(path: &Path) -> Option<Entry> {
         return None;
     }
     let name_text = name.to_string_lossy().into_owned();
+    let sort_key = name_text.to_lowercase();
     let link_metadata = std::fs::symlink_metadata(path).ok()?;
     let is_symlink = link_metadata.file_type().is_symlink();
     let metadata = std::fs::metadata(path).ok().or(Some(link_metadata));
@@ -98,6 +103,7 @@ pub fn entry_for_path(path: &Path) -> Option<Entry> {
     Some(Entry {
         name,
         name_text,
+        sort_key,
         path: path.to_path_buf(),
         is_dir,
         is_symlink,
@@ -376,8 +382,14 @@ pub fn visible_entries(all: &[Entry], show_hidden: bool, order: SortOrder) -> Ve
 
 /// Natural, case-insensitive name comparison ("file2" < "file10", "alpha" <
 /// "Zebra"), with a case-sensitive pass as deterministic tie-breaker.
+#[cfg(test)]
 pub fn compare_names(a: &str, b: &str) -> std::cmp::Ordering {
     compare_str(a.to_lowercase(), b.to_lowercase()).then_with(|| compare_str(a, b))
+}
+
+/// Compare using a precomputed lowercase key, avoiding per-comparison allocation.
+fn compare_precomputed(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+    compare_str(&a.sort_key, &b.sort_key).then_with(|| compare_str(&a.name_text, &b.name_text))
 }
 
 /// Stable natural sort: directories first, then the chosen key with a natural
@@ -387,15 +399,16 @@ pub fn sort_entries(entries: &mut Vec<Entry>, order: SortOrder) {
         .into_iter()
         .partition(|entry| entry.is_dir);
 
+    // Use the precomputed lowercase key so sorting never allocates.
     let cmp = |a: &Entry, b: &Entry| {
         let primary = match order.key {
-            SortKey::Name => compare_names(&a.name_text, &b.name_text),
+            SortKey::Name => compare_precomputed(a, b),
             SortKey::Kind => kind_sort_key(a).cmp(&kind_sort_key(b)),
             SortKey::Size => a.size.cmp(&b.size),
             // `None` (unreadable timestamp) sorts before any timestamp.
             SortKey::Modified => a.modified.cmp(&b.modified),
         };
-        primary.then_with(|| compare_names(&a.name_text, &b.name_text))
+        primary.then_with(|| compare_precomputed(a, b))
     };
 
     dirs.sort_by(cmp);
@@ -656,6 +669,7 @@ mod tests {
         Entry {
             name: OsString::from(name),
             name_text: name.to_string(),
+            sort_key: name.to_lowercase(),
             path: PathBuf::from("/tmp").join(name),
             is_dir,
             is_symlink: false,

@@ -65,6 +65,7 @@ pub fn entries_from_items(items: &[trash::TrashItem]) -> Vec<Entry> {
             Entry {
                 name_text: item.name.to_string_lossy().into_owned(),
                 name: item.name.clone(),
+                sort_key: item.name.to_string_lossy().to_lowercase(),
                 path: PathBuf::from(&item.id),
                 is_dir: false,
                 is_symlink: false,

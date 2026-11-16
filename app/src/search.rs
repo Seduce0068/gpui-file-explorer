@@ -536,6 +536,7 @@ mod filter_tests {
         Entry {
             name: OsString::from(name),
             name_text: name.to_string(),
+            sort_key: name.to_lowercase(),
             path: PathBuf::from(format!("/root/{name}")),
             is_dir,
             is_symlink: false,
@@ -810,6 +811,7 @@ mod scope_tests {
             let name = path.file_name().unwrap_or_default().to_os_string();
             Entry {
                 name_text: name.to_string_lossy().into_owned(),
+                sort_key: name.to_string_lossy().to_lowercase(),
                 name,
                 path: path.clone(),
                 is_dir: false,
