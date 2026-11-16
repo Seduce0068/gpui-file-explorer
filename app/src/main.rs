@@ -15,6 +15,7 @@ mod ops;
 mod preview;
 mod search;
 mod settings;
+mod strings;
 mod tabs;
 mod trash_view;
 mod undo;
@@ -189,29 +190,23 @@ fn empty_state_message(
         return Some((format!("エラー: {error}"), None));
     }
     if loading {
-        return Some(("読み込み中…".to_string(), None));
+        return Some((LOADING.to_string(), None));
     }
     if all_entries == 0 {
         return Some(match view {
-            ViewSource::Trash => (
-                "ゴミ箱は空です".to_string(),
-                Some("削除した項目はここに表示されます（完全削除は未対応）".to_string()),
-            ),
-            ViewSource::Search => (
-                "一致する項目がありません".to_string(),
-                Some("検索語や絞り込みを変更してください".to_string()),
-            ),
+            ViewSource::Trash => (EMPTY_TRASH.0.to_string(), Some(EMPTY_TRASH.1.to_string())),
+            ViewSource::Search => (EMPTY_SEARCH.0.to_string(), Some(EMPTY_SEARCH.1.to_string())),
             ViewSource::Directory => (
-                "このフォルダは空です".to_string(),
-                Some("ここにファイルをドロップするとコピーできます".to_string()),
+                EMPTY_DIRECTORY.0.to_string(),
+                Some(EMPTY_DIRECTORY.1.to_string()),
             ),
         });
     }
     if entries == 0 {
         return Some(if view == ViewSource::Search {
             (
-                "絞り込みで全て除外されました".to_string(),
-                Some("種別や拡張子の条件を変更してください".to_string()),
+                EMPTY_FILTERED.0.to_string(),
+                Some(EMPTY_FILTERED.1.to_string()),
             )
         } else {
             (
@@ -223,77 +218,9 @@ fn empty_state_message(
     None
 }
 
-/// Keyboard shortcuts shown by the F1 help overlay.
-const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
-    (
-        "ナビゲーション",
-        &[
-            ("Enter", "選択項目を開く"),
-            ("Ctrl+L", "パスを直接入力して移動"),
-            ("Alt+← / Alt+→", "戻る / 進む"),
-            ("Alt+↑ / Backspace", "親ディレクトリへ"),
-            ("Home / End", "先頭 / 末尾へ"),
-            ("PageUp / PageDown", "ページ単位で移動"),
-        ],
-    ),
-    (
-        "選択",
-        &[
-            ("Ctrl+A", "全選択"),
-            ("Shift+↑↓", "範囲選択"),
-            ("Ctrl+クリック / Shift+クリック", "追加選択 / 範囲選択"),
-        ],
-    ),
-    (
-        "ファイル操作",
-        &[
-            (
-                "Ctrl+C / Ctrl+X / Ctrl+V",
-                "コピー / 切り取り / 貼り付け（常に別名保存）",
-            ),
-            ("F2", "名前変更"),
-            ("Delete", "ゴミ箱へ移動（完全削除なし）"),
-            ("Ctrl+Shift+N", "新規フォルダ"),
-            (
-                "ドラッグ&ドロップ",
-                "OS からコピー / フォルダ行へコピー / OS へドラッグ",
-            ),
-            (
-                "Ctrl+Z / Ctrl+Shift+Z",
-                "元に戻す / やり直す（名前変更・ゴミ箱のみ）",
-            ),
-            ("Ctrl+Shift+U", "操作の履歴を表示"),
-        ],
-    ),
-    (
-        "表示",
-        &[
-            ("Ctrl+1 / Ctrl+2", "詳細リスト / アイコングリッド"),
-            ("Ctrl+H", "隠しファイルの表示切替"),
-            ("Ctrl+R / F5", "再読込"),
-            ("Ctrl+F", "検索（名前 / 内容）"),
-            ("Ctrl+I", "プロパティ"),
-            ("Space / F3", "テキストプレビュー"),
-        ],
-    ),
-    (
-        "タブ・ブックマーク",
-        &[
-            ("Ctrl+T / Ctrl+W", "タブを開く / 閉じる"),
-            ("Ctrl+Tab / Ctrl+Shift+Tab", "次のタブ / 前のタブ"),
-            ("Ctrl+Shift+PageUp / PageDown", "タブを左 / 右へ移動"),
-            ("Ctrl+D", "現在のディレクトリをブックマーク"),
-        ],
-    ),
-    (
-        "その他",
-        &[
-            ("F1", "このヘルプ"),
-            ("Esc", "キャンセル / ダイアログを閉じる"),
-            ("Ctrl+Q", "終了"),
-        ],
-    ),
-];
+use crate::strings::{
+    EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, HELP_SECTIONS, LOADING,
+};
 
 /// One sidebar "place".
 ///
@@ -5658,7 +5585,7 @@ mod tests {
 
     #[test]
     fn help_sections_are_well_formed() {
-        use super::HELP_SECTIONS;
+        use crate::strings::HELP_SECTIONS;
         assert!(HELP_SECTIONS.len() >= 4);
         let mut total = 0usize;
         for (section, shortcuts) in HELP_SECTIONS {
