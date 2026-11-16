@@ -13,6 +13,7 @@
 //! }
 //! ```
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -196,14 +197,22 @@ impl Settings {
     }
 
     /// Atomic write (tmp file + rename) so a crash never leaves a truncated
-    /// settings file behind.
+    /// settings file behind. The tmp file is flushed with `sync_all()` before
+    /// the rename; a directory fsync is not performed (best-effort).
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
         std::fs::rename(&tmp, path)
     }
 }

@@ -342,8 +342,10 @@ bash packaging/linux/build-deb.sh
   （`cx.open_with_system` / `cx.reveal_path`）は戻り値を持たないため、
   xdg-open 等が失敗しても「開きました」「表示しました」という成功文言のままです
   （AC-9）。失敗通知は P1 で D-Bus / プロセス終了コード監視などを導入して対応します。
-- 設定の保存は tmp + rename のみで **fsync は行いません**（電源断耐性は保証外）。
-  `version` は現状 1 固定で、将来スキーマのダウングレードは検出しません。
+- 設定の保存は tmp + rename + `sync_all()` です。ディレクトリの fsync は
+  未実施のため、電源断時の完全な耐性は保証外です。
+  `version` は現状 1 固定で、未知の version は警告を出して v1 として
+  読み込みます（ダウングレード検出は未実装）。
 - 起動時 `canonicalize` / 各所の単発 `is_dir()`（起動・ナビゲーション時のみ）は
   同期実行です（影響はマイクロ秒級。DESIGN §4.4 の厳密適用は P1）。
 - `Window::prompt` のダイアログ表示中に別の prompt を開かない保証はありません
