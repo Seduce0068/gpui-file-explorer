@@ -220,6 +220,12 @@ fn empty_state_message(
 
 use crate::strings::{
     EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, HELP_SECTIONS, LOADING,
+    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLING, STATUS_CHANGED, STATUS_DROP_EMPTY,
+    STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
+    STATUS_DROP_SAME_DIRECTORY, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_NO_CLIPBOARD,
+    STATUS_OP_RUNNING, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT,
+    STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_PASTE,
+    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
 };
 
 /// One sidebar "place".
@@ -780,7 +786,7 @@ impl Explorer {
         self.selection.clear();
         self.selected = 0;
         self.pending_select = None;
-        self.status = "ゴミ箱を読み込んでいます…".to_string();
+        self.status = STATUS_TRASH_LOADING.to_string();
         self.reload(cx);
     }
 
@@ -888,7 +894,7 @@ impl Explorer {
     /// Toggle a bookmark for the current directory (Ctrl+D).
     fn toggle_current_bookmark(&mut self, cx: &mut Context<Self>) {
         if self.view != ViewSource::Directory {
-            self.status = "ブックマークはディレクトリ表示でのみ操作できます".to_string();
+            self.status = STATUS_BOOKMARKS_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
@@ -964,7 +970,7 @@ impl Explorer {
                         .iter()
                         .any(|event| matches!(event, FsEvent::Rescan | FsEvent::Renamed { .. }))
                     {
-                        this.status = "変更を検出しました".to_string();
+                        this.status = STATUS_CHANGED.to_string();
                         this.reload(cx);
                         return;
                     }
@@ -1002,7 +1008,7 @@ impl Explorer {
                                 }
                             }
                             FsEvent::Rescan | FsEvent::Renamed { .. } => {
-                                this.status = "変更を検出しました".to_string();
+                                this.status = STATUS_CHANGED.to_string();
                                 this.reload(cx);
                                 return;
                             }
@@ -1011,7 +1017,7 @@ impl Explorer {
                     if changed {
                         this.fingerprint = fingerprint(&this.all_entries);
                         this.rebuild_view(keep);
-                        this.status = "変更を検出しました".to_string();
+                        this.status = STATUS_CHANGED.to_string();
                         cx.notify();
                     }
                 });
@@ -1093,7 +1099,7 @@ impl Explorer {
 
     fn new_tab(&mut self, cx: &mut Context<Self>) {
         if self.view != ViewSource::Directory {
-            self.status = "タブはディレクトリ表示でのみ操作できます".to_string();
+            self.status = STATUS_TABS_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
@@ -1105,12 +1111,12 @@ impl Explorer {
 
     fn close_tab(&mut self, cx: &mut Context<Self>) {
         if self.view != ViewSource::Directory {
-            self.status = "タブはディレクトリ表示でのみ操作できます".to_string();
+            self.status = STATUS_TABS_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
         if self.tabs.len() <= 1 {
-            self.status = "最後のタブは閉じられません".to_string();
+            self.status = STATUS_LAST_TAB.to_string();
             cx.notify();
             return;
         }
@@ -1137,7 +1143,7 @@ impl Explorer {
         if self.tabs.move_active_left() {
             self.persist_tabs();
             self.settings.save();
-            self.status = "タブを左へ移動しました".to_string();
+            self.status = STATUS_TAB_MOVED_LEFT.to_string();
             cx.notify();
         }
     }
@@ -1147,7 +1153,7 @@ impl Explorer {
         if self.tabs.move_active_right() {
             self.persist_tabs();
             self.settings.save();
-            self.status = "タブを右へ移動しました".to_string();
+            self.status = STATUS_TAB_MOVED_RIGHT.to_string();
             cx.notify();
         }
     }
@@ -1537,7 +1543,7 @@ impl Explorer {
                 ("n", true) => self.new_folder(cx),
                 ("c", false) => {
                     if self.view == ViewSource::Trash {
-                        self.status = "ゴミ箱ビューではコピーできません".to_string();
+                        self.status = STATUS_TRASH_NO_COPY.to_string();
                         cx.notify();
                     } else {
                         self.copy_selected(cx);
@@ -1545,7 +1551,7 @@ impl Explorer {
                 }
                 ("x", false) => {
                     if self.view == ViewSource::Trash {
-                        self.status = "ゴミ箱ビューでは切り取りできません".to_string();
+                        self.status = STATUS_TRASH_NO_CUT.to_string();
                         cx.notify();
                     } else {
                         self.cut_selected(cx);
@@ -1553,7 +1559,7 @@ impl Explorer {
                 }
                 ("v", false) => {
                     if self.view == ViewSource::Trash {
-                        self.status = "ゴミ箱ビューでは貼り付けできません".to_string();
+                        self.status = STATUS_TRASH_NO_PASTE.to_string();
                         cx.notify();
                     } else {
                         self.paste(cx);
@@ -1591,7 +1597,7 @@ impl Explorer {
             "space" | "f3" => self.open_preview_selected(cx),
             "f2" => {
                 if self.view == ViewSource::Trash {
-                    self.status = "ゴミ箱ビューでは名前を変更できません".to_string();
+                    self.status = STATUS_TRASH_NO_RENAME.to_string();
                     cx.notify();
                 } else {
                     self.start_rename(window, cx);
@@ -1600,7 +1606,7 @@ impl Explorer {
             "delete" => {
                 if self.view == ViewSource::Trash {
                     // Permanent deletion is intentionally not offered.
-                    self.status = "ゴミ箱内の完全削除は未対応です".to_string();
+                    self.status = STATUS_TRASH_NO_PURGE.to_string();
                     cx.notify();
                 } else {
                     self.trash_selected(window, cx);
@@ -1641,7 +1647,7 @@ impl Explorer {
     fn new_folder(&mut self, cx: &mut Context<Self>) {
         let dir = self.cwd.clone();
         let expected_dir = dir.clone();
-        self.status = "フォルダを作成中…".to_string();
+        self.status = STATUS_FOLDER_CREATING.to_string();
         cx.notify();
         let task = cx.background_spawn(async move { create_unique_folder(&dir) });
         cx.spawn(async move |this, cx| {
@@ -1730,7 +1736,7 @@ impl Explorer {
             return;
         };
         cancel.cancel();
-        self.status = "キャンセルしています…".to_string();
+        self.status = STATUS_CANCELLING.to_string();
         cx.notify();
     }
 
@@ -1742,12 +1748,12 @@ impl Explorer {
     /// only applies the result. `Esc` cancels cooperatively.
     fn paste(&mut self, cx: &mut Context<Self>) {
         let Some(slot) = self.clipboard.clone() else {
-            self.status = "コピー/切り取りした項目がありません".to_string();
+            self.status = STATUS_NO_CLIPBOARD.to_string();
             cx.notify();
             return;
         };
         if self.op_task.is_some() {
-            self.status = "ファイル操作を実行中です（Esc でキャンセル）".to_string();
+            self.status = STATUS_OP_RUNNING.to_string();
             cx.notify();
             return;
         }
@@ -1780,7 +1786,7 @@ impl Explorer {
             self.status = if same_dir > 0 {
                 "同じフォルダのため移動しません".to_string()
             } else {
-                "コピー/切り取りした項目がありません".to_string()
+                STATUS_NO_CLIPBOARD.to_string()
             };
             cx.notify();
             return;
@@ -1977,17 +1983,17 @@ impl Explorer {
         cx: &mut Context<Self>,
     ) {
         if self.view != ViewSource::Directory {
-            self.status = "ドロップはディレクトリ表示でのみ使えます".to_string();
+            self.status = STATUS_DROP_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
         if self.op_task.is_some() {
-            self.status = "ファイル操作を実行中です（Esc でキャンセル）".to_string();
+            self.status = STATUS_OP_RUNNING.to_string();
             cx.notify();
             return;
         }
         if !destination.is_dir() {
-            self.status = "ドロップ先のフォルダが見つかりません".to_string();
+            self.status = STATUS_DROP_NO_DESTINATION.to_string();
             cx.notify();
             return;
         }
@@ -2016,13 +2022,13 @@ impl Explorer {
         }
         if existing.is_empty() {
             self.status = if same > 0 {
-                "同じフォルダのためコピーしません".to_string()
+                STATUS_DROP_SAME_DIRECTORY.to_string()
             } else if missing > 0 {
-                "ドロップされた項目が見つかりません".to_string()
+                STATUS_DROP_NOT_FOUND.to_string()
             } else if special > 0 {
                 "特殊ファイルのためコピーできません".to_string()
             } else {
-                "ドロップされた項目がありません".to_string()
+                STATUS_DROP_EMPTY.to_string()
             };
             cx.notify();
             return;
@@ -2264,7 +2270,7 @@ impl Explorer {
     /// them would delete data the user may have already changed.
     fn undo_last(&mut self, cx: &mut Context<Self>) {
         if self.op_task.is_some() {
-            self.status = "ファイル操作を実行中です（Esc でキャンセル）".to_string();
+            self.status = STATUS_OP_RUNNING.to_string();
             cx.notify();
             return;
         }
@@ -2375,7 +2381,7 @@ impl Explorer {
     /// Redo the most recently undone operation (Ctrl+Shift+Z).
     fn redo_last(&mut self, cx: &mut Context<Self>) {
         if self.op_task.is_some() {
-            self.status = "ファイル操作を実行中です（Esc でキャンセル）".to_string();
+            self.status = STATUS_OP_RUNNING.to_string();
             cx.notify();
             return;
         }
