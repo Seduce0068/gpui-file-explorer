@@ -761,6 +761,7 @@ impl Explorer {
                         this.entries.clear();
                         this.selected = 0;
                         this.selection.clear();
+                        this.status.clear();
                         this.error = Some(error);
                     }
                 }
