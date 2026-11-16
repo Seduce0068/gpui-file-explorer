@@ -281,21 +281,32 @@ fn copy_file_atomic(
         }
     };
 
-    // `hard_link` fails when `dest` exists, which gives us a no-clobber rename
-    // on filesystems that support it. Fall back to a checked rename.
-    match fs::hard_link(&partial, dest) {
-        Ok(()) => {
-            let _ = fs::remove_file(&partial);
-        }
-        Err(_) => {
-            if dest.exists() {
+    // Reserve `dest` with O_EXCL semantics. A concurrent creator cannot slip
+    // in between this check and the final rename, so the "never overwrite"
+    // rule holds even under a race. `rename` then atomically replaces only our
+    // own empty reservation with the fully copied partial file.
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+    {
+        Ok(reservation) => {
+            drop(reservation);
+            if let Err(error) = fs::rename(&partial, dest) {
+                // `dest` is our own reservation at this point; removing it is
+                // safe and leaves no half-written destination behind.
+                let _ = fs::remove_file(dest);
                 let _ = fs::remove_file(&partial);
-                return Err(OpError::AlreadyExists(dest.to_path_buf()));
+                return Err(io_error(dest, error));
             }
-            fs::rename(&partial, dest).map_err(|e| {
-                let _ = fs::remove_file(&partial);
-                io_error(dest, e)
-            })?;
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&partial);
+            return Err(OpError::AlreadyExists(dest.to_path_buf()));
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&partial);
+            return Err(io_error(dest, error));
         }
     }
 
