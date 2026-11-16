@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T03:33:15+09:00
+verified: 2026-11-17T03:46:07+09:00
 status: complete
 ---
 
@@ -340,6 +340,9 @@ status: complete
   `watcher.rs` 46/54 → 48/54。全体は UI の `main.rs`
   （70/3173）が支配的で、合成入力ツール未導入により headless
   テストが困難な既知の制限どおり。
+- 同上の再計測（2026-11-17T03:40+09:00）: `icons.rs` が
+  17/35 → 34/35、`ops.rs` が 222/284 → 229/291、
+  `preview.rs` が 70/73 → 71/73 に改善。
 - `bash scripts/check.sh`（audit 込みの完全ループ、
   2026-11-17T02:03+09:00）: **exit 0 / All checks passed**
   （app 150 tests / poc 4 tests / clippy 警告 0 /
