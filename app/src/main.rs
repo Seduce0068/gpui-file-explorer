@@ -5605,9 +5605,35 @@ fn main() {
 mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
-    use super::{classify_cli, summarize_op, CliAction, Explorer};
+    use super::{classify_cli, format_selected, summarize_op, CliAction, Explorer};
+    use crate::model::Entry;
     use crate::ops::OpStats;
+    use std::ffi::OsString;
     use std::path::PathBuf;
+    use std::time::SystemTime;
+
+    #[test]
+    fn format_selected_covers_dirs_and_files() {
+        let base = Entry {
+            name: OsString::from("item"),
+            name_text: "item".to_string(),
+            sort_key: "item".to_string(),
+            path: PathBuf::from("/tmp/item"),
+            is_dir: false,
+            is_symlink: false,
+            size: 2048,
+            modified: Some(SystemTime::UNIX_EPOCH),
+        };
+        let file = format_selected(&base);
+        assert!(file.starts_with("item（"), "{file}");
+        assert!(file.contains("2.0 K"), "{file}");
+
+        let dir = Entry {
+            is_dir: true,
+            ..base
+        };
+        assert_eq!(format_selected(&dir), "item（フォルダ）");
+    }
 
     #[test]
     fn summarize_op_reports_files_dirs_and_skips() {
