@@ -222,10 +222,11 @@ use crate::strings::{
     EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, HELP_SECTIONS, LOADING,
     STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLING, STATUS_CHANGED, STATUS_DROP_EMPTY,
     STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
-    STATUS_DROP_SAME_DIRECTORY, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_NO_CLIPBOARD,
-    STATUS_OP_RUNNING, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT,
+    STATUS_DROP_SAME_DIRECTORY, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_NOT_DIRECTORY,
+    STATUS_NO_CLIPBOARD, STATUS_OP_RUNNING, STATUS_PATH_GONE, STATUS_REDO_NO_TARGET,
+    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TARGET_GONE,
     STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_PASTE,
-    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
+    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_UNDO_FAILED,
 };
 
 /// One sidebar "place".
@@ -1266,7 +1267,7 @@ impl Explorer {
         if !path.is_dir() {
             self.load = LoadState::Error {
                 generation: self.generation,
-                error: format!("ディレクトリではありません: {}", display_path(&path)),
+                error: format!("{STATUS_NOT_DIRECTORY}: {}", display_path(&path)),
             };
             cx.notify();
             return;
@@ -1287,7 +1288,7 @@ impl Explorer {
             if target.is_dir() {
                 self.set_cwd(target, cx);
             } else {
-                self.status = format!("移動先が存在しません: {}", display_path(&target));
+                self.status = format!("{STATUS_TARGET_GONE}: {}", display_path(&target));
                 cx.notify();
             }
         }
@@ -1305,7 +1306,7 @@ impl Explorer {
             if target.is_dir() {
                 self.set_cwd(target, cx);
             } else {
-                self.status = format!("移動先が存在しません: {}", display_path(&target));
+                self.status = format!("{STATUS_TARGET_GONE}: {}", display_path(&target));
                 cx.notify();
             }
         }
@@ -1342,7 +1343,7 @@ impl Explorer {
     /// index) so a watcher-driven re-sort cannot redirect the action.
     fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if !path.exists() {
-            self.status = format!("対象が存在しません: {}", display_path(&path));
+            self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
             self.reload(cx);
             return;
         }
@@ -2325,7 +2326,7 @@ impl Explorer {
                             }
                             Err(error) => {
                                 this.undo.push_undo(action_for_redo);
-                                this.status = format!("元に戻せません: {error}");
+                                this.status = format!("{STATUS_UNDO_FAILED}: {error}");
                             }
                         }
                         cx.notify();
@@ -2365,7 +2366,7 @@ impl Explorer {
                             }
                             Err(error) => {
                                 this.undo.push_undo(action_for_redo);
-                                this.status = format!("元に戻せません: {error}");
+                                this.status = format!("{STATUS_UNDO_FAILED}: {error}");
                             }
                         }
                         cx.notify();
@@ -2441,7 +2442,7 @@ impl Explorer {
                     .collect();
                 if paths.is_empty() {
                     self.undo.push_redo(UndoAction::Trash { items });
-                    self.status = "やり直せません: 対象が存在しません".to_string();
+                    self.status = STATUS_REDO_NO_TARGET.to_string();
                     cx.notify();
                     return;
                 }
@@ -2807,7 +2808,7 @@ impl Explorer {
         };
         if !resolved.is_dir() {
             self.set_location_error(
-                format!("ディレクトリではありません: {}", display_path(&resolved)),
+                format!("{STATUS_NOT_DIRECTORY}: {}", display_path(&resolved)),
                 cx,
             );
             return;
@@ -2961,7 +2962,7 @@ impl Explorer {
     fn open_properties(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let link_metadata = std::fs::symlink_metadata(&path);
         let Ok(link_metadata) = link_metadata else {
-            self.status = format!("対象が存在しません: {}", display_path(&path));
+            self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
             self.reload(cx);
             return;
         };
@@ -3427,7 +3428,7 @@ impl Explorer {
 
     fn reveal(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if !path.exists() {
-            self.status = format!("対象が存在しません: {}", display_path(&path));
+            self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
             self.reload(cx);
             return;
         }
