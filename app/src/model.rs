@@ -14,6 +14,66 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use alphanumeric_sort::compare_str;
 use serde::{Deserialize, Serialize};
 
+/// Category of a filesystem error, independent of `std::io::ErrorKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FsErrorKind {
+    NotFound,
+    PermissionDenied,
+    NotADirectory,
+    Io,
+    Unknown,
+}
+
+/// A filesystem error carrying its path and a display message (DESIGN.md §5.5).
+#[derive(Clone, Debug)]
+pub struct FsError {
+    pub kind: FsErrorKind,
+    pub path: PathBuf,
+    pub os_message: Option<String>,
+}
+
+impl FsError {
+    /// Map an `io::Error` to a stable kind without leaking `io` types upward.
+    pub fn from_io(path: PathBuf, err: &std::io::Error) -> Self {
+        use std::io::ErrorKind;
+        let kind = match err.kind() {
+            ErrorKind::NotFound => FsErrorKind::NotFound,
+            ErrorKind::PermissionDenied => FsErrorKind::PermissionDenied,
+            ErrorKind::NotADirectory => FsErrorKind::NotADirectory,
+            ErrorKind::Other => FsErrorKind::Unknown,
+            _ => FsErrorKind::Io,
+        };
+        Self {
+            kind,
+            path,
+            os_message: Some(err.to_string()),
+        }
+    }
+
+    /// Japanese message including the affected path.
+    pub fn message_ja(&self) -> String {
+        let reason = match self.kind {
+            FsErrorKind::NotFound => "見つかりません",
+            FsErrorKind::PermissionDenied => "アクセスが拒否されました",
+            FsErrorKind::NotADirectory => "ディレクトリではありません",
+            FsErrorKind::Io => "読み取れませんでした",
+            FsErrorKind::Unknown => "エラーが発生しました",
+        };
+        match &self.os_message {
+            Some(message) if !message.is_empty() => {
+                format!("{}: {reason} ({message})", display_path(&self.path))
+            }
+            _ => format!("{}: {reason}", display_path(&self.path)),
+        }
+    }
+}
+
+impl std::fmt::Display for FsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message_ja())
+    }
+}
+
 /// One entry of a directory listing.
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -68,8 +128,9 @@ impl Entry {
 
 /// Blocking directory read. Callers on the UI thread must run this on the
 /// background executor (see `Explorer::reload`).
-pub fn read_entries(dir: &Path) -> Result<Vec<Entry>, String> {
-    let dir_reader = std::fs::read_dir(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+pub fn read_entries(dir: &Path) -> Result<Vec<Entry>, FsError> {
+    let dir_reader =
+        std::fs::read_dir(dir).map_err(|err| FsError::from_io(dir.to_path_buf(), &err))?;
     let mut entries = Vec::new();
     for item in dir_reader {
         let Ok(item) = item else { continue };
@@ -650,7 +711,7 @@ mod tests {
         breadcrumb_segments, clamp_index, compare_names, create_unique_folder, display_path,
         fingerprint, first_index, human_age, human_datetime, human_size, is_hidden_name,
         kind_label, last_index, read_entries, sort_entries, step_selection, unique_child_name,
-        visible_entries, Entry, SortDir, SortKey, SortOrder, SortSpec,
+        visible_entries, Entry, FsError, FsErrorKind, SortDir, SortKey, SortOrder, SortSpec,
     };
     use std::ffi::OsString;
     use std::fs;
@@ -724,7 +785,28 @@ mod tests {
     fn read_entries_reports_errors() {
         let missing = scratch_dir("missing");
         let _ = fs::remove_dir_all(&missing);
-        assert!(read_entries(&missing).is_err());
+        let error = read_entries(&missing).expect_err("missing dir must fail");
+        assert_eq!(error.kind, FsErrorKind::NotFound);
+        assert_eq!(error.path, missing);
+        assert!(error.message_ja().contains("見つかりません"));
+        assert!(error.to_string().contains("見つかりません"));
+    }
+
+    #[test]
+    fn fs_error_maps_io_kinds() {
+        use std::io::{Error, ErrorKind};
+        let err = FsError::from_io(
+            PathBuf::from("/tmp/x"),
+            &Error::from(ErrorKind::PermissionDenied),
+        );
+        assert_eq!(err.kind, FsErrorKind::PermissionDenied);
+        assert_eq!(err.os_message.as_deref(), Some("permission denied"));
+
+        let err = FsError::from_io(PathBuf::from("/tmp/x"), &Error::from(ErrorKind::NotFound));
+        assert_eq!(err.kind, FsErrorKind::NotFound);
+
+        let err = FsError::from_io(PathBuf::from("/tmp/x"), &Error::other("custom"));
+        assert_eq!(err.kind, FsErrorKind::Unknown);
     }
 
     #[test]
