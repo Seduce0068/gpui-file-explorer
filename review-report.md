@@ -186,8 +186,10 @@ status: complete
   `search::SearchResult { entry, match_line }` へ分離。Explorer は
   `search_lines: HashMap<PathBuf, u32>` で行番号を保持し、
   描画時に参照。検索クリア時に Map もクリア（arch A-2）。
-- `model.rs:83`: `Selection.paths: Vec<PathBuf>` が O(n)。
-  `BTreeSet<PathBuf>` に変更（arch A-14）。
+- `model.rs:178`（解消済み）: `Selection` は順序保持の `Vec` に加え
+  `HashSet` インデックスを並走させ、`contains` を O(1) 化。
+  描画の各行からの検索が高速化され、追加順・範囲選択の挙動は
+  不変。同期不変条件のテストを追加（arch A-14）。
 - `model.rs:385`（解消済み）: `Entry.sort_key`（小文字化済み）を
   構築時に事前計算し、`sort_entries` は比較ごとの `to_lowercase()`
   アロケーションを廃止。`compare_names` はテスト専用に限定。
