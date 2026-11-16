@@ -119,6 +119,13 @@ pub const STATUS_DROP_EMPTY: &str = "ドロップされた項目がありませ�
 pub const STATUS_TRASH_LOADING: &str = "ゴミ箱を読み込んでいます…";
 pub const STATUS_FOLDER_CREATING: &str = "フォルダを作成中…";
 
+/// Repeated format-string prefixes (the dynamic suffix stays at the call site).
+pub const STATUS_TARGET_GONE: &str = "移動先が存在しません";
+pub const STATUS_PATH_GONE: &str = "対象が存在しません";
+pub const STATUS_NOT_DIRECTORY: &str = "ディレクトリではありません";
+pub const STATUS_UNDO_FAILED: &str = "元に戻せません";
+pub const STATUS_REDO_NO_TARGET: &str = "やり直せません: 対象が存在しません";
+
 #[cfg(test)]
 mod tests {
     use super::*;
