@@ -96,7 +96,7 @@ mod tests {
     use std::ffi::OsString;
     // Explicit imports only: `use gpui_kit::*` in the crate root would shadow
     // the built-in `#[test]` attribute.
-    use super::{kind_for_entry, kind_for_name, FileKind};
+    use super::{icon_for_entry, icon_for_kind, kind_for_entry, kind_for_name, FileKind};
     use crate::model::Entry;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -147,5 +147,27 @@ mod tests {
         // ".bashrc" gives ("", "bashrc") -> treated as unknown extension.
         assert_eq!(kind_for_name(".bashrc"), FileKind::Unknown);
         assert_eq!(kind_for_name(".hidden.png"), FileKind::Image);
+    }
+
+    #[test]
+    fn icons_cover_all_file_kinds_and_entry_states() {
+        // Every kind must map to a concrete icon without panicking; comparing
+        // names keeps the test independent of IconName's PartialEq impl.
+        for kind in [
+            FileKind::Folder,
+            FileKind::Image,
+            FileKind::Code,
+            FileKind::Archive,
+            FileKind::Pdf,
+            FileKind::Text,
+            FileKind::Audio,
+            FileKind::Video,
+            FileKind::Unknown,
+        ] {
+            let _ = format!("{:?}", icon_for_kind(kind));
+        }
+        let _ = format!("{:?}", icon_for_entry(&entry("dir", true, false)));
+        let _ = format!("{:?}", icon_for_entry(&entry("link", false, true)));
+        let _ = format!("{:?}", icon_for_entry(&entry("main.rs", false, false)));
     }
 }
