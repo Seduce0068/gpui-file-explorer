@@ -146,7 +146,10 @@ impl Settings {
             // failing to start.
             let backup = path.with_extension(format!(
                 "json.broken-{}-{}",
-                chrono::Utc::now().timestamp_millis(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or(0),
                 std::process::id()
             ));
             let _ = std::fs::rename(path, backup);
