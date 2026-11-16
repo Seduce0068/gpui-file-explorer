@@ -47,7 +47,7 @@ use crate::search::{
     filter_results, merge_search_results, search_by_name, search_contents, search_roots,
     ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
 };
-use crate::settings::{Settings, ViewMode as LayoutMode};
+use crate::settings::{Settings, ViewLayout};
 use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
 use crate::watcher::{DirWatcher, FsEvent};
@@ -106,11 +106,11 @@ fn format_selected(entry: &Entry) -> String {
 /// For multi-root searches, fall back to another matching root or the full path.
 fn display_name_for(
     entry: &Entry,
-    view: ViewMode,
+    view: ViewSource,
     root: &std::path::Path,
     search_roots: &[PathBuf],
 ) -> String {
-    if view == ViewMode::Search {
+    if view == ViewSource::Search {
         if let Ok(relative) = entry.path.strip_prefix(root) {
             return relative.display().to_string();
         }
@@ -170,7 +170,7 @@ fn summarize_op(verb: &str, stats: &OpStats) -> String {
 
 /// Which listing the window currently shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ViewMode {
+enum ViewSource {
     Directory,
     Trash,
     Search,
@@ -179,7 +179,7 @@ enum ViewMode {
 /// Message + optional hint shown in the middle of the list area when there is
 /// nothing to render (or an error/loading state is active).
 fn empty_state_message(
-    view: ViewMode,
+    view: ViewSource,
     loading: bool,
     error: Option<&str>,
     all_entries: usize,
@@ -193,22 +193,22 @@ fn empty_state_message(
     }
     if all_entries == 0 {
         return Some(match view {
-            ViewMode::Trash => (
+            ViewSource::Trash => (
                 "ゴミ箱は空です".to_string(),
                 Some("削除した項目はここに表示されます（完全削除は未対応）".to_string()),
             ),
-            ViewMode::Search => (
+            ViewSource::Search => (
                 "一致する項目がありません".to_string(),
                 Some("検索語や絞り込みを変更してください".to_string()),
             ),
-            ViewMode::Directory => (
+            ViewSource::Directory => (
                 "このフォルダは空です".to_string(),
                 Some("ここにファイルをドロップするとコピーできます".to_string()),
             ),
         });
     }
     if entries == 0 {
-        return Some(if view == ViewMode::Search {
+        return Some(if view == ViewSource::Search {
             (
                 "絞り込みで全て除外されました".to_string(),
                 Some("種別や拡張子の条件を変更してください".to_string()),
@@ -466,7 +466,7 @@ struct Explorer {
     /// Multi-selection keyed by path so it survives reloads and re-sorting.
     selection: Selection,
     /// Current listing source (real directory or the system trash).
-    view: ViewMode,
+    view: ViewSource,
     /// Trash items backing the virtual listing (empty in directory view).
     trash_items: Vec<trash::TrashItem>,
     /// Recursive search state (active only while `view == Search`).
@@ -591,7 +591,7 @@ impl Explorer {
             entries: Vec::new(),
             selected: 0,
             selection: Selection::default(),
-            view: ViewMode::Directory,
+            view: ViewSource::Directory,
             trash_items: Vec::new(),
             search: SearchState::default(),
             history,
@@ -687,7 +687,7 @@ impl Explorer {
         // Search results are their own listing; reloading the cwd while the
         // search bar is open would replace them. The view is switched back to
         // Directory before `reload` when leaving search.
-        if self.view == ViewMode::Search {
+        if self.view == ViewSource::Search {
             return;
         }
         self.generation = self.generation.wrapping_add(1);
@@ -699,7 +699,7 @@ impl Explorer {
         self.refresh_recent();
         self.refresh_bookmarks();
         self.update_watcher();
-        if self.view == ViewMode::Trash {
+        if self.view == ViewSource::Trash {
             self.reload_trash(cx);
             return;
         }
@@ -808,12 +808,12 @@ impl Explorer {
     }
 
     fn enter_trash(&mut self, cx: &mut Context<Self>) {
-        if self.view == ViewMode::Trash {
+        if self.view == ViewSource::Trash {
             self.reload(cx);
             return;
         }
         self.clear_search();
-        self.view = ViewMode::Trash;
+        self.view = ViewSource::Trash;
         self.selection.clear();
         self.selected = 0;
         self.pending_select = None;
@@ -822,10 +822,10 @@ impl Explorer {
     }
 
     fn exit_trash(&mut self, cx: &mut Context<Self>) {
-        if self.view != ViewMode::Trash {
+        if self.view != ViewSource::Trash {
             return;
         }
-        self.view = ViewMode::Directory;
+        self.view = ViewSource::Directory;
         self.selection.clear();
         self.selected = 0;
         self.status.clear();
@@ -888,7 +888,7 @@ impl Explorer {
     }
 
     fn update_watcher(&mut self) {
-        let dirs = if self.view == ViewMode::Directory {
+        let dirs = if self.view == ViewSource::Directory {
             self.watched_dirs()
         } else {
             Vec::new()
@@ -924,7 +924,7 @@ impl Explorer {
 
     /// Toggle a bookmark for the current directory (Ctrl+D).
     fn toggle_current_bookmark(&mut self, cx: &mut Context<Self>) {
-        if self.view != ViewMode::Directory {
+        if self.view != ViewSource::Directory {
             self.status = "ブックマークはディレクトリ表示でのみ操作できます".to_string();
             cx.notify();
             return;
@@ -954,7 +954,7 @@ impl Explorer {
     fn reconcile(&mut self, cx: &mut Context<Self>) {
         // The trash view has its own listing; the directory reconcile must not
         // overwrite it with the current directory contents.
-        if self.loading || self.view != ViewMode::Directory {
+        if self.loading || self.view != ViewSource::Directory {
             return;
         }
         let generation = self.generation;
@@ -991,7 +991,7 @@ impl Explorer {
                 }
                 let updated = this.update(cx, |this, cx| {
                     if this.is_suppressed()
-                        || this.view != ViewMode::Directory
+                        || this.view != ViewSource::Directory
                         || this.op_cancel.is_some()
                     {
                         return;
@@ -1103,7 +1103,7 @@ impl Explorer {
     /// Load a tab's directory/history into the explorer.
     fn load_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.clear_search();
-        self.view = ViewMode::Directory;
+        self.view = ViewSource::Directory;
         self.cwd = tab.cwd;
         self.history = tab.history;
         self.selection.clear();
@@ -1129,7 +1129,7 @@ impl Explorer {
     }
 
     fn new_tab(&mut self, cx: &mut Context<Self>) {
-        if self.view != ViewMode::Directory {
+        if self.view != ViewSource::Directory {
             self.status = "タブはディレクトリ表示でのみ操作できます".to_string();
             cx.notify();
             return;
@@ -1141,7 +1141,7 @@ impl Explorer {
     }
 
     fn close_tab(&mut self, cx: &mut Context<Self>) {
-        if self.view != ViewMode::Directory {
+        if self.view != ViewSource::Directory {
             self.status = "タブはディレクトリ表示でのみ操作できます".to_string();
             cx.notify();
             return;
@@ -1191,7 +1191,7 @@ impl Explorer {
 
     /// Horizontal tab bar (directory view only).
     fn tab_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.view != ViewMode::Directory {
+        if self.view != ViewSource::Directory {
             return None;
         }
         let mut bar = div()
@@ -1264,7 +1264,7 @@ impl Explorer {
 
     fn set_cwd(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.clear_search();
-        self.view = ViewMode::Directory;
+        self.view = ViewSource::Directory;
         if path == self.cwd {
             self.reload(cx);
             return;
@@ -1287,7 +1287,7 @@ impl Explorer {
 
     fn navigate_with_mode(&mut self, path: PathBuf, mode: NavMode, cx: &mut Context<Self>) {
         self.clear_search();
-        self.view = ViewMode::Directory;
+        self.view = ViewSource::Directory;
         if path == self.cwd {
             // Re-loading the same directory must not touch history.
             self.history.apply(self.cwd.clone(), path, NavMode::Replace);
@@ -1307,7 +1307,7 @@ impl Explorer {
     }
 
     fn go_back(&mut self, cx: &mut Context<Self>) {
-        if self.view == ViewMode::Trash {
+        if self.view == ViewSource::Trash {
             self.exit_trash(cx);
             return;
         }
@@ -1325,7 +1325,7 @@ impl Explorer {
     }
 
     fn go_forward(&mut self, cx: &mut Context<Self>) {
-        if self.view == ViewMode::Trash {
+        if self.view == ViewSource::Trash {
             self.exit_trash(cx);
             return;
         }
@@ -1343,7 +1343,7 @@ impl Explorer {
     }
 
     fn go_parent(&mut self, cx: &mut Context<Self>) {
-        if self.view == ViewMode::Trash {
+        if self.view == ViewSource::Trash {
             self.exit_trash(cx);
             return;
         }
@@ -1355,7 +1355,7 @@ impl Explorer {
     }
 
     fn open_selected(&mut self, cx: &mut Context<Self>) {
-        if self.view == ViewMode::Trash {
+        if self.view == ViewSource::Trash {
             self.restore_selected(cx);
             return;
         }
@@ -1440,7 +1440,7 @@ impl Explorer {
     }
 
     /// Switch between the details list and the icon grid (persisted).
-    fn set_view(&mut self, mode: LayoutMode, cx: &mut Context<Self>) {
+    fn set_view(&mut self, mode: ViewLayout, cx: &mut Context<Self>) {
         if self.settings.view == mode {
             return;
         }
@@ -1539,7 +1539,7 @@ impl Explorer {
             }
             return;
         }
-        if self.view == ViewMode::Search {
+        if self.view == ViewSource::Search {
             if event.keystroke.key == "escape" {
                 self.close_search(cx);
             }
@@ -1568,12 +1568,12 @@ impl Explorer {
                 ("tab", true) => self.prev_tab(cx),
                 ("pageup", true) => self.move_tab_left(cx),
                 ("pagedown", true) => self.move_tab_right(cx),
-                ("1", false) => self.set_view(LayoutMode::Details, cx),
-                ("2", false) => self.set_view(LayoutMode::Icons, cx),
+                ("1", false) => self.set_view(ViewLayout::Details, cx),
+                ("2", false) => self.set_view(ViewLayout::Icons, cx),
                 ("r", _) => self.reload(cx),
                 ("n", true) => self.new_folder(cx),
                 ("c", false) => {
-                    if self.view == ViewMode::Trash {
+                    if self.view == ViewSource::Trash {
                         self.status = "ゴミ箱ビューではコピーできません".to_string();
                         cx.notify();
                     } else {
@@ -1581,7 +1581,7 @@ impl Explorer {
                     }
                 }
                 ("x", false) => {
-                    if self.view == ViewMode::Trash {
+                    if self.view == ViewSource::Trash {
                         self.status = "ゴミ箱ビューでは切り取りできません".to_string();
                         cx.notify();
                     } else {
@@ -1589,7 +1589,7 @@ impl Explorer {
                     }
                 }
                 ("v", false) => {
-                    if self.view == ViewMode::Trash {
+                    if self.view == ViewSource::Trash {
                         self.status = "ゴミ箱ビューでは貼り付けできません".to_string();
                         cx.notify();
                     } else {
@@ -1627,7 +1627,7 @@ impl Explorer {
             "f5" => self.reload(cx),
             "space" | "f3" => self.open_preview_selected(cx),
             "f2" => {
-                if self.view == ViewMode::Trash {
+                if self.view == ViewSource::Trash {
                     self.status = "ゴミ箱ビューでは名前を変更できません".to_string();
                     cx.notify();
                 } else {
@@ -1635,7 +1635,7 @@ impl Explorer {
                 }
             }
             "delete" => {
-                if self.view == ViewMode::Trash {
+                if self.view == ViewSource::Trash {
                     // Permanent deletion is intentionally not offered.
                     self.status = "ゴミ箱内の完全削除は未対応です".to_string();
                     cx.notify();
@@ -2010,7 +2010,7 @@ impl Explorer {
         paths: Vec<PathBuf>,
         cx: &mut Context<Self>,
     ) {
-        if self.view != ViewMode::Directory {
+        if self.view != ViewSource::Directory {
             self.status = "ドロップはディレクトリ表示でのみ使えます".to_string();
             cx.notify();
             return;
@@ -2547,7 +2547,7 @@ impl Explorer {
     // ----------------------------------------------------------------- preview
 
     fn open_preview_selected(&mut self, cx: &mut Context<Self>) {
-        if self.view != ViewMode::Directory {
+        if self.view != ViewSource::Directory {
             self.status = "プレビューはディレクトリ表示でのみ使えます".to_string();
             cx.notify();
             return;
@@ -2787,7 +2787,7 @@ impl Explorer {
 
     /// Open the Ctrl+L location bar with the current path prefilled.
     fn open_location(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.view != ViewMode::Directory {
+        if self.view != ViewSource::Directory {
             self.status = "パス入力はディレクトリ表示でのみ使えます".to_string();
             cx.notify();
             return;
@@ -3048,7 +3048,7 @@ impl Explorer {
     }
 
     fn open_selected_properties(&mut self, cx: &mut Context<Self>) {
-        if self.view != ViewMode::Directory {
+        if self.view != ViewSource::Directory {
             self.status = "プロパティはディレクトリ表示でのみ表示できます".to_string();
             cx.notify();
             return;
@@ -3601,14 +3601,14 @@ impl Explorer {
 
     /// Open the search bar (Ctrl+F). Only available from the directory view.
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.view == ViewMode::Search {
+        if self.view == ViewSource::Search {
             if let Some(input) = &self.search.input {
                 let focus = input.read(cx).focus_handle(cx).clone();
                 focus.focus(window, cx);
             }
             return;
         }
-        if self.view != ViewMode::Directory {
+        if self.view != ViewSource::Directory {
             self.status = "検索はディレクトリ表示でのみ使えます".to_string();
             cx.notify();
             return;
@@ -3642,7 +3642,7 @@ impl Explorer {
         self.search.active_roots.clear();
         self.search.fell_back_to_cwd = false;
         self.search.generation = self.search.generation.wrapping_add(1);
-        self.view = ViewMode::Search;
+        self.view = ViewSource::Search;
         self.selection.clear();
         self.selected = 0;
         self.status = "検索語を入力して Enter（Esc で閉じる）".to_string();
@@ -3836,11 +3836,11 @@ impl Explorer {
     }
 
     fn close_search(&mut self, cx: &mut Context<Self>) {
-        if self.view != ViewMode::Search {
+        if self.view != ViewSource::Search {
             return;
         }
         self.clear_search();
-        self.view = ViewMode::Directory;
+        self.view = ViewSource::Directory;
         self.selection.clear();
         self.selected = 0;
         self.status.clear();
@@ -4022,7 +4022,7 @@ impl Explorer {
     /// Restoring is non-destructive; collisions are reported by the `trash`
     /// crate and leave the affected items in the trash.
     fn restore_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        if self.view != ViewMode::Trash {
+        if self.view != ViewSource::Trash {
             return;
         }
         let items: Vec<trash::TrashItem> = self
@@ -4330,13 +4330,13 @@ impl Explorer {
         let display_name =
             display_name_for(&entry, this.view, &this.cwd, &this.search.active_roots);
         let display_name = match entry.match_line {
-            Some(line) if this.view == ViewMode::Search => format!("{display_name}:{line}"),
+            Some(line) if this.view == ViewSource::Search => format!("{display_name}:{line}"),
             _ => display_name,
         };
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
-        let (icon, icon_color) = if this.view == ViewMode::Trash {
+        let (icon, icon_color) = if this.view == ViewSource::Trash {
             (IconName::Trash, C_MUTED)
         } else {
             (
@@ -4354,7 +4354,7 @@ impl Explorer {
             let modifiers = event.modifiers();
             this.select_with_modifiers(index, modifiers.control, modifiers.shift, cx);
             if event.click_count() >= 2 {
-                if this.view == ViewMode::Trash {
+                if this.view == ViewSource::Trash {
                     this.restore_selected(cx);
                 } else {
                     this.open_index(index, cx);
@@ -4383,13 +4383,13 @@ impl Explorer {
             vec![entry.path.clone()]
         };
         let drag_paths = batch_paths.clone();
-        let drag_out = this.view == ViewMode::Directory;
+        let drag_out = this.view == ViewSource::Directory;
         let drop_target = if drag_out && is_dir && !entry.is_symlink {
             Some(entry.path.clone())
         } else {
             None
         };
-        let context_menu: MenuBuilder = if this.view == ViewMode::Trash {
+        let context_menu: MenuBuilder = if this.view == ViewSource::Trash {
             Box::new(Self::trash_entry_menu(entity, batch_paths))
         } else {
             Box::new(Self::entry_menu(
@@ -4457,7 +4457,7 @@ impl Explorer {
                         .text_xs()
                         .truncate()
                         .text_color(rgb(C_MUTED))
-                        .child(if this.view == ViewMode::Trash {
+                        .child(if this.view == ViewSource::Trash {
                             "—".to_string()
                         } else {
                             model::kind_label(&entry)
@@ -4469,7 +4469,7 @@ impl Explorer {
                         .text_xs()
                         .text_right()
                         .text_color(rgb(C_MUTED))
-                        .child(if entry.is_dir || this.view == ViewMode::Trash {
+                        .child(if entry.is_dir || this.view == ViewSource::Trash {
                             "-".to_string()
                         } else {
                             human_size(entry.size)
@@ -4526,13 +4526,13 @@ impl Explorer {
         let display_name =
             display_name_for(&entry, this.view, &this.cwd, &this.search.active_roots);
         let display_name = match entry.match_line {
-            Some(line) if this.view == ViewMode::Search => format!("{display_name}:{line}"),
+            Some(line) if this.view == ViewSource::Search => format!("{display_name}:{line}"),
             _ => display_name,
         };
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
-        let (icon, icon_color) = if this.view == ViewMode::Trash {
+        let (icon, icon_color) = if this.view == ViewSource::Trash {
             (IconName::Trash, C_MUTED)
         } else {
             (
@@ -4549,7 +4549,7 @@ impl Explorer {
             let modifiers = event.modifiers();
             this.select_with_modifiers(index, modifiers.control, modifiers.shift, cx);
             if event.click_count() >= 2 {
-                if this.view == ViewMode::Trash {
+                if this.view == ViewSource::Trash {
                     this.restore_selected(cx);
                 } else {
                     this.open_index(index, cx);
@@ -4576,13 +4576,13 @@ impl Explorer {
             vec![entry.path.clone()]
         };
         let drag_paths = batch_paths.clone();
-        let drag_out = this.view == ViewMode::Directory;
+        let drag_out = this.view == ViewSource::Directory;
         let drop_target = if drag_out && is_dir && !entry.is_symlink {
             Some(entry.path.clone())
         } else {
             None
         };
-        let context_menu: MenuBuilder = if this.view == ViewMode::Trash {
+        let context_menu: MenuBuilder = if this.view == ViewSource::Trash {
             Box::new(Self::trash_entry_menu(entity, batch_paths))
         } else {
             Box::new(Self::entry_menu(
@@ -4677,9 +4677,9 @@ impl Explorer {
             let existing = place.exists;
             let is_trash = place.trash;
             let active = if is_trash {
-                self.view == ViewMode::Trash
+                self.view == ViewSource::Trash
             } else {
-                self.view == ViewMode::Directory
+                self.view == ViewSource::Directory
                     && place
                         .path
                         .as_ref()
@@ -4728,7 +4728,7 @@ impl Explorer {
                     .child("ブックマーク"),
             );
             for (index, path) in self.bookmarks.iter().enumerate() {
-                let active = self.view == ViewMode::Directory && path == &self.cwd;
+                let active = self.view == ViewSource::Directory && path == &self.cwd;
                 let label = tab_label(path);
                 let target = path.clone();
                 sidebar = sidebar.child(
@@ -4766,7 +4766,7 @@ impl Explorer {
                     .child("最近"),
             );
             for (index, path) in recent.iter().enumerate() {
-                let active = self.view == ViewMode::Directory && path == &self.cwd;
+                let active = self.view == ViewSource::Directory && path == &self.cwd;
                 let label = tab_label(path);
                 let target = path.clone();
                 sidebar = sidebar.child(
@@ -4803,7 +4803,7 @@ impl Explorer {
                     .child("ドライブ"),
             );
             for (index, mount) in self.mounts.iter().enumerate() {
-                let active = self.view == ViewMode::Directory && mount.path == self.cwd;
+                let active = self.view == ViewSource::Directory && mount.path == self.cwd;
                 let label = if mount.path == std::path::Path::new("/") {
                     "ルート (/)".to_string()
                 } else {
@@ -4846,7 +4846,7 @@ impl Explorer {
             .overflow_hidden()
             .gap_1()
             .mx_2();
-        if self.view == ViewMode::Trash {
+        if self.view == ViewSource::Trash {
             breadcrumb = breadcrumb.child(
                 div()
                     .px_1()
@@ -4856,7 +4856,7 @@ impl Explorer {
                     .child("ゴミ箱"),
             );
         }
-        let segments = if self.view == ViewMode::Trash {
+        let segments = if self.view == ViewSource::Trash {
             Vec::new()
         } else {
             breadcrumb_segments(&self.cwd)
@@ -4890,7 +4890,7 @@ impl Explorer {
         let back = icon_button(
             "nav-back",
             IconName::ArrowLeft,
-            self.history.can_go_back() || self.view == ViewMode::Trash,
+            self.history.can_go_back() || self.view == ViewSource::Trash,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.go_back(cx);
@@ -4899,7 +4899,7 @@ impl Explorer {
         let forward = icon_button(
             "nav-forward",
             IconName::ArrowRight,
-            self.history.can_go_forward() || self.view == ViewMode::Trash,
+            self.history.can_go_forward() || self.view == ViewSource::Trash,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.go_forward(cx);
@@ -4908,7 +4908,7 @@ impl Explorer {
         let up = icon_button(
             "nav-up",
             IconName::ArrowUp,
-            self.view == ViewMode::Trash || parent_dir(&self.cwd).is_some(),
+            self.view == ViewSource::Trash || parent_dir(&self.cwd).is_some(),
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.go_parent(cx);
@@ -4945,26 +4945,26 @@ impl Explorer {
             "view-details",
             IconName::List,
             true,
-            self.settings.view == LayoutMode::Details,
+            self.settings.view == ViewLayout::Details,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
-                this.set_view(LayoutMode::Details, cx);
+                this.set_view(ViewLayout::Details, cx);
             }),
         );
         let view_grid = icon_button_active(
             "view-grid",
             IconName::LayoutGrid,
             true,
-            self.settings.view == LayoutMode::Icons,
+            self.settings.view == ViewLayout::Icons,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
-                this.set_view(LayoutMode::Icons, cx);
+                this.set_view(ViewLayout::Icons, cx);
             }),
         );
         let new_folder = icon_button(
             "new-folder",
             IconName::FolderPlus,
-            self.view == ViewMode::Directory,
+            self.view == ViewSource::Directory,
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.new_folder(cx);
@@ -5019,7 +5019,7 @@ impl Explorer {
                     .max_w(px(520.0))
                     .truncate()
                     .text_color(rgb(C_SUBTEXT))
-                    .child(if self.view == ViewMode::Trash {
+                    .child(if self.view == ViewSource::Trash {
                         "ゴミ箱".to_string()
                     } else {
                         display_path(&self.cwd)
@@ -5035,7 +5035,7 @@ impl Explorer {
                     } else {
                         match self.selected_entry() {
                             Some(entry)
-                                if !self.entries.is_empty() && self.view == ViewMode::Trash =>
+                                if !self.entries.is_empty() && self.view == ViewSource::Trash =>
                             {
                                 format!(
                                     "選択: {}（削除: {}）",
@@ -5107,7 +5107,7 @@ impl Explorer {
             } else {
                 div().into_any_element()
             })
-            .child(if self.view == ViewMode::Search && hidden_count > 0 {
+            .child(if self.view == ViewSource::Search && hidden_count > 0 {
                 // Search results were narrowed by the kind/extension filter.
                 div()
                     .text_color(rgb(C_MUTED))
@@ -5140,7 +5140,7 @@ impl Explorer {
                     }))
                     .into_any_element()
             })
-            .child(if self.view == ViewMode::Trash {
+            .child(if self.view == ViewSource::Trash {
                 div()
                     .text_color(rgb(C_MUTED))
                     .child("ゴミ箱（自動更新なし）")
@@ -5246,13 +5246,13 @@ impl Explorer {
     /// Each hook clears its own flag, so it fires once per activation. Kept
     /// out of `render()` so the drawing path stays readable.
     fn apply_startup_hooks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.debug.open_trash_once && self.view == ViewMode::Directory {
+        if self.debug.open_trash_once && self.view == ViewSource::Directory {
             self.debug.open_trash_once = false;
             self.enter_trash(cx);
         }
         if self.debug.grid_once {
             self.debug.grid_once = false;
-            self.settings.view = LayoutMode::Icons;
+            self.settings.view = ViewLayout::Icons;
         }
         if self.debug.progress_once && !self.entries.is_empty() {
             self.debug.progress_once = false;
@@ -5261,7 +5261,7 @@ impl Explorer {
             self.status = "コピー中… 35.0 MB / 100.0 MB（Esc でキャンセル）".to_string();
         }
         if self.debug.restore_trash_once
-            && self.view == ViewMode::Trash
+            && self.view == ViewSource::Trash
             && !self.loading
             && !self.entries.is_empty()
         {
@@ -5306,7 +5306,7 @@ impl Explorer {
                 }
             }
         }
-        if self.debug.tabs_once && self.view == ViewMode::Directory && !self.loading {
+        if self.debug.tabs_once && self.view == ViewSource::Directory && !self.loading {
             self.debug.tabs_once = false;
             self.sync_active_tab();
             if let Some(home) = dirs::home_dir() {
@@ -5319,7 +5319,7 @@ impl Explorer {
                 self.move_tab_left(cx);
             }
         }
-        if self.debug.search_once && self.view == ViewMode::Directory && !self.loading {
+        if self.debug.search_once && self.view == ViewSource::Directory && !self.loading {
             self.debug.search_once = false;
             let query =
                 std::env::var("GPUI_FE_DEBUG_SEARCH_QUERY").unwrap_or_else(|_| "txt".to_string());
@@ -5407,7 +5407,7 @@ impl Render for Explorer {
         let preview_dialog = self.preview_dialog(cx);
         let undo_history_dialog = self.undo_history_dialog(cx);
 
-        let grid_mode = self.settings.view == LayoutMode::Icons;
+        let grid_mode = self.settings.view == ViewLayout::Icons;
         // Column headers only make sense in the details list.
         let header = if grid_mode {
             None
@@ -5625,35 +5625,35 @@ mod tests {
     #[test]
     fn empty_state_covers_all_views() {
         use super::empty_state_message;
-        use super::ViewMode;
+        use super::ViewSource;
 
-        let (title, hint) = empty_state_message(ViewMode::Directory, false, None, 0, 0).unwrap();
+        let (title, hint) = empty_state_message(ViewSource::Directory, false, None, 0, 0).unwrap();
         assert_eq!(title, "このフォルダは空です");
         assert!(hint.unwrap().contains("ドロップ"));
 
-        let (title, hint) = empty_state_message(ViewMode::Search, false, None, 0, 0).unwrap();
+        let (title, hint) = empty_state_message(ViewSource::Search, false, None, 0, 0).unwrap();
         assert_eq!(title, "一致する項目がありません");
         assert!(hint.unwrap().contains("検索語"));
 
-        let (title, hint) = empty_state_message(ViewMode::Search, false, None, 5, 0).unwrap();
+        let (title, hint) = empty_state_message(ViewSource::Search, false, None, 5, 0).unwrap();
         assert_eq!(title, "絞り込みで全て除外されました");
         assert!(hint.unwrap().contains("拡張子"));
 
-        let (title, hint) = empty_state_message(ViewMode::Trash, false, None, 0, 0).unwrap();
+        let (title, hint) = empty_state_message(ViewSource::Trash, false, None, 0, 0).unwrap();
         assert_eq!(title, "ゴミ箱は空です");
         assert!(hint.unwrap().contains("完全削除"));
 
-        let (title, _) = empty_state_message(ViewMode::Directory, false, None, 5, 0).unwrap();
+        let (title, _) = empty_state_message(ViewSource::Directory, false, None, 5, 0).unwrap();
         assert!(title.contains("隠しファイル 5 件"));
 
-        let (title, _) = empty_state_message(ViewMode::Directory, true, None, 0, 0).unwrap();
+        let (title, _) = empty_state_message(ViewSource::Directory, true, None, 0, 0).unwrap();
         assert_eq!(title, "読み込み中…");
 
         let (title, _) =
-            empty_state_message(ViewMode::Directory, false, Some("読めません"), 0, 0).unwrap();
+            empty_state_message(ViewSource::Directory, false, Some("読めません"), 0, 0).unwrap();
         assert_eq!(title, "エラー: 読めません");
 
-        assert!(empty_state_message(ViewMode::Directory, false, None, 3, 2).is_none());
+        assert!(empty_state_message(ViewSource::Directory, false, None, 3, 2).is_none());
     }
 
     #[test]
@@ -5664,7 +5664,7 @@ mod tests {
 
     #[test]
     fn display_name_for_search_prefers_matching_roots_then_full_path() {
-        use super::{display_name_for, ViewMode};
+        use super::{display_name_for, ViewSource};
         use crate::model::Entry;
 
         let cwd = PathBuf::from("/work/project");
@@ -5681,7 +5681,7 @@ mod tests {
             match_line: None,
         };
         assert_eq!(
-            display_name_for(&in_cwd, ViewMode::Search, &cwd, &roots),
+            display_name_for(&in_cwd, ViewSource::Search, &cwd, &roots),
             "src/main.rs"
         );
 
@@ -5695,7 +5695,7 @@ mod tests {
             match_line: None,
         };
         assert_eq!(
-            display_name_for(&in_other_root, ViewMode::Search, &cwd, &roots),
+            display_name_for(&in_other_root, ViewSource::Search, &cwd, &roots),
             "docs/notes.txt"
         );
 
@@ -5709,7 +5709,7 @@ mod tests {
             match_line: None,
         };
         assert_eq!(
-            display_name_for(&outside, ViewMode::Search, &cwd, &roots),
+            display_name_for(&outside, ViewSource::Search, &cwd, &roots),
             "/elsewhere/outside.txt"
         );
 
@@ -5717,12 +5717,12 @@ mod tests {
         let nested_child = PathBuf::from("/data/shared");
         let nested_roots = vec![cwd.clone(), nested_parent, nested_child];
         assert_eq!(
-            display_name_for(&in_other_root, ViewMode::Search, &cwd, &nested_roots),
+            display_name_for(&in_other_root, ViewSource::Search, &cwd, &nested_roots),
             "docs/notes.txt"
         );
 
         assert_eq!(
-            display_name_for(&in_other_root, ViewMode::Directory, &cwd, &roots),
+            display_name_for(&in_other_root, ViewSource::Directory, &cwd, &roots),
             "notes.txt"
         );
     }

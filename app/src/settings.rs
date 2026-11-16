@@ -35,7 +35,7 @@ pub const MAX_RECENT_SEARCHES: usize = 10;
 /// `settings.json` as `"details"` / `"icons"`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ViewMode {
+pub enum ViewLayout {
     #[default]
     Details,
     Icons,
@@ -49,7 +49,7 @@ pub struct Settings {
     pub last_dir: Option<PathBuf>,
     pub sort: SortSpec,
     pub show_hidden: bool,
-    pub view: ViewMode,
+    pub view: ViewLayout,
     /// Recently visited directories, most recent first (bounded).
     pub recent_dirs: Vec<PathBuf>,
     /// Bookmarked directories, in insertion order (bounded).
@@ -69,7 +69,7 @@ impl Default for Settings {
             last_dir: None,
             sort: SortSpec::default(),
             show_hidden: false,
-            view: ViewMode::Details,
+            view: ViewLayout::Details,
             recent_dirs: Vec::new(),
             bookmarks: Vec::new(),
             tabs: Vec::new(),
@@ -221,7 +221,7 @@ impl Settings {
 mod tests {
     // Explicit imports only: the crate root glob re-exports GPUI's `test`
     // proc-macro which would shadow the built-in `#[test]`.
-    use super::{Settings, ViewMode, APP_DIR, SCHEMA_VERSION};
+    use super::{Settings, ViewLayout, APP_DIR, SCHEMA_VERSION};
     use crate::model::{SortDir, SortKey, SortSpec};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(settings.sort.dir, SortDir::Asc);
         assert!(settings.sort.dirs_first);
         assert!(!settings.show_hidden);
-        assert_eq!(settings.view, ViewMode::Details);
+        assert_eq!(settings.view, ViewLayout::Details);
         assert!(settings.last_dir.is_none());
     }
 
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(loaded.sort.key, SortKey::Modified);
         assert_eq!(loaded.sort.dir, SortDir::Asc);
         assert_eq!(loaded.version, SCHEMA_VERSION);
-        assert_eq!(loaded.view, ViewMode::Details);
+        assert_eq!(loaded.view, ViewLayout::Details);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -357,7 +357,7 @@ mod tests {
         let loaded = Settings::load_from(&path);
         assert_eq!(loaded.version, SCHEMA_VERSION);
         assert!(loaded.show_hidden);
-        assert_eq!(loaded.view, ViewMode::Icons);
+        assert_eq!(loaded.view, ViewLayout::Icons);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -384,7 +384,7 @@ mod tests {
         .unwrap();
         let loaded = Settings::load_from(&path);
         assert_eq!(loaded.version, SCHEMA_VERSION);
-        assert_eq!(loaded.view, ViewMode::Icons);
+        assert_eq!(loaded.view, ViewLayout::Icons);
         assert!(loaded.show_hidden);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -397,7 +397,7 @@ mod tests {
         let path = dir.join("settings.json");
         fs::write(&path, br#"{ "future_field": 42, "view": "icons" }"#).unwrap();
         let loaded = Settings::load_from(&path);
-        assert_eq!(loaded.view, ViewMode::Icons);
+        assert_eq!(loaded.view, ViewLayout::Icons);
         assert_eq!(loaded.sort, SortSpec::default());
         fs::remove_dir_all(&dir).unwrap();
     }
