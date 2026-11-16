@@ -322,6 +322,12 @@ fn copy_file_atomic(
     {
         Ok(reservation) => {
             drop(reservation);
+            // On Windows `fs::rename` refuses to replace an existing file, so
+            // the reservation must be removed first. The O_EXCL check above
+            // still prevents clobbering a pre-existing destination; Unix keeps
+            // the reservation in place for its atomic replace semantics.
+            #[cfg(windows)]
+            let _ = fs::remove_file(dest);
             if let Err(error) = fs::rename(&partial, dest) {
                 // `dest` is our own reservation at this point; removing it is
                 // safe and leaves no half-written destination behind.
