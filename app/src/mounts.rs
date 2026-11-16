@@ -75,23 +75,25 @@ fn path_is_visible(path: &str) -> bool {
 /// `\011` = tab, `\012` = newline, `\134` = backslash).
 fn unescape_mount_field(value: &str) -> String {
     let bytes = value.as_bytes();
-    let mut out = String::with_capacity(value.len());
+    let mut out: Vec<u8> = Vec::with_capacity(value.len());
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'\\' && index + 3 < bytes.len() {
             let octal = &value[index + 1..index + 4];
             if octal.bytes().all(|byte| (b'0'..=b'7').contains(&byte)) {
                 if let Ok(byte) = u8::from_str_radix(octal, 8) {
-                    out.push(byte as char);
+                    out.push(byte);
                     index += 4;
                     continue;
                 }
             }
         }
-        out.push(bytes[index] as char);
+        out.push(bytes[index]);
         index += 1;
     }
-    out
+    // Decode once at the end so multi-byte UTF-8 paths are not mangled by
+    // treating each byte as a separate char.
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Parse `/proc/mounts` content into visible, de-duplicated, sorted mounts.
@@ -184,6 +186,13 @@ overlay /var/lib/docker/overlay2/abc overlay rw 0 0
         assert_eq!(unescape_mount_field(r"a\011b"), "a\tb");
         assert_eq!(unescape_mount_field(r"a\134b"), r"a\b");
         assert_eq!(unescape_mount_field("plain"), "plain");
+    }
+
+    #[test]
+    fn unescape_preserves_utf8_and_octal_utf8() {
+        assert_eq!(unescape_mount_field("/mnt/日本語"), "/mnt/日本語");
+        // \303\251 is the UTF-8 byte sequence for 'é'.
+        assert_eq!(unescape_mount_field(r"/mnt/caf\303\251"), "/mnt/café");
     }
 
     #[test]
