@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T06:57:36+09:00
+verified: 2026-11-17T06:59:42+09:00
 status: complete
 ---
 
@@ -345,6 +345,11 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
   PASS 8件、NOT TESTABLE 4件（AC-8/9/10/12 = 合成入力ツール未導入
   による実押下不可）、AC-9 のエラー通知は GPUI API 制約で未実装
   （README に明記済み）。新たな未対応項目なし。
+- 最終コードで実機起動を再確認（2026-11-17T06:58+09:00、Wayland
+  `WAYLAND_DISPLAY=wayland-0`）: ビルド成功、3 秒間プロセス生存、
+  stderr / stdout とも空（panic / EGL / Vulkan エラーなし = AC-3）、
+  SIGTERM でプロセス残存なし（AC-13）。KWin D-Bus の
+  `WindowsRunner.Match` は当環境で interface 不明のため照合不可。
 - 初期の独立検証（`notes/verify-report.md`）の major 3 件も再確認
   （2026-11-17T05:16+09:00）: render パスに同期 I/O なし、選択は
   `Selection`（PathBuf キー）で行 index 競合を回避、起動・ナビゲーション
