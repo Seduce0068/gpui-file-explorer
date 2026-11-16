@@ -95,6 +95,30 @@ pub const EMPTY_FILTERED: (&str, &str) = (
 );
 pub const LOADING: &str = "読み込み中…";
 
+/// Frequently used fixed status-bar messages.
+pub const STATUS_CHANGED: &str = "変更を検出しました";
+pub const STATUS_TABS_ONLY_DIRECTORY: &str = "タブはディレクトリ表示でのみ操作できます";
+pub const STATUS_BOOKMARKS_ONLY_DIRECTORY: &str =
+    "ブックマークはディレクトリ表示でのみ操作できます";
+pub const STATUS_LAST_TAB: &str = "最後のタブは閉じられません";
+pub const STATUS_TAB_MOVED_LEFT: &str = "タブを左へ移動しました";
+pub const STATUS_TAB_MOVED_RIGHT: &str = "タブを右へ移動しました";
+pub const STATUS_TRASH_NO_COPY: &str = "ゴミ箱ビューではコピーできません";
+pub const STATUS_TRASH_NO_CUT: &str = "ゴミ箱ビューでは切り取りできません";
+pub const STATUS_TRASH_NO_PASTE: &str = "ゴミ箱ビューでは貼り付けできません";
+pub const STATUS_TRASH_NO_RENAME: &str = "ゴミ箱ビューでは名前を変更できません";
+pub const STATUS_TRASH_NO_PURGE: &str = "ゴミ箱内の完全削除は未対応です";
+pub const STATUS_CANCELLING: &str = "キャンセルしています…";
+pub const STATUS_NO_CLIPBOARD: &str = "コピー/切り取りした項目がありません";
+pub const STATUS_OP_RUNNING: &str = "ファイル操作を実行中です（Esc でキャンセル）";
+pub const STATUS_DROP_ONLY_DIRECTORY: &str = "ドロップはディレクトリ表示でのみ使えます";
+pub const STATUS_DROP_NO_DESTINATION: &str = "ドロップ先のフォルダが見つかりません";
+pub const STATUS_DROP_SAME_DIRECTORY: &str = "同じフォルダのためコピーしません";
+pub const STATUS_DROP_NOT_FOUND: &str = "ドロップされた項目が見つかりません";
+pub const STATUS_DROP_EMPTY: &str = "ドロップされた項目がありません";
+pub const STATUS_TRASH_LOADING: &str = "ゴミ箱を読み込んでいます…";
+pub const STATUS_FOLDER_CREATING: &str = "フォルダを作成中…";
+
 #[cfg(test)]
 mod tests {
     use super::*;
