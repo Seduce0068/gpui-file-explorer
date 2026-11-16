@@ -331,7 +331,7 @@ struct PropsState {
 /// different menus for the same row.
 type MenuBuilder = Box<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
-/// One entry on the internal cut/copy clipboard (P1: single selection).
+/// Internal cut/copy clipboard: one slot holding the current selection.
 ///
 /// The OS clipboard is deliberately not used for file cut/copy: its cut/copy
 /// semantics are platform-specific and it would overwrite whatever the user
@@ -464,7 +464,7 @@ struct Explorer {
     recent: Vec<PathBuf>,
     /// Existing bookmarked directories (pruned on reload; never probed in render).
     bookmarks: Vec<PathBuf>,
-    /// Internal cut/copy clipboard (single entry in P1).
+    /// Internal cut/copy clipboard (may hold multiple selected paths).
     clipboard: Option<ClipboardSlot>,
     /// Running paste operation; dropping the task cancels it.
     op_task: Option<Task<()>>,

@@ -18,8 +18,7 @@
 //!   [`CancelFlag`]; it is checked between entries and between 64 KiB chunks.
 //!
 //! This module is intentionally GPUI-free so it can be unit tested headlessly.
-//! It is currently exercised by the tests below and will back the P1
-//! cut/copy/paste UI.
+//! It is exercised by the tests below and backs the cut/copy/paste UI.
 
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
