@@ -227,6 +227,12 @@ status: complete
   返すパッケージ名も文字種で検証。`bash -n` / `shellcheck` 通過、
   実 DEB ビルドで `Depends` が従来どおり生成されることを確認。
 
+- `gpui-file-explorer.desktop`（追加改善）: `Exec` に `%f` を追加し、
+  ファイルマネージャーからフォルダを引数として渡せるようにした。
+  `desktop-file-validate` 通過、DEB 展開後の `.desktop` にも反映確認。
+  `StartupWMClass` の再実測は kdotool 未導入・KWin D-Bus 無応答のため
+  未実施（2026-11-11 の確認結果を維持）。
+
 ### セキュリティ（事実確認済み）
 
 - `ops.rs:286-299`（解消済み）: `hard_link` 失敗 → `dest.exists()`
