@@ -322,6 +322,10 @@ status: complete
 
 ## 検証エビデンス（Runtime Proof）
 
+- `bash scripts/check.sh`（audit 込みの完全ループ、
+  2026-11-17T02:03+09:00）: **exit 0 / All checks passed**
+  （app 150 tests / poc 4 tests / clippy 警告 0 /
+  cargo audit 8 allowed warnings）
 - `cargo test --all-targets --locked`（`app/`、2026-11-16T22:51:56+09:00）:
   **132 passed / 0 failed / 0 ignored**
 - `cargo audit`（`app/`、同日時）: **exit 0**、
@@ -351,3 +355,6 @@ status: complete
 4. CI の共有ワークフロー側の audit 設定は `gh api` で確認済み
    （追加対応不要）。OKF メタデータの `verified` は最終検証時に
    更新済み（`generated` は初回作成時刻のまま）。
+5. `origin/main` に対して 50 コミット先行している。push は外部
+   影響が大きいためユーザー確認なしには実施しない。ローカルで
+   CI と同一の完全ループを実行し exit 0 を確認済み。
