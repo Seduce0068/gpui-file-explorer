@@ -109,6 +109,16 @@ fn io_error(path: &Path, err: std::io::Error) -> OpError {
         std::io::ErrorKind::NotFound => OpError::NotFound(path.to_path_buf()),
         std::io::ErrorKind::PermissionDenied => OpError::PermissionDenied(path.to_path_buf()),
         std::io::ErrorKind::AlreadyExists => OpError::AlreadyExists(path.to_path_buf()),
+        // Cross-device moves are handled by the fallback in `move_entry`; if
+        // one reaches here it is a genuine unsupported operation.
+        std::io::ErrorKind::CrossesDevices => OpError::Unsupported(format!(
+            "異なるデバイス間の操作に失敗しました: {}",
+            path.display()
+        )),
+        std::io::ErrorKind::IsADirectory => OpError::InvalidTarget(format!(
+            "ディレクトリに対してファイル操作はできません: {}",
+            path.display()
+        )),
         _ => OpError::Io {
             path: path.to_path_buf(),
             message: err.to_string(),
@@ -970,9 +980,9 @@ mod tests {
 
 #[cfg(test)]
 mod dir_stats_tests {
-    use super::{dir_stats, CancelFlag};
+    use super::{dir_stats, io_error, CancelFlag, OpError};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1039,5 +1049,36 @@ mod dir_stats_tests {
         let stats = dir_stats(&dir, &cancel);
         assert_eq!(stats, super::DirStats::default());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn io_error_maps_common_kinds() {
+        let path = Path::new("/tmp/example");
+        let not_found = io_error(path, std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(matches!(not_found, OpError::NotFound(_)));
+
+        let denied = io_error(
+            path,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert!(matches!(denied, OpError::PermissionDenied(_)));
+
+        let exists = io_error(
+            path,
+            std::io::Error::from(std::io::ErrorKind::AlreadyExists),
+        );
+        assert!(matches!(exists, OpError::AlreadyExists(_)));
+
+        let cross = io_error(
+            path,
+            std::io::Error::from(std::io::ErrorKind::CrossesDevices),
+        );
+        assert!(matches!(cross, OpError::Unsupported(_)));
+
+        let is_dir = io_error(path, std::io::Error::from(std::io::ErrorKind::IsADirectory));
+        assert!(matches!(is_dir, OpError::InvalidTarget(_)));
+
+        let other = io_error(path, std::io::Error::other("boom"));
+        assert!(matches!(other, OpError::Io { .. }));
     }
 }
