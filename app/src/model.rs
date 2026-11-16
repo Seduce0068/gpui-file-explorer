@@ -849,6 +849,19 @@ mod tests {
         assert!(denied.message_ja().contains("アクセスが拒否されました"));
         let unknown = FsError::from_io(PathBuf::from("/tmp/x"), &Error::other("custom"));
         assert!(unknown.message_ja().contains("エラーが発生しました"));
+
+        // No OS detail: the message stays short without an empty "()".
+        let plain = FsError {
+            kind: FsErrorKind::NotFound,
+            path: PathBuf::from("/tmp/x"),
+            os_message: None,
+        };
+        assert_eq!(plain.message_ja(), "/tmp/x: 見つかりません");
+        let empty_detail = FsError {
+            os_message: Some(String::new()),
+            ..plain
+        };
+        assert_eq!(empty_detail.message_ja(), "/tmp/x: 見つかりません");
     }
 
     #[test]
