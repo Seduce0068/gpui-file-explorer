@@ -492,6 +492,10 @@ pub fn last_index(len: usize) -> usize {
 
 /// Cheap content fingerprint used by the 10s reconciliation timer to detect
 /// changes the OS watcher missed (or that happened while watching was broken).
+///
+/// `modified` is hashed at one-second resolution, so two edits within the same
+/// second that leave the name and size unchanged are indistinguishable. The
+/// OS watcher is the primary detector; this is a coarse backstop only.
 pub fn fingerprint(entries: &[Entry]) -> u64 {
     let mut hasher = DefaultHasher::new();
     entries.len().hash(&mut hasher);

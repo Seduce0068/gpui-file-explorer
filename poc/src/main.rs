@@ -69,14 +69,15 @@ fn read_entries(dir: &Path) -> Result<Vec<Entry>, String> {
         let Ok(item) = item else { continue };
         let path = item.path();
         let name = item.file_name().to_string_lossy().to_string();
-        // `DirEntry::metadata` does not follow symlinks; use `fs::metadata` for
-        // the directory test so symlinked dirs are enterable.
-        let metadata = item.metadata().ok();
+        // `DirEntry::metadata` follows symlinks; use `symlink_metadata` for the
+        // displayed size/time so a link's own attributes are shown. `fs::metadata`
+        // is used only for the directory test so symlinked dirs stay enterable.
+        let link_metadata = std::fs::symlink_metadata(&path).ok();
         let is_dir = std::fs::metadata(&path)
             .map(|meta| meta.is_dir())
             .unwrap_or(false);
-        let size = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
-        let modified = metadata.and_then(|meta| meta.modified().ok());
+        let size = link_metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+        let modified = link_metadata.and_then(|meta| meta.modified().ok());
         entries.push(Entry {
             name,
             path,
