@@ -259,6 +259,13 @@ cd app
 | `src/settings.rs` | serde_json 永続化（アトミック書き込み） |
 | `src/icons.rs` | 拡張子 → Lucide アイコン分類（GPUI 非依存の分類 + アイコン写像） |
 | `src/watcher.rs` | debounce 付き OS ファイル監視（カレント + 親、非再帰） |
+| `src/ops.rs` | 安全なコピー/移動/リネーム/ゴミ箱の操作エンジン |
+| `src/search.rs` | 名前・内容検索、複数ルート統合、後段フィルタ |
+| `src/preview.rs` | テキスト/画像プレビューの読み取りと形式判定 |
+| `src/mounts.rs` | `/proc/mounts` 解析（Linux）とボリューム一覧 |
+| `src/trash_view.rs` | ゴミ箱内一覧と ID 指定の復元 |
+| `src/undo.rs` | 名前変更・ゴミ箱の undo/redo スタック |
+| `src/strings.rs` | UI 文言の集約（ヘルプ・空状態・ステータス） |
 
 設計方針:
 
