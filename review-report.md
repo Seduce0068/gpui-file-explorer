@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T02:17:04+09:00
+verified: 2026-11-17T02:20:57+09:00
 status: complete
 ---
 
@@ -328,6 +328,9 @@ status: complete
   2026-11-17T02:03+09:00）: **exit 0 / All checks passed**
   （app 150 tests / poc 4 tests / clippy 警告 0 /
   cargo audit 8 allowed warnings）
+- `cargo test --release --all-targets --locked`（`app/`、
+  2026-11-17T02:20+09:00）: **151 passed / 0 failed**。
+  debug / release の双方で同一結果（過去の検証は 150 件時点）。
 - `cargo test --all-targets --locked`（`app/`、2026-11-16T22:51:56+09:00）:
   **132 passed / 0 failed / 0 ignored**
 - `cargo audit`（`app/`、同日時）: **exit 0**、
