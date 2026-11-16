@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T03:06:36+09:00
+verified: 2026-11-17T03:12:31+09:00
 status: complete
 ---
 
@@ -325,6 +325,10 @@ status: complete
 
 ## 検証エビデンス（Runtime Proof）
 
+- `cargo clippy --all-targets --locked -- -D warnings \
+  -D clippy::undocumented_unsafe_blocks`（2026-11-17T03:11+09:00）:
+  警告なし。`app/src/main.rs` と `app/build.rs` に
+  `#![forbid(unsafe_code)]` を確認（AGENTS.md §15 の unsafe 禁止を具現化）。
 - `cargo tarpaulin --locked --out Stdout --exclude-files 'target/*'`
   （2026-11-17T03:05+09:00）: データ層のカバレッジを改善。
   `model.rs` 270/301 → 287/301、`ops.rs` 212/284 → 222/284、
