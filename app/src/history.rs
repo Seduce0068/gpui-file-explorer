@@ -3,6 +3,21 @@
 
 use std::path::PathBuf;
 
+/// Intent of a navigation (DESIGN.md §5.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavMode {
+    /// Ordinary navigation; records `current` on the back stack.
+    Push,
+    /// Move to the previous entry.
+    Back,
+    /// Move to the next entry.
+    Forward,
+    /// Move to a parent directory (same history semantics as `Push`).
+    Up,
+    /// Change location without touching the history stacks.
+    Replace,
+}
+
 /// Browser-style navigation history with a bounded back stack.
 #[derive(Debug, Default, Clone)]
 pub struct History {
@@ -46,6 +61,20 @@ impl History {
         Some(target)
     }
 
+    /// Apply a navigation and return the next location. `target` is only used
+    /// by `Push`, `Up` and `Replace`; `Back` / `Forward` ignore it.
+    pub fn apply(&mut self, current: PathBuf, target: PathBuf, mode: NavMode) -> Option<PathBuf> {
+        match mode {
+            NavMode::Push | NavMode::Up => {
+                self.visit(current, target.clone());
+                Some(target)
+            }
+            NavMode::Back => self.go_back(current),
+            NavMode::Forward => self.go_forward(current),
+            NavMode::Replace => Some(target),
+        }
+    }
+
     pub fn can_go_back(&self) -> bool {
         !self.back.is_empty()
     }
@@ -69,7 +98,7 @@ impl History {
 mod tests {
     // Explicit imports: `use gpui_kit::*` in the crate root would shadow
     // the built-in `#[test]` attribute through a glob import.
-    use super::History;
+    use super::{History, NavMode};
     use std::path::PathBuf;
 
     fn p(value: &str) -> PathBuf {
@@ -131,5 +160,33 @@ mod tests {
         assert_eq!(history.go_back(p("/d")), Some(p("/c")));
         assert_eq!(history.go_back(p("/c")), Some(p("/b")));
         assert_eq!(history.go_back(p("/b")), None);
+    }
+
+    #[test]
+    fn apply_covers_all_nav_modes() {
+        let mut history = History::new();
+        assert_eq!(
+            history.apply(p("/a"), p("/b"), NavMode::Push),
+            Some(p("/b"))
+        );
+        assert_eq!(history.back_len(), 1);
+        assert_eq!(
+            history.apply(p("/b"), PathBuf::new(), NavMode::Back),
+            Some(p("/a"))
+        );
+        assert_eq!(
+            history.apply(p("/a"), PathBuf::new(), NavMode::Forward),
+            Some(p("/b"))
+        );
+        assert_eq!(
+            history.apply(p("/b"), p("/b/child"), NavMode::Replace),
+            Some(p("/b/child"))
+        );
+        assert_eq!(history.back_len(), 1, "Replace must not change history");
+        assert_eq!(
+            history.apply(p("/b/child"), p("/"), NavMode::Up),
+            Some(p("/"))
+        );
+        assert_eq!(history.back_len(), 2);
     }
 }
