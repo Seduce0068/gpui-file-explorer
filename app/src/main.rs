@@ -2016,9 +2016,18 @@ impl Explorer {
         let mut existing: Vec<PathBuf> = Vec::new();
         let mut missing = 0usize;
         let mut same = 0usize;
+        let mut special = 0usize;
         for path in paths {
-            if !path.exists() && !path.is_symlink() {
+            // `symlink_metadata` sees broken links too and never follows them.
+            let Ok(link_metadata) = std::fs::symlink_metadata(&path) else {
                 missing += 1;
+                continue;
+            };
+            let file_type = link_metadata.file_type();
+            if !file_type.is_symlink() && !file_type.is_file() && !file_type.is_dir() {
+                // Devices, sockets and FIFOs cannot be copied safely; skip them
+                // here instead of failing the whole transfer in `copy_recursive`.
+                special += 1;
                 continue;
             }
             if path == destination {
@@ -2032,14 +2041,23 @@ impl Explorer {
                 "同じフォルダのためコピーしません".to_string()
             } else if missing > 0 {
                 "ドロップされた項目が見つかりません".to_string()
+            } else if special > 0 {
+                "特殊ファイルのためコピーできません".to_string()
             } else {
                 "ドロップされた項目がありません".to_string()
             };
             cx.notify();
             return;
         }
+        let mut notices = Vec::new();
         if missing > 0 {
-            self.status = format!("{missing} 件は存在しないためスキップします");
+            notices.push(format!("{missing} 件は存在しないためスキップ"));
+        }
+        if special > 0 {
+            notices.push(format!("特殊ファイル {special} 件をスキップ"));
+        }
+        if !notices.is_empty() {
+            self.status = notices.join(" / ");
         }
         self.run_transfer(destination, existing, false, cx);
     }
