@@ -24,6 +24,7 @@ pub struct MountPoint {
 /// Filesystem types that are useful in a file-manager sidebar. Pseudo
 /// filesystems (`proc`, `sysfs`, `tmpfs`, `overlay`, `squashfs`, ...) are
 /// deliberately excluded.
+#[cfg(any(target_os = "linux", test))]
 const ALLOWED_FS: &[&str] = &[
     "ext2",
     "ext3",
@@ -48,11 +49,13 @@ const ALLOWED_FS: &[&str] = &[
     "fuse.smbnetfs",
 ];
 
+#[cfg(any(target_os = "linux", test))]
 fn fs_is_visible(fs_type: &str) -> bool {
     ALLOWED_FS.contains(&fs_type)
 }
 
 /// System mount points that would only add noise to the sidebar.
+#[cfg(any(target_os = "linux", test))]
 fn path_is_visible(path: &str) -> bool {
     if path == "/" {
         return true;
@@ -73,6 +76,7 @@ fn path_is_visible(path: &str) -> bool {
 
 /// Decode the octal escapes used by `/proc/mounts` (`\040` = space,
 /// `\011` = tab, `\012` = newline, `\134` = backslash).
+#[cfg(any(target_os = "linux", test))]
 fn unescape_mount_field(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(value.len());
@@ -97,6 +101,7 @@ fn unescape_mount_field(value: &str) -> String {
 }
 
 /// Parse `/proc/mounts` content into visible, de-duplicated, sorted mounts.
+#[cfg(any(target_os = "linux", test))]
 pub fn parse_mounts(text: &str) -> Vec<MountPoint> {
     let mut mounts: Vec<MountPoint> = Vec::new();
     for line in text.lines() {
