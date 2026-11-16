@@ -408,6 +408,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -421,6 +422,19 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn scope_labels_and_empty_query() {
+        assert_eq!(SearchScope::Current.label(), "現在のフォルダ");
+        assert_eq!(SearchScope::OpenTabs.label(), "開いているタブ");
+        assert_eq!(SearchScope::Bookmarks.label(), "ブックマーク");
+
+        let dir = scratch("empty-query");
+        let cancel = AtomicBool::new(false);
+        assert!(search_by_name(&dir, "", SearchOptions::default(), &cancel).is_empty());
+        assert!(search_contents(&dir, "  ", ContentSearchOptions::default(), &cancel).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn write(path: &Path) {
