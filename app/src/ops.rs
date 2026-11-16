@@ -171,29 +171,48 @@ pub fn validate_file_name(name: &str) -> Result<(), OpError> {
 }
 
 /// Return `dir/name` if free, otherwise the first free `name (N).ext`.
-pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
+///
+/// Builds candidate names as raw `OsString`s so non-UTF-8 file names survive
+/// the rename-conflict path without lossy conversion.
+pub fn unique_path(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
     let candidate = dir.join(name);
     if !candidate.exists() {
         return candidate;
     }
     let path = Path::new(name);
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| name.to_string());
-    let extension = path
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
+    let stem = path.file_stem().unwrap_or(name);
+    let extension = path.extension();
+
+    let append_counter = |stem: &std::ffi::OsStr, counter: usize| -> std::ffi::OsString {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::{OsStrExt, OsStringExt};
+            let mut bytes = stem.as_bytes().to_vec();
+            bytes.extend_from_slice(format!(" ({counter})").as_bytes());
+            std::ffi::OsString::from_vec(bytes)
+        }
+        #[cfg(not(unix))]
+        {
+            let mut text = stem.to_string_lossy().into_owned();
+            text.push_str(&format!(" ({counter})"));
+            std::ffi::OsString::from(text)
+        }
+    };
+
     for counter in 1..=10_000 {
-        let candidate = dir.join(format!("{stem} ({counter}){extension}"));
+        let mut candidate_name = append_counter(stem, counter);
+        if let Some(extension) = extension {
+            candidate_name.push(".");
+            candidate_name.push(extension);
+        }
+        let candidate = dir.join(candidate_name);
         if !candidate.exists() {
             return candidate;
         }
     }
     // Practically unreachable; fall back to the original path so the caller
     // fails with AlreadyExists instead of looping forever.
-    dir.join(name)
+    candidate
 }
 
 /// Resolve the destination path for `src` inside `dest_dir` according to
@@ -213,7 +232,7 @@ fn resolve_destination(
     match policy {
         ConflictPolicy::Fail => Err(OpError::AlreadyExists(candidate)),
         ConflictPolicy::Skip => Ok(None),
-        ConflictPolicy::Rename => Ok(Some(unique_path(dest_dir, &name.to_string_lossy()))),
+        ConflictPolicy::Rename => Ok(Some(unique_path(dest_dir, name))),
     }
 }
 
@@ -980,7 +999,7 @@ mod tests {
 
 #[cfg(test)]
 mod dir_stats_tests {
-    use super::{dir_stats, io_error, CancelFlag, OpError};
+    use super::{dir_stats, io_error, unique_path, CancelFlag, OpError};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -1113,5 +1132,28 @@ mod dir_stats_tests {
             let text = error.to_string();
             assert!(text.contains(expected), "expected {expected:?} in {text:?}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unique_path_preserves_non_utf8_names() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let dir = scratch("non-utf8-unique");
+        let name = std::ffi::OsString::from_vec(vec![b'x', 0xff, b'.', b't', b'x', b't']);
+        fs::write(dir.join(&name), b"first").unwrap();
+
+        let unique = unique_path(&dir, &name);
+        let bytes = unique.file_name().unwrap().as_bytes();
+        assert_eq!(
+            bytes, b"x\xff (1).txt",
+            "raw bytes must survive conflict rename"
+        );
+        assert!(!unique.exists());
+        fs::write(&unique, b"second").unwrap();
+        let second = unique_path(&dir, &name);
+        assert_eq!(second.file_name().unwrap().as_bytes(), b"x\xff (2).txt");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
