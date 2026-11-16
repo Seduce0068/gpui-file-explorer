@@ -143,7 +143,7 @@ cd app
       連番プローブ + `create_dir` を UI スレッドで行わない）
 - [x] 設定の永続化: `~/.config/gpui-file-explorer/settings.json`
       （最終ディレクトリ・ソートキー・昇順/降順・隠しファイル表示）。
-      起動時ロード、変更時保存。壊れた JSON は `settings.json.broken-<epoch秒>` に
+      起動時ロード、変更時保存。壊れた JSON は `settings.json.broken-<epochナノ秒>-<PID>` に
       退避して既定値で起動（起動失敗にしない）。存在しない `last_dir` は無視
 - [x] AGPL-3.0-or-later（LICENSE）、NOTICE、各ソースに SPDX ヘッダ
 
