@@ -5606,7 +5606,8 @@ mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
-        classify_cli, format_selected, kind_color, summarize_op, tab_label, CliAction, Explorer,
+        build_places, classify_cli, format_selected, kind_color, summarize_op, tab_label,
+        CliAction, Explorer,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -5614,6 +5615,21 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
+
+    #[test]
+    fn build_places_always_includes_trash_last() {
+        let places = build_places();
+        assert!(places.len() >= 2);
+        let trash = places.last().unwrap();
+        assert_eq!(trash.label, "ゴミ箱");
+        assert!(trash.trash);
+        assert!(trash.path.is_none());
+        assert!(trash.exists);
+        // Root is always present and its directory existence is checked.
+        assert!(places
+            .iter()
+            .any(|place| place.label == "ルート" && place.exists));
+    }
 
     #[test]
     fn kind_colors_are_distinct_per_file_kind() {
