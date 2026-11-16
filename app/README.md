@@ -147,11 +147,11 @@ cd app
       退避して既定値で起動（起動失敗にしない）。存在しない `last_dir` は無視
 - [x] AGPL-3.0-or-later（LICENSE）、NOTICE、各ソースに SPDX ヘッダ
 
-## 進行中（P1）
+## P1（実装済み）
 
 - [x] **安全なファイル操作エンジン**（`src/ops.rs`、UI 接続済み・ユニットテストあり）
   - 上書き禁止が既定（`ConflictPolicy::{Fail, Skip, Rename}`。`Overwrite` は意図的に無し）
-  - コピーは `.partial-*` へ書き、完了後に hard link / rename で配置（部分ファイルを残さない）
+  - コピーは `.partial-*` へ書き、完了後に O_EXCL 予約 + rename で配置（部分ファイルを残さない）
   - シンボリックリンクはリンクとしてコピーし、削除時は**絶対に辿らない**（`symlink_metadata`）
   - 移動は同一 FS なら `rename`、`EXDEV` は「コピー成功後にのみ元を削除」
   - キャンセル（`CancelFlag`）で部分ファイルを掃除。ディレクトリを自身の配下へコピー/移動する操作を拒否
