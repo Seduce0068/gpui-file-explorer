@@ -314,6 +314,7 @@ pub fn resolve_location_input(
 }
 
 /// Render Unix permission bits (`mode & 0o777`) as `rwxr-xr-x`.
+#[cfg(any(unix, test))]
 pub fn permissions_string(mode: u32) -> String {
     let mut out = String::with_capacity(9);
     for shift in [6u32, 3, 0] {

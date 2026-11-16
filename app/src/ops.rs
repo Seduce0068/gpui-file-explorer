@@ -260,6 +260,7 @@ fn copy_file_atomic(
     stats: &mut OpStats,
     progress: &mut dyn FnMut(u64),
 ) -> Result<(), OpError> {
+    #[cfg(unix)]
     let metadata = fs::metadata(src).map_err(|e| io_error(src, e))?;
     let parent = dest
         .parent()
@@ -1005,7 +1006,9 @@ mod tests {
 
 #[cfg(test)]
 mod dir_stats_tests {
-    use super::{dir_stats, io_error, unique_path, CancelFlag, OpError};
+    #[cfg(unix)]
+    use super::unique_path;
+    use super::{dir_stats, io_error, CancelFlag, OpError};
     use std::fs;
     use std::path::{Path, PathBuf};
 
