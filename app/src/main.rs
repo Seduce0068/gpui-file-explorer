@@ -408,6 +408,34 @@ struct ClipboardSlot {
     cut: bool,
 }
 
+/// Development-only screenshot / deterministic smoke-test hooks.
+///
+/// Every field is driven by a `GPUI_FE_DEBUG_*` environment variable. Keeping
+/// them in one struct lets `Explorer` expose a single field instead of twenty
+/// unrelated flags.
+#[derive(Default)]
+struct DebugHooks {
+    open_rename_once: bool,
+    select_all_once: bool,
+    open_trash_once: bool,
+    restore_trash_once: bool,
+    progress_once: bool,
+    grid_once: bool,
+    search_once: bool,
+    properties_once: bool,
+    help_once: bool,
+    location_once: bool,
+    preview_once: bool,
+    undo_history_once: bool,
+    undo: Option<String>,
+    preview_report: bool,
+    properties_size: bool,
+    ephemeral: bool,
+    tabs_once: bool,
+    drop_path: Option<String>,
+    drop_target: Option<String>,
+}
+
 struct Explorer {
     settings: Settings,
     cwd: PathBuf,
@@ -489,65 +517,8 @@ struct Explorer {
     undo_history_open: bool,
     /// Set after a successful rename; the next render refocuses the list.
     focus_list_on_next_render: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_RENAME=1` opens the rename dialog
-    /// for the first entry after the initial load (used for UI screenshots
-    /// where synthetic keyboard input is unavailable).
-    debug_open_rename_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_SELECT_ALL=1` selects every entry
-    /// after the first load (multi-selection screenshot).
-    debug_select_all_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_TRASH=1` opens the trash view once
-    /// after startup (screenshot / smoke testing without synthetic input).
-    debug_open_trash_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_TRASH_RESTORE=1` restores the
-    /// first trash item after the trash listing loads (end-to-end smoke test).
-    debug_restore_trash_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_PROGRESS=1` shows a fake progress
-    /// bar after startup (screenshot of the progress UI).
-    debug_progress_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_GRID=1` switches to the icon grid
-    /// view once after startup (screenshot).
-    debug_grid_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_SEARCH=1` runs a search after the
-    /// first load; the query comes from `GPUI_FE_DEBUG_SEARCH_QUERY` (default
-    /// `txt`). Used for search screenshots.
-    debug_search_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_PROPERTIES=1` opens the
-    /// properties dialog for the first entry once after loading.
-    debug_properties_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_HELP=1` opens the help overlay.
-    debug_help_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_LOCATION=1` opens the Ctrl+L bar.
-    debug_location_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_PREVIEW=1` previews the first file.
-    debug_preview_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_UNDO_HISTORY=1` opens the undo
-    /// history overlay once after startup.
-    debug_undo_history_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_UNDO=rename|trash` performs one
-    /// reversible operation and immediately undoes it, printing each step to
-    /// stderr (deterministic verification of the undo engine against the real
-    /// filesystem).
-    debug_undo: Option<String>,
-    /// Development-only hook: `GPUI_FE_DEBUG_PREVIEW_REPORT=1` prints the
-    /// preview outcome (kind/format/size or error) once, for verification
-    /// without taking screenshots.
-    debug_preview_report: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_PROPERTIES_SIZE=1` starts the
-    /// directory size calculation after opening the properties dialog.
-    debug_properties_size: bool,
-    /// True when a development hook is active; debug sessions must not persist
-    /// tab state into the user's real settings file.
-    debug_ephemeral: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_TABS=1` opens extra tabs once
-    /// after startup (tab bar screenshot).
-    debug_tabs_once: bool,
-    /// Development-only hook: `GPUI_FE_DEBUG_DROP_PATH=<file>` feeds one path
-    /// through the external-drop handler once (no OS drag needed).
-    debug_drop_path: Option<String>,
-    /// Development-only hook: `GPUI_FE_DEBUG_DROP_TARGET=<folder name>` sends
-    /// the debug drop to that folder instead of the current directory.
-    debug_drop_target: Option<String>,
+    /// Development-only hooks (screenshot / deterministic smoke tests).
+    debug: DebugHooks,
 }
 
 impl Explorer {
@@ -659,46 +630,48 @@ impl Explorer {
             undo: UndoStack::new(),
             undo_history_open: false,
             focus_list_on_next_render: false,
-            debug_open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
-            debug_select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
-            debug_open_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH").is_some(),
-            debug_restore_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH_RESTORE").is_some(),
-            debug_progress_once: std::env::var_os("GPUI_FE_DEBUG_PROGRESS").is_some(),
-            debug_grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
-            debug_search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
-            debug_properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
-            debug_help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
-            debug_location_once: std::env::var_os("GPUI_FE_DEBUG_LOCATION").is_some(),
-            debug_preview_once: std::env::var_os("GPUI_FE_DEBUG_PREVIEW").is_some(),
-            debug_preview_report: std::env::var_os("GPUI_FE_DEBUG_PREVIEW_REPORT").is_some(),
-            debug_undo: std::env::var("GPUI_FE_DEBUG_UNDO").ok(),
-            debug_undo_history_once: std::env::var_os("GPUI_FE_DEBUG_UNDO_HISTORY").is_some(),
-            debug_properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
-            debug_ephemeral: [
-                "GPUI_FE_DEBUG_TABS",
-                "GPUI_FE_DEBUG_RECENT",
-                "GPUI_FE_DEBUG_BOOKMARKS",
-                "GPUI_FE_DEBUG_SEARCH",
-                "GPUI_FE_DEBUG_SEARCH_SCOPE",
-                "GPUI_FE_DEBUG_GRID",
-                "GPUI_FE_DEBUG_PROPERTIES",
-                "GPUI_FE_DEBUG_PROPERTIES_SIZE",
-                "GPUI_FE_DEBUG_HELP",
-                "GPUI_FE_DEBUG_DROP_PATH",
-                "GPUI_FE_DEBUG_SORT",
-                "GPUI_FE_DEBUG_SEARCH_HISTORY",
-                "GPUI_FE_DEBUG_TAB_MOVE",
-                "GPUI_FE_DEBUG_LOCATION",
-                "GPUI_FE_DEBUG_PREVIEW",
-                "GPUI_FE_DEBUG_PREVIEW_REPORT",
-                "GPUI_FE_DEBUG_UNDO",
-                "GPUI_FE_DEBUG_UNDO_HISTORY",
-            ]
-            .iter()
-            .any(|name| std::env::var_os(name).is_some()),
-            debug_tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
-            debug_drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
-            debug_drop_target: std::env::var("GPUI_FE_DEBUG_DROP_TARGET").ok(),
+            debug: DebugHooks {
+                open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
+                select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
+                open_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH").is_some(),
+                restore_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH_RESTORE").is_some(),
+                progress_once: std::env::var_os("GPUI_FE_DEBUG_PROGRESS").is_some(),
+                grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
+                search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
+                properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
+                help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
+                location_once: std::env::var_os("GPUI_FE_DEBUG_LOCATION").is_some(),
+                preview_once: std::env::var_os("GPUI_FE_DEBUG_PREVIEW").is_some(),
+                preview_report: std::env::var_os("GPUI_FE_DEBUG_PREVIEW_REPORT").is_some(),
+                undo: std::env::var("GPUI_FE_DEBUG_UNDO").ok(),
+                undo_history_once: std::env::var_os("GPUI_FE_DEBUG_UNDO_HISTORY").is_some(),
+                properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
+                ephemeral: [
+                    "GPUI_FE_DEBUG_TABS",
+                    "GPUI_FE_DEBUG_RECENT",
+                    "GPUI_FE_DEBUG_BOOKMARKS",
+                    "GPUI_FE_DEBUG_SEARCH",
+                    "GPUI_FE_DEBUG_SEARCH_SCOPE",
+                    "GPUI_FE_DEBUG_GRID",
+                    "GPUI_FE_DEBUG_PROPERTIES",
+                    "GPUI_FE_DEBUG_PROPERTIES_SIZE",
+                    "GPUI_FE_DEBUG_HELP",
+                    "GPUI_FE_DEBUG_DROP_PATH",
+                    "GPUI_FE_DEBUG_SORT",
+                    "GPUI_FE_DEBUG_SEARCH_HISTORY",
+                    "GPUI_FE_DEBUG_TAB_MOVE",
+                    "GPUI_FE_DEBUG_LOCATION",
+                    "GPUI_FE_DEBUG_PREVIEW",
+                    "GPUI_FE_DEBUG_PREVIEW_REPORT",
+                    "GPUI_FE_DEBUG_UNDO",
+                    "GPUI_FE_DEBUG_UNDO_HISTORY",
+                ]
+                .iter()
+                .any(|name| std::env::var_os(name).is_some()),
+                tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
+                drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
+                drop_target: std::env::var("GPUI_FE_DEBUG_DROP_TARGET").ok(),
+            },
         };
 
         // Remember the directory we actually started in (also proves the
@@ -1126,7 +1099,7 @@ impl Explorer {
     /// Mirror the open tabs and the active index into settings (the caller
     /// saves the settings file).
     fn persist_tabs(&mut self) {
-        if self.debug_ephemeral {
+        if self.debug.ephemeral {
             return;
         }
         self.tabs.sync(self.cwd.clone(), self.history.clone());
@@ -2582,7 +2555,7 @@ impl Explorer {
                 };
                 preview.loading = false;
                 preview.task = None;
-                if this.debug_preview_report {
+                if this.debug.preview_report {
                     match &result {
                         Ok((Some(image), _)) => eprintln!(
                             "preview-report: ok kind=image format={:?} bytes={}",
@@ -3711,7 +3684,7 @@ impl Explorer {
                 this.all_entries = entries;
                 this.apply_search_filter(cx);
                 this.settings.record_search(&this.search_query);
-                if !this.debug_ephemeral {
+                if !this.debug.ephemeral {
                     this.settings.save();
                 }
             });
@@ -5182,34 +5155,34 @@ fn icon_button(
 
 impl Render for Explorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.debug_open_trash_once && self.view == ViewMode::Directory {
-            self.debug_open_trash_once = false;
+        if self.debug.open_trash_once && self.view == ViewMode::Directory {
+            self.debug.open_trash_once = false;
             self.enter_trash(cx);
         }
-        if self.debug_grid_once {
-            self.debug_grid_once = false;
+        if self.debug.grid_once {
+            self.debug.grid_once = false;
             self.settings.view = LayoutMode::Icons;
         }
-        if self.debug_progress_once && !self.entries.is_empty() {
-            self.debug_progress_once = false;
+        if self.debug.progress_once && !self.entries.is_empty() {
+            self.debug.progress_once = false;
             self.op_progress = Some((35_000_000, 100_000_000));
             self.suppress_for(Duration::from_secs(30));
             self.status = "コピー中… 35.0 MB / 100.0 MB（Esc でキャンセル）".to_string();
         }
-        if self.debug_restore_trash_once
+        if self.debug.restore_trash_once
             && self.view == ViewMode::Trash
             && !self.loading
             && !self.entries.is_empty()
         {
-            self.debug_restore_trash_once = false;
+            self.debug.restore_trash_once = false;
             self.restore_selected(cx);
         }
-        if self.debug_select_all_once && !self.entries.is_empty() && self.selection.len() <= 1 {
-            self.debug_select_all_once = false;
+        if self.debug.select_all_once && !self.entries.is_empty() && self.selection.len() <= 1 {
+            self.debug.select_all_once = false;
             self.select_all(cx);
         }
-        if self.debug_open_rename_once && !self.entries.is_empty() && self.renaming.is_none() {
-            self.debug_open_rename_once = false;
+        if self.debug.open_rename_once && !self.entries.is_empty() && self.renaming.is_none() {
+            self.debug.open_rename_once = false;
             self.start_rename(window, cx);
         }
         if self.focus_list_on_next_render {
@@ -5218,17 +5191,17 @@ impl Render for Explorer {
             window.on_next_frame(move |window, cx| handle.focus(window, cx));
         }
         if !self.loading {
-            if self.debug_properties_once && !self.loading && !self.entries.is_empty() {
-                self.debug_properties_once = false;
+            if self.debug.properties_once && !self.loading && !self.entries.is_empty() {
+                self.debug.properties_once = false;
                 let path = self.entries[0].path.clone();
                 self.open_properties(path, cx);
-                if self.debug_properties_size {
+                if self.debug.properties_size {
                     self.start_dir_size(cx);
                 }
             }
-            if let Some(path) = self.debug_drop_path.take() {
+            if let Some(path) = self.debug.drop_path.take() {
                 let source = PathBuf::from(path);
-                let target = self.debug_drop_target.take().and_then(|name| {
+                let target = self.debug.drop_target.take().and_then(|name| {
                     self.entries
                         .iter()
                         .find(|entry| entry.name == name && entry.is_dir)
@@ -5242,8 +5215,8 @@ impl Render for Explorer {
                 }
             }
         }
-        if self.debug_tabs_once && self.view == ViewMode::Directory && !self.loading {
-            self.debug_tabs_once = false;
+        if self.debug.tabs_once && self.view == ViewMode::Directory && !self.loading {
+            self.debug.tabs_once = false;
             self.sync_active_tab();
             if let Some(home) = dirs::home_dir() {
                 self.tabs.new_tab(home);
@@ -5255,8 +5228,8 @@ impl Render for Explorer {
                 self.move_tab_left(cx);
             }
         }
-        if self.debug_search_once && self.view == ViewMode::Directory && !self.loading {
-            self.debug_search_once = false;
+        if self.debug.search_once && self.view == ViewMode::Directory && !self.loading {
+            self.debug.search_once = false;
             let query =
                 std::env::var("GPUI_FE_DEBUG_SEARCH_QUERY").unwrap_or_else(|_| "txt".to_string());
             self.open_search(window, cx);
@@ -5298,24 +5271,24 @@ impl Render for Explorer {
         let search_bar = self.search_bar(cx);
         let search_history_bar = self.search_history_bar(cx);
         let location_bar = self.location_bar(cx);
-        if self.debug_help_once {
-            self.debug_help_once = false;
+        if self.debug.help_once {
+            self.debug.help_once = false;
             self.help_open = true;
         }
-        if self.debug_location_once && !self.loading {
-            self.debug_location_once = false;
+        if self.debug.location_once && !self.loading {
+            self.debug.location_once = false;
             self.open_location(window, cx);
         }
-        if self.debug_undo_history_once && !self.loading {
-            self.debug_undo_history_once = false;
+        if self.debug.undo_history_once && !self.loading {
+            self.debug.undo_history_once = false;
             self.undo_history_open = true;
         }
-        if self.debug_undo.is_some() && !self.loading && !self.entries.is_empty() {
-            let mode = self.debug_undo.take().unwrap_or_default();
+        if self.debug.undo.is_some() && !self.loading && !self.entries.is_empty() {
+            let mode = self.debug.undo.take().unwrap_or_default();
             self.run_debug_undo(&mode, cx);
         }
-        if self.debug_preview_once && !self.loading && !self.entries.is_empty() {
-            self.debug_preview_once = false;
+        if self.debug.preview_once && !self.loading && !self.entries.is_empty() {
+            self.debug.preview_once = false;
             if let Some(entry) = self
                 .entries
                 .iter()
