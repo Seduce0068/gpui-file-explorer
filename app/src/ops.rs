@@ -1082,4 +1082,37 @@ mod dir_stats_tests {
         let other = io_error(path, std::io::Error::other("boom"));
         assert!(matches!(other, OpError::Io { .. }));
     }
+
+    #[test]
+    fn op_error_display_is_user_readable() {
+        let path = Path::new("/tmp/target.txt");
+        let cases: Vec<(OpError, &str)> = vec![
+            (OpError::NotFound(path.to_path_buf()), "見つかりません"),
+            (
+                OpError::PermissionDenied(path.to_path_buf()),
+                "アクセスが拒否されました",
+            ),
+            (OpError::AlreadyExists(path.to_path_buf()), "既に存在します"),
+            (
+                OpError::InvalidTarget("理由".to_string()),
+                "操作できません: 理由",
+            ),
+            (
+                OpError::Unsupported("理由".to_string()),
+                "未対応の操作です: 理由",
+            ),
+            (OpError::Cancelled, "操作はキャンセルされました"),
+            (
+                OpError::Io {
+                    path: path.to_path_buf(),
+                    message: "詳細".to_string(),
+                },
+                "/tmp/target.txt: 詳細",
+            ),
+        ];
+        for (error, expected) in cases {
+            let text = error.to_string();
+            assert!(text.contains(expected), "expected {expected:?} in {text:?}");
+        }
+    }
 }
