@@ -454,6 +454,37 @@ struct DebugHooks {
     drop_target: Option<String>,
 }
 
+/// Current directory load state; `Loading` and `Error` are mutually exclusive
+/// by construction (DESIGN.md §5.5).
+#[derive(Clone, Debug)]
+enum LoadState {
+    Loading { generation: u64 },
+    Ready,
+    Error { generation: u64, error: String },
+}
+
+impl LoadState {
+    fn error_message(&self) -> Option<&str> {
+        match self {
+            LoadState::Error { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+
+    fn is_loading(&self) -> bool {
+        matches!(self, LoadState::Loading { .. })
+    }
+
+    fn generation(&self) -> Option<u64> {
+        match self {
+            LoadState::Loading { generation } | LoadState::Error { generation, .. } => {
+                Some(*generation)
+            }
+            LoadState::Ready => None,
+        }
+    }
+}
+
 struct Explorer {
     settings: Settings,
     cwd: PathBuf,
@@ -476,8 +507,7 @@ struct Explorer {
     history: History,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
-    loading: bool,
-    error: Option<String>,
+    load: LoadState,
     status: String,
     /// Monotonic id of the latest load request; stale results are dropped.
     generation: u64,
@@ -600,8 +630,7 @@ impl Explorer {
             history,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
-            loading: true,
-            error: None,
+            load: LoadState::Loading { generation: 0 },
             status: String::new(),
             generation: 0,
             fingerprint: 0,
@@ -695,8 +724,7 @@ impl Explorer {
         }
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
-        self.loading = true;
-        self.error = None;
+        self.load = LoadState::Loading { generation };
         self.refresh_places();
         self.refresh_mounts();
         self.refresh_recent();
@@ -714,10 +742,10 @@ impl Explorer {
         let task = cx.spawn(async move |this, cx| {
             let result = background.await;
             let _ = this.update(cx, |this, cx| {
-                if this.generation != generation {
+                if this.load.generation() != Some(generation) {
                     return;
                 }
-                this.loading = false;
+                this.load = LoadState::Ready;
                 match result {
                     Ok(entries) => {
                         this.apply_loaded(entries);
@@ -731,7 +759,10 @@ impl Explorer {
                         this.selected = 0;
                         this.selection.clear();
                         this.status.clear();
-                        this.error = Some(error.message_ja());
+                        this.load = LoadState::Error {
+                            generation,
+                            error: error.message_ja(),
+                        };
                     }
                 }
                 cx.notify();
@@ -744,17 +775,16 @@ impl Explorer {
     /// Load the system trash into the virtual listing (background executor).
     fn reload_trash(&mut self, cx: &mut Context<Self>) {
         let generation = self.generation;
-        self.loading = true;
-        self.error = None;
+        self.load = LoadState::Loading { generation };
         self.load_task.take();
         let background = cx.background_spawn(async move { trash_view::list() });
         let task = cx.spawn(async move |this, cx| {
             let result = background.await;
             let _ = this.update(cx, |this, cx| {
-                if this.generation != generation {
+                if this.load.generation() != Some(generation) {
                     return;
                 }
-                this.loading = false;
+                this.load = LoadState::Ready;
                 match result {
                     Ok(items) => {
                         this.trash_items = items;
@@ -766,7 +796,10 @@ impl Explorer {
                         this.entries.clear();
                         this.selected = 0;
                         this.selection.clear();
-                        this.error = Some(format!("ゴミ箱を読み込めません: {error}"));
+                        this.load = LoadState::Error {
+                            generation,
+                            error: format!("ゴミ箱を読み込めません: {error}"),
+                        };
                     }
                 }
                 cx.notify();
@@ -957,7 +990,7 @@ impl Explorer {
     fn reconcile(&mut self, cx: &mut Context<Self>) {
         // The trash view has its own listing; the directory reconcile must not
         // overwrite it with the current directory contents.
-        if self.loading || self.view != ViewSource::Directory {
+        if self.load.is_loading() || self.view != ViewSource::Directory {
             return;
         }
         let generation = self.generation;
@@ -966,7 +999,7 @@ impl Explorer {
         cx.spawn(async move |this, cx| {
             let Ok(entries) = task.await else { return };
             let _ = this.update(cx, |this, cx| {
-                if this.generation != generation || this.loading {
+                if this.generation != generation || this.load.is_loading() {
                     return;
                 }
                 if fingerprint(&entries) == this.fingerprint {
@@ -1112,7 +1145,7 @@ impl Explorer {
         self.selection.clear();
         self.selected = 0;
         self.pending_select = None;
-        self.error = None;
+        self.load = LoadState::Ready;
         self.status.clear();
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
@@ -1275,7 +1308,7 @@ impl Explorer {
         self.cwd = path;
         self.selected = 0;
         self.pending_select = None;
-        self.error = None;
+        self.load = LoadState::Ready;
         self.status.clear();
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
@@ -1298,10 +1331,10 @@ impl Explorer {
             return;
         }
         if !path.is_dir() {
-            self.error = Some(format!(
-                "ディレクトリではありません: {}",
-                display_path(&path)
-            ));
+            self.load = LoadState::Error {
+                generation: self.generation,
+                error: format!("ディレクトリではありません: {}", display_path(&path)),
+            };
             cx.notify();
             return;
         }
@@ -1706,7 +1739,10 @@ impl Explorer {
                         }
                     }
                     Err(error) => {
-                        this.error = Some(format!("フォルダを作成できません: {error}"));
+                        this.load = LoadState::Error {
+                            generation: this.generation,
+                            error: format!("フォルダを作成できません: {error}"),
+                        };
                     }
                 }
                 cx.notify();
@@ -3542,13 +3578,16 @@ impl Explorer {
             let _ = this.update(cx, |this, cx| {
                 let (trashed, failures) = result;
                 if trashed.is_empty() {
-                    this.error = Some(format!(
-                        "ゴミ箱へ移動できません: {}",
-                        failures
-                            .first()
-                            .map(|(_, message)| message.clone())
-                            .unwrap_or_default()
-                    ));
+                    this.load = LoadState::Error {
+                        generation: this.generation,
+                        error: format!(
+                            "ゴミ箱へ移動できません: {}",
+                            failures
+                                .first()
+                                .map(|(_, message)| message.clone())
+                                .unwrap_or_default()
+                        ),
+                    };
                 } else {
                     this.suppress_for(SELF_OP_SUPPRESS);
                     let mut message = if trashed.len() == 1 {
@@ -3689,7 +3728,6 @@ impl Explorer {
         let cancel = Arc::new(AtomicBool::new(false));
         self.search.cancel = Some(cancel.clone());
         self.search.task.take();
-        self.loading = true;
 
         let include_hidden = self.settings.show_hidden;
         let mode = self.search.mode;
@@ -3756,7 +3794,7 @@ impl Explorer {
                 if this.search.generation != generation {
                     return;
                 }
-                this.loading = false;
+                this.load = LoadState::Ready;
                 this.search.task = None;
                 this.search.cancel = None;
                 this.search_lines = entries
@@ -3861,7 +3899,7 @@ impl Explorer {
 
     fn search_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
         let input = self.search.input.as_ref()?;
-        let hint = if self.loading {
+        let hint = if self.load.is_loading() {
             "検索中…"
         } else {
             "Enter で検索 / Esc で閉じる"
@@ -4306,12 +4344,16 @@ impl Explorer {
     fn overlay(&self) -> Option<Div> {
         let (message, hint) = empty_state_message(
             self.view,
-            self.loading,
-            self.error.as_deref(),
+            self.load.is_loading(),
+            self.load.error_message(),
             self.all_entries.len(),
             self.entries.len(),
         )?;
-        let color = if self.error.is_some() { C_RED } else { C_MUTED };
+        let color = if self.load.error_message().is_some() {
+            C_RED
+        } else {
+            C_MUTED
+        };
         Some(
             div()
                 .absolute()
@@ -5066,12 +5108,12 @@ impl Explorer {
             .flex()
             .items_center()
             .gap_2()
-            .child(if let Some(error) = &self.error {
+            .child(if let Some(error) = self.load.error_message() {
                 div()
                     .text_color(rgb(C_RED))
                     .child(format!("エラー: {error}"))
                     .into_any_element()
-            } else if self.loading {
+            } else if self.load.is_loading() {
                 div()
                     .text_color(rgb(C_YELLOW))
                     .child("読み込み中…")
@@ -5274,7 +5316,7 @@ impl Explorer {
         }
         if self.debug.restore_trash_once
             && self.view == ViewSource::Trash
-            && !self.loading
+            && !self.load.is_loading()
             && !self.entries.is_empty()
         {
             self.debug.restore_trash_once = false;
@@ -5293,8 +5335,8 @@ impl Explorer {
             let handle = self.focus_handle.clone();
             window.on_next_frame(move |window, cx| handle.focus(window, cx));
         }
-        if !self.loading {
-            if self.debug.properties_once && !self.loading && !self.entries.is_empty() {
+        if !self.load.is_loading() {
+            if self.debug.properties_once && !self.load.is_loading() && !self.entries.is_empty() {
                 self.debug.properties_once = false;
                 let path = self.entries[0].path.clone();
                 self.open_properties(path, cx);
@@ -5318,7 +5360,7 @@ impl Explorer {
                 }
             }
         }
-        if self.debug.tabs_once && self.view == ViewSource::Directory && !self.loading {
+        if self.debug.tabs_once && self.view == ViewSource::Directory && !self.load.is_loading() {
             self.debug.tabs_once = false;
             self.sync_active_tab();
             if let Some(home) = dirs::home_dir() {
@@ -5331,7 +5373,7 @@ impl Explorer {
                 self.move_tab_left(cx);
             }
         }
-        if self.debug.search_once && self.view == ViewSource::Directory && !self.loading {
+        if self.debug.search_once && self.view == ViewSource::Directory && !self.load.is_loading() {
             self.debug.search_once = false;
             let query =
                 std::env::var("GPUI_FE_DEBUG_SEARCH_QUERY").unwrap_or_else(|_| "txt".to_string());
@@ -5378,19 +5420,19 @@ impl Explorer {
             self.debug.help_once = false;
             self.help_open = true;
         }
-        if self.debug.location_once && !self.loading {
+        if self.debug.location_once && !self.load.is_loading() {
             self.debug.location_once = false;
             self.open_location(window, cx);
         }
-        if self.debug.undo_history_once && !self.loading {
+        if self.debug.undo_history_once && !self.load.is_loading() {
             self.debug.undo_history_once = false;
             self.undo_history_open = true;
         }
-        if self.debug.undo.is_some() && !self.loading && !self.entries.is_empty() {
+        if self.debug.undo.is_some() && !self.load.is_loading() && !self.entries.is_empty() {
             let mode = self.debug.undo.take().unwrap_or_default();
             self.run_debug_undo(&mode, cx);
         }
-        if self.debug.preview_once && !self.loading && !self.entries.is_empty() {
+        if self.debug.preview_once && !self.load.is_loading() && !self.entries.is_empty() {
             self.debug.preview_once = false;
             if let Some(entry) = self
                 .entries
@@ -5751,5 +5793,28 @@ mod tests {
         assert_eq!(Explorer::per_root_cap(2000, 4), 500);
         assert_eq!(Explorer::per_root_cap(2000, 10), 200);
         assert_eq!(Explorer::per_root_cap(2000, 100), 20);
+    }
+
+    #[test]
+    fn load_state_is_exclusive_and_tracks_generation() {
+        use super::LoadState;
+
+        let loading = LoadState::Loading { generation: 7 };
+        assert!(loading.is_loading());
+        assert_eq!(loading.error_message(), None);
+        assert_eq!(loading.generation(), Some(7));
+
+        let error = LoadState::Error {
+            generation: 8,
+            error: "読み込み失敗".to_string(),
+        };
+        assert!(!error.is_loading());
+        assert_eq!(error.error_message(), Some("読み込み失敗"));
+        assert_eq!(error.generation(), Some(8));
+
+        let ready = LoadState::Ready;
+        assert!(!ready.is_loading());
+        assert_eq!(ready.error_message(), None);
+        assert_eq!(ready.generation(), None);
     }
 }
