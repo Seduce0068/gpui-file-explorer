@@ -2448,11 +2448,11 @@ impl Explorer {
                 };
                 let background = cx.background_spawn(async move {
                     let mut trashed: Vec<PathBuf> = Vec::new();
-                    let mut failures = 0usize;
+                    let mut failures: Vec<(PathBuf, String)> = Vec::new();
                     for path in paths {
                         match trash::delete(&path) {
                             Ok(()) => trashed.push(path),
-                            Err(_) => failures += 1,
+                            Err(error) => failures.push((path, error.to_string())),
                         }
                     }
                     (trashed, failures)
@@ -2464,7 +2464,7 @@ impl Explorer {
                         eprintln!(
                             "gpui-file-explorer: op=redo action=trash items={} failures={}",
                             trashed.len(),
-                            failures
+                            failures.len()
                         );
                         if trashed.is_empty() {
                             this.undo.push_redo(action_for_undo);
@@ -2487,12 +2487,20 @@ impl Explorer {
                                     .collect();
                                 this.undo.push_undo(UndoAction::Trash { items: recorded });
                             }
-                            this.status = if failures == 0 {
+                            this.status = if failures.is_empty() {
                                 format!("{label}をやり直しました（{} 件）", trashed.len())
                             } else {
+                                let (path, reason) = &failures[0];
+                                let name = path
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| display_path(path));
                                 format!(
-                                    "{label}をやり直しました（{} 件、{failures} 件失敗）",
-                                    trashed.len()
+                                    "{label}をやり直しました（{} 件、{} 件失敗: 「{}」: {}）",
+                                    trashed.len(),
+                                    failures.len(),
+                                    name,
+                                    reason
                                 )
                             };
                             this.reload(cx);
@@ -3521,8 +3529,17 @@ impl Explorer {
                     } else {
                         format!("{} 件をゴミ箱へ移動しました", trashed.len())
                     };
-                    if !failures.is_empty() {
-                        message.push_str(&format!("（{} 件失敗）", failures.len()));
+                    if let Some((path, reason)) = failures.first() {
+                        let name = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| display_path(path));
+                        message.push_str(&format!(
+                            "（{} 件失敗: 「{}」: {}）",
+                            failures.len(),
+                            name,
+                            reason
+                        ));
                     }
                     this.status = message;
                     if let Ok(items) = trash_view::list() {
