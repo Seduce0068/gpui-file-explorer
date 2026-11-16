@@ -502,25 +502,13 @@ impl Explorer {
                 dirs_first: true,
             };
         }
-        // Restore the tabs from the previous session, dropping directories that
-        // disappeared. The active tab's directory becomes the start directory.
-        let saved_tabs: Vec<PathBuf> = settings
-            .tabs
-            .iter()
-            .filter(|path| path.is_dir())
-            .cloned()
-            .collect();
-        let start_dir = if saved_tabs.is_empty() {
-            startup_dir()
-                .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
-                .filter(|path| path.is_dir())
-                .or_else(|| settings.last_dir.clone())
-                .or_else(dirs::home_dir)
-                .unwrap_or_else(|| PathBuf::from("/"))
-        } else {
-            let index = settings.active_tab.min(saved_tabs.len() - 1);
-            saved_tabs[index].clone()
-        };
+        let (saved_tabs, start_dir) = restore_session(
+            &settings.tabs,
+            settings.active_tab,
+            settings.last_dir.as_deref(),
+            startup_dir(),
+            dirs::home_dir(),
+        );
         if std::env::var_os("GPUI_FE_DEBUG_RECENT").is_some() {
             settings.record_recent(&start_dir);
             if let Some(home) = dirs::home_dir() {
@@ -5536,6 +5524,35 @@ fn startup_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Restore the persisted tab set and choose the directory to open first.
+///
+/// Kept separate from `Explorer::new` so the precedence (saved tabs → CLI
+/// argument → last directory → home → `/`) can be tested headlessly. The
+/// existence checks are intentionally done by the caller before this point
+/// for the CLI path (see `Explorer::new`), while persisted paths are filtered
+/// here.
+fn restore_session(
+    saved: &[PathBuf],
+    active: usize,
+    last_dir: Option<&std::path::Path>,
+    cli_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> (Vec<PathBuf>, PathBuf) {
+    let tabs: Vec<PathBuf> = saved.iter().filter(|path| path.is_dir()).cloned().collect();
+    if !tabs.is_empty() {
+        let index = active.min(tabs.len() - 1);
+        let start = tabs[index].clone();
+        return (tabs, start);
+    }
+    let start = cli_dir
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .filter(|path| path.is_dir())
+        .or_else(|| last_dir.filter(|path| path.is_dir()).map(PathBuf::from))
+        .or(home)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    (tabs, start)
+}
+
 fn main() {
     if handle_cli() {
         return;
@@ -5783,5 +5800,38 @@ mod tests {
             classify_cli(&args(&["--help", "--version"])),
             CliAction::Version
         );
+    }
+
+    #[test]
+    fn restore_session_prefers_saved_tabs_then_cli_then_last_then_home() {
+        use super::restore_session;
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-session-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let saved = vec![dir.join("gone"), dir.clone()];
+        let (tabs, start) = restore_session(&saved, 99, None, None, None);
+        assert_eq!(tabs, vec![dir.clone()], "vanished paths are dropped");
+        assert_eq!(start, dir, "active index is clamped to the saved tab");
+
+        let (_, start) = restore_session(&[], 0, None, Some(dir.clone()), None);
+        assert_eq!(start, dir, "CLI argument wins when no tabs are saved");
+
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let (_, start) = restore_session(&[], 0, Some(&home), None, Some(dir.clone()));
+        assert_eq!(start, home, "last_dir wins over home");
+
+        let (_, start) = restore_session(&[], 0, None, None, Some(dir.clone()));
+        assert_eq!(start, dir, "home is the final fallback");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
