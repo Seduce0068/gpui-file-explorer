@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T02:20:57+09:00
+verified: 2026-11-17T03:06:36+09:00
 status: complete
 ---
 
@@ -325,6 +325,13 @@ status: complete
 
 ## 検証エビデンス（Runtime Proof）
 
+- `cargo tarpaulin --locked --out Stdout --exclude-files 'target/*'`
+  （2026-11-17T03:05+09:00）: データ層のカバレッジを改善。
+  `model.rs` 270/301 → 287/301、`ops.rs` 212/284 → 222/284、
+  `search.rs` 118/126 → 124/126、`undo.rs` 34/37 → 35/37、
+  `watcher.rs` 46/54 → 48/54。全体は UI の `main.rs`
+  （70/3173）が支配的で、合成入力ツール未導入により headless
+  テストが困難な既知の制限どおり。
 - `bash scripts/check.sh`（audit 込みの完全ループ、
   2026-11-17T02:03+09:00）: **exit 0 / All checks passed**
   （app 150 tests / poc 4 tests / clippy 警告 0 /
