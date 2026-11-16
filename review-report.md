@@ -232,8 +232,9 @@ status: complete
 - `gpui-file-explorer.desktop`（追加改善）: `Exec` に `%f` を追加し、
   ファイルマネージャーからフォルダを引数として渡せるようにした。
   `desktop-file-validate` 通過、DEB 展開後の `.desktop` にも反映確認。
-  `StartupWMClass` の再実測は kdotool 未導入・KWin D-Bus 無応答のため
-  未実施（2026-11-11 の確認結果を維持）。
+  `StartupWMClass` の再実測は、kdotool 未導入に加え KWin D-Bus に
+  `activeWindow` が無く `queryWindowInfo` は対話的（UserCancel）で
+  自動化できないため未実施（2026-11-11 の確認結果を維持）。
 
 ### セキュリティ（事実確認済み）
 
