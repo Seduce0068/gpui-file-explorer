@@ -126,6 +126,12 @@ pub const STATUS_NOT_DIRECTORY: &str = "ディレクトリではありません"
 pub const STATUS_UNDO_FAILED: &str = "元に戻せません";
 pub const STATUS_REDO_NO_TARGET: &str = "やり直せません: 対象が存在しません";
 
+/// Suffixes used to summarize a completed file operation.
+pub const OP_FILES_SUFFIX: &str = "ファイル";
+pub const OP_DIRS_SUFFIX: &str = "フォルダ";
+pub const OP_SKIPPED_SUFFIX: &str = "件スキップ";
+pub const OP_DONE_SUFFIX: &str = "しました";
+
 #[cfg(test)]
 mod tests {
     use super::*;

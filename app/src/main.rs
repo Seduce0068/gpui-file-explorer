@@ -149,15 +149,15 @@ fn tab_label(path: &std::path::Path) -> String {
 fn summarize_op(verb: &str, stats: &OpStats) -> String {
     let mut parts: Vec<String> = Vec::new();
     if stats.files > 0 {
-        parts.push(format!("{} ファイル", stats.files));
+        parts.push(format!("{} {OP_FILES_SUFFIX}", stats.files));
     }
     if stats.dirs > 0 {
-        parts.push(format!("{} フォルダ", stats.dirs));
+        parts.push(format!("{} {OP_DIRS_SUFFIX}", stats.dirs));
     }
     if !stats.skipped.is_empty() {
-        parts.push(format!("{} 件スキップ", stats.skipped.len()));
+        parts.push(format!("{} {OP_SKIPPED_SUFFIX}", stats.skipped.len()));
     }
-    let mut message = format!("{verb}しました");
+    let mut message = format!("{verb}{OP_DONE_SUFFIX}");
     if !parts.is_empty() {
         message.push_str(&format!("（{}）", parts.join(" / ")));
     }
@@ -220,6 +220,7 @@ fn empty_state_message(
 
 use crate::strings::{
     EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, HELP_SECTIONS, LOADING,
+    OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
     STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLING, STATUS_CHANGED, STATUS_DROP_EMPTY,
     STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
     STATUS_DROP_SAME_DIRECTORY, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_NOT_DIRECTORY,
