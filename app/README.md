@@ -440,6 +440,12 @@ bash packaging/linux/build-deb.sh
   デバッグ用フックは `#[cfg(debug_assertions)]` で**無効化していません**。
   本機に合成入力ツールが無いため release ビルドのスクリーンショット検証でも
   同じフックが必要なためです。環境変数を設定しなければ発火しません。
+- 依存監査では `unmaintained` 警告が 8 件（`gpui-kit` が引き込む
+  `instant` / `paste` / `rustls-pemfile` / `rustybuzz` / `ttf-parser` /
+  `zbus_names` / `zvariant` / `zvariant_derive`）が報告されますが、
+  修正済み CVE はありません。`gpui-kit` / `gpui-pre` を更新する際は
+  `cargo update` 後に `cargo audit` を再実行し、`Cargo.lock` を
+  追従させてください（警告は cargo-audit の既定で allowed）。
 - クロスプラットフォーム設計ですが、Windows/macOS でのビルド・実行は未検証です。
 - **ブラウザ（wasm）では動作しません**。GPUI の Web バックエンド自体は存在しますが、
   本アプリは `std::fs` / `notify` / `trash` / OS ダイアログに依存しています。
