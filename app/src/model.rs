@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 /// One entry of a directory listing.
 #[derive(Clone, Debug)]
 pub struct Entry {
-    pub name: String,
+    /// Raw OS file name. Never lossy-converted, so non-UTF-8 names survive I/O.
+    pub name: std::ffi::OsString,
+    /// Display/sort form of `name` (`to_string_lossy`). Cached on construction.
+    pub name_text: String,
     pub path: PathBuf,
     pub is_dir: bool,
     pub is_symlink: bool,
@@ -32,10 +35,11 @@ impl Entry {
     /// whose name cannot be represented (rare, platform dependent).
     fn from_dir_entry(item: std::fs::DirEntry) -> Option<Entry> {
         let path = item.path();
-        let name = item.file_name().to_string_lossy().to_string();
+        let name = item.file_name();
         if name.is_empty() {
             return None;
         }
+        let name_text = name.to_string_lossy().into_owned();
         // `symlink_metadata` does not follow symlinks; `metadata` does. We use
         // the former for the symlink flag and the latter for dir-ness/size so
         // symlinked directories stay enterable.
@@ -50,6 +54,7 @@ impl Entry {
         let modified = metadata.and_then(|meta| meta.modified().ok());
         Some(Entry {
             name,
+            name_text,
             path,
             is_dir,
             is_symlink,
@@ -79,10 +84,11 @@ pub fn read_entries(dir: &Path) -> Result<Vec<Entry>, String> {
 /// Symlinks are flagged from `symlink_metadata` while their target is followed
 /// for size/time so symlinked directories remain enterable.
 pub fn entry_for_path(path: &Path) -> Option<Entry> {
-    let name = path.file_name()?.to_string_lossy().into_owned();
+    let name = path.file_name()?.to_os_string();
     if name.is_empty() {
         return None;
     }
+    let name_text = name.to_string_lossy().into_owned();
     let link_metadata = std::fs::symlink_metadata(path).ok()?;
     let is_symlink = link_metadata.file_type().is_symlink();
     let metadata = std::fs::metadata(path).ok().or(Some(link_metadata));
@@ -91,6 +97,7 @@ pub fn entry_for_path(path: &Path) -> Option<Entry> {
     let modified = metadata.and_then(|meta| meta.modified().ok());
     Some(Entry {
         name,
+        name_text,
         path: path.to_path_buf(),
         is_dir,
         is_symlink,
@@ -338,7 +345,7 @@ pub fn kind_label(entry: &Entry) -> String {
     if entry.is_symlink {
         return "リンク".to_string();
     }
-    let extension = extension_of(&entry.name);
+    let extension = extension_of(&entry.name_text);
     if extension.is_empty() {
         "—".to_string()
     } else {
@@ -352,7 +359,7 @@ fn kind_sort_key(entry: &Entry) -> String {
     if entry.is_dir {
         String::new()
     } else {
-        extension_of(&entry.name)
+        extension_of(&entry.name_text)
     }
 }
 
@@ -360,7 +367,7 @@ fn kind_sort_key(entry: &Entry) -> String {
 pub fn visible_entries(all: &[Entry], show_hidden: bool, order: SortOrder) -> Vec<Entry> {
     let mut view: Vec<Entry> = all
         .iter()
-        .filter(|entry| show_hidden || !is_hidden_name(&entry.name))
+        .filter(|entry| show_hidden || !is_hidden_name(&entry.name_text))
         .cloned()
         .collect();
     sort_entries(&mut view, order);
@@ -382,13 +389,13 @@ pub fn sort_entries(entries: &mut Vec<Entry>, order: SortOrder) {
 
     let cmp = |a: &Entry, b: &Entry| {
         let primary = match order.key {
-            SortKey::Name => compare_names(&a.name, &b.name),
+            SortKey::Name => compare_names(&a.name_text, &b.name_text),
             SortKey::Kind => kind_sort_key(a).cmp(&kind_sort_key(b)),
             SortKey::Size => a.size.cmp(&b.size),
             // `None` (unreadable timestamp) sorts before any timestamp.
             SortKey::Modified => a.modified.cmp(&b.modified),
         };
-        primary.then_with(|| compare_names(&a.name, &b.name))
+        primary.then_with(|| compare_names(&a.name_text, &b.name_text))
     };
 
     dirs.sort_by(cmp);
@@ -636,6 +643,7 @@ mod tests {
         kind_label, last_index, read_entries, sort_entries, step_selection, unique_child_name,
         visible_entries, Entry, SortDir, SortKey, SortOrder, SortSpec,
     };
+    use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
@@ -646,7 +654,8 @@ mod tests {
 
     fn entry(name: &str, is_dir: bool, size: u64, modified_secs: u64) -> Entry {
         Entry {
-            name: name.to_string(),
+            name: OsString::from(name),
+            name_text: name.to_string(),
             path: PathBuf::from("/tmp").join(name),
             is_dir,
             is_symlink: false,
@@ -670,12 +679,34 @@ mod tests {
         assert_eq!(entries.iter().filter(|entry| entry.is_dir).count(), 2);
         let beta = entries
             .iter()
-            .find(|entry| entry.name == "beta.txt")
+            .find(|entry| entry.name_text == "beta.txt")
             .unwrap();
         assert_eq!(beta.size, 11);
         assert!(beta.modified.is_some());
         assert!(beta.path.ends_with("beta.txt"));
         assert!(!beta.is_symlink);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_entries_keeps_non_utf8_names_lossless() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let dir = scratch_dir("non-utf8");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let raw = std::ffi::OsString::from_vec(vec![b'x', 0xff, b'.', b't', b'x', b't']);
+        fs::write(dir.join(&raw), b"data").unwrap();
+
+        let entries = read_entries(&dir).expect("directory should be readable");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, raw, "raw OS name must survive intact");
+        assert!(
+            entries[0].name_text.contains("x"),
+            "display form is a lossy rendering of the same name"
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -700,7 +731,7 @@ mod tests {
         assert_eq!(
             shown
                 .iter()
-                .map(|entry| entry.name.as_str())
+                .map(|entry| entry.name_text.as_str())
                 .collect::<Vec<_>>(),
             vec!["visible"]
         );
@@ -719,7 +750,10 @@ mod tests {
             entry("alpha", true, 0, 0),
         ];
         sort_entries(&mut entries, SortOrder::default());
-        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.name_text.as_str())
+            .collect();
         assert_eq!(names, vec!["alpha", "Zebra", "file2.txt", "file10.txt"]);
         // Case-insensitive natural ordering: lowercase sorts before uppercase.
         assert_eq!(compare_names("alpha", "Zebra"), std::cmp::Ordering::Less);
@@ -741,7 +775,7 @@ mod tests {
         assert_eq!(
             entries
                 .iter()
-                .map(|entry| entry.name.as_str())
+                .map(|entry| entry.name_text.as_str())
                 .collect::<Vec<_>>(),
             vec!["big", "mid", "small"]
         );
@@ -754,7 +788,7 @@ mod tests {
         assert_eq!(
             entries
                 .iter()
-                .map(|entry| entry.name.as_str())
+                .map(|entry| entry.name_text.as_str())
                 .collect::<Vec<_>>(),
             vec!["big", "small", "mid"]
         );
@@ -776,7 +810,10 @@ mod tests {
                 ascending: true,
             },
         );
-        let names: Vec<_> = entries.iter().map(|entry| entry.name.clone()).collect();
+        let names: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.name_text.clone())
+            .collect();
         assert_eq!(names, vec!["docs", "noext", "a.rs", "b.txt", "zeta.txt"]);
 
         let mut entries = vec![entry("b.txt", false, 0, 0), entry("a.rs", false, 0, 0)];
@@ -787,7 +824,10 @@ mod tests {
                 ascending: false,
             },
         );
-        let names: Vec<_> = entries.iter().map(|entry| entry.name.clone()).collect();
+        let names: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.name_text.clone())
+            .collect();
         assert_eq!(names, vec!["b.txt", "a.rs"]);
     }
 
@@ -795,7 +835,8 @@ mod tests {
     fn kind_labels_cover_dirs_links_and_extensions() {
         let mut file = entry("photo.PNG", false, 0, 0);
         assert_eq!(kind_label(&file), "png");
-        file.name = "noext".to_string();
+        file.name = OsString::from("noext");
+        file.name_text = "noext".to_string();
         assert_eq!(kind_label(&file), "—");
         file.is_symlink = true;
         assert_eq!(kind_label(&file), "リンク");
@@ -847,7 +888,8 @@ mod tests {
         changed[0].size = 99;
         assert_ne!(fingerprint(&base), fingerprint(&changed));
         let mut renamed = same.clone();
-        renamed[1].name = "c".to_string();
+        renamed[1].name = OsString::from("c");
+        renamed[1].name_text = "c".to_string();
         assert_ne!(fingerprint(&base), fingerprint(&renamed));
     }
 

@@ -29,7 +29,7 @@ pub fn kind_for_entry(entry: &Entry) -> FileKind {
     if entry.is_dir {
         FileKind::Folder
     } else {
-        kind_for_name(&entry.name)
+        kind_for_name(&entry.name_text)
     }
 }
 
@@ -87,12 +87,13 @@ pub fn icon_for_entry(entry: &Entry) -> IconName {
     } else if entry.is_symlink {
         IconName::FileSymlink
     } else {
-        icon_for_kind(kind_for_name(&entry.name))
+        icon_for_kind(kind_for_name(&entry.name_text))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     // Explicit imports only: `use gpui_kit::*` in the crate root would shadow
     // the built-in `#[test]` attribute.
     use super::{kind_for_entry, kind_for_name, FileKind};
@@ -102,7 +103,8 @@ mod tests {
 
     fn entry(name: &str, is_dir: bool, is_symlink: bool) -> Entry {
         Entry {
-            name: name.to_string(),
+            name: OsString::from(name),
+            name_text: name.to_string(),
             path: PathBuf::from("/tmp").join(name),
             is_dir,
             is_symlink,
