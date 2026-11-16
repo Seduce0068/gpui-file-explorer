@@ -731,7 +731,7 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::time::{Duration, SystemTime};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn scratch_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("gpui-fe-model-{tag}-{}", std::process::id()))
@@ -841,6 +841,14 @@ mod tests {
         );
         assert_eq!(err.kind, FsErrorKind::Io);
         assert!(err.message_ja().contains("読み取れませんでした"));
+
+        let denied = FsError::from_io(
+            PathBuf::from("/tmp/x"),
+            &Error::from(ErrorKind::PermissionDenied),
+        );
+        assert!(denied.message_ja().contains("アクセスが拒否されました"));
+        let unknown = FsError::from_io(PathBuf::from("/tmp/x"), &Error::other("custom"));
+        assert!(unknown.message_ja().contains("エラーが発生しました"));
     }
 
     #[test]
@@ -1038,6 +1046,11 @@ mod tests {
         renamed[1].name = OsString::from("c");
         renamed[1].name_text = "c".to_string();
         assert_ne!(fingerprint(&base), fingerprint(&renamed));
+
+        let mut pre_epoch = same.clone();
+        pre_epoch[0].modified = Some(UNIX_EPOCH - Duration::from_secs(1));
+        // Pre-epoch timestamps hash as None without panicking.
+        let _ = fingerprint(&pre_epoch);
     }
 
     #[test]
