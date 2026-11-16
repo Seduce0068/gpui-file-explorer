@@ -103,3 +103,18 @@
   実押下 E2E は未実施。コードはコンパイル検証 + データ層テストのみ。
 - 空き領域右クリックメニュー、複数選択、グリッド、リネーム等は未実装。
 - Windows/macOS ビルドは未検証（設計は `std::fs` / `dirs` / `trash` でポータブル）。
+
+## 2026-11-17 追記（P1 完了・クロスレビュー対応）
+
+- `cargo test`: **149 passed / 0 failed**。`cargo audit`: exit 0
+  （allowed warnings 8 件、修正済み CVE なし）。
+- P1 機能（grid / rename / copy-move / tabs / search / volumes /
+  multi-select / preview / bookmark / undo ほか）は実装済み。
+  上記「未着手」「未実装」の記述は 2026-11-11 時点の履歴。
+- 全体クロスレビュー（[../review-report.md](../review-report.md)）の指摘を
+  反映: 監視イベントの FsEvent 正規化と差分適用、設定スキーマ
+  マイグレーション、内容検索の streaming 化、`FsError` /
+  `LoadState` の型化、`OsString` / `sort_key` / `SearchResult`
+  へのデータモデル整理、O_EXCL による上書き競合の解消など。
+- UI 文言は `strings.rs` に段階的に集約済み。完全な `ui/*`
+  モジュール分割とショートカットの Action 化は設計判断のため保留。
