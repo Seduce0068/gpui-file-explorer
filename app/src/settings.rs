@@ -9,7 +9,12 @@
 //!   "last_dir": "/home/koppe/document",
 //!   "sort": { "key": "name", "dir": "asc", "dirs_first": true },
 //!   "show_hidden": false,
-//!   "view": "details"
+//!   "view": "details",
+//!   "recent_dirs": ["/tmp"],
+//!   "bookmarks": ["/home/koppe"],
+//!   "tabs": ["/home/koppe", "/tmp"],
+//!   "active_tab": 0,
+//!   "recent_searches": ["TODO"]
 //! }
 //! ```
 
