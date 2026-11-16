@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T05:17:43+09:00
+verified: 2026-11-17T05:19:52+09:00
 status: complete
 ---
 
@@ -343,6 +343,9 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
   （2026-11-17T05:16+09:00）: render パスに同期 I/O なし、選択は
   `Selection`（PathBuf キー）で行 index 競合を回避、起動・ナビゲーション
   以外の UI スレッド I/O なし。すべて解消済み。
+  major M-3（コンテキストメニューが行 index を捕捉する問題）も
+  `entry_menu(entity, entry.path.clone(), …)` とパスを捕捉する方式に
+  変更済みで解消（main.rs:4380 付近）。
 - クロスコンパイル（2026-11-17T04:56+09:00）:
   `x86_64-pc-windows-msvc` は check 成功（Windows の rename 仕様差も修正済み）。
   `aarch64-apple-darwin` は上流 `gpui-pre-apple` のビルドスクリプトが
