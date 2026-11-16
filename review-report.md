@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T06:38:40+09:00
+verified: 2026-11-17T06:55:39+09:00
 status: complete
 ---
 
@@ -380,6 +380,10 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
 - 同上の再計測（2026-11-17T04:29+09:00）: `model.rs` が
   290/301 → 292/301（`parent_dir` の境界を追加カバー）。
   `history.rs` 30/30、`tabs.rs` 56/56 は完全カバーを維持。
+- テスト分布（2026-11-17T06:55+09:00、全167件）: model 38 / settings 24 /
+  ops 20 / search 19 / UI 純粋ヘルパー 13 / preview 12 / tabs 9 /
+  undo 7 / history 6 / watcher 5 / mounts 5 / trash_view 4 / icons 4 /
+  strings 1。データ層中心に偏り、残りは GPUI 描画（headless 不可）。
 - `bash scripts/check.sh`（audit 込みの完全ループ、
   2026-11-17T02:03+09:00）: **exit 0 / All checks passed**
   （app 150 tests / poc 4 tests / clippy 警告 0 /
