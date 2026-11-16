@@ -176,11 +176,19 @@ pub fn entry_for_path(path: &Path) -> Option<Entry> {
 /// paths are selected and the anchor used for shift-range selection.
 #[derive(Clone, Debug, Default)]
 pub struct Selection {
+    /// Insertion/view order is preserved for anchor and range selection.
     paths: Vec<PathBuf>,
+    /// Mirrors `paths` so the per-row `contains` check in rendering is O(1).
+    path_set: std::collections::HashSet<PathBuf>,
     anchor: Option<PathBuf>,
 }
 
 impl Selection {
+    fn set_paths(&mut self, paths: Vec<PathBuf>) {
+        self.path_set = paths.iter().cloned().collect();
+        self.paths = paths;
+    }
+
     pub fn paths(&self) -> &[PathBuf] {
         &self.paths
     }
@@ -194,30 +202,36 @@ impl Selection {
     }
 
     pub fn contains(&self, path: &Path) -> bool {
-        self.paths.iter().any(|selected| selected == path)
+        self.path_set.contains(path)
     }
 
     pub fn clear(&mut self) {
         self.paths.clear();
+        self.path_set.clear();
         self.anchor = None;
     }
 
     /// Replace the selection with a single path (plain click / arrow key).
     pub fn select_single(&mut self, path: PathBuf) {
         self.paths = vec![path.clone()];
+        self.path_set.clear();
+        self.path_set.insert(path.clone());
         self.anchor = Some(path);
     }
 
     /// Ctrl+click: add or remove one path; the anchor follows the click.
     pub fn toggle(&mut self, path: PathBuf) {
-        if let Some(position) = self.paths.iter().position(|selected| selected == &path) {
-            self.paths.remove(position);
+        if self.path_set.remove(&path) {
+            if let Some(position) = self.paths.iter().position(|selected| selected == &path) {
+                self.paths.remove(position);
+            }
             if self.anchor.as_deref() == Some(path.as_path()) {
                 self.anchor = self.paths.last().cloned();
             }
         } else {
-            self.paths.push(path.clone());
-            self.anchor = Some(path);
+            self.path_set.insert(path.clone());
+            self.paths.push(path);
+            self.anchor = self.paths.last().cloned();
         }
     }
 
@@ -240,11 +254,11 @@ impl Selection {
         } else {
             (target_index, anchor_index)
         };
-        self.paths = entries[start..=end].to_vec();
+        self.set_paths(entries[start..=end].to_vec());
     }
 
     pub fn select_all(&mut self, entries: &[PathBuf]) {
-        self.paths = entries.to_vec();
+        self.set_paths(entries.to_vec());
         if self.anchor.is_none() {
             self.anchor = entries.first().cloned();
         }
@@ -253,6 +267,7 @@ impl Selection {
     /// Drop paths that no longer exist in the current listing.
     pub fn retain(&mut self, entries: &[PathBuf]) {
         self.paths.retain(|path| entries.contains(path));
+        self.path_set = self.paths.iter().cloned().collect();
         if let Some(anchor) = &self.anchor {
             if !entries.contains(anchor) {
                 self.anchor = self.paths.first().cloned();
@@ -1183,6 +1198,38 @@ mod selection_tests {
 
         selection.retain(&[]);
         assert!(selection.is_empty());
+    }
+
+    #[test]
+    fn hash_index_stays_in_sync_with_ordered_paths() {
+        let entries = paths(&["/a", "/b", "/c", "/d"]);
+        let mut selection = Selection::default();
+
+        let assert_in_sync = |selection: &Selection| {
+            for path in selection.paths() {
+                assert!(selection.contains(path), "missing index entry for {path:?}");
+            }
+            for path in &entries {
+                assert_eq!(
+                    selection.contains(path),
+                    selection.paths().contains(path),
+                    "index disagrees with ordered paths for {path:?}"
+                );
+            }
+        };
+
+        selection.select_all(&entries);
+        assert_in_sync(&selection);
+        selection.toggle(PathBuf::from("/b"));
+        assert_in_sync(&selection);
+        selection.select_single(PathBuf::from("/c"));
+        assert_in_sync(&selection);
+        selection.select_range(&entries, Path::new("/a"));
+        assert_in_sync(&selection);
+        selection.retain(&paths(&["/a", "/c"]));
+        assert_in_sync(&selection);
+        selection.clear();
+        assert_in_sync(&selection);
     }
 }
 
