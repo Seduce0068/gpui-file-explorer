@@ -33,7 +33,7 @@ use gpui_kit::component::{Icon, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::history::History;
+use crate::history::{History, NavMode};
 use crate::icons::{icon_for_entry, kind_for_entry, FileKind};
 use crate::model::{
     breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
@@ -1282,9 +1282,15 @@ impl Explorer {
     }
 
     fn navigate_to(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.navigate_with_mode(path, NavMode::Push, cx);
+    }
+
+    fn navigate_with_mode(&mut self, path: PathBuf, mode: NavMode, cx: &mut Context<Self>) {
         self.clear_search();
         self.view = ViewMode::Directory;
         if path == self.cwd {
+            // Re-loading the same directory must not touch history.
+            self.history.apply(self.cwd.clone(), path, NavMode::Replace);
             self.reload(cx);
             return;
         }
@@ -1296,7 +1302,7 @@ impl Explorer {
             cx.notify();
             return;
         }
-        self.history.visit(self.cwd.clone(), path.clone());
+        self.history.apply(self.cwd.clone(), path.clone(), mode);
         self.set_cwd(path, cx);
     }
 
@@ -1305,7 +1311,10 @@ impl Explorer {
             self.exit_trash(cx);
             return;
         }
-        if let Some(target) = self.history.go_back(self.cwd.clone()) {
+        if let Some(target) = self
+            .history
+            .apply(self.cwd.clone(), PathBuf::new(), NavMode::Back)
+        {
             if target.is_dir() {
                 self.set_cwd(target, cx);
             } else {
@@ -1320,7 +1329,10 @@ impl Explorer {
             self.exit_trash(cx);
             return;
         }
-        if let Some(target) = self.history.go_forward(self.cwd.clone()) {
+        if let Some(target) = self
+            .history
+            .apply(self.cwd.clone(), PathBuf::new(), NavMode::Forward)
+        {
             if target.is_dir() {
                 self.set_cwd(target, cx);
             } else {
@@ -1337,7 +1349,7 @@ impl Explorer {
         }
         if let Some(parent) = parent_dir(&self.cwd) {
             if parent != self.cwd {
-                self.navigate_to(parent, cx);
+                self.navigate_with_mode(parent, NavMode::Up, cx);
             }
         }
     }
