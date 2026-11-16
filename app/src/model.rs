@@ -812,6 +812,20 @@ mod tests {
 
         let err = FsError::from_io(PathBuf::from("/tmp/x"), &Error::other("custom"));
         assert_eq!(err.kind, FsErrorKind::Unknown);
+
+        let err = FsError::from_io(
+            PathBuf::from("/tmp/x"),
+            &Error::from(ErrorKind::NotADirectory),
+        );
+        assert_eq!(err.kind, FsErrorKind::NotADirectory);
+        assert!(err.message_ja().contains("ディレクトリではありません"));
+
+        let err = FsError::from_io(
+            PathBuf::from("/tmp/x"),
+            &Error::from(ErrorKind::InvalidInput),
+        );
+        assert_eq!(err.kind, FsErrorKind::Io);
+        assert!(err.message_ja().contains("読み取れませんでした"));
     }
 
     #[test]
