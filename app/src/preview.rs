@@ -149,7 +149,7 @@ pub fn read_preview(path: &Path, max_bytes: u64) -> Result<Preview, String> {
     file.take(max_bytes)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("読み取りに失敗しました: {error}"))?;
-    if bytes.iter().take(8 * 1024).any(|byte| *byte == 0) {
+    if bytes.contains(&0) {
         return Err("バイナリファイルはプレビューできません".to_string());
     }
     Ok(Preview {
@@ -336,6 +336,17 @@ mod tests {
         let dir = scratch("binary");
         let path = dir.join("bin");
         fs::write(&path, b"abc\0def").unwrap();
+        assert!(read_preview(&path, MAX_PREVIEW_BYTES).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refuses_binary_with_nul_after_first_8kib() {
+        let dir = scratch("binary-late");
+        let path = dir.join("late.bin");
+        let mut bytes = vec![b'a'; 8 * 1024];
+        bytes.extend_from_slice(b"\0tail");
+        fs::write(&path, bytes).unwrap();
         assert!(read_preview(&path, MAX_PREVIEW_BYTES).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
