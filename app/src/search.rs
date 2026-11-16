@@ -285,11 +285,43 @@ impl Default for ContentSearchOptions {
 }
 
 /// Return the 1-based line number of the first line containing `needle`
-/// (case-insensitive), or `None` when the file has no match.
-fn first_matching_line(text: &str, needle: &str) -> Option<u32> {
-    text.lines()
-        .position(|line| line.to_lowercase().contains(needle))
-        .map(|index| (index + 1) as u32)
+/// (case-insensitive), or `None` when the file has no match or is binary.
+///
+/// Reads one line at a time so a match near the start avoids reading the
+/// whole file. A NUL byte anywhere in the read range marks the file as
+/// binary, and cancellation is checked between lines.
+fn first_matching_line_in_file(
+    path: &Path,
+    needle: &str,
+    max_bytes: u64,
+    cancel: &AtomicBool,
+) -> std::io::Result<Option<u32>> {
+    use std::io::{BufRead, BufReader, Read};
+
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::new(file.take(max_bytes));
+    let mut line = Vec::new();
+    let mut line_number = 0u32;
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        line_number += 1;
+        if line.contains(&0) {
+            return Ok(None); // binary file
+        }
+        if String::from_utf8_lossy(&line)
+            .to_lowercase()
+            .contains(needle)
+        {
+            return Ok(Some(line_number));
+        }
+    }
+    Ok(None)
 }
 
 /// Recursively search file **contents** for `query` (case-insensitive).
@@ -297,9 +329,10 @@ fn first_matching_line(text: &str, needle: &str) -> Option<u32> {
 /// Safety/conservatism:
 /// - symlinks are skipped entirely (no reading through links),
 /// - files larger than `max_file_size` are skipped,
-/// - files containing a NUL byte in the first 8 KiB are treated as binary,
+/// - files containing a NUL byte anywhere in the read range are binary,
 /// - hidden entries follow `include_hidden`, unreadable entries are skipped,
-/// - results and depth are capped, cancellation is checked per entry.
+/// - reads are streamed line-by-line with an early exit on the first match,
+/// - results and depth are capped; cancellation is checked per entry and line.
 pub fn search_contents(
     root: &Path,
     query: &str,
@@ -358,14 +391,9 @@ pub fn search_contents(
             if !link_metadata.is_file() || link_metadata.len() > options.max_file_size {
                 continue;
             }
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            if bytes.iter().take(8 * 1024).any(|byte| *byte == 0) {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&bytes);
-            if let Some(line) = first_matching_line(&text, &needle) {
+            if let Ok(Some(line)) =
+                first_matching_line_in_file(&path, &needle, options.max_file_size, cancel)
+            {
                 let mut entry = entry_for(&path, &name);
                 entry.match_line = Some(line);
                 matches.push(entry);
@@ -655,6 +683,23 @@ mod content_tests {
         let names: Vec<_> = found.iter().map(|entry| entry.name.clone()).collect();
         assert_eq!(names, vec!["ok.txt"]);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skips_binary_with_nul_after_first_8kib() {
+        let dir = scratch("binary-late");
+        let mut bytes = vec![b'a'; 8 * 1024];
+        bytes.extend_from_slice(b"\nTARGET\0tail");
+        write(&dir.join("late.bin"), &bytes);
+
+        let found = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions::default(),
+            &AtomicBool::new(false),
+        );
+        assert!(found.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
