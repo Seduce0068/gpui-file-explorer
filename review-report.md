@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T05:19:52+09:00
+verified: 2026-11-17T05:23:44+09:00
 status: complete
 ---
 
@@ -352,7 +352,9 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
   `stitched_shaders.metal` を生成できず失敗。当リポジトリのコードではなく
   上流のクロスビルド制約で、README の「macOS 実機ビルド未検証」と整合。
   `poc/` も Windows ターゲットで check 成功（2026-11-17T05:04+09:00）。
-  `app/` の非 Linux 警告は cfg gating で解消済み。
+  `app/` の非 Linux 警告は cfg gating で解消済み。Windows のテスト
+  バイナリは MSVC linker（`link.exe`）未導入のため link 不可
+  （2026-11-17T05:21+09:00、check レベルの検証は完了済み）。
   `aarch64-unknown-linux-gnu` は cross linker
   （aarch64-linux-gnu-gcc）未インストールのため check 不可
   （2026-11-17T05:08+09:00、環境制約でコード起因ではない）。
