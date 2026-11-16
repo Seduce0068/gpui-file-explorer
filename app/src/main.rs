@@ -5483,28 +5483,49 @@ impl Render for Explorer {
     }
 }
 
+/// What the command line asks the process to do before starting GPUI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CliAction {
+    Run,
+    Version,
+    Help,
+}
+
+/// Pure CLI classification, kept separate from `std::env` and stdout for tests.
+fn classify_cli(args: &[String]) -> CliAction {
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        CliAction::Version
+    } else if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        CliAction::Help
+    } else {
+        CliAction::Run
+    }
+}
+
 /// Handle `--version` / `--help` before starting GPUI.
 ///
 /// Returns `true` when the process should exit without opening a window.
 fn handle_cli() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
-        println!("gpui-file-explorer {}", env!("CARGO_PKG_VERSION"));
-        return true;
+    match classify_cli(&args) {
+        CliAction::Version => {
+            println!("gpui-file-explorer {}", env!("CARGO_PKG_VERSION"));
+            true
+        }
+        CliAction::Help => {
+            println!(
+                "gpui-file-explorer {}\n\n\
+                 使い方: gpui-file-explorer [ディレクトリ]\n\n\
+                 引数なしの場合は前回のディレクトリ（無ければ $HOME）を開きます。\n\
+                 主なキー: F2 名前変更 / Ctrl+C・Ctrl+X・Ctrl+V コピー・切り取り・貼り付け /\n\
+                 Ctrl+H 隠しファイル / Ctrl+Shift+N 新規フォルダ / Alt+←→ 戻る・進む / Esc キャンセル\n\n\
+                 ライセンス: AGPL-3.0-or-later",
+                env!("CARGO_PKG_VERSION")
+            );
+            true
+        }
+        CliAction::Run => false,
     }
-    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!(
-            "gpui-file-explorer {}\n\n\
-             使い方: gpui-file-explorer [ディレクトリ]\n\n\
-             引数なしの場合は前回のディレクトリ（無ければ $HOME）を開きます。\n\
-             主なキー: F2 名前変更 / Ctrl+C・Ctrl+X・Ctrl+V コピー・切り取り・貼り付け /\n\
-             Ctrl+H 隠しファイル / Ctrl+Shift+N 新規フォルダ / Alt+←→ 戻る・進む / Esc キャンセル\n\n\
-             ライセンス: AGPL-3.0-or-later",
-            env!("CARGO_PKG_VERSION")
-        );
-        return true;
-    }
-    false
 }
 
 /// First non-flag argument, treated as the initial directory.
@@ -5566,7 +5587,7 @@ fn main() {
 mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
-    use super::{summarize_op, Explorer};
+    use super::{classify_cli, summarize_op, CliAction, Explorer};
     use crate::ops::OpStats;
     use std::path::PathBuf;
 
@@ -5747,5 +5768,20 @@ mod tests {
         assert!(!ready.is_loading());
         assert_eq!(ready.error_message(), None);
         assert_eq!(ready.generation(), None);
+    }
+
+    #[test]
+    fn cli_classification_prefers_version_then_help() {
+        let args = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(classify_cli(&args(&[])), CliAction::Run);
+        assert_eq!(classify_cli(&args(&["/tmp/dir"])), CliAction::Run);
+        assert_eq!(classify_cli(&args(&["-h"])), CliAction::Help);
+        assert_eq!(classify_cli(&args(&["--help"])), CliAction::Help);
+        assert_eq!(classify_cli(&args(&["-V"])), CliAction::Version);
+        assert_eq!(classify_cli(&args(&["--version"])), CliAction::Version);
+        assert_eq!(
+            classify_cli(&args(&["--help", "--version"])),
+            CliAction::Version
+        );
     }
 }
