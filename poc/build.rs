@@ -16,10 +16,17 @@
 //! On hosts where the development package is installed the symlink is absent
 //! and this script does nothing.
 
+#![forbid(unsafe_code)]
+
 use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+
+    // The X11 link shim below is a Linux-only workaround.
+    if !cfg!(target_os = "linux") {
+        return;
+    }
 
     let manifest_dir = match std::env::var_os("CARGO_MANIFEST_DIR") {
         Some(dir) => PathBuf::from(dir),
