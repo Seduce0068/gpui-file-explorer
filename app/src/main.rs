@@ -5116,17 +5116,28 @@ impl Explorer {
                     .child("ゴミ箱（自動更新なし）")
                     .into_any_element()
             } else if self.watcher.is_supported() {
-                div()
-                    .text_color(rgb(C_MUTED))
-                    .child(format!(
-                        "監視: {} ディレクトリ",
-                        self.watcher.watched_paths().len()
-                    ))
-                    .into_any_element()
+                if let Some(reason) = self.watcher.last_error() {
+                    div()
+                        .text_color(rgb(C_YELLOW))
+                        .child(format!("監視: 一部無効 — {reason}"))
+                        .into_any_element()
+                } else {
+                    div()
+                        .text_color(rgb(C_MUTED))
+                        .child(format!(
+                            "監視: {} ディレクトリ",
+                            self.watcher.watched_paths().len()
+                        ))
+                        .into_any_element()
+                }
             } else {
+                let reason = self
+                    .watcher
+                    .last_error()
+                    .unwrap_or("監視の初期化に失敗しました");
                 div()
                     .text_color(rgb(C_YELLOW))
-                    .child("監視: 無効")
+                    .child(format!("監視: 無効 — {reason}"))
                     .into_any_element()
             });
         div()

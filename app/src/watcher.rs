@@ -106,7 +106,6 @@ impl DirWatcher {
         self.debouncer.is_some()
     }
 
-    #[allow(dead_code)]
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
