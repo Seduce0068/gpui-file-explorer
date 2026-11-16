@@ -22,7 +22,7 @@
 //! cut/copy/paste UI.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -556,8 +556,8 @@ pub fn move_entry(
             on_progress(0);
             Ok(stats)
         }
-        Err(err) if err.raw_os_error() == Some(18) => {
-            // EXDEV: cross-device link. Copy to the resolved destination first,
+        Err(err) if err.kind() == ErrorKind::CrossesDevices => {
+            // Cross-device link. Copy to the resolved destination first,
             // then delete the source only after a fully successful copy.
             let mut stats = OpStats::default();
             let progress: &mut dyn FnMut(u64) = &mut on_progress;
@@ -945,6 +945,15 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exdev_maps_to_crosses_devices() {
+        // EXDEV is 18 on Linux. The move fallback relies on std mapping it to
+        // ErrorKind::CrossesDevices instead of a hard-coded raw errno.
+        let err = std::io::Error::from_raw_os_error(18);
+        assert_eq!(err.kind(), std::io::ErrorKind::CrossesDevices);
     }
 }
 
