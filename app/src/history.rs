@@ -83,14 +83,10 @@ impl History {
         !self.forward.is_empty()
     }
 
-    #[allow(dead_code)]
+    /// Test-only inspection of the back stack length.
+    #[cfg(test)]
     pub fn back_len(&self) -> usize {
         self.back.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn forward_len(&self) -> usize {
-        self.forward.len()
     }
 }
 
