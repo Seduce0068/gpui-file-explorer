@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T04:23:44+09:00
+verified: 2026-11-17T04:36:10+09:00
 status: complete
 ---
 
@@ -352,6 +352,9 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
 - 同上の再計測（2026-11-17T04:10+09:00）: `model.rs` が
   287/301 → 290/301 に改善。残る未カバー行は errno のレア分岐
   と環境依存の I/O 経路のみ。
+- 同上の再計測（2026-11-17T04:29+09:00）: `model.rs` が
+  290/301 → 292/301（`parent_dir` の境界を追加カバー）。
+  `history.rs` 30/30、`tabs.rs` 56/56 は完全カバーを維持。
 - `bash scripts/check.sh`（audit 込みの完全ループ、
   2026-11-17T02:03+09:00）: **exit 0 / All checks passed**
   （app 150 tests / poc 4 tests / clippy 警告 0 /
