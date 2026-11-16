@@ -8,10 +8,69 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use notify_debouncer_full::notify::event::{EventKind, ModifyKind, RenameMode};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 
 type FileEventWatcher = Debouncer<RecommendedWatcher, RecommendedCache>;
+
+/// Normalized filesystem event, independent of `notify`'s event types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FsEvent {
+    Created(Vec<PathBuf>),
+    Removed(Vec<PathBuf>),
+    Modified(Vec<PathBuf>),
+    Renamed {
+        from: Option<PathBuf>,
+        to: Option<PathBuf>,
+    },
+    Rescan,
+}
+
+/// Convert a debouncer result into UI-facing events. Errors and unknown kinds
+/// become `Rescan` so the caller can safely fall back to a full reload.
+pub fn normalize_events(result: &DebounceEventResult) -> Vec<FsEvent> {
+    let Ok(events) = result else {
+        return vec![FsEvent::Rescan];
+    };
+    let mut out = Vec::new();
+    for debounced in events {
+        let event = &debounced.event;
+        let paths: Vec<PathBuf> = event
+            .paths
+            .iter()
+            .filter(|path| !path.as_os_str().is_empty())
+            .cloned()
+            .collect();
+        match event.kind {
+            EventKind::Create(_) if !paths.is_empty() => out.push(FsEvent::Created(paths)),
+            EventKind::Remove(_) if !paths.is_empty() => out.push(FsEvent::Removed(paths)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)) if paths.len() >= 2 => {
+                out.push(FsEvent::Renamed {
+                    from: Some(paths[0].clone()),
+                    to: Some(paths[1].clone()),
+                });
+            }
+            EventKind::Modify(ModifyKind::Name(RenameMode::From)) if !paths.is_empty() => {
+                out.push(FsEvent::Renamed {
+                    from: paths.first().cloned(),
+                    to: None,
+                });
+            }
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)) if !paths.is_empty() => {
+                out.push(FsEvent::Renamed {
+                    from: None,
+                    to: paths.first().cloned(),
+                });
+            }
+            EventKind::Modify(ModifyKind::Name(_)) => out.push(FsEvent::Rescan),
+            EventKind::Modify(_) if !paths.is_empty() => out.push(FsEvent::Modified(paths)),
+            EventKind::Access(_) => {}
+            _ => out.push(FsEvent::Rescan),
+        }
+    }
+    out
+}
 
 /// Debounce window for change events.
 pub const DEBOUNCE: Duration = Duration::from_millis(400);
@@ -25,13 +84,10 @@ pub struct DirWatcher {
 
 impl DirWatcher {
     /// Create the debounced watcher. `on_change` is called (from the watcher
-    /// thread) after every debounced batch of filesystem events.
-    pub fn new(on_change: impl Fn() + Send + 'static) -> Self {
+    /// thread) with normalized events after every debounced batch.
+    pub fn new(on_change: impl Fn(Vec<FsEvent>) + Send + 'static) -> Self {
         let debouncer = new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
-            // We do not need the individual paths: any event in the current
-            // directory (or its parent) triggers a refresh of the listing.
-            let _ = result;
-            on_change();
+            on_change(normalize_events(&result));
         })
         .ok();
         let last_error = if debouncer.is_some() {
@@ -102,7 +158,7 @@ impl Drop for DirWatcher {
 mod tests {
     // Explicit imports only: `use gpui_kit::*` in the crate root would shadow
     // the built-in `#[test]` attribute.
-    use super::DirWatcher;
+    use super::{normalize_events, DirWatcher, FsEvent};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::mpsc;
@@ -118,9 +174,9 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let (tx, rx) = mpsc::channel::<()>();
-        let mut watcher = DirWatcher::new(move || {
-            let _ = tx.send(());
+        let (tx, rx) = mpsc::channel::<Vec<FsEvent>>();
+        let mut watcher = DirWatcher::new(move |events| {
+            let _ = tx.send(events);
         });
         assert!(
             watcher.is_supported(),
@@ -130,10 +186,22 @@ mod tests {
         assert_eq!(watcher.watched_paths(), std::slice::from_ref(&dir));
 
         fs::write(dir.join("hello.txt"), b"hi").unwrap();
-        rx.recv_timeout(Duration::from_secs(5))
+        let events = rx
+            .recv_timeout(Duration::from_secs(5))
             .expect("watcher should report the new file");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, FsEvent::Created(_))),
+            "creation should be normalized to FsEvent::Created: {events:?}"
+        );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn watcher_errors_become_rescan() {
+        assert_eq!(normalize_events(&Err(vec![])), vec![FsEvent::Rescan]);
     }
 
     #[test]
@@ -141,7 +209,7 @@ mod tests {
         let dir = scratch("same");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let mut watcher = DirWatcher::new(|| {});
+        let mut watcher = DirWatcher::new(|_| {});
         watcher.watch(std::slice::from_ref(&dir));
         watcher.watch(std::slice::from_ref(&dir));
         assert_eq!(watcher.watched_paths(), std::slice::from_ref(&dir));

@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::model::{is_hidden_name, Entry};
+use crate::model::{entry_for_path, is_hidden_name, Entry};
 
 /// Kind filter applied to search results without re-running the search.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -78,31 +78,6 @@ impl Default for SearchOptions {
     }
 }
 
-fn entry_for(path: &Path, name: &str) -> Entry {
-    let link_metadata = std::fs::symlink_metadata(path).ok();
-    let is_symlink = link_metadata
-        .as_ref()
-        .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(false);
-    let metadata = std::fs::metadata(path).ok().or(link_metadata);
-    let is_dir = metadata
-        .as_ref()
-        .map(|metadata| metadata.is_dir())
-        .unwrap_or(false);
-    Entry {
-        name: name.to_string(),
-        path: path.to_path_buf(),
-        is_dir,
-        is_symlink,
-        size: metadata
-            .as_ref()
-            .map(|metadata| metadata.len())
-            .unwrap_or(0),
-        modified: metadata.and_then(|metadata| metadata.modified().ok()),
-        match_line: None,
-    }
-}
-
 /// Search `root` recursively for entries whose file name contains `query`
 /// (case-insensitive). Returns matching entries sorted by path.
 pub fn search_by_name(
@@ -151,9 +126,11 @@ pub fn search_by_name(
                 .map(|metadata| metadata.is_dir())
                 .unwrap_or(false);
             if name.to_lowercase().contains(&needle) {
-                matches.push(entry_for(&path, &name));
-                if matches.len() >= options.max_results {
-                    break;
+                if let Some(entry) = entry_for_path(&path) {
+                    matches.push(entry);
+                    if matches.len() >= options.max_results {
+                        break;
+                    }
                 }
             }
             if is_dir_without_following && depth < options.max_depth {
@@ -394,11 +371,12 @@ pub fn search_contents(
             if let Ok(Some(line)) =
                 first_matching_line_in_file(&path, &needle, options.max_file_size, cancel)
             {
-                let mut entry = entry_for(&path, &name);
-                entry.match_line = Some(line);
-                matches.push(entry);
-                if matches.len() >= options.max_results {
-                    break;
+                if let Some(mut entry) = entry_for_path(&path) {
+                    entry.match_line = Some(line);
+                    matches.push(entry);
+                    if matches.len() >= options.max_results {
+                        break;
+                    }
                 }
             }
         }
