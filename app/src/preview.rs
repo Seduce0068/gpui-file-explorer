@@ -304,6 +304,8 @@ mod image_tests {
         assert!(
             read_image_preview(&dir.join("nope.png"), ImageFormat::Png, MAX_IMAGE_BYTES).is_err()
         );
+        let error = read_image_preview(&dir, ImageFormat::Png, MAX_IMAGE_BYTES).unwrap_err();
+        assert_eq!(error, "ファイルではありません");
         let _ = fs::remove_dir_all(&dir);
     }
 }
