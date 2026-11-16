@@ -725,8 +725,9 @@ mod tests {
     use super::{
         breadcrumb_segments, clamp_index, compare_names, create_unique_folder, display_path,
         fingerprint, first_index, human_age, human_datetime, human_size, is_hidden_name,
-        kind_label, last_index, read_entries, sort_entries, step_selection, unique_child_name,
-        visible_entries, Entry, FsError, FsErrorKind, SortDir, SortKey, SortOrder, SortSpec,
+        kind_label, last_index, parent_dir, read_entries, sort_entries, step_selection,
+        unique_child_name, visible_entries, Entry, FsError, FsErrorKind, SortDir, SortKey,
+        SortOrder, SortSpec,
     };
     use std::ffi::OsString;
     use std::fs;
@@ -1064,6 +1065,14 @@ mod tests {
         pre_epoch[0].modified = Some(UNIX_EPOCH - Duration::from_secs(1));
         // Pre-epoch timestamps hash as None without panicking.
         let _ = fingerprint(&pre_epoch);
+    }
+
+    #[test]
+    fn parent_dir_handles_root_and_relative_paths() {
+        assert_eq!(parent_dir(Path::new("/")), None);
+        assert_eq!(parent_dir(Path::new("/a")), Some(PathBuf::from("/")));
+        assert_eq!(parent_dir(Path::new("/a/b")), Some(PathBuf::from("/a")));
+        assert_eq!(parent_dir(Path::new("a")), Some(PathBuf::from("")));
     }
 
     #[test]
