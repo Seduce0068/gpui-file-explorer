@@ -184,6 +184,23 @@ mod tests {
     }
 
     #[test]
+    fn push_undo_after_redo_is_also_bounded() {
+        let mut stack = UndoStack::new();
+        for index in 0..(MAX_UNDO + 3) {
+            stack.push_undo(rename(&format!("/a-{index}"), &format!("/b-{index}")));
+        }
+        assert_eq!(stack.undo_len(), MAX_UNDO);
+        let newest = stack.pop_undo().unwrap();
+        assert_eq!(
+            newest,
+            rename(
+                &format!("/a-{}", MAX_UNDO + 2),
+                &format!("/b-{}", MAX_UNDO + 2)
+            )
+        );
+    }
+
+    #[test]
     fn trash_action_reports_item_count() {
         let action = UndoAction::Trash {
             items: vec![
