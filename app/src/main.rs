@@ -5605,12 +5605,41 @@ fn main() {
 mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
-    use super::{classify_cli, format_selected, summarize_op, CliAction, Explorer};
+    use super::{
+        classify_cli, format_selected, kind_color, summarize_op, tab_label, CliAction, Explorer,
+    };
+    use crate::icons::FileKind;
     use crate::model::Entry;
     use crate::ops::OpStats;
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
+
+    #[test]
+    fn kind_colors_are_distinct_per_file_kind() {
+        use std::collections::HashSet;
+        let kinds = [
+            FileKind::Folder,
+            FileKind::Image,
+            FileKind::Code,
+            FileKind::Archive,
+            FileKind::Pdf,
+            FileKind::Text,
+            FileKind::Audio,
+            FileKind::Video,
+            FileKind::Unknown,
+        ];
+        let colors: HashSet<u32> = kinds.iter().map(|kind| kind_color(*kind)).collect();
+        assert_eq!(colors.len(), kinds.len(), "each kind needs its own color");
+    }
+
+    #[test]
+    fn tab_label_uses_last_component_or_root() {
+        use std::path::Path;
+        assert_eq!(tab_label(Path::new("/")), "ルート");
+        assert_eq!(tab_label(Path::new("/home/koppe")), "koppe");
+        assert_eq!(tab_label(Path::new("relative/dir")), "dir");
+    }
 
     #[test]
     fn format_selected_covers_dirs_and_files() {
