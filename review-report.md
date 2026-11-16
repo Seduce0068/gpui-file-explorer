@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T07:29:56+09:00
+verified: 2026-11-17T07:32:11+09:00
 status: complete
 ---
 
@@ -222,7 +222,7 @@ status: complete
   `sync_all()` を追加して解消済み。ディレクトリの fsync は
   未実施で、README の既知の制限も更新した。
 - `settings.rs:45-62`: 永続設定と実行時状態（tabs / recent_searches /
-  bookmarks）が同居。Phase2 で分離する。
+  bookmarks）が同居。設計判断のため現状維持（分離は将来課題）。
 - `ops.rs:317-332`: 非 Unix で symlink コピーが Unsupported。
   Windows の `symlink_file` / `symlink_dir` 対応が必要。
 - `ops.rs:559`: EXDEV 判定が `raw_os_error() == Some(18)` に依存していた。
