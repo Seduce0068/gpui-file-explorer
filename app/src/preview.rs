@@ -112,7 +112,18 @@ pub fn read_image_preview(
             crate::model::human_size(max_bytes)
         ));
     }
-    let bytes = std::fs::read(path).map_err(|error| format!("読み取りに失敗しました: {error}"))?;
+    // `metadata.len()` can lie on pseudo filesystems; cap the actual read too.
+    let file = std::fs::File::open(path).map_err(|error| format!("開けません: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("読み取りに失敗しました: {error}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "画像が大きすぎます（上限 {}）",
+            crate::model::human_size(max_bytes)
+        ));
+    }
     match sniff_image_format(&bytes) {
         // Trust the content over the extension when they disagree.
         Some(format) => Ok(ImageBytes { format, bytes }),
@@ -266,6 +277,16 @@ mod image_tests {
         bytes.extend(std::iter::repeat_n(0u8, 56));
         fs::write(&big, bytes).unwrap();
         assert!(read_image_preview(&big, ImageFormat::Png, 8).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_image_at_exact_limit() {
+        let dir = scratch("exact-limit");
+        let path = dir.join("exact.png");
+        fs::write(&path, PNG_HEADER).unwrap(); // exactly 8 bytes
+        let read = read_image_preview(&path, ImageFormat::Png, 8).unwrap();
+        assert_eq!(read.bytes.len(), 8);
         let _ = fs::remove_dir_all(&dir);
     }
 
