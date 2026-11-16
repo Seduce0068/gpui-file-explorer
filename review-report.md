@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T04:58:21+09:00
+verified: 2026-11-17T05:07:04+09:00
 status: complete
 ---
 
@@ -344,6 +344,8 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
   `aarch64-apple-darwin` は上流 `gpui-pre-apple` のビルドスクリプトが
   `stitched_shaders.metal` を生成できず失敗。当リポジトリのコードではなく
   上流のクロスビルド制約で、README の「macOS 実機ビルド未検証」と整合。
+  `poc/` も Windows ターゲットで check 成功（2026-11-17T05:04+09:00）。
+  `app/` の非 Linux 警告は cfg gating で解消済み。
 - `cargo tarpaulin --locked --out Stdout --exclude-files 'target/*'`
   （2026-11-17T03:05+09:00）: データ層のカバレッジを改善。
   `model.rs` 270/301 → 287/301、`ops.rs` 212/284 → 222/284、
