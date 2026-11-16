@@ -90,11 +90,11 @@ fn kind_color(kind: FileKind) -> u32 {
 /// Expression in the status bar (relaxed English/Japanese)
 fn format_selected(entry: &Entry) -> String {
     if entry.is_dir {
-        format!("{}（フォルダ）", entry.name)
+        format!("{}（フォルダ）", entry.name_text)
     } else {
         format!(
             "{}（{} / {}）",
-            entry.name,
+            entry.name_text,
             human_size(entry.size),
             human_age(entry.modified)
         )
@@ -131,7 +131,7 @@ fn display_name_for(
         }
         return entry.path.display().to_string();
     }
-    entry.name.clone()
+    entry.name_text.clone()
 }
 
 /// Label for a tab: the directory's last component, or "ルート" for `/`.
@@ -2272,7 +2272,7 @@ impl Explorer {
             }
             _ => {
                 let from = entry.path.clone();
-                let name = format!("{}.renamed-by-debug", entry.name);
+                let name = format!("{}.renamed-by-debug", entry.name_text);
                 match ops::rename_entry(&from, &name) {
                     Ok(to) => {
                         eprintln!(
@@ -2566,7 +2566,7 @@ impl Explorer {
             return;
         }
         let path = entry.path.clone();
-        let title = entry.name.clone();
+        let title = entry.name_text.clone();
         self.open_preview(path, title, cx);
     }
 
@@ -3248,7 +3248,7 @@ impl Explorer {
             return;
         };
         let target = entry.path.clone();
-        let original = entry.name.clone();
+        let original = entry.name_text.clone();
         let input = cx.new(|cx| InputState::new(window, cx).default_value(original.clone()));
         let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
@@ -5039,7 +5039,7 @@ impl Explorer {
                             {
                                 format!(
                                     "選択: {}（削除: {}）",
-                                    entry.name,
+                                    entry.name_text,
                                     human_datetime(entry.modified)
                                 )
                             }
@@ -5295,7 +5295,7 @@ impl Explorer {
                 let target = self.debug.drop_target.take().and_then(|name| {
                     self.entries
                         .iter()
-                        .find(|entry| entry.name == name && entry.is_dir)
+                        .find(|entry| entry.name_text == name && entry.is_dir)
                         .map(|entry| entry.path.clone())
                 });
                 match target {
@@ -5386,7 +5386,7 @@ impl Explorer {
                 .find(|entry| !entry.is_dir && !entry.is_symlink)
             {
                 let path = entry.path.clone();
-                let title = entry.name.clone();
+                let title = entry.name_text.clone();
                 self.open_preview(path, title, cx);
             }
         }
@@ -5666,13 +5666,15 @@ mod tests {
     fn display_name_for_search_prefers_matching_roots_then_full_path() {
         use super::{display_name_for, ViewSource};
         use crate::model::Entry;
+        use std::ffi::OsString;
 
         let cwd = PathBuf::from("/work/project");
         let other_root = PathBuf::from("/data/shared");
         let roots = vec![cwd.clone(), other_root.clone()];
 
         let in_cwd = Entry {
-            name: "main.rs".to_string(),
+            name: OsString::from("main.rs"),
+            name_text: "main.rs".to_string(),
             path: PathBuf::from("/work/project/src/main.rs"),
             is_dir: false,
             is_symlink: false,
@@ -5686,7 +5688,8 @@ mod tests {
         );
 
         let in_other_root = Entry {
-            name: "notes.txt".to_string(),
+            name: OsString::from("notes.txt"),
+            name_text: "notes.txt".to_string(),
             path: PathBuf::from("/data/shared/docs/notes.txt"),
             is_dir: false,
             is_symlink: false,
@@ -5700,7 +5703,8 @@ mod tests {
         );
 
         let outside = Entry {
-            name: "outside.txt".to_string(),
+            name: OsString::from("outside.txt"),
+            name_text: "outside.txt".to_string(),
             path: PathBuf::from("/elsewhere/outside.txt"),
             is_dir: false,
             is_symlink: false,
