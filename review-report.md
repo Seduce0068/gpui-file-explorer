@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T05:09:05+09:00
+verified: 2026-11-17T05:17:43+09:00
 status: complete
 ---
 
@@ -339,6 +339,10 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
   -D clippy::undocumented_unsafe_blocks`（2026-11-17T03:11+09:00）:
   警告なし。`app/src/main.rs` と `app/build.rs` に
   `#![forbid(unsafe_code)]` を確認（AGENTS.md §15 の unsafe 禁止を具現化）。
+- 初期の独立検証（`notes/verify-report.md`）の major 3 件も再確認
+  （2026-11-17T05:16+09:00）: render パスに同期 I/O なし、選択は
+  `Selection`（PathBuf キー）で行 index 競合を回避、起動・ナビゲーション
+  以外の UI スレッド I/O なし。すべて解消済み。
 - クロスコンパイル（2026-11-17T04:56+09:00）:
   `x86_64-pc-windows-msvc` は check 成功（Windows の rename 仕様差も修正済み）。
   `aarch64-apple-darwin` は上流 `gpui-pre-apple` のビルドスクリプトが
