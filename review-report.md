@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T06:59:42+09:00
+verified: 2026-11-17T07:01:49+09:00
 status: complete
 ---
 
@@ -350,6 +350,12 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
   stderr / stdout とも空（panic / EGL / Vulkan エラーなし = AC-3）、
   SIGTERM でプロセス残存なし（AC-13）。KWin D-Bus の
   `WindowsRunner.Match` は当環境で interface 不明のため照合不可。
+  AC-4 の再計測も試行（2026-11-17T07:00+09:00）: KWin D-Bus の
+  interface/method を introspect したが、`getWindowInfo` はウィンドウ ID
+  引数が必要、`queryWindowInfo` は対話的キャンセルが必要、
+  `xwininfo -root -tree` にも Wayland ネイティブウィンドウは現れない。
+  再計測不可のため 2026-11-11 の `resourceClass=gpui-file-explorer`
+  確認記録を維持。
 - 初期の独立検証（`notes/verify-report.md`）の major 3 件も再確認
   （2026-11-17T05:16+09:00）: render パスに同期 I/O なし、選択は
   `Selection`（PathBuf キー）で行 index 競合を回避、起動・ナビゲーション
