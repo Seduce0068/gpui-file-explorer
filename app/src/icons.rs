@@ -111,7 +111,6 @@ mod tests {
             is_symlink,
             size: 0,
             modified: Some(SystemTime::UNIX_EPOCH),
-            match_line: None,
         }
     }
 
