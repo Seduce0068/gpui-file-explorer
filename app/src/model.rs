@@ -1013,6 +1013,20 @@ mod tests {
     }
 
     #[test]
+    fn human_age_covers_all_relative_units() {
+        let now = SystemTime::now();
+        let future = now + Duration::from_secs(3600);
+        assert_eq!(human_age(Some(future)), "未来");
+        assert_eq!(human_age(Some(now - Duration::from_secs(120))), "2分前");
+        assert_eq!(human_age(Some(now - Duration::from_secs(7200))), "2時間前");
+        assert_eq!(human_age(Some(now - Duration::from_secs(172_800))), "2日前");
+        assert_eq!(
+            human_age(Some(now - Duration::from_secs(86_400 * 730))),
+            "2年前"
+        );
+    }
+
+    #[test]
     fn fingerprint_changes_with_content() {
         let base = vec![entry("a", false, 1, 10), entry("b", true, 0, 20)];
         let same = vec![entry("a", false, 1, 10), entry("b", true, 0, 20)];
