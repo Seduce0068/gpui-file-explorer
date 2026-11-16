@@ -254,6 +254,46 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_remove_modify_and_access_events() {
+        use notify_debouncer_full::notify::event::{
+            AccessKind, DataChange, Event, EventKind, MetadataKind, ModifyKind, RemoveKind,
+        };
+        use notify_debouncer_full::DebouncedEvent;
+        use std::time::Instant;
+
+        let path = PathBuf::from("/tmp/changed.txt");
+        let debounced = |kind| DebouncedEvent {
+            event: Event {
+                kind,
+                paths: vec![path.clone()],
+                attrs: Default::default(),
+            },
+            time: Instant::now(),
+        };
+
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(EventKind::Remove(RemoveKind::Any))])),
+            vec![FsEvent::Removed(vec![path.clone()])]
+        );
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(EventKind::Modify(ModifyKind::Data(
+                DataChange::Any
+            )))])),
+            vec![FsEvent::Modified(vec![path.clone()])]
+        );
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(EventKind::Modify(
+                ModifyKind::Metadata(MetadataKind::Any)
+            ))])),
+            vec![FsEvent::Modified(vec![path.clone()])]
+        );
+        assert!(
+            normalize_events(&Ok(vec![debounced(EventKind::Access(AccessKind::Any))])).is_empty(),
+            "access events must be ignored"
+        );
+    }
+
+    #[test]
     fn rewatching_same_set_is_a_noop() {
         let dir = scratch("same");
         let _ = fs::remove_dir_all(&dir);
