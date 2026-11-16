@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Minimal GPUI file explorer PoC.
 //!
 //! Stack: gpui-kit 0.9.1 (facade over gpui-pre 0.3.12 = Zed gpui snapshot
