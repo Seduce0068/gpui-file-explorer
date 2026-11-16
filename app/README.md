@@ -437,10 +437,16 @@ bash packaging/linux/build-deb.sh
 - ドラッグ&ドロップの**実操作 E2E は未検証**です（Wayland への合成入力ツールが無いため）。
   ドロップ受信パイプラインは `GPUI_FE_DEBUG_DROP_PATH` / `GPUI_FE_DEBUG_DROP_TARGET` で検証済み
   （カレント/フォルダ指定コピー・選択・再読込）。
+  デバッグ用フックは `#[cfg(debug_assertions)]` で**無効化していません**。
+  本機に合成入力ツールが無いため release ビルドのスクリーンショット検証でも
+  同じフックが必要なためです。環境変数を設定しなければ発火しません。
 - クロスプラットフォーム設計ですが、Windows/macOS でのビルド・実行は未検証です。
 - **ブラウザ（wasm）では動作しません**。GPUI の Web バックエンド自体は存在しますが、
   本アプリは `std::fs` / `notify` / `trash` / OS ダイアログに依存しています。
-  調査と移植案は [../notes/wasm-browser-notes.md](../notes/wasm-browser-notes.md) を参照。
+  日時表示とバックアップファイル名に使う `chrono = "0.4"` も wasm 対応時には
+  `js-sys` ベースの時刻取得への差し替えが必要です（現状は `Local` /
+  `Utc::now()` を使用）。調査と移植案は
+  [../notes/wasm-browser-notes.md](../notes/wasm-browser-notes.md) を参照。
 
 ## 設計（DESIGN.md）からの差分
 
