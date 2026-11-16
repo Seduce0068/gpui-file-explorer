@@ -148,9 +148,29 @@ impl Settings {
             let _ = std::fs::rename(path, backup);
             return Self::default();
         };
-        settings.version = SCHEMA_VERSION; // future migration hook
+        let loaded_version = settings.version;
+        settings.migrate(loaded_version);
         settings.validate();
         settings
+    }
+
+    /// Convert a deserialized settings file to the current schema.
+    ///
+    /// `SCHEMA_VERSION` is 1 today. When version 2 is introduced, add a
+    /// `2 => { ... }` arm that rewrites the old representation before the
+    /// common `version` normalization below. A missing `version` field
+    /// deserializes to 0 and is treated as v1 for backward compatibility.
+    fn migrate(&mut self, loaded_version: u32) {
+        match loaded_version {
+            0 | 1 => {}
+            future => {
+                eprintln!(
+                    "gpui-file-explorer: settings schema v{future} is not \
+                     supported; loading it as v{SCHEMA_VERSION}"
+                );
+            }
+        }
+        self.version = SCHEMA_VERSION;
     }
 
     /// Drop a remembered directory that no longer exists.
@@ -162,11 +182,16 @@ impl Settings {
         }
     }
 
-    /// Persist to the platform config path. Errors are ignored: settings are
-    /// best-effort and must never break the UI.
+    /// Persist to the platform config path. Failure is reported on stderr
+    /// (journald on Linux) but never breaks the UI: settings are best-effort.
     pub fn save(&self) {
         if let Some(path) = Self::config_path() {
-            let _ = self.save_to(&path);
+            if let Err(error) = self.save_to(&path) {
+                eprintln!(
+                    "gpui-file-explorer: failed to save settings to {}: {error}",
+                    path.display()
+                );
+            }
         }
     }
 
@@ -306,6 +331,52 @@ mod tests {
         assert_eq!(loaded.sort.dir, SortDir::Asc);
         assert_eq!(loaded.version, SCHEMA_VERSION);
         assert_eq!(loaded.view, ViewMode::Details);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn migration_keeps_v1_values() {
+        let dir = scratch("migrate-v1");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            br#"{ "version": 1, "show_hidden": true, "view": "icons" }"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.version, SCHEMA_VERSION);
+        assert!(loaded.show_hidden);
+        assert_eq!(loaded.view, ViewMode::Icons);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn migration_treats_missing_version_as_v1() {
+        let mut settings = Settings {
+            version: 0,
+            ..Settings::default()
+        };
+        settings.migrate(0);
+        assert_eq!(settings.version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_normalizes_future_version_without_dropping_values() {
+        let dir = scratch("migrate-future");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            br#"{ "version": 42, "view": "icons", "show_hidden": true }"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.version, SCHEMA_VERSION);
+        assert_eq!(loaded.view, ViewMode::Icons);
+        assert!(loaded.show_hidden);
         fs::remove_dir_all(&dir).unwrap();
     }
 
