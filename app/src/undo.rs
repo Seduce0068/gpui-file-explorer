@@ -142,11 +142,15 @@ mod tests {
         stack.push(rename("/b", "/c"));
         assert!(stack.can_undo());
         assert!(!stack.can_redo());
+        assert_eq!(stack.undo_len(), 2);
+        assert_eq!(stack.redo_len(), 0);
 
         let action = stack.pop_undo().expect("undo");
         assert_eq!(action, rename("/b", "/c"));
         stack.push_redo(action);
         assert!(stack.can_redo());
+        assert_eq!(stack.undo_len(), 1);
+        assert_eq!(stack.redo_len(), 1);
 
         let redone = stack.pop_redo().expect("redo");
         assert_eq!(redone, rename("/b", "/c"));
