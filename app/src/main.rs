@@ -5675,6 +5675,7 @@ mod tests {
         let in_cwd = Entry {
             name: OsString::from("main.rs"),
             name_text: "main.rs".to_string(),
+            sort_key: "main.rs".to_lowercase(),
             path: PathBuf::from("/work/project/src/main.rs"),
             is_dir: false,
             is_symlink: false,
@@ -5690,6 +5691,7 @@ mod tests {
         let in_other_root = Entry {
             name: OsString::from("notes.txt"),
             name_text: "notes.txt".to_string(),
+            sort_key: "notes.txt".to_lowercase(),
             path: PathBuf::from("/data/shared/docs/notes.txt"),
             is_dir: false,
             is_symlink: false,
@@ -5705,6 +5707,7 @@ mod tests {
         let outside = Entry {
             name: OsString::from("outside.txt"),
             name_text: "outside.txt".to_string(),
+            sort_key: "outside.txt".to_lowercase(),
             path: PathBuf::from("/elsewhere/outside.txt"),
             is_dir: false,
             is_symlink: false,

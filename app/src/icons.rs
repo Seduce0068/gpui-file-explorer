@@ -105,6 +105,7 @@ mod tests {
         Entry {
             name: OsString::from(name),
             name_text: name.to_string(),
+            sort_key: name.to_lowercase(),
             path: PathBuf::from("/tmp").join(name),
             is_dir,
             is_symlink,
