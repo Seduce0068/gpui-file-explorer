@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T04:36:10+09:00
+verified: 2026-11-17T04:42:26+09:00
 status: complete
 ---
 
@@ -366,6 +366,9 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
   **132 passed / 0 failed / 0 ignored**
 - `cargo audit`（`app/`、同日時）: **exit 0**、
   「warning: 8 allowed warnings found」（unmaintained のみ）
+- 2026-11-17T04:40+09:00 の完全ループで RustSec DB の fetch が
+  ネットワークエラーで失敗したが、`cargo audit -n`（ローカル DB）
+  では exit 0。コード起因ではなく外部ネットワークの一時的障害。
 - `gh api repos/Seduce0068/workflows/contents/.github/workflows/rust-gates.yml?ref=v1`
   （2026-11-16T22:55+09:00）: exit 0、本文 162 行を取得。
   監査ステップは `run: cargo audit`（152-155 行）で、
