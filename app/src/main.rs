@@ -471,6 +471,8 @@ struct Explorer {
     trash_items: Vec<trash::TrashItem>,
     /// Recursive search state (active only while `view == Search`).
     search: SearchState,
+    /// Content-search line numbers keyed by path (display concern, not Entry).
+    search_lines: std::collections::HashMap<PathBuf, u32>,
     history: History,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
@@ -594,6 +596,7 @@ impl Explorer {
             view: ViewSource::Directory,
             trash_items: Vec::new(),
             search: SearchState::default(),
+            search_lines: std::collections::HashMap::new(),
             history,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
@@ -3756,7 +3759,15 @@ impl Explorer {
                 this.loading = false;
                 this.search.task = None;
                 this.search.cancel = None;
-                this.all_entries = entries;
+                this.search_lines = entries
+                    .iter()
+                    .filter_map(|result| {
+                        result
+                            .match_line
+                            .map(|line| (result.entry.path.clone(), line))
+                    })
+                    .collect();
+                this.all_entries = entries.into_iter().map(|result| result.entry).collect();
                 this.apply_search_filter(cx);
                 this.settings.record_search(&this.search.query);
                 if !this.debug.ephemeral {
@@ -3833,6 +3844,7 @@ impl Explorer {
         self.search.query.clear();
         self.search.active_roots.clear();
         self.search.fell_back_to_cwd = false;
+        self.search_lines.clear();
     }
 
     fn close_search(&mut self, cx: &mut Context<Self>) {
@@ -4329,7 +4341,7 @@ impl Explorer {
         let entry = this.entries.get(index).cloned()?;
         let display_name =
             display_name_for(&entry, this.view, &this.cwd, &this.search.active_roots);
-        let display_name = match entry.match_line {
+        let display_name = match this.search_lines.get(&entry.path) {
             Some(line) if this.view == ViewSource::Search => format!("{display_name}:{line}"),
             _ => display_name,
         };
@@ -4525,7 +4537,7 @@ impl Explorer {
         let entry = this.entries.get(index).cloned()?;
         let display_name =
             display_name_for(&entry, this.view, &this.cwd, &this.search.active_roots);
-        let display_name = match entry.match_line {
+        let display_name = match this.search_lines.get(&entry.path) {
             Some(line) if this.view == ViewSource::Search => format!("{display_name}:{line}"),
             _ => display_name,
         };
@@ -5681,7 +5693,6 @@ mod tests {
             is_symlink: false,
             size: 1,
             modified: None,
-            match_line: None,
         };
         assert_eq!(
             display_name_for(&in_cwd, ViewSource::Search, &cwd, &roots),
@@ -5697,7 +5708,6 @@ mod tests {
             is_symlink: false,
             size: 1,
             modified: None,
-            match_line: None,
         };
         assert_eq!(
             display_name_for(&in_other_root, ViewSource::Search, &cwd, &roots),
@@ -5713,7 +5723,6 @@ mod tests {
             is_symlink: false,
             size: 1,
             modified: None,
-            match_line: None,
         };
         assert_eq!(
             display_name_for(&outside, ViewSource::Search, &cwd, &roots),

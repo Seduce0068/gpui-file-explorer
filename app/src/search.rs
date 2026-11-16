@@ -78,6 +78,15 @@ impl Default for SearchOptions {
     }
 }
 
+/// A search hit with its optional content-match line number. Kept separate
+/// from [`Entry`] so the filesystem model does not carry a view-only concern.
+#[derive(Clone, Debug)]
+pub struct SearchResult {
+    pub entry: Entry,
+    /// 1-based line number of the first content match (content search only).
+    pub match_line: Option<u32>,
+}
+
 /// Search `root` recursively for entries whose file name contains `query`
 /// (case-insensitive). Returns matching entries sorted by path.
 pub fn search_by_name(
@@ -85,13 +94,13 @@ pub fn search_by_name(
     query: &str,
     options: SearchOptions,
     cancel: &AtomicBool,
-) -> Vec<Entry> {
+) -> Vec<SearchResult> {
     let needle = query.to_lowercase();
     if needle.is_empty() {
         return Vec::new();
     }
 
-    let mut matches: Vec<Entry> = Vec::new();
+    let mut matches: Vec<SearchResult> = Vec::new();
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
 
     while let Some((dir, depth)) = stack.pop() {
@@ -127,7 +136,10 @@ pub fn search_by_name(
                 .unwrap_or(false);
             if name.to_lowercase().contains(&needle) {
                 if let Some(entry) = entry_for_path(&path) {
-                    matches.push(entry);
+                    matches.push(SearchResult {
+                        entry,
+                        match_line: None,
+                    });
                     if matches.len() >= options.max_results {
                         break;
                     }
@@ -139,7 +151,7 @@ pub fn search_by_name(
         }
     }
 
-    matches.sort_by(|left, right| left.path.cmp(&right.path));
+    matches.sort_by(|left, right| left.entry.path.cmp(&right.entry.path));
     matches
 }
 
@@ -222,21 +234,24 @@ pub fn search_roots(
 
 /// Merge per-root search results into one list, de-duplicated by path and
 /// capped globally. Input batches are assumed to be sorted by path.
-pub fn merge_search_results(batches: Vec<Vec<Entry>>, max_total: usize) -> Vec<Entry> {
+pub fn merge_search_results(
+    batches: Vec<Vec<SearchResult>>,
+    max_total: usize,
+) -> Vec<SearchResult> {
     use std::collections::HashSet;
     let mut seen = HashSet::new();
     let mut merged = Vec::new();
     for batch in batches {
-        for entry in batch {
+        for result in batch {
             if merged.len() >= max_total {
                 return merged;
             }
-            if seen.insert(entry.path.clone()) {
-                merged.push(entry);
+            if seen.insert(result.entry.path.clone()) {
+                merged.push(result);
             }
         }
     }
-    merged.sort_by(|left, right| left.path.cmp(&right.path));
+    merged.sort_by(|left, right| left.entry.path.cmp(&right.entry.path));
     merged
 }
 
@@ -315,13 +330,13 @@ pub fn search_contents(
     query: &str,
     options: ContentSearchOptions,
     cancel: &AtomicBool,
-) -> Vec<Entry> {
+) -> Vec<SearchResult> {
     let needle = query.to_lowercase();
     if needle.is_empty() {
         return Vec::new();
     }
 
-    let mut matches: Vec<Entry> = Vec::new();
+    let mut matches: Vec<SearchResult> = Vec::new();
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
 
     while let Some((dir, depth)) = stack.pop() {
@@ -371,9 +386,11 @@ pub fn search_contents(
             if let Ok(Some(line)) =
                 first_matching_line_in_file(&path, &needle, options.max_file_size, cancel)
             {
-                if let Some(mut entry) = entry_for_path(&path) {
-                    entry.match_line = Some(line);
-                    matches.push(entry);
+                if let Some(entry) = entry_for_path(&path) {
+                    matches.push(SearchResult {
+                        entry,
+                        match_line: Some(line),
+                    });
                     if matches.len() >= options.max_results {
                         break;
                     }
@@ -382,7 +399,7 @@ pub fn search_contents(
         }
     }
 
-    matches.sort_by(|left, right| left.path.cmp(&right.path));
+    matches.sort_by(|left, right| left.entry.path.cmp(&right.entry.path));
     matches
 }
 
@@ -413,10 +430,10 @@ mod tests {
         fs::write(path, b"x").unwrap();
     }
 
-    fn names(entries: &[Entry]) -> Vec<String> {
-        entries
+    fn names(results: &[SearchResult]) -> Vec<String> {
+        results
             .iter()
-            .map(|entry| entry.name_text.clone())
+            .map(|result| result.entry.name_text.clone())
             .collect()
     }
 
@@ -434,7 +451,7 @@ mod tests {
             &AtomicBool::new(false),
         );
         assert_eq!(names(&found), vec!["Alpha.txt", "beta.TXT"]);
-        assert!(found.iter().all(|entry| !entry.is_dir));
+        assert!(found.iter().all(|result| !result.entry.is_dir));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -542,7 +559,6 @@ mod filter_tests {
             is_symlink: false,
             size: 0,
             modified: None,
-            match_line: None,
         }
     }
 
@@ -647,7 +663,7 @@ mod content_tests {
             ContentSearchOptions::default(),
             &AtomicBool::new(false),
         );
-        let names: Vec<_> = found.iter().map(|entry| entry.name_text.clone()).collect();
+        let names: Vec<_> = found.iter().map(|entry| entry.entry.name_text.clone()).collect();
         assert_eq!(names, vec!["a.txt", "c.txt"]);
         assert_eq!(found[0].match_line, Some(2));
         assert_eq!(found[1].match_line, Some(1));
@@ -667,7 +683,7 @@ mod content_tests {
             ..Default::default()
         };
         let found = search_contents(&dir, "target", options, &AtomicBool::new(false));
-        let names: Vec<_> = found.iter().map(|entry| entry.name_text.clone()).collect();
+        let names: Vec<_> = found.iter().map(|entry| entry.entry.name_text.clone()).collect();
         assert_eq!(names, vec!["ok.txt"]);
 
         let _ = fs::remove_dir_all(&dir);
@@ -705,7 +721,7 @@ mod content_tests {
             ContentSearchOptions::default(),
             &AtomicBool::new(false),
         );
-        let names: Vec<_> = found.iter().map(|entry| entry.name_text.clone()).collect();
+        let names: Vec<_> = found.iter().map(|entry| entry.entry.name_text.clone()).collect();
         assert_eq!(names, vec!["real.txt"]);
 
         let options = ContentSearchOptions {
@@ -713,7 +729,7 @@ mod content_tests {
             ..Default::default()
         };
         let found = search_contents(&dir, "target", options, &AtomicBool::new(false));
-        let mut names: Vec<_> = found.iter().map(|entry| entry.name_text.clone()).collect();
+        let mut names: Vec<_> = found.iter().map(|entry| entry.entry.name_text.clone()).collect();
         names.sort();
         assert_eq!(names, vec![".hidden.txt", "inside.txt", "real.txt"]);
 
@@ -809,20 +825,22 @@ mod scope_tests {
         let p2 = PathBuf::from("/tmp/b");
         let e = |path: &PathBuf| {
             let name = path.file_name().unwrap_or_default().to_os_string();
-            Entry {
-                name_text: name.to_string_lossy().into_owned(),
-                sort_key: name.to_string_lossy().to_lowercase(),
-                name,
-                path: path.clone(),
-                is_dir: false,
-                is_symlink: false,
-                size: 0,
-                modified: None,
+            SearchResult {
                 match_line: None,
+                entry: Entry {
+                    name_text: name.to_string_lossy().into_owned(),
+                    sort_key: name.to_string_lossy().to_lowercase(),
+                    name,
+                    path: path.clone(),
+                    is_dir: false,
+                    is_symlink: false,
+                    size: 0,
+                    modified: None,
+                },
             }
         };
         let merged = merge_search_results(vec![vec![e(&p1), e(&p2)], vec![e(&p1)]], 10);
-        let paths: Vec<_> = merged.iter().map(|entry| entry.path.clone()).collect();
+        let paths: Vec<_> = merged.iter().map(|result| result.entry.path.clone()).collect();
         assert_eq!(paths, vec![p1.clone(), p2.clone()]);
         let capped = merge_search_results(vec![vec![e(&p1), e(&p2)]], 1);
         assert_eq!(capped.len(), 1);
