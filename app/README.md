@@ -455,18 +455,18 @@ DESIGN.md §4.1 の指示に従い、P0 実装で設計からずれた点を記�
 
 | 項目 | DESIGN.md | 本実装（P0） | 扱い |
 |---|---|---|---|
-| モジュール構成 | `app.rs` + `model/*` + `fs/*` + `ui/*` に分割 | `main.rs`（UI+操作）+ `model.rs` / `history.rs` / `settings.rs` / `icons.rs` / `watcher.rs` のフラット構成（GPUI 非依存のデータ層は分離済み） | P1 で `ui/*` へ抽出 |
+| モジュール構成 | `app.rs` + `model/*` + `fs/*` + `ui/*` に分割 | `main.rs` + データ層モジュール（GPUI 非依存）。`strings.rs` を新設し、`DebugHooks` / `SearchState` / `LoadState` へ状態を集約、描画フックも専用メソッドへ抽出 | `ui/*` の完全分割は残課題 |
 | キー入力 | 大半を `actions!` + `KeyBinding` + `.key_context("Explorer")` で実装 | ルート要素の `track_focus` + `on_key_down` で実装（矢印キー等と同じ経路に統一） | キー動作は §3.4 の表をカバー。Action 化は P1 |
 | 設定スキーマ | `version` / `sort`（`key`/`dir`/`dirs_first`）/ `show_hidden` / `view` | **DESIGN.md §5.7・§8.1 のスキーマに一致**（`settings.json` サンプル参照） | 一致 |
-| 選択 | `Selection`（`PathBuf` キー、複数選択の余地） | `selected: usize`（単一選択） | P0 要件どおり。P1 で型置換 |
-| ロード状態 | `LoadState` / `FsError` の型 | `loading: bool` + `error: Option<String>` | 表示同等。P1 で型化 |
+| 選択 | `Selection`（`PathBuf` キー、複数選択） | `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択・バッチ操作対応） | 一致（`BTreeSet` 化は見送り） |
+| ロード状態 | `LoadState` / `FsError` の型 | `LoadState`（Loading/Ready/Error）+ `FsError` / `FsErrorKind` を導入 | 一致（generation も LoadState が保持） |
 | ステータスバー | gpui-component `StatusBar` | 自作 `div`（5 領域の 1 つとして実装） | 見た目は同等。P1 で置換可 |
 | テーマ | gpui-component 既定ダークテーマの意味色 | Catppuccin 系の色を直書き（`Theme::change(Dark)` はメニュー/ダイアログ用に実施） | P0 は許容（DESIGN §8.2 の「色直書きは最小限」からは逸脱） |
-| 日本語文言 | `strings.rs` に集約 | `main.rs` 内にリテラルで記述 | P1 で `strings.rs` へ抽出 |
+| 日本語文言 | `strings.rs` に集約 | `strings.rs` にヘルプ・空状態・固定ステータス文言を集約。値埋め込みの `format!` 文言は呼び出し側 | 部分対応（段階的 i18n） |
 | アイコン | 拡張子→`IconName` の静的対応表 | `icons.rs` の `FileKind` 経由（同一役割） | 一致 |
 | `dirs` crate | 7.0.0 推奨（6 系も許容と明記） | 6.0.0 | 許容（`config_dir()` API 同一） |
 | chrono | std で可（P0 は許容） | chrono 0.4（ローカル時刻表示） | 許容 |
-| `view` フィールド | 詳細/アイコン | `details` 固定で保存のみ（アイコンビューは P2） | スキーマ先行 |
+| `view` フィールド | 詳細/アイコン | `details` / `icons` を保存・復元（Ctrl+1/2 で切替） | 一致 |
 | 空き領域の右クリックメニュー | 明記なし | 未対応（仮想リストが領域を占有。新規フォルダはツールバー/行メニューから） | 既知の制限 |
 | 入力 E2E | §10.3 の手動操作 | 合成入力ツールが無く **キーボード/右クリック/確認ダイアログの実押下は未検証** | 既知の制限（§実行検証記録） |
 
