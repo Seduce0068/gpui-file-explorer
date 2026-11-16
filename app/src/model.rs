@@ -1063,6 +1063,17 @@ mod tests {
             segments[2],
             ("koppe".to_string(), PathBuf::from("/home/koppe"))
         );
+
+        // CurDir / ParentDir produce no label, but remain in the accumulated
+        // path so each breadcrumb still points at the original location.
+        let relative = breadcrumb_segments(Path::new("./a/../b"));
+        assert_eq!(
+            relative,
+            vec![
+                ("a".to_string(), PathBuf::from("./a")),
+                ("b".to_string(), PathBuf::from("./a/../b")),
+            ]
+        );
     }
 
     #[test]
