@@ -326,6 +326,10 @@ mod tests {
             .filter(|name| name.contains("broken"))
             .collect();
         assert_eq!(backups.len(), 1, "expected a .broken-* backup: {backups:?}");
+        assert!(
+            backups[0].contains(&std::process::id().to_string()),
+            "backup should include PID to avoid cross-process collisions: {backups:?}"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
