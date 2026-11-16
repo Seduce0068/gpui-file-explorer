@@ -5560,13 +5560,18 @@ fn main() {
             ..Default::default()
         };
 
-        gpui_kit::open_window(options, cx, |window, cx| {
+        if let Err(error) = gpui_kit::open_window(options, cx, |window, cx| {
             let view = cx.new(Explorer::new);
             let focus_handle = view.read(cx).focus_handle.clone();
             focus_handle.focus(window, cx);
             view
-        })
-        .expect("failed to open window");
+        }) {
+            // A missing display / compositor is a normal failure on headless
+            // hosts; report it instead of panicking with a backtrace.
+            eprintln!("gpui-file-explorer: ウィンドウを開けませんでした: {error}");
+            cx.quit();
+            return;
+        }
 
         cx.activate(true);
     });
