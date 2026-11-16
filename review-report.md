@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T06:36:27+09:00
+verified: 2026-11-17T06:38:40+09:00
 status: complete
 ---
 
@@ -341,6 +341,10 @@ High 1 は状態集約とフック抽出で実質的負債を軽減済み（完�
   -D clippy::undocumented_unsafe_blocks`（2026-11-17T03:11+09:00）:
   警告なし。`app/src/main.rs` と `app/build.rs` に
   `#![forbid(unsafe_code)]` を確認（AGENTS.md §15 の unsafe 禁止を具現化）。
+- DESIGN の受入条件 AC-1〜AC-13 を照合（2026-11-17T06:37+09:00）:
+  PASS 8件、NOT TESTABLE 4件（AC-8/9/10/12 = 合成入力ツール未導入
+  による実押下不可）、AC-9 のエラー通知は GPUI API 制約で未実装
+  （README に明記済み）。新たな未対応項目なし。
 - 初期の独立検証（`notes/verify-report.md`）の major 3 件も再確認
   （2026-11-17T05:16+09:00）: render パスに同期 I/O なし、選択は
   `Selection`（PathBuf キー）で行 index 競合を回避、起動・ナビゲーション
