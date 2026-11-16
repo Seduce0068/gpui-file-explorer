@@ -790,6 +790,11 @@ mod tests {
         assert_eq!(error.path, missing);
         assert!(error.message_ja().contains("見つかりません"));
         assert!(error.to_string().contains("見つかりません"));
+        assert!(
+            error.message_ja().contains('('),
+            "OS detail should be shown when available: {}",
+            error.message_ja()
+        );
     }
 
     #[test]
