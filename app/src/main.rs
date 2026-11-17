@@ -570,7 +570,7 @@ impl Explorer {
                 dirs_first: true,
             };
         }
-        let (saved_tabs, start_dir) = restore_session(
+        let (saved_tabs, start_dir, restored_active) = restore_session(
             &settings.tabs,
             settings.active_tab,
             settings.last_dir.as_deref(),
@@ -603,7 +603,7 @@ impl Explorer {
         });
 
         let places = build_places();
-        let tabs = Tabs::from_paths(saved_tabs, settings.active_tab)
+        let tabs = Tabs::from_paths(saved_tabs, restored_active)
             .unwrap_or_else(|| Tabs::new(start_dir.clone()));
         let history = tabs.active().history.clone();
         let mut this = Self {
@@ -5707,20 +5707,37 @@ fn restore_session(
     last_dir: Option<&std::path::Path>,
     cli_dir: Option<PathBuf>,
     home: Option<PathBuf>,
-) -> (Vec<PathBuf>, PathBuf) {
+) -> (Vec<PathBuf>, PathBuf, usize) {
+    let cli_dir = cli_dir
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .filter(|path| path.is_dir());
     let tabs: Vec<PathBuf> = saved.iter().filter(|path| path.is_dir()).cloned().collect();
+    // An explicit CLI argument (`.desktop %f`, shell invocation) must win over
+    // persisted tabs; otherwise passing a folder to the app silently opens a
+    // different location (third cross-review F6-12).
+    if let Some(cli) = cli_dir {
+        let mut tabs = tabs;
+        let position = tabs.iter().position(|path| path == &cli);
+        let index = match position {
+            Some(index) => index,
+            None => {
+                tabs.push(cli.clone());
+                tabs.len() - 1
+            }
+        };
+        return (tabs, cli, index);
+    }
     if !tabs.is_empty() {
         let index = active.min(tabs.len() - 1);
         let start = tabs[index].clone();
-        return (tabs, start);
+        return (tabs, start, index);
     }
-    let start = cli_dir
-        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+    let start = last_dir
         .filter(|path| path.is_dir())
-        .or_else(|| last_dir.filter(|path| path.is_dir()).map(PathBuf::from))
+        .map(PathBuf::from)
         .or(home)
         .unwrap_or_else(|| PathBuf::from("/"));
-    (tabs, start)
+    (tabs, start, 0)
 }
 
 /// Install a compact structured-log subscriber. `RUST_LOG` selects the level
@@ -6079,11 +6096,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let saved = vec![dir.join("gone"), dir.clone()];
-        let (tabs, start) = restore_session(&saved, 99, None, None, None);
+        let (tabs, start, index) = restore_session(&saved, 99, None, None, None);
         assert_eq!(tabs, vec![dir.clone()], "vanished paths are dropped");
         assert_eq!(start, dir, "active index is clamped to the saved tab");
+        assert_eq!(index, 0);
 
-        let (_, start) = restore_session(&[], 0, None, Some(dir.clone()), None);
+        let (_, start, _) = restore_session(&[], 0, None, Some(dir.clone()), None);
         // On Windows canonicalize() adds a `\\?\` verbatim prefix; compare via
         // file_name-based identity rather than raw path bytes.
         assert_eq!(
@@ -6092,12 +6110,23 @@ mod tests {
             "CLI argument wins when no tabs are saved"
         );
 
+        // F6-12: an explicit CLI argument must beat persisted tabs.
+        let cli = dir.join("cli-target");
+        std::fs::create_dir_all(&cli).unwrap();
+        let (tabs, start, index) =
+            restore_session(std::slice::from_ref(&dir), 0, None, Some(cli.clone()), None);
+        assert_eq!(canonical_for_compare(&start), canonical_for_compare(&cli));
+        assert_eq!(index, tabs.len() - 1, "CLI tab must be active");
+        assert!(tabs
+            .iter()
+            .any(|p| canonical_for_compare(p) == canonical_for_compare(&cli)));
+
         let home = dir.join("home");
         std::fs::create_dir_all(&home).unwrap();
-        let (_, start) = restore_session(&[], 0, Some(&home), None, Some(dir.clone()));
+        let (_, start, _) = restore_session(&[], 0, Some(&home), None, Some(dir.clone()));
         assert_eq!(start, home, "last_dir wins over home");
 
-        let (_, start) = restore_session(&[], 0, None, None, Some(dir.clone()));
+        let (_, start, _) = restore_session(&[], 0, None, None, Some(dir.clone()));
         assert_eq!(start, dir, "home is the final fallback");
 
         let _ = std::fs::remove_dir_all(&dir);
