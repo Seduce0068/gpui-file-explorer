@@ -14,9 +14,30 @@
 //!   "bookmarks": ["/home/koppe"],
 //!   "tabs": ["/home/koppe", "/tmp"],
 //!   "active_tab": 0,
-//!   "recent_searches": ["TODO"]
+//!   "recent_searches": ["TODO"],
+//!   "windows": [
+//!     {
+//!       "bounds": { "x": 80, "y": 60, "width": 1100, "height": 700, "mode": "windowed" },
+//!       "tabs": [
+//!         { "cwd": "/home/koppe", "back": ["/tmp"], "forward": [] },
+//!         { "cwd": "/tmp", "back": [], "forward": [] }
+//!       ],
+//!       "active_tab": 0
+//!     }
+//!   ]
 //! }
 //! ```
+//!
+//! ## Window scope
+//!
+//! Session state (frame bounds, tabs and each tab's back/forward history) is
+//! **owned by a window**, not by the application: `windows[i]` is the session
+//! of the i-th window in creation order. Only one window is opened today, so
+//! `windows[0]` is the primary window and is the entry restored at launch. A
+//! future second window must append its own entry instead of sharing the
+//! primary one; closing a window updates only its own entry. The legacy
+//! top-level `tabs` / `active_tab` fields remain as a path-only mirror for
+//! older settings files.
 //!
 //! Untrusted on-disk input is validated in three layers: serde enforces field
 //! types, [`Settings::migrate`] classifies the schema version (unknown newer
@@ -30,7 +51,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use gpui_kit::{bounds, point, px, size, Window, WindowBounds};
+
+use crate::history::History;
 use crate::model::SortSpec;
+use crate::tabs::Tab;
 
 use tracing::{error, warn};
 
@@ -49,6 +74,16 @@ pub const MAX_BOOKMARKS: usize = 50;
 pub const MAX_RECENT_SEARCHES: usize = 10;
 /// Maximum number of tabs restored from settings.
 pub const MAX_TABS: usize = 32;
+/// Maximum number of window sessions kept in settings. Each window owns one
+/// entry; the primary window is always index 0.
+pub const MAX_WINDOW_SESSIONS: usize = 8;
+/// `History::max_back` is 200 and back + forward can never exceed it, so the
+/// persisted stacks use the same budget.
+pub const MAX_HISTORY_ENTRIES: usize = 200;
+/// Bounds smaller than this are almost certainly a corrupt/stray value.
+pub const MIN_WINDOW_SIZE_PX: f32 = 320.0;
+/// Guard against absurd saved sizes (e.g. a corrupt file or 8K-tiled setups).
+pub const MAX_WINDOW_SIZE_PX: f32 = 8192.0;
 /// Refuse to parse a settings file larger than this (hardening against a
 /// crafted file exhausting memory at startup). Oversized files are backed up
 /// like corrupt ones.
@@ -107,6 +142,174 @@ pub enum ViewLayout {
     Icons,
 }
 
+/// Frame state of a window, persisted alongside its bounds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowMode {
+    #[default]
+    Windowed,
+    Maximized,
+    Fullscreen,
+}
+
+/// Last known frame of one window, in GPUI screen pixels.
+///
+/// This is window-scoped state: it belongs to the `WindowSession` that owns
+/// the window, never to the application as a whole.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowBoundsState {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub mode: WindowMode,
+}
+
+impl WindowBoundsState {
+    /// Read the current frame from a live window. `None` for an unusable frame
+    /// (minimized/headless windows can report degenerate values).
+    pub fn from_window(window: &Window) -> Option<Self> {
+        let window_bounds = window.window_bounds();
+        let frame = window_bounds.get_bounds();
+        let mode = match window_bounds {
+            WindowBounds::Windowed(_) => WindowMode::Windowed,
+            WindowBounds::Maximized(_) => WindowMode::Maximized,
+            WindowBounds::Fullscreen(_) => WindowMode::Fullscreen,
+        };
+        let state = Self {
+            x: frame.origin.x.as_f32(),
+            y: frame.origin.y.as_f32(),
+            width: frame.size.width.as_f32(),
+            height: frame.size.height.as_f32(),
+            mode,
+        };
+        state.is_valid().then_some(state)
+    }
+
+    /// Reject NaN/infinite coordinates and degenerate sizes from an untrusted
+    /// settings file before they reach GPUI's window creation path.
+    pub fn is_valid(&self) -> bool {
+        let finite = |value: f32| value.is_finite() && value.abs() <= 100_000.0;
+        finite(self.x)
+            && finite(self.y)
+            && self.width.is_finite()
+            && self.height.is_finite()
+            && self.width >= MIN_WINDOW_SIZE_PX
+            && self.height >= MIN_WINDOW_SIZE_PX
+            && self.width <= MAX_WINDOW_SIZE_PX
+            && self.height <= MAX_WINDOW_SIZE_PX
+    }
+
+    /// Convert to GPUI's launch-time bounds, or `None` when the saved value is
+    /// unusable (the caller then keeps the previous centered fallback).
+    pub fn as_window_bounds(&self) -> Option<WindowBounds> {
+        if !self.is_valid() {
+            return None;
+        }
+        let frame = bounds(
+            point(px(self.x), px(self.y)),
+            size(px(self.width), px(self.height)),
+        );
+        Some(match self.mode {
+            WindowMode::Windowed => WindowBounds::Windowed(frame),
+            WindowMode::Maximized => WindowBounds::Maximized(frame),
+            WindowMode::Fullscreen => WindowBounds::Fullscreen(frame),
+        })
+    }
+}
+
+/// Back/forward history of a single tab. `back` is oldest-first, `forward` is
+/// next-first (the order `History::go_forward` returns entries).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TabSession {
+    pub cwd: PathBuf,
+    #[serde(default)]
+    pub back: Vec<PathBuf>,
+    #[serde(default)]
+    pub forward: Vec<PathBuf>,
+}
+
+impl TabSession {
+    /// Snapshot a tab's navigation history using only `History`'s public API
+    /// (its stacks are private and deliberately stay encapsulated).
+    pub fn from_tab(tab: &Tab) -> Self {
+        let probe = PathBuf::from("__gpui_fe_history_probe__");
+        let mut back = Vec::new();
+        let mut walker = tab.history.clone();
+        while let Some(path) = walker.go_back(probe.clone()) {
+            back.push(path);
+        }
+        back.reverse();
+        let mut forward = Vec::new();
+        let mut walker = tab.history.clone();
+        while let Some(path) = walker.go_forward(probe.clone()) {
+            forward.push(path);
+        }
+        Self {
+            cwd: tab.cwd.clone(),
+            back,
+            forward,
+        }
+    }
+
+    /// Rebuild a `History` with the same back/forward stacks.
+    ///
+    /// `History` exposes no direct setter, so the stacks are rebuilt from
+    /// navigations: `visit` appends to `back`, and `go_back(current)` pops one
+    /// `back` entry while pushing the supplied `current` onto `forward`.
+    /// Padding entries are appended to `back` and then consumed by `go_back`
+    /// with the desired forward path as `current`.
+    pub fn to_history(&self) -> History {
+        let mut history = History::new();
+        let mut back: Vec<PathBuf> = self
+            .back
+            .iter()
+            .filter(|path| sane_path(path))
+            .cloned()
+            .collect();
+        let mut forward: Vec<PathBuf> = self
+            .forward
+            .iter()
+            .filter(|path| sane_path(path))
+            .cloned()
+            .collect();
+        forward.truncate(MAX_HISTORY_ENTRIES);
+        back.truncate(MAX_HISTORY_ENTRIES.saturating_sub(forward.len()));
+
+        for window in back.windows(2) {
+            history.visit(window[0].clone(), window[1].clone());
+        }
+        if let Some(last) = back.last() {
+            history.visit(last.clone(), self.cwd.clone());
+        }
+
+        let mut cursor = self.cwd.clone();
+        for index in 0..forward.len() {
+            let pad = self.cwd.join(format!("__gpui_fe_pad_{index}__"));
+            history.visit(cursor, pad.clone());
+            cursor = pad;
+        }
+        // `go_back` pops the padding and pushes each forward target; because
+        // `forward` is next-first, reverse iteration leaves the next target on
+        // top of the forward stack.
+        for target in forward.iter().rev() {
+            history.go_back(target.clone());
+        }
+        history
+    }
+}
+
+/// Session of one window: frame plus its tabs and per-tab navigation history.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WindowSession {
+    #[serde(default)]
+    pub bounds: Option<WindowBoundsState>,
+    #[serde(default)]
+    pub tabs: Vec<TabSession>,
+    #[serde(default)]
+    pub active_tab: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -124,6 +327,10 @@ pub struct Settings {
     pub tabs: Vec<PathBuf>,
     /// Index of the active tab in `tabs` (clamped when restoring).
     pub active_tab: usize,
+    /// Window-scoped sessions. Index 0 is the primary window; each additional
+    /// window owns its own entry (never shared). See the module docs.
+    #[serde(default)]
+    pub windows: Vec<WindowSession>,
     /// Recently used search queries, most recent first (bounded).
     pub recent_searches: Vec<String>,
     /// Set when a corrupt settings file could not be backed up. Prevents a
@@ -151,6 +358,7 @@ impl Default for Settings {
             bookmarks: Vec::new(),
             tabs: Vec::new(),
             active_tab: 0,
+            windows: Vec::new(),
             recent_searches: Vec::new(),
             read_only: false,
             load_error: None,
@@ -164,6 +372,20 @@ impl Settings {
     /// on Linux.
     pub fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|dir| dir.join(APP_DIR).join("settings.json"))
+    }
+
+    /// Session of the primary window (index 0), if any window has been saved.
+    pub fn primary_window(&self) -> Option<&WindowSession> {
+        self.windows.first()
+    }
+
+    /// Mutable session of the primary window; creates the entry on first use.
+    /// Other windows must append their own entry instead of using this method.
+    pub fn primary_window_mut(&mut self) -> &mut WindowSession {
+        if self.windows.is_empty() {
+            self.windows.push(WindowSession::default());
+        }
+        &mut self.windows[0]
     }
 
     /// Remember `path` as the most recent directory (de-duplicated, bounded).
@@ -357,6 +579,27 @@ impl Settings {
         self.tabs.truncate(MAX_TABS);
         dedupe_paths(&mut self.tabs);
         self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+
+        // Window-scoped sessions get the same hardening as the legacy fields.
+        // A bogus frame is dropped (the caller falls back to a centered window)
+        // instead of reaching GPUI's window creation path.
+        self.windows.truncate(MAX_WINDOW_SESSIONS);
+        for session in &mut self.windows {
+            if session.bounds.is_none_or(|bounds| !bounds.is_valid()) {
+                session.bounds = None;
+            }
+            session.tabs.retain(|tab| sane_path(&tab.cwd));
+            session.tabs.truncate(MAX_TABS);
+            let mut seen = HashSet::with_capacity(session.tabs.len());
+            session.tabs.retain(|tab| seen.insert(tab.cwd.clone()));
+            for tab in &mut session.tabs {
+                tab.back.retain(|path| sane_path(path));
+                tab.forward.retain(|path| sane_path(path));
+                tab.forward.truncate(MAX_HISTORY_ENTRIES);
+                tab.back.truncate(MAX_HISTORY_ENTRIES - tab.forward.len());
+            }
+            session.active_tab = session.active_tab.min(session.tabs.len().saturating_sub(1));
+        }
 
         self.recent_searches = std::mem::take(&mut self.recent_searches)
             .into_iter()
@@ -1099,5 +1342,178 @@ mod schema_validation_tests {
             vec!["ping".to_string(), "dup".to_string()]
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod window_session_tests {
+    use super::{
+        Settings, TabSession, WindowBoundsState, WindowMode, WindowSession, MAX_HISTORY_ENTRIES,
+        MAX_WINDOW_SESSIONS,
+    };
+    use crate::history::History;
+    use crate::tabs::Tab;
+    use std::path::PathBuf;
+
+    fn p(value: &str) -> PathBuf {
+        PathBuf::from(value)
+    }
+
+    fn frame() -> WindowBoundsState {
+        WindowBoundsState {
+            x: 80.0,
+            y: 60.0,
+            width: 1100.0,
+            height: 700.0,
+            mode: WindowMode::Windowed,
+        }
+    }
+
+    #[test]
+    fn window_bounds_roundtrip_and_reject_untrusted_values() {
+        let saved = frame();
+        let window_bounds = saved.as_window_bounds().expect("valid bounds");
+        let gpu = window_bounds.get_bounds();
+        assert_eq!(gpu.origin.x.as_f32(), 80.0);
+        assert_eq!(gpu.origin.y.as_f32(), 60.0);
+        assert_eq!(gpu.size.width.as_f32(), 1100.0);
+        assert_eq!(gpu.size.height.as_f32(), 700.0);
+
+        let mut bad = frame();
+        bad.width = f32::NAN;
+        assert!(bad.as_window_bounds().is_none());
+        let mut bad = frame();
+        bad.height = 10.0;
+        assert!(bad.as_window_bounds().is_none());
+        let mut bad = frame();
+        bad.x = f32::INFINITY;
+        assert!(bad.as_window_bounds().is_none());
+    }
+
+    #[test]
+    fn window_session_survives_save_and_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-window-session-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        let primary = settings.primary_window_mut();
+        primary.bounds = Some(frame());
+        primary.tabs = vec![TabSession {
+            cwd: p("/tmp"),
+            back: vec![p("/home")],
+            forward: vec![],
+        }];
+        primary.active_tab = 0;
+        settings.save_to(&path).unwrap();
+
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.primary_window(), settings.primary_window());
+        // The primary window is created on demand and stays index 0.
+        assert_eq!(loaded.primary_window().unwrap().bounds, Some(frame()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tab_session_restores_back_and_forward_order() {
+        let mut history = History::new();
+        history.visit(p("/a"), p("/b"));
+        history.visit(p("/b"), p("/c"));
+        history.visit(p("/c"), p("/d"));
+        history.go_back(p("/d")); // at /c: back [/a, /b], forward [/d]
+        let tab = Tab {
+            cwd: p("/c"),
+            history,
+        };
+        let session = TabSession::from_tab(&tab);
+        assert_eq!(session.cwd, p("/c"));
+        assert_eq!(session.back, vec![p("/a"), p("/b")]);
+        assert_eq!(session.forward, vec![p("/d")]);
+
+        let restored = session.to_history();
+        let mut walker = restored.clone();
+        let mut back = Vec::new();
+        while let Some(path) = walker.go_back(p("/current")) {
+            back.push(path);
+        }
+        back.reverse();
+        assert_eq!(back, vec![p("/a"), p("/b")]);
+        let mut walker = restored;
+        let mut forward = Vec::new();
+        while let Some(path) = walker.go_forward(p("/current")) {
+            forward.push(path);
+        }
+        assert_eq!(forward, vec![p("/d")]);
+    }
+
+    #[test]
+    fn tab_session_restores_multiple_forward_entries() {
+        let mut history = History::new();
+        history.visit(p("/a"), p("/b"));
+        history.visit(p("/b"), p("/c"));
+        history.go_back(p("/c"));
+        history.go_back(p("/b")); // at /a: back [], forward [/b, /c] (next /b)
+        let session = TabSession::from_tab(&Tab {
+            cwd: p("/a"),
+            history,
+        });
+        assert!(session.back.is_empty());
+        assert_eq!(session.forward, vec![p("/b"), p("/c")]);
+
+        let restored = session.to_history();
+        let mut walker = restored.clone();
+        let mut back = Vec::new();
+        while let Some(path) = walker.go_back(p("/current")) {
+            back.push(path);
+        }
+        assert!(back.is_empty(), "padding entries must not leak into back");
+        let mut walker = restored;
+        let mut forward = Vec::new();
+        while let Some(path) = walker.go_forward(p("/current")) {
+            forward.push(path);
+        }
+        assert_eq!(forward, vec![p("/b"), p("/c")]);
+    }
+
+    #[test]
+    fn window_sessions_are_bounded_and_history_is_capped() {
+        let mut settings = Settings::default();
+        for index in 0..(MAX_WINDOW_SESSIONS + 3) {
+            settings.windows.push(WindowSession {
+                bounds: Some(WindowBoundsState {
+                    x: index as f32,
+                    y: 0.0,
+                    width: 900.0,
+                    height: 600.0,
+                    mode: WindowMode::Windowed,
+                }),
+                tabs: vec![],
+                active_tab: 7,
+            });
+        }
+        settings.validate();
+        assert_eq!(settings.windows.len(), MAX_WINDOW_SESSIONS);
+        assert_eq!(settings.primary_window().unwrap().active_tab, 0);
+
+        let mut settings = Settings::default();
+        settings.primary_window_mut().tabs = vec![TabSession {
+            cwd: p("/tmp"),
+            back: (0..MAX_HISTORY_ENTRIES + 20)
+                .map(|index| p(&format!("/back-{index}")))
+                .collect(),
+            forward: (0..10)
+                .map(|index| p(&format!("/forward-{index}")))
+                .collect(),
+        }];
+        settings.validate();
+        let tab = &settings.primary_window().unwrap().tabs[0];
+        assert_eq!(tab.forward.len(), 10);
+        assert_eq!(tab.back.len(), MAX_HISTORY_ENTRIES - 10);
     }
 }

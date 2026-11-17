@@ -49,7 +49,7 @@ use crate::search::{
     filter_results, merge_search_results, search_by_name, search_contents, search_roots,
     ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
 };
-use crate::settings::{Settings, ViewLayout};
+use crate::settings::{Settings, TabSession, ViewLayout, WindowBoundsState};
 use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
 use crate::watcher::{removed_paths, DirWatcher, FsEvent};
@@ -611,6 +611,9 @@ struct Explorer {
     mounts: Vec<MountPoint>,
     /// Open tabs (always at least one); the active tab mirrors `cwd`/`history`.
     tabs: Tabs,
+    /// Latest frame of this window, refreshed in `render` and persisted with
+    /// the window-scoped session. Session state is per window, never global.
+    window_bounds: Option<WindowBoundsState>,
     /// Existing recent directories (pruned on reload; never probed in render).
     recent: Vec<PathBuf>,
     /// Existing bookmarked directories (pruned on reload; never probed in render).
@@ -746,9 +749,11 @@ impl Explorer {
         });
 
         let places = build_places();
-        let tabs = Tabs::from_paths(saved_tabs, restored_active)
-            .unwrap_or_else(|| Tabs::new(start_dir.clone()));
+        let tabs = restore_tab_sessions(&settings, &saved_tabs, restored_active, &start_dir);
         let history = tabs.active().history.clone();
+        // Seed from the saved frame so an early save (before the first render
+        // observes the real window) cannot overwrite it with nothing.
+        let restored_bounds = settings.primary_window().and_then(|window| window.bounds);
         let mut this = Self {
             settings,
             cwd: start_dir,
@@ -777,6 +782,7 @@ impl Explorer {
             // `reload` below; reading /proc/mounts here would block the UI.
             mounts: Vec::new(),
             tabs,
+            window_bounds: restored_bounds,
             recent: Vec::new(),
             bookmarks: Vec::new(),
             clipboard: None,
@@ -798,7 +804,7 @@ impl Explorer {
         // Remember the directory we actually started in (also proves the
         // settings file round-trips on the very first launch).
         this.settings.last_dir = Some(this.cwd.clone());
-        if !this.settings.save() {
+        if !this.save_settings() {
             this.status = "設定を保存できませんでした（詳細は stderr を参照）".to_string();
         }
         if let Some(reason) = this.settings.load_error.as_deref() {
@@ -1068,7 +1074,7 @@ impl Explorer {
         let was_bookmarked = self.settings.is_bookmarked(&path);
         let added = self.settings.toggle_bookmark(&path);
         debug_assert_eq!(added, !was_bookmarked);
-        let _ = self.settings.save();
+        let _ = self.save_settings();
         self.refresh_bookmarks();
         self.status = if added {
             format!("ブックマークに追加しました: {}", display_path(&path))
@@ -1295,7 +1301,8 @@ impl Explorer {
     }
 
     /// Mirror the open tabs and the active index into settings (the caller
-    /// saves the settings file).
+    /// saves the settings file). The full per-tab navigation history is kept
+    /// in the primary window's session, not in the legacy path-only fields.
     fn persist_tabs(&mut self) {
         if self.debug.ephemeral {
             return;
@@ -1303,6 +1310,20 @@ impl Explorer {
         self.tabs.sync(self.cwd.clone(), self.history.clone());
         self.settings.tabs = self.tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
         self.settings.active_tab = self.tabs.active_index();
+        let window = self.settings.primary_window_mut();
+        window.active_tab = self.tabs.active_index();
+        window.tabs = self.tabs.tabs().iter().map(TabSession::from_tab).collect();
+    }
+
+    /// Save settings with this window's latest frame attached.
+    ///
+    /// All session writes go through here so the bounds observed in `render`
+    /// (and the should-close hook) are persisted alongside tabs/history.
+    fn save_settings(&mut self) -> bool {
+        if let Some(bounds) = self.window_bounds {
+            self.settings.primary_window_mut().bounds = Some(bounds);
+        }
+        self.settings.save()
     }
 
     /// Load a tab's directory/history into the explorer.
@@ -1319,7 +1340,7 @@ impl Explorer {
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
         self.persist_tabs();
-        let _ = self.settings.save();
+        let _ = self.save_settings();
         self.reload(cx);
     }
 
@@ -1403,7 +1424,7 @@ impl Explorer {
         self.sync_active_tab();
         if self.tabs.move_active_left() {
             self.persist_tabs();
-            let _ = self.settings.save();
+            let _ = self.save_settings();
             self.status = STATUS_TAB_MOVED_LEFT.to_string();
             cx.notify();
         }
@@ -1413,7 +1434,7 @@ impl Explorer {
         self.sync_active_tab();
         if self.tabs.move_active_right() {
             self.persist_tabs();
-            let _ = self.settings.save();
+            let _ = self.save_settings();
             self.status = STATUS_TAB_MOVED_RIGHT.to_string();
             cx.notify();
         }
@@ -1507,7 +1528,7 @@ impl Explorer {
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
         self.persist_tabs();
-        let _ = self.settings.save();
+        let _ = self.save_settings();
         self.reload(cx);
     }
 
@@ -1673,7 +1694,7 @@ impl Explorer {
             return;
         }
         self.settings.view = mode;
-        let _ = self.settings.save();
+        let _ = self.save_settings();
         cx.notify();
     }
 
@@ -1890,7 +1911,7 @@ impl Explorer {
 
     fn toggle_hidden(&mut self, cx: &mut Context<Self>) {
         self.settings.show_hidden = !self.settings.show_hidden;
-        let _ = self.settings.save();
+        let _ = self.save_settings();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
         self.rebuild_view(keep);
         self.status = if self.settings.show_hidden {
@@ -1904,7 +1925,7 @@ impl Explorer {
     fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
         let order = self.settings.sort.order().toggled(key);
         self.settings.sort = SortSpec::from_order(order);
-        let _ = self.settings.save();
+        let _ = self.save_settings();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
         self.rebuild_view(keep);
         cx.notify();
@@ -4185,7 +4206,7 @@ impl Explorer {
                 this.apply_search_filter(cx);
                 this.settings.record_search(&this.search.query);
                 if !this.debug.ephemeral {
-                    let _ = this.settings.save();
+                    let _ = this.save_settings();
                 }
             });
         });
@@ -5902,6 +5923,11 @@ impl Explorer {
 
 impl Render for Explorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Cache the current frame cheaply (no disk I/O in render). It is
+        // written to settings by the normal save points and the close hook.
+        if let Some(bounds) = WindowBoundsState::from_window(window) {
+            self.window_bounds = Some(bounds);
+        }
         self.apply_startup_hooks(window, cx);
         let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar(cx);
@@ -6114,6 +6140,49 @@ fn restore_session(
     (tabs, start, 0)
 }
 
+/// Compare two persisted tab paths, tolerating Windows' `\\?\` prefix added by
+/// `canonicalize` (the same normalization the session tests use).
+fn same_tab_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canonical(left) == canonical(right)
+}
+
+/// Restore tabs **with their back/forward history** from the primary window's
+/// session. `restore_session` still decides which directories open (CLI > saved
+/// tabs > last dir > home); this only reattaches the per-tab history that used
+/// to be lost on restart. Tabs whose directory vanished get a fresh history.
+fn restore_tab_sessions(
+    settings: &Settings,
+    saved_tabs: &[PathBuf],
+    active: usize,
+    fallback: &Path,
+) -> Tabs {
+    let sessions: &[TabSession] = settings
+        .primary_window()
+        .map(|window| window.tabs.as_slice())
+        .unwrap_or(&[]);
+    let mut tabs = Tabs::from_paths(saved_tabs.to_vec(), active)
+        .unwrap_or_else(|| Tabs::new(fallback.to_path_buf()));
+    for index in 0..tabs.len() {
+        let cwd = tabs.tabs()[index].cwd.clone();
+        let history = sessions
+            .iter()
+            .find(|session| same_tab_path(&session.cwd, &cwd))
+            .map(TabSession::to_history)
+            .unwrap_or_else(History::new);
+        // `Tabs` can set a history only on the active tab: visit each index
+        // in turn, then restore the index chosen by `restore_session`.
+        tabs.activate(index);
+        tabs.sync(cwd, history);
+    }
+    tabs.activate(active.min(tabs.len() - 1));
+    tabs
+}
+
 /// Install a compact structured-log subscriber. `RUST_LOG` selects the level
 /// (defaults to `info`); failures are ignored so logging never blocks startup.
 fn init_logging() {
@@ -6122,6 +6191,16 @@ fn init_logging() {
         .with_env_filter(filter)
         .with_target(false)
         .try_init();
+}
+
+/// A saved frame is reused only when its origin still lands on a display.
+/// This preserves the previous Linux/Wayland behaviour (a visible window)
+/// after a monitor was unplugged or settings came from another machine.
+fn bounds_visible(bounds: &Bounds<Pixels>, cx: &App) -> bool {
+    let origin = point(bounds.origin.x, bounds.origin.y);
+    cx.displays()
+        .iter()
+        .any(|display| display.visible_bounds().contains(&origin))
 }
 
 fn main() {
@@ -6144,9 +6223,19 @@ fn main() {
         })
         .detach();
 
-        let bounds = Bounds::centered(None, size(px(1100.0), px(700.0)), cx);
+        // Restore the saved frame of the primary window. The centered fallback
+        // remains for a fresh install, unusable saved values and off-screen
+        // origins (e.g. after a monitor change).
+        let settings = Settings::load();
+        let window_bounds = settings
+            .primary_window()
+            .and_then(|session| session.bounds)
+            .and_then(|saved| saved.as_window_bounds())
+            .filter(|candidate| bounds_visible(&candidate.get_bounds(), cx));
+        let bounds = window_bounds
+            .unwrap_or_else(|| WindowBounds::centered(size(px(1100.0), px(700.0)), cx));
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_bounds: Some(bounds),
             titlebar: Some(TitlebarOptions {
                 title: Some("GPUI File Explorer".into()),
                 ..Default::default()
@@ -6160,6 +6249,20 @@ fn main() {
         if let Err(error) = gpui_kit::open_window(options, cx, |window, cx| {
             let view = cx.new(Explorer::new);
             let focus_handle = view.read(cx).focus_handle.clone();
+            let explorer = view.downgrade();
+            // The final frame must be captured here: `on_window_closed` runs
+            // after the window is gone and can no longer read its bounds.
+            window.on_window_should_close(cx, move |window, cx| {
+                if let Some(bounds) = WindowBoundsState::from_window(window) {
+                    let _ = explorer.update(cx, |this, cx| {
+                        this.window_bounds = Some(bounds);
+                        this.persist_tabs();
+                        this.save_settings();
+                        cx.notify();
+                    });
+                }
+                true
+            });
             focus_handle.focus(window, cx);
             view
         }) {
@@ -6503,6 +6606,62 @@ mod tests {
         let (_, start, _) = restore_session(&[], 0, None, None, Some(dir.clone()));
         assert_eq!(start, dir, "home is the final fallback");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_tab_sessions_reattaches_history_and_keeps_active_index() {
+        use super::restore_tab_sessions;
+        use crate::settings::{Settings, TabSession};
+
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-tab-session-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut settings = Settings::default();
+        settings.primary_window_mut().tabs = vec![
+            TabSession {
+                cwd: dir.clone(),
+                back: vec![PathBuf::from("/alpha-parent")],
+                forward: vec![],
+            },
+            TabSession {
+                cwd: PathBuf::from("/beta"),
+                back: vec![PathBuf::from("/beta-parent")],
+                forward: vec![],
+            },
+        ];
+        let saved_tabs = vec![dir.clone(), PathBuf::from("/beta")];
+        let tabs = restore_tab_sessions(&settings, &saved_tabs, 1, &dir);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.active_index(), 1, "saved active tab must be restored");
+        let mut first = tabs.tabs()[0].history.clone();
+        assert_eq!(
+            first.go_back(PathBuf::from("/probe")),
+            Some(PathBuf::from("/alpha-parent")),
+            "per-tab back history must survive restart"
+        );
+        let mut second = tabs.tabs()[1].history.clone();
+        assert_eq!(
+            second.go_back(PathBuf::from("/probe")),
+            Some(PathBuf::from("/beta-parent"))
+        );
+
+        // A tab added by a CLI argument has no saved history and stays empty.
+        let tabs = restore_tab_sessions(
+            &settings,
+            &[dir.clone(), PathBuf::from("/cli-only")],
+            1,
+            &dir,
+        );
+        assert!(!tabs.tabs()[1].history.can_go_back());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

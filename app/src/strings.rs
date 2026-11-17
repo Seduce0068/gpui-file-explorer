@@ -33,6 +33,40 @@
 //! 直書きされている同義リテラルの正規定義である。F6-26 の書き込み範囲はこの
 //! ファイルのみのため呼び出し側の差し替えは別タスクだが、下の
 //! `formatting_words_match_call_sites` / `kind_words_match_call_sites` が乖離を検出する。
+//!
+//! # エラー・ステータスメッセージの情報量と共存ルール (F6-36)
+//!
+//! ## 情報量の段階
+//!
+//! 診断できる通知は次の 4 段で構成し、上から順に欠落しないようにする。
+//!
+//! 1. **種別**: `STATUS_ERROR_PREFIX` などの接頭辞で成否・種別を明示する。
+//! 2. **対象**: パス / 名前 / 件数（`「{name}」`、`{n} 件`）。部分失敗では
+//!    対象名を残すのに全件失敗で捨てるという非対称を作らない。
+//! 3. **理由**: `OpError` / `error` の文言をそのまま連結する。
+//! 4. **復帰導線**: `（Esc でキャンセル）`、`（再検索が必要です）` など次に
+//!    何をすべきかを示す（既存の `STATUS_SEARCH_STALE` がこの形）。
+//!
+//! 実行時値は従来どおり呼び出し側の `format!` に残し、ここには自足した
+//! 接頭辞・接尾辞だけを正規定義として置く。
+//!
+//! ## 共存ルール（競合時の優先順位）
+//!
+//! 表示層の優先順位は `STATUS_PRIORITY` のとおり
+//! **エラー > 操作通知 > 進捗 > 選択情報 > 監視状態** で、狭い領域では
+//! 後ろから省略する。空状態ではエラーがローディングより優先される。
+//!
+//! 1 回の操作完了内の分岐は `OP_RESULT_PRIORITY` のとおり
+//! **キャンセル > 一部失敗 > 失敗のみ > 成功** である。成功と失敗が
+//! 同時に起きたときは成功を消さず `STATUS_PARTIAL_FAILURE_SUFFIX` で
+//! 失敗を併記し、成功項目が皆無の場合だけ `STATUS_OP_FAILED_SUFFIX` に
+//! 落とす。再スキャン失敗（`STATUS_RESCAN_FAILED`）は後続の
+//! `STATUS_CHANGED` で上書きせず、次回成功まで保持する。
+//!
+//! 現行 `main.rs` にはこの規約に反する箇所がある（完了通知直後の reload が
+//! 失敗時に `status` を消去する、再スキャン失敗が watcher イベントで
+//! 上書きされる、全件失敗が対象名を破棄する など）。呼び出し側は本
+//! タスクの書き込み範囲外のため変更せず、報告で移行箇所を列挙する。
 
 // ---------------------------------------------------------------------------
 // F1 ヘルプオーバーレイ
@@ -181,6 +215,106 @@ pub const OP_FILES_SUFFIX: &str = "ファイル";
 pub const OP_DIRS_SUFFIX: &str = "フォルダ";
 pub const OP_SKIPPED_SUFFIX: &str = "件スキップ";
 pub const OP_DONE_SUFFIX: &str = "しました";
+
+// ---------------------------------------------------------------------------
+// F6-36 エラー・ステータスメッセージ（呼び出し側は未移行）
+// ---------------------------------------------------------------------------
+
+// 呼び出し側（main.rs）への適用は本タスクの書き込み範囲外のため別タスク。
+// 適用完了まで非テストビルドでは未使用となるので dead_code を明示的に許可し、
+// 値は既存リテラルをそのまま写す（ここでは文言を変更しない）。
+
+/// エラー表示の共通プレフィクス。空状態ではローディングより優先される。
+#[allow(dead_code)]
+pub const STATUS_ERROR_PREFIX: &str = "エラー: ";
+/// `{verb}しました` に続く一部失敗の括弧。成功を消さず失敗を併記する。
+#[allow(dead_code)]
+pub const STATUS_PARTIAL_FAILURE_SUFFIX: &str = "しました（一部失敗: ";
+/// 成功項目が皆無のときの失敗接尾（`{verb}` に続く）。
+#[allow(dead_code)]
+pub const STATUS_OP_FAILED_SUFFIX: &str = "できません";
+/// スキップ件数の括弧（`{status}` に続く）。
+#[allow(dead_code)]
+pub const STATUS_SKIPPED_PREFIX: &str = "（存在しない項目 ";
+#[allow(dead_code)]
+pub const STATUS_SKIPPED_SUFFIX: &str = " 件をスキップ）";
+/// 操作中止の完了通知（進行中の `STATUS_CANCELLING` とは別フェーズ）。
+#[allow(dead_code)]
+pub const STATUS_CANCELLED: &str = "キャンセルしました";
+/// 進行中通知の接尾（`{verb}` に続く）。
+#[allow(dead_code)]
+pub const STATUS_OP_IN_PROGRESS_SUFFIX: &str = "中…（Esc でキャンセル）";
+
+/// 再スキャン失敗。後続の `STATUS_CHANGED` で上書きしない（R6-A-04）。
+#[allow(dead_code)]
+pub const STATUS_RESCAN_FAILED: &str = "再スキャンに失敗しました";
+/// 監視の状態表示。`last_error()` がある場合は理由を連結する。
+#[allow(dead_code)]
+pub const STATUS_WATCH_PREFIX: &str = "監視: ";
+#[allow(dead_code)]
+pub const STATUS_WATCH_PARTIAL: &str = "一部無効 — ";
+#[allow(dead_code)]
+pub const STATUS_WATCH_DISABLED: &str = "無効 — ";
+#[allow(dead_code)]
+pub const STATUS_WATCH_INIT_FAILED: &str = "監視の初期化に失敗しました";
+/// 監視ディレクトリ数の接尾（`{count}` に続く）。
+#[allow(dead_code)]
+pub const STATUS_WATCH_COUNT_SUFFIX: &str = " ディレクトリ";
+
+/// OS 連携の成功 notification。戻り値を確認せずに出す現状の文言（r4-error-01）。
+#[allow(dead_code)]
+pub const STATUS_OPENED_DEFAULT_SUFFIX: &str = "を既定のアプリで開きました";
+#[allow(dead_code)]
+pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: ";
+/// 設定の失敗／退避（読み込み失敗と情報量を揃える）。
+#[allow(dead_code)]
+pub const STATUS_SETTINGS_SAVE_FAILED: &str = "設定を保存できませんでした（詳細は stderr を参照）";
+#[allow(dead_code)]
+pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
+/// タブ復元の成否。
+#[allow(dead_code)]
+pub const STATUS_TAB_RESTORED: &str = "タブを復元しました";
+#[allow(dead_code)]
+pub const STATUS_TAB_RESTORE_EMPTY: &str = "復元できるタブがありません";
+/// フォルダ作成の成否。
+#[allow(dead_code)]
+pub const STATUS_FOLDER_CREATED: &str = "フォルダを作成しました";
+#[allow(dead_code)]
+pub const ERR_FOLDER_CREATE: &str = "フォルダを作成できません";
+/// パスコピー／件数付き通知の接尾。
+#[allow(dead_code)]
+pub const STATUS_PATH_COPIED: &str = "パスをコピーしました";
+#[allow(dead_code)]
+pub const STATUS_MISSING_COUNT_SUFFIX: &str = " 件は既に存在しません";
+/// Undo / Redo の「対象なし」と失敗。
+#[allow(dead_code)]
+pub const STATUS_UNDO_EMPTY: &str = "元に戻せる操作がありません";
+#[allow(dead_code)]
+pub const STATUS_UNDO_EXISTS_SUFFIX: &str = " が既に存在します";
+#[allow(dead_code)]
+pub const STATUS_REDO_EMPTY: &str = "やり直せる操作がありません";
+#[allow(dead_code)]
+pub const STATUS_REDO_FAILED: &str = "やり直せません";
+#[allow(dead_code)]
+pub const STATUS_RENAME_FAILED: &str = "変更できません";
+#[allow(dead_code)]
+pub const STATUS_TARGET_MISSING: &str = "対象は既に存在しません";
+/// ゴミ箱操作の全件失敗と部分失敗（後者は `（{n} 件失敗: 「{name}」: {reason}）` の一部）。
+#[allow(dead_code)]
+pub const STATUS_TRASH_ALL_FAILED: &str = "ゴミ箱へ移動できません";
+#[allow(dead_code)]
+pub const STATUS_TRASH_PARTIAL_FAILED: &str = " 件失敗: ";
+#[allow(dead_code)]
+pub const STATUS_RESTORE_FAILED: &str = "復元できません";
+
+/// 表示層の優先順位（高い順）。狭いステータスバーでは後ろから省略する。
+/// 実行時のスロットではなく、競合時に参照する規約データ（r5-render-09）。
+#[allow(dead_code)]
+pub const STATUS_PRIORITY: &[&str] = &["エラー", "操作通知", "進捗", "選択情報", "監視状態"];
+/// 1 回の操作完了内での分岐順（高い順）。成功と失敗が競合しても成功を消さず、
+/// 一部失敗として併記するための規約。
+#[allow(dead_code)]
+pub const OP_RESULT_PRIORITY: &[&str] = &["キャンセル", "一部失敗", "失敗のみ", "成功"];
 
 // ---------------------------------------------------------------------------
 // 実行時値と組み合わせる正規の単語（呼び出し側は未移行、下のテストで整合性を検査）
@@ -343,5 +477,68 @@ mod tests {
             crate::model::human_age(Some(SystemTime::now() + Duration::from_secs(3600))),
             AGE_FUTURE
         );
+    }
+
+    #[test]
+    fn status_message_constants_are_nonempty() {
+        for message in [
+            STATUS_ERROR_PREFIX,
+            STATUS_PARTIAL_FAILURE_SUFFIX,
+            STATUS_OP_FAILED_SUFFIX,
+            STATUS_SKIPPED_PREFIX,
+            STATUS_SKIPPED_SUFFIX,
+            STATUS_CANCELLED,
+            STATUS_OP_IN_PROGRESS_SUFFIX,
+            STATUS_RESCAN_FAILED,
+            STATUS_WATCH_PREFIX,
+            STATUS_WATCH_PARTIAL,
+            STATUS_WATCH_DISABLED,
+            STATUS_WATCH_INIT_FAILED,
+            STATUS_WATCH_COUNT_SUFFIX,
+            STATUS_OPENED_DEFAULT_SUFFIX,
+            STATUS_REVEALED_PREFIX,
+            STATUS_SETTINGS_SAVE_FAILED,
+            STATUS_SETTINGS_READ_ONLY,
+            STATUS_TAB_RESTORED,
+            STATUS_TAB_RESTORE_EMPTY,
+            STATUS_FOLDER_CREATED,
+            ERR_FOLDER_CREATE,
+            STATUS_PATH_COPIED,
+            STATUS_MISSING_COUNT_SUFFIX,
+            STATUS_UNDO_EMPTY,
+            STATUS_UNDO_EXISTS_SUFFIX,
+            STATUS_REDO_EMPTY,
+            STATUS_REDO_FAILED,
+            STATUS_RENAME_FAILED,
+            STATUS_TARGET_MISSING,
+            STATUS_TRASH_ALL_FAILED,
+            STATUS_TRASH_PARTIAL_FAILED,
+            STATUS_RESTORE_FAILED,
+        ] {
+            assert!(!message.is_empty(), "status message must not be empty");
+        }
+    }
+
+    #[test]
+    fn status_priority_keeps_errors_above_notifications() {
+        assert_eq!(STATUS_PRIORITY.first(), Some(&"エラー"));
+        assert_eq!(STATUS_PRIORITY.last(), Some(&"監視状態"));
+        let mut seen = std::collections::HashSet::new();
+        for label in STATUS_PRIORITY {
+            assert!(seen.insert(*label), "duplicate priority label: {label}");
+        }
+    }
+
+    #[test]
+    fn success_and_failure_conflict_keeps_success_visible() {
+        // 成功項目がある失敗は「成功 + 一部失敗」の併記に解決し、失敗のみに
+        // 落とさない。キャンセルは完了分岐で最も優先される。
+        assert_eq!(OP_RESULT_PRIORITY[0], "キャンセル");
+        assert_eq!(OP_RESULT_PRIORITY[1], "一部失敗");
+        assert_eq!(OP_RESULT_PRIORITY[3], "成功");
+        assert!(STATUS_PARTIAL_FAILURE_SUFFIX.contains("一部失敗"));
+        assert!(STATUS_OP_FAILED_SUFFIX.starts_with("できません"));
+        // 進行中と完了は別フェーズで、同じ文言に潰してはならない。
+        assert_ne!(STATUS_CANCELLED, STATUS_CANCELLING);
     }
 }
