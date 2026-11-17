@@ -344,6 +344,10 @@ struct LocationState {
 
 /// Read-only text preview (Space / F3).
 struct PreviewState {
+    /// File currently shown; the source of truth for next/prev navigation.
+    path: PathBuf,
+    /// Monotonic serial of this preview, used to ignore stale read results.
+    serial: u64,
     title: String,
     loading: bool,
     text: Option<String>,
@@ -616,6 +620,24 @@ fn internal_drop_paths(paths: &[PathBuf], destination: &Path) -> Vec<PathBuf> {
     kept
 }
 
+/// Decide where a pending post-creation rename may start (F6-34).
+///
+/// Pure so the guard can be regression-tested: the listing must be loaded and
+/// idle, we must be in the directory view with no dialog already owning the
+/// keyboard, and the freshly created folder must actually be visible.
+fn pending_rename_index(
+    loading: bool,
+    renaming: bool,
+    directory_view: bool,
+    entries: &[Entry],
+    path: &Path,
+) -> Option<usize> {
+    if loading || renaming || !directory_view {
+        return None;
+    }
+    entries.iter().position(|entry| entry.path == path)
+}
+
 struct Explorer {
     settings: Settings,
     cwd: PathBuf,
@@ -649,6 +671,11 @@ struct Explorer {
     fingerprint: u64,
     /// Path to select once the next load finishes (new folder, etc.).
     pending_select: Option<PathBuf>,
+    /// Path to select and immediately rename once the next load finishes
+    /// (Ctrl+Shift+N creates a folder already primed for typing its name).
+    pending_rename: Option<PathBuf>,
+    /// Monotonic serial for previews; stale background reads are discarded.
+    preview_serial: u64,
     /// Foreground waiter of the latest load. Dropping it cancels the wait.
     load_task: Option<Task<()>>,
     watcher: DirWatcher,
@@ -823,6 +850,8 @@ impl Explorer {
             generation: 0,
             fingerprint: 0,
             pending_select: None,
+            pending_rename: None,
+            preview_serial: 0,
             load_task: None,
             watcher,
             suppress_until: None,
@@ -1008,6 +1037,7 @@ impl Explorer {
         self.selection.clear();
         self.selected = 0;
         self.pending_select = None;
+        self.pending_rename = None;
         self.status = STATUS_TRASH_LOADING.to_string();
         self.reload(cx);
     }
@@ -1384,6 +1414,7 @@ impl Explorer {
         self.selection.clear();
         self.selected = 0;
         self.pending_select = None;
+        self.pending_rename = None;
         self.load = LoadState::Ready;
         self.status.clear();
         self.settings.last_dir = Some(self.cwd.clone());
@@ -1572,6 +1603,7 @@ impl Explorer {
         self.cwd = path;
         self.selected = 0;
         self.pending_select = None;
+        self.pending_rename = None;
         self.load = LoadState::Ready;
         self.status.clear();
         self.settings.last_dir = Some(self.cwd.clone());
@@ -1822,12 +1854,18 @@ impl Explorer {
             }
             return;
         }
+        let keystroke = &event.keystroke;
+        let key = keystroke.key.as_str();
+        let modifiers = &keystroke.modifiers;
         if self.preview.is_some() {
-            if event.keystroke.key == "escape"
-                || event.keystroke.key == "space"
-                || event.keystroke.key == "f3"
-            {
-                self.close_preview(cx);
+            // The preview overlay owns the keyboard: route its keys through a
+            // pure mapping so the normal keymap below is left untouched.
+            match preview::preview_key_action(key, modifiers.control) {
+                preview::PreviewKeyAction::Close => self.close_preview(cx),
+                preview::PreviewKeyAction::Next => self.move_preview(1, cx),
+                preview::PreviewKeyAction::Prev => self.move_preview(-1, cx),
+                preview::PreviewKeyAction::OpenNewTab => self.preview_open_in_new_tab(cx),
+                preview::PreviewKeyAction::None => {}
             }
             return;
         }
@@ -1843,9 +1881,6 @@ impl Explorer {
             }
             return;
         }
-        let keystroke = &event.keystroke;
-        let key = keystroke.key.as_str();
-        let modifiers = &keystroke.modifiers;
         if modifiers.control {
             match (key, modifiers.shift) {
                 ("h", _) => self.toggle_hidden(cx),
@@ -2020,7 +2055,11 @@ impl Explorer {
                             .unwrap_or_default();
                         if this.cwd == expected_dir {
                             this.status = format!("フォルダを作成しました: {name}");
-                            this.pending_select = Some(path);
+                            this.pending_select = Some(path.clone());
+                            // F6-34: creation and naming become one gesture.
+                            // The next render starts the inline rename once
+                            // the new folder is present in the loaded listing.
+                            this.pending_rename = Some(path);
                             this.reload(cx);
                         } else {
                             this.status = format!(
@@ -3037,7 +3076,12 @@ impl Explorer {
     /// as text.
     fn open_preview(&mut self, path: PathBuf, title: String, cx: &mut Context<Self>) {
         let image_format = preview::image_format_for_name(&title);
+        let serial = self.preview_serial.wrapping_add(1);
+        self.preview_serial = serial;
+        let expected_path = path.clone();
         self.preview = Some(PreviewState {
+            path: path.clone(),
+            serial,
             title,
             loading: true,
             text: None,
@@ -3066,6 +3110,11 @@ impl Explorer {
                 let Some(preview) = this.preview.as_mut() else {
                     return;
                 };
+                // Consecutive navigation replaces the overlay quickly. A read
+                // from an older file must never paint over the newer one.
+                if preview.serial != serial || preview.path != expected_path {
+                    return;
+                }
                 preview.loading = false;
                 preview.task = None;
                 if this.debug.preview_report {
@@ -3115,11 +3164,67 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Move to the next/previous previewable file (F6-34). Folders and symlinks
+    /// are skipped; the list selection follows so closing the overlay leaves
+    /// the cursor on the file that was last shown.
+    fn move_preview(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let current = self.preview.as_ref().and_then(|preview| {
+            self.entries
+                .iter()
+                .position(|entry| entry.path == preview.path)
+        });
+        let Some(index) = preview::step_preview_index(&self.entries, current, delta) else {
+            return;
+        };
+        let entry = &self.entries[index];
+        let path = entry.path.clone();
+        let title = entry.name_text.clone();
+        self.select_single_index(index, cx);
+        self.open_preview(path, title, cx);
+    }
+
+    /// Open the previewed file in a new tab (F6-34): tabs hold directories, so
+    /// the file's parent becomes the new tab and the file is selected there.
+    fn preview_open_in_new_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.preview.as_ref().map(|preview| preview.path.clone()) else {
+            return;
+        };
+        let Some(parent) = preview::preview_parent(&path).map(Path::to_path_buf) else {
+            self.status = "このファイルは新しいタブで開けません".to_string();
+            cx.notify();
+            return;
+        };
+        if !parent.is_dir() {
+            self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&parent));
+            cx.notify();
+            return;
+        }
+        self.sync_active_tab();
+        self.tabs.new_tab(parent.clone());
+        let tab = self.tabs.active().clone();
+        self.close_preview(cx);
+        self.load_tab(tab, cx);
+        // `load_tab` clears pending selection; set it afterwards so the file
+        // that was previewed is focused in the freshly opened tab.
+        self.pending_select = Some(path);
+        self.status = format!("新しいタブで開きました: {}", display_path(&parent));
+        cx.notify();
+    }
+
     /// Read-only preview overlay with a scrollable text area.
     fn preview_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
         let preview = self.preview.as_ref()?;
         let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
             this.close_preview(cx);
+        });
+        let prev = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.move_preview(-1, cx);
+        });
+        let next = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.move_preview(1, cx);
+        });
+        let new_tab = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.preview_open_in_new_tab(cx);
         });
         let backdrop = div()
             .absolute()
@@ -3219,18 +3324,44 @@ impl Explorer {
                     .child(body_text),
             );
         }
+        let positions = preview::previewable_indices(&self.entries);
+        let counter = positions
+            .iter()
+            .position(|&index| {
+                self.entries.get(index).map(|entry| &entry.path) == Some(&preview.path)
+            })
+            .map(|position| format!("{} / {}", position + 1, positions.len()))
+            .unwrap_or_default();
         panel = panel.child(
             div()
                 .flex()
-                .justify_end()
-                .child(Button::new("preview-close").label("閉じる").on_click(close)),
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(Button::new("preview-prev").label("前へ").on_click(prev))
+                        .child(Button::new("preview-next").label("次へ").on_click(next))
+                        .child(
+                            Button::new("preview-new-tab")
+                                .label("新タブで開く")
+                                .on_click(new_tab),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().text_xs().text_color(rgb(C_MUTED)).child(counter))
+                        .child(Button::new("preview-close").label("閉じる").on_click(close)),
+                ),
         );
-        panel = panel.child(
-            div()
-                .text_xs()
-                .text_color(rgb(C_MUTED))
-                .child("Space / F3 / Esc で閉じる（読み取り専用）"),
-        );
+        panel = panel.child(div().text_xs().text_color(rgb(C_MUTED)).child(
+            "↑/↓ で前後のファイル、Ctrl+Enter で新タブ、Space / F3 / Esc で閉じる（読み取り専用）",
+        ));
         Some(
             div()
                 .absolute()
@@ -3700,6 +3831,9 @@ impl Explorer {
         if self.renaming.is_some() {
             return;
         }
+        // A manual F2 (or a debug hook) satisfies any queued post-creation
+        // rename too; never fire a second dialog on a later render.
+        self.pending_rename = None;
         let Some(entry) = self.entries.get(self.selected) else {
             return;
         };
@@ -5852,6 +5986,43 @@ fn icon_button(
 }
 
 impl Explorer {
+    /// Start the inline rename for a freshly created folder once its row has
+    /// appeared in the loaded listing. Runs in both debug and release builds:
+    /// unlike the screenshot hooks below this is a real workflow feature.
+    fn apply_pending_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.pending_rename.clone() else {
+            return;
+        };
+        let index = pending_rename_index(
+            self.load.is_loading(),
+            self.renaming.is_some(),
+            self.view == ViewSource::Directory,
+            &self.entries,
+            &path,
+        );
+        match index {
+            Some(index) => {
+                self.pending_rename = None;
+                self.select_single_index(index, cx);
+                // The rename input must keep focus even if an earlier dialog
+                // scheduled a return of focus to the list.
+                self.focus_list_on_next_render = false;
+                self.start_rename(window, cx);
+            }
+            None => {
+                // The folder disappeared (watcher/undo): never leave a stale
+                // rename request queued forever. While another dialog owns the
+                // keyboard, keep the request for the next render instead.
+                if !self.load.is_loading()
+                    && self.view == ViewSource::Directory
+                    && self.renaming.is_none()
+                {
+                    self.pending_rename = None;
+                }
+            }
+        }
+    }
+
     /// Development hooks evaluated before the bar elements are built.
     ///
     /// Each hook clears its own flag, so it fires once per activation. Kept
@@ -6035,6 +6206,7 @@ impl Render for Explorer {
             self.window_bounds = Some(bounds);
         }
         self.apply_startup_hooks(window, cx);
+        self.apply_pending_rename(window, cx);
         let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar(cx);
         let search_history_bar = self.search_history_bar(cx);
@@ -6395,8 +6567,9 @@ mod tests {
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
         build_places, classify_cli, clear_op_token, format_selected, install_op_token,
-        internal_drop_paths, kind_color, read_properties_snapshot, summarize_op, tab_label,
-        trash_batch, trash_delete_status, trash_key_action, CliAction, Explorer, TrashKeyAction,
+        internal_drop_paths, kind_color, pending_rename_index, read_properties_snapshot,
+        summarize_op, tab_label, trash_batch, trash_delete_status, trash_key_action, CliAction,
+        Explorer, TrashKeyAction,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -6514,6 +6687,55 @@ mod tests {
             vec![PathBuf::from("/work/a.txt"), PathBuf::from("/work/b.txt")]
         );
         assert!(internal_drop_paths(&[], &destination).is_empty());
+    }
+
+    #[test]
+    fn pending_rename_waits_for_a_visible_loaded_row() {
+        let entries = vec![
+            Entry {
+                name: OsString::from("a.txt"),
+                name_text: "a.txt".to_string(),
+                sort_key: "a.txt".to_string(),
+                path: PathBuf::from("/work/a.txt"),
+                is_dir: false,
+                is_symlink: false,
+                size: 1,
+                modified: None,
+            },
+            Entry {
+                name: OsString::from("新しいフォルダ"),
+                name_text: "新しいフォルダ".to_string(),
+                sort_key: "新しいフォルダ".to_string(),
+                path: PathBuf::from("/work/新しいフォルダ"),
+                is_dir: true,
+                is_symlink: false,
+                size: 0,
+                modified: None,
+            },
+        ];
+        let target = &entries[1].path;
+        assert_eq!(
+            pending_rename_index(false, false, true, &entries, target),
+            Some(1)
+        );
+        // Do not steal the keyboard while loading or while another dialog is
+        // open, and never rename from a non-directory view.
+        assert_eq!(
+            pending_rename_index(true, false, true, &entries, target),
+            None
+        );
+        assert_eq!(
+            pending_rename_index(false, true, true, &entries, target),
+            None
+        );
+        assert_eq!(
+            pending_rename_index(false, false, false, &entries, target),
+            None
+        );
+        assert_eq!(
+            pending_rename_index(false, false, true, &entries, &PathBuf::from("/work/gone")),
+            None
+        );
     }
 
     #[test]

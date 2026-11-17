@@ -170,6 +170,94 @@ pub fn read_preview(path: &Path, max_bytes: u64) -> Result<Preview, String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// F6-34 workflow helpers (GPUI-free so the routing can be unit tested).
+// ---------------------------------------------------------------------------
+
+/// Whether a visible listing entry can be shown in the read-only preview.
+/// Folders and symlinks are refused, matching `open_preview_selected`.
+pub fn is_previewable(entry: &crate::model::Entry) -> bool {
+    !entry.is_dir && !entry.is_symlink
+}
+
+/// Visible-listing indices of the entries that can be previewed.
+pub fn previewable_indices(entries: &[crate::model::Entry]) -> Vec<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| is_previewable(entry))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Step through previewable entries, wrapping at either end.
+///
+/// `current` is an index into the *visible* listing (the same slice the list
+/// renders). `None` means no previewable entry is focused yet: a positive
+/// `delta` starts at the first one and a negative one at the last. Folders and
+/// symlinks are skipped so consecutive previewing never gets stuck.
+pub fn step_preview_index(
+    entries: &[crate::model::Entry],
+    current: Option<usize>,
+    delta: isize,
+) -> Option<usize> {
+    let positions = previewable_indices(entries);
+    if positions.is_empty() {
+        return None;
+    }
+    let len = positions.len() as isize;
+    let next: usize =
+        match current.and_then(|index| positions.iter().position(|&slot| slot == index)) {
+            Some(position) => ((position as isize + delta).rem_euclid(len)) as usize,
+            None => {
+                // The focused row is not itself previewable (a folder/symlink, or
+                // a stale index after a re-sort). Pick the nearest usable row in
+                // the requested direction, wrapping at the edge.
+                let index = current.unwrap_or(0);
+                let candidate = if delta < 0 {
+                    positions.iter().rposition(|&slot| slot < index)
+                } else {
+                    positions.iter().position(|&slot| slot > index)
+                };
+                candidate.unwrap_or_else(|| if delta < 0 { positions.len() - 1 } else { 0 })
+            }
+        };
+    positions.get(next).copied()
+}
+
+/// Directory to use when opening a previewed file in a new tab.
+///
+/// Tabs own directories (not files), so the file's parent is opened and the
+/// file itself is selected there. Paths without a parent (a bare file name or
+/// a filesystem root) have no usable tab target.
+pub fn preview_parent(path: &Path) -> Option<&Path> {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+}
+
+/// A key press while the preview overlay owns the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewKeyAction {
+    Close,
+    Next,
+    Prev,
+    OpenNewTab,
+    None,
+}
+
+/// Map a keystroke to a preview action without touching the normal keymap.
+/// Escape/Space/F3 keep their existing close behaviour; Up/Down and
+/// Ctrl+Enter are new and were previously swallowed while previewing.
+pub fn preview_key_action(key: &str, control: bool) -> PreviewKeyAction {
+    match (key, control) {
+        ("escape" | "space" | "f3", _) => PreviewKeyAction::Close,
+        ("down", false) => PreviewKeyAction::Next,
+        ("up", false) => PreviewKeyAction::Prev,
+        ("enter", true) => PreviewKeyAction::OpenNewTab,
+        _ => PreviewKeyAction::None,
+    }
+}
+
 #[cfg(test)]
 mod image_tests {
     use super::{image_format_for_name, read_image_preview, sniff_image_format, MAX_IMAGE_BYTES};
@@ -401,5 +489,98 @@ mod tests {
         let dir = scratch("missing");
         assert!(read_preview(&dir.join("nope.txt"), MAX_PREVIEW_BYTES).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod workflow_tests {
+    use super::{
+        preview_key_action, preview_parent, previewable_indices, step_preview_index,
+        PreviewKeyAction,
+    };
+    use crate::model::Entry;
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+
+    fn entry(name: &str, is_dir: bool, is_symlink: bool) -> Entry {
+        Entry {
+            name: OsString::from(name),
+            name_text: name.to_string(),
+            sort_key: name.to_lowercase(),
+            path: PathBuf::from(format!("/work/{name}")),
+            is_dir,
+            is_symlink,
+            size: 1,
+            modified: None,
+        }
+    }
+
+    fn listing() -> Vec<Entry> {
+        vec![
+            entry("sub", true, false),
+            entry("a.txt", false, false),
+            entry("link.txt", false, true),
+            entry("b.txt", false, false),
+        ]
+    }
+
+    #[test]
+    fn previewable_indices_skip_folders_and_symlinks() {
+        let entries = listing();
+        assert_eq!(previewable_indices(&entries), vec![1, 3]);
+        assert!(previewable_indices(&[]).is_empty());
+        assert!(previewable_indices(&entries[..1]).is_empty());
+    }
+
+    #[test]
+    fn preview_navigation_wraps_and_skips_unpreviewable_rows() {
+        let entries = listing();
+        assert_eq!(step_preview_index(&entries, None, 1), Some(1));
+        assert_eq!(step_preview_index(&entries, None, -1), Some(3));
+        assert_eq!(step_preview_index(&entries, Some(1), 1), Some(3));
+        assert_eq!(step_preview_index(&entries, Some(3), 1), Some(1));
+        assert_eq!(step_preview_index(&entries, Some(3), -1), Some(1));
+        assert_eq!(step_preview_index(&entries, Some(1), -1), Some(3));
+        // Focusing a folder/symlink still lands on a usable neighbour.
+        assert_eq!(step_preview_index(&entries, Some(0), 1), Some(1));
+        assert_eq!(step_preview_index(&entries, Some(2), -1), Some(1));
+        assert_eq!(step_preview_index(&entries, Some(2), 1), Some(3));
+    }
+
+    #[test]
+    fn preview_navigation_without_previewable_entries_is_noop() {
+        let entries = vec![entry("dir", true, false), entry("link", false, true)];
+        assert_eq!(step_preview_index(&entries, Some(0), 1), None);
+        assert_eq!(step_preview_index(&[], None, -1), None);
+    }
+
+    #[test]
+    fn preview_new_tab_target_is_the_files_parent() {
+        assert_eq!(
+            preview_parent(Path::new("/work/docs/a.txt")),
+            Some(Path::new("/work/docs"))
+        );
+        assert_eq!(preview_parent(Path::new("/a.txt")), Some(Path::new("/")));
+        // A bare file name has no directory to open in a tab.
+        assert_eq!(preview_parent(Path::new("a.txt")), None);
+        assert_eq!(preview_parent(Path::new("/")), None);
+    }
+
+    #[test]
+    fn preview_keys_keep_close_and_add_navigation_and_new_tab() {
+        assert_eq!(preview_key_action("escape", false), PreviewKeyAction::Close);
+        assert_eq!(preview_key_action("space", false), PreviewKeyAction::Close);
+        assert_eq!(preview_key_action("f3", false), PreviewKeyAction::Close);
+        assert_eq!(preview_key_action("down", false), PreviewKeyAction::Next);
+        assert_eq!(preview_key_action("up", false), PreviewKeyAction::Prev);
+        assert_eq!(
+            preview_key_action("enter", true),
+            PreviewKeyAction::OpenNewTab
+        );
+        // Unmodified Enter and modified arrows stay inert: the normal keymap
+        // (Enter = open with the system app, Ctrl+arrows = history) is untouched.
+        assert_eq!(preview_key_action("enter", false), PreviewKeyAction::None);
+        assert_eq!(preview_key_action("down", true), PreviewKeyAction::None);
+        assert_eq!(preview_key_action("f2", false), PreviewKeyAction::None);
     }
 }

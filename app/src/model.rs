@@ -513,6 +513,104 @@ impl SortSpec {
     }
 }
 
+// --- Personalization data model (F6-38) -----------------------------------
+//
+// These types are deliberately GPUI-free and live in `model` so they can be
+// unit tested headlessly. `settings.rs` owns their persistence, caps and
+// duplicate pruning; the UI layer wires them through `Settings` methods.
+
+/// Maximum number of named searches persisted in settings.
+pub const MAX_SAVED_SEARCHES: usize = 50;
+/// Maximum byte length of a saved search's display name.
+pub const MAX_SAVED_SEARCH_NAME_BYTES: usize = 128;
+/// Maximum byte length of a saved search query (matches `settings::MAX_QUERY_BYTES`).
+pub const MAX_SAVED_SEARCH_QUERY_BYTES: usize = 1024;
+/// Maximum byte length of a bookmark label.
+pub const MAX_BOOKMARK_LABEL_BYTES: usize = 128;
+/// Maximum number of labeled bookmarks (tracks `settings::MAX_BOOKMARKS`).
+pub const MAX_BOOKMARK_LABELS: usize = 50;
+
+/// Shared text rule for persisted personalization values: non-empty after
+/// trimming, bounded on the raw byte length, and free of embedded NUL.
+fn sane_personal_text(value: &str, max_bytes: usize) -> bool {
+    !value.trim().is_empty() && value.len() <= max_bytes && !value.contains('\0')
+}
+
+/// A named, reusable search query (F6-38 personalization).
+///
+/// Persisted as `saved_searches: [{ "name": ..., "query": ... }]`. Values are
+/// normalized (trimmed) on construction; entries that are blank, oversized or
+/// contain NUL are dropped by `Settings::validate` after deserialization.
+/// Names are compared case-insensitively for lookup and duplicate detection.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct SavedSearch {
+    /// User-facing name, unique (case-insensitively) within the settings list.
+    pub name: String,
+    /// Search expression replayed by the UI; the query language is unchanged.
+    pub query: String,
+}
+
+impl SavedSearch {
+    /// Build a normalized entry, or `None` for blank/oversized/NUL text.
+    // UI-facing constructor; the saved-search panel is wired in a follow-up.
+    #[allow(dead_code)]
+    pub fn new(name: &str, query: &str) -> Option<Self> {
+        let search = Self {
+            name: name.trim().to_owned(),
+            query: query.trim().to_owned(),
+        };
+        search.is_valid().then_some(search)
+    }
+
+    /// Whether both fields are usable for persistence.
+    pub fn is_valid(&self) -> bool {
+        sane_personal_text(&self.name, MAX_SAVED_SEARCH_NAME_BYTES)
+            && sane_personal_text(&self.query, MAX_SAVED_SEARCH_QUERY_BYTES)
+    }
+
+    /// Case-insensitive key used for duplicate detection and lookup.
+    pub fn name_key(&self) -> String {
+        self.name.to_lowercase()
+    }
+}
+
+/// A user label attached to a bookmarked path (F6-38 personalization).
+///
+/// Persisted as `bookmark_labels: [{ "path": ..., "label": ... }]`. This type
+/// owns label validation only; the full path rule (non-empty, bounded,
+/// NUL-free) is applied by `Settings::validate` with the same `sane_path`
+/// check used for `bookmarks`, keeping this module independent of settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct BookmarkLabel {
+    /// Bookmark path the label belongs to; unique within the settings list.
+    pub path: PathBuf,
+    /// Short user-facing description of the bookmark.
+    pub label: String,
+}
+
+impl BookmarkLabel {
+    /// Build a normalized entry, rejecting an empty path or an unusable label.
+    // UI-facing constructor; the bookmark-label panel is wired in a follow-up.
+    #[allow(dead_code)]
+    pub fn new(path: &Path, label: &str) -> Option<Self> {
+        if path.as_os_str().is_empty() {
+            return None;
+        }
+        let entry = Self {
+            path: path.to_path_buf(),
+            label: label.trim().to_owned(),
+        };
+        entry.is_valid().then_some(entry)
+    }
+
+    /// Whether the label is usable for persistence (path checked by settings).
+    pub fn is_valid(&self) -> bool {
+        sane_personal_text(&self.label, MAX_BOOKMARK_LABEL_BYTES)
+    }
+}
+
 /// Clamp a selection index into `0..len` (0 for an empty list).
 pub fn clamp_index(index: usize, len: usize) -> usize {
     if len == 0 {
@@ -1383,5 +1481,72 @@ mod location_tests {
             resolve_location_input(&cwd(), "~user", Some(&home())).unwrap(),
             PathBuf::from("/work/dir/~user")
         );
+    }
+}
+
+#[cfg(test)]
+mod personalization_tests {
+    use super::{
+        BookmarkLabel, SavedSearch, MAX_BOOKMARK_LABEL_BYTES, MAX_SAVED_SEARCH_NAME_BYTES,
+        MAX_SAVED_SEARCH_QUERY_BYTES,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn saved_search_new_trims_and_rejects_invalid_text() {
+        let search = SavedSearch::new("  TODO  ", "  name:rs  ").unwrap();
+        assert_eq!(search.name, "TODO");
+        assert_eq!(search.query, "name:rs");
+        assert_eq!(search.name_key(), "todo");
+
+        assert!(SavedSearch::new("   ", "q").is_none());
+        assert!(SavedSearch::new("n", "  ").is_none());
+        assert!(SavedSearch::new("bad\0name", "q").is_none());
+        assert!(SavedSearch::new("n", "bad\0query").is_none());
+        assert!(SavedSearch::new(&"n".repeat(MAX_SAVED_SEARCH_NAME_BYTES + 1), "q").is_none());
+        assert!(SavedSearch::new("n", &"q".repeat(MAX_SAVED_SEARCH_QUERY_BYTES + 1)).is_none());
+    }
+
+    #[test]
+    fn saved_search_json_roundtrip_and_partial_defaults() {
+        let search = SavedSearch::new("todos", "TODO").unwrap();
+        let text = serde_json::to_string(&search).unwrap();
+        assert!(text.contains("\"name\":\"todos\""));
+        assert!(text.contains("\"query\":\"TODO\""));
+        assert_eq!(serde_json::from_str::<SavedSearch>(&text).unwrap(), search);
+
+        // A partial object is tolerated by serde but is not valid for storage;
+        // Settings::validate drops such entries on load.
+        let partial: SavedSearch = serde_json::from_str(r#"{"name":"todos"}"#).unwrap();
+        assert!(partial.query.is_empty());
+        assert!(!partial.is_valid());
+    }
+
+    #[test]
+    fn bookmark_label_new_trims_and_rejects_invalid_input() {
+        let entry = BookmarkLabel::new(Path::new("/home/koppe"), " home ").unwrap();
+        assert_eq!(entry.path, Path::new("/home/koppe"));
+        assert_eq!(entry.label, "home");
+        assert!(entry.is_valid());
+
+        assert!(BookmarkLabel::new(Path::new(""), "home").is_none());
+        assert!(BookmarkLabel::new(Path::new("/a"), "   ").is_none());
+        assert!(BookmarkLabel::new(Path::new("/a"), "bad\0label").is_none());
+        assert!(
+            BookmarkLabel::new(Path::new("/a"), &"x".repeat(MAX_BOOKMARK_LABEL_BYTES + 1))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bookmark_label_json_roundtrip_and_partial_defaults() {
+        let entry = BookmarkLabel::new(Path::new("/home/koppe"), "home").unwrap();
+        let text = serde_json::to_string(&entry).unwrap();
+        assert!(text.contains("\"path\":\"/home/koppe\""));
+        assert!(text.contains("\"label\":\"home\""));
+        assert_eq!(serde_json::from_str::<BookmarkLabel>(&text).unwrap(), entry);
+
+        let partial: BookmarkLabel = serde_json::from_str(r#"{"path":"/a"}"#).unwrap();
+        assert!(!partial.is_valid());
     }
 }
