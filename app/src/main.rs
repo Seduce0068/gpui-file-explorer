@@ -454,6 +454,9 @@ struct Explorer {
     history: History,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
+    /// Current icon-grid column count, refreshed each render. Used to map an
+    /// entry index to its list row when scrolling (F6-10).
+    grid_column_count: usize,
     load: LoadState,
     status: String,
     /// Monotonic id of the latest load request; stale results are dropped.
@@ -623,6 +626,7 @@ impl Explorer {
             history,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
+            grid_column_count: 1,
             load: LoadState::Loading { generation: 0 },
             status: String::new(),
             generation: 0,
@@ -793,8 +797,7 @@ impl Explorer {
             }
         }
         if !self.entries.is_empty() {
-            self.scroll_handle
-                .scroll_to_item(self.selected, ScrollStrategy::Nearest);
+            self.scroll_to_entry(self.selected);
         }
     }
 
@@ -860,8 +863,7 @@ impl Explorer {
             }
         }
         if !self.entries.is_empty() {
-            self.scroll_handle
-                .scroll_to_item(self.selected, ScrollStrategy::Nearest);
+            self.scroll_to_entry(self.selected);
         }
     }
 
@@ -1214,6 +1216,19 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Scroll to the list row containing an entry. In icon-grid mode several
+    /// entries share a row, so the list index differs from the entry index
+    /// (third cross-review F6-10).
+    fn scroll_to_entry(&self, entry_index: usize) {
+        let row = if self.settings.view == ViewLayout::Icons {
+            entry_index / self.grid_column_count.max(1)
+        } else {
+            entry_index
+        };
+        self.scroll_handle
+            .scroll_to_item(row, ScrollStrategy::Nearest);
+    }
+
     fn next_tab(&mut self, cx: &mut Context<Self>) {
         self.sync_active_tab();
         let tab = self.tabs.next();
@@ -1459,8 +1474,7 @@ impl Explorer {
             self.selection.clear();
         }
         if !self.entries.is_empty() {
-            self.scroll_handle
-                .scroll_to_item(index, ScrollStrategy::Nearest);
+            self.scroll_to_entry(index);
         }
         cx.notify();
     }
@@ -1491,8 +1505,7 @@ impl Explorer {
             self.selection.select_single(path);
         }
         self.selected = index;
-        self.scroll_handle
-            .scroll_to_item(index, ScrollStrategy::Nearest);
+        self.scroll_to_entry(index);
         cx.notify();
     }
 
@@ -3911,8 +3924,7 @@ impl Explorer {
             .first()
             .and_then(|path| self.entries.iter().position(|entry| &entry.path == path))
             .unwrap_or(0);
-        self.scroll_handle
-            .scroll_to_item(0, ScrollStrategy::Nearest);
+        self.scroll_to_entry(0);
         let mode_label = if self.search.mode == SearchMode::Content {
             "（内容）"
         } else {
@@ -5581,6 +5593,7 @@ impl Render for Explorer {
             window.viewport_size().width.to_f64() as f32 - SIDEBAR_WIDTH_PX,
             GRID_CELL_WIDTH_PX,
         );
+        self.grid_column_count = columns;
         let item_count = if grid_mode {
             grid_row_count(self.entries.len(), columns)
         } else {
