@@ -2600,22 +2600,28 @@ impl Explorer {
                             this.status = "やり直せません".to_string();
                         } else {
                             this.suppress_for(SELF_OP_SUPPRESS);
-                            if let Ok(items) = trash_view::list() {
-                                let recorded: Vec<(PathBuf, String)> = trashed
-                                    .iter()
-                                    .filter_map(|path| {
-                                        items.iter().find(|item| item.original_path() == *path).map(
-                                            |item| {
-                                                (
-                                                    path.clone(),
-                                                    item.id.to_string_lossy().into_owned(),
-                                                )
-                                            },
-                                        )
-                                    })
-                                    .collect();
-                                this.undo.push_undo(UndoAction::Trash { items: recorded });
-                            }
+                            // Always record the redo, even when the trash
+                            // listing fails: otherwise the operation silently
+                            // vanishes from the undo stack (F6-15).
+                            let recorded: Vec<(PathBuf, String)> = trash_view::list()
+                                .map(|items| {
+                                    trashed
+                                        .iter()
+                                        .filter_map(|path| {
+                                            items
+                                                .iter()
+                                                .find(|item| item.original_path() == *path)
+                                                .map(|item| {
+                                                    (
+                                                        path.clone(),
+                                                        item.id.to_string_lossy().into_owned(),
+                                                    )
+                                                })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            this.undo.push_undo(UndoAction::Trash { items: recorded });
                             this.status = if failures.is_empty() {
                                 format!("{label}をやり直しました（{} 件）", trashed.len())
                             } else {
