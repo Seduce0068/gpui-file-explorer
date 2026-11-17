@@ -52,7 +52,7 @@ use crate::search::{
 use crate::settings::{Settings, ViewLayout};
 use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
-use crate::watcher::{DirWatcher, FsEvent};
+use crate::watcher::{removed_paths, DirWatcher, FsEvent};
 
 // Catppuccin Mocha-ish palette.
 const C_BASE: u32 = 0x1e1e2e;
@@ -989,12 +989,7 @@ impl Explorer {
                         // entries that vanished so the view cannot act on a
                         // deleted path. Full re-search is deferred to the user
                         // (documented limitation).
-                        let mut removed = Vec::new();
-                        for event in &batch {
-                            if let FsEvent::Removed(paths) = event {
-                                removed.extend(paths.iter().cloned());
-                            }
-                        }
+                        let removed = removed_paths(&batch);
                         if removed.is_empty() {
                             return;
                         }
