@@ -22,6 +22,7 @@ mod undo;
 mod watcher;
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -204,6 +205,465 @@ fn summarize_op(verb: &str, stats: &OpStats) -> String {
     message
 }
 
+// ------------------------------------------------------------- F6-50 terminal
+
+/// Directory in which "open terminal here" starts the child process.
+///
+/// A selected directory is used as-is; a selected file uses its parent so the
+/// shell opens where the file lives. `fallback` is the listing's current
+/// directory when nothing is selected (or the path has no parent).
+fn terminal_dir_for(path: &Path, is_dir: bool, fallback: &Path) -> PathBuf {
+    if is_dir {
+        return path.to_path_buf();
+    }
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| fallback.to_path_buf())
+}
+
+/// Resolve the terminal working directory from the focused row, falling back
+/// to the current directory when the listing is empty.
+fn terminal_target_dir(entry: Option<&Entry>, cwd: &Path) -> PathBuf {
+    match entry {
+        Some(entry) => terminal_dir_for(&entry.path, entry.is_dir, cwd),
+        None => cwd.to_path_buf(),
+    }
+}
+
+/// Build the child process from an already-split argv. The target path never
+/// enters the command line: it is passed only via `Command::current_dir`, so a
+/// user-controlled path cannot be interpreted as a shell fragment (F6-50).
+fn terminal_process(argv: &[String], dir: &Path) -> Option<Command> {
+    let (program, args) = argv.split_first()?;
+    let mut command = Command::new(program);
+    command.args(args).current_dir(dir);
+    Some(command)
+}
+
+/// Status shown when the configured terminal command is missing or unusable.
+fn terminal_disabled_status() -> String {
+    "ターミナルを開けません: 起動コマンドが未設定です（設定の terminal_command を確認）".to_string()
+}
+
+/// Status shown after a successful launch (command plus target directory).
+fn terminal_started_status(argv: &[String], dir: &Path) -> String {
+    format!(
+        "ターミナルを起動しました: {}（{}）",
+        argv.join(" "),
+        display_path(dir)
+    )
+}
+
+/// Status shown when the spawn itself failed, including the OS error so the
+/// user can tell a missing emulator from a missing directory.
+fn terminal_failed_status(error: &std::io::Error, dir: &Path) -> String {
+    format!(
+        "ターミナルを起動できません: {error}（{}）",
+        display_path(dir)
+    )
+}
+
+// --------------------------------------------------------------- F6-51 keymap
+
+/// Logical action produced by a keystroke. The keyboard dispatch is a table of
+/// (keystroke -> action) pairs rather than a hardcoded `match`, so a binding can
+/// be changed without touching the dispatch code (F6-51 / r5-future-14).
+///
+/// Dialog-ownership keys (`F1`, `Escape`) are deliberately handled *before* the
+/// table in `on_key_down`: a bad rebind must never lock the user out of a
+/// dialog, so those two keys stay literal and are not listed here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyAction {
+    OpenPreview,
+    StartRename,
+    Reload,
+    OpenSelected,
+    GoParent,
+    MoveUp,
+    MoveDown,
+    PageUp,
+    PageDown,
+    SelectFirst,
+    SelectLast,
+    TrashSelected,
+    RestoreSelected,
+    ToggleHidden,
+    SelectAll,
+    ToggleBookmark,
+    OpenSearch,
+    FocusSearchName,
+    OpenProperties,
+    OpenLocation,
+    Undo,
+    Redo,
+    ToggleUndoHistory,
+    NewTab,
+    RestoreClosedTab,
+    CloseTab,
+    NextTab,
+    PrevTab,
+    MoveTabLeft,
+    MoveTabRight,
+    DetailsView,
+    IconsView,
+    NewFolder,
+    Copy,
+    Cut,
+    Paste,
+    Quit,
+    GoBack,
+    GoForward,
+    /// Ctrl+P: open the fuzzy-jump overlay.
+    FuzzyJump,
+    /// F4: open a terminal in the selected directory (F6-50).
+    OpenTerminal,
+    /// No binding (either unmapped by default or unbound by the user).
+    None,
+}
+
+/// One row of the keymap table. `shift: None` matches both shift states, which
+/// preserves the pre-existing `Ctrl+H` / `Ctrl+R` / `Ctrl+Q` "either shift"
+/// behaviour and the plain Shift+Arrow selection extension.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct KeyBinding {
+    key: &'static str,
+    ctrl: bool,
+    alt: bool,
+    shift: Option<bool>,
+    action: KeyAction,
+}
+
+/// Personalized key map. The table is data, so a settings panel (or a test)
+/// can rebind an action without editing `on_key_down` (F6-51).
+#[derive(Clone, Debug)]
+struct KeyMap {
+    bindings: Vec<KeyBinding>,
+}
+
+impl KeyMap {
+    /// Whether a binding claims a keystroke. `None` for `shift` means "any
+    /// shift state", so both wildcard-default bindings and concrete rebinds
+    /// are compared consistently.
+    fn binding_matches(
+        binding: &KeyBinding,
+        key: &str,
+        ctrl: bool,
+        alt: bool,
+        shift: Option<bool>,
+    ) -> bool {
+        binding.key == key
+            && binding.ctrl == ctrl
+            && binding.alt == alt
+            && match (binding.shift, shift) {
+                (Some(bound), Some(wanted)) => bound == wanted,
+                _ => true,
+            }
+    }
+
+    /// The default table reproduces every shortcut that existed before F6-51
+    /// and adds Ctrl+P for fuzzy jump. Binding order is significant: the first
+    /// match wins.
+    fn default_keymap() -> Self {
+        // Import the variants explicitly: a glob would import `KeyAction::None`
+        // and shadow `Option::None` used in the wildcard-shift bindings below.
+        use KeyAction::{
+            CloseTab, Copy, Cut, DetailsView, FocusSearchName, FuzzyJump, GoBack, GoForward,
+            GoParent, IconsView, MoveDown, MoveTabLeft, MoveTabRight, MoveUp, NewFolder, NewTab,
+            NextTab, OpenLocation, OpenPreview, OpenProperties, OpenSearch, OpenSelected,
+            OpenTerminal, PageDown, PageUp, Paste, PrevTab, Quit, Redo, Reload, RestoreClosedTab,
+            RestoreSelected, SelectAll, SelectFirst, SelectLast, StartRename, ToggleBookmark,
+            ToggleHidden, ToggleUndoHistory, TrashSelected, Undo,
+        };
+        let binding = |key, ctrl, alt, shift, action| KeyBinding {
+            key,
+            ctrl,
+            alt,
+            shift,
+            action,
+        };
+        Self {
+            bindings: vec![
+                // Plain keys.
+                binding("up", false, false, None, MoveUp),
+                binding("down", false, false, None, MoveDown),
+                binding("pageup", false, false, None, PageUp),
+                binding("pagedown", false, false, None, PageDown),
+                binding("home", false, false, None, SelectFirst),
+                binding("end", false, false, None, SelectLast),
+                binding("enter", false, false, None, OpenSelected),
+                binding("backspace", false, false, None, GoParent),
+                binding("f5", false, false, None, Reload),
+                binding("space", false, false, None, OpenPreview),
+                binding("f3", false, false, None, OpenPreview),
+                // F4 follows the KDE/Dolphin convention of opening a terminal
+                // in the current folder. It was unused, so no F6-51 binding
+                // (notably Ctrl+P fuzzy jump) changes (F6-50).
+                binding("f4", false, false, None, OpenTerminal),
+                binding("f2", false, false, None, StartRename),
+                binding("delete", false, false, None, TrashSelected),
+                binding("r", false, false, None, RestoreSelected),
+                // Ctrl keys.
+                binding("h", true, false, None, ToggleHidden),
+                binding("a", true, false, Some(false), SelectAll),
+                binding("d", true, false, Some(false), ToggleBookmark),
+                binding("f", true, false, Some(false), OpenSearch),
+                binding("f", true, false, Some(true), FocusSearchName),
+                binding("i", true, false, Some(false), OpenProperties),
+                binding("l", true, false, Some(false), OpenLocation),
+                binding("z", true, false, Some(false), Undo),
+                binding("z", true, false, Some(true), Redo),
+                binding("u", true, false, Some(true), ToggleUndoHistory),
+                binding("t", true, false, Some(false), NewTab),
+                binding("t", true, false, Some(true), RestoreClosedTab),
+                binding("w", true, false, Some(false), CloseTab),
+                binding("tab", true, false, Some(false), NextTab),
+                binding("tab", true, false, Some(true), PrevTab),
+                binding("pageup", true, false, Some(true), MoveTabLeft),
+                binding("pagedown", true, false, Some(true), MoveTabRight),
+                binding("1", true, false, Some(false), DetailsView),
+                binding("2", true, false, Some(false), IconsView),
+                binding("r", true, false, None, Reload),
+                binding("n", true, false, Some(true), NewFolder),
+                binding("c", true, false, Some(false), Copy),
+                binding("x", true, false, Some(false), Cut),
+                binding("v", true, false, Some(false), Paste),
+                binding("enter", true, false, Some(false), RestoreSelected),
+                binding("q", true, false, None, Quit),
+                binding("p", true, false, Some(false), FuzzyJump),
+                // Alt keys.
+                binding("left", false, true, None, GoBack),
+                binding("right", false, true, None, GoForward),
+                binding("up", false, true, None, GoParent),
+            ],
+        }
+    }
+
+    /// Pure lookup used by `on_key_down`. Unknown keys intentionally resolve to
+    /// `None` so the old "unbound key is a no-op" behaviour is preserved.
+    fn resolve(&self, key: &str, ctrl: bool, shift: bool, alt: bool) -> KeyAction {
+        let found = self
+            .bindings
+            .iter()
+            .find(|binding| Self::binding_matches(binding, key, ctrl, alt, Some(shift)));
+        found.map_or(KeyAction::None, |binding| binding.action)
+    }
+
+    /// Give `action` a new keystroke, evicting any other binding that would
+    /// claim the same keystroke. Returns `false` for an action that is not in
+    /// the table or for a reserved dialog key. This is the personalization
+    /// hook a settings panel can call without touching the dispatcher.
+    /// `#[allow(dead_code)]` keeps the `-D warnings` gate green until a settings
+    /// panel calls it; the unit tests exercise the full rebind/reset path.
+    #[allow(dead_code)]
+    fn rebind(
+        &mut self,
+        action: KeyAction,
+        key: &'static str,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    ) -> bool {
+        const RESERVED: [&str; 2] = ["escape", "f1"];
+        if RESERVED.contains(&key) || !self.bindings.iter().any(|b| b.action == action) {
+            return false;
+        }
+        // Drop the action's old binding as well: a rebind moves the action,
+        // it does not add a second keystroke for it.
+        self.bindings.retain(|binding| binding.action != action);
+        self.bindings
+            .retain(|binding| !Self::binding_matches(binding, key, ctrl, alt, Some(shift)));
+        self.bindings.push(KeyBinding {
+            key,
+            ctrl,
+            alt,
+            shift: Some(shift),
+            action,
+        });
+        true
+    }
+
+    /// Restore one action to its shipped keystroke (used by a "reset" button).
+    /// See `rebind` for why this is allowed to be unused in the binary today.
+    #[allow(dead_code)]
+    fn reset(&mut self, action: KeyAction) {
+        let defaults = Self::default_keymap();
+        if let Some(default) = defaults.bindings.iter().find(|b| b.action == action) {
+            let default = *default;
+            self.bindings.retain(|b| b.action != action);
+            self.bindings.retain(|b| {
+                !Self::binding_matches(b, default.key, default.ctrl, default.alt, default.shift)
+            });
+            self.bindings.push(default);
+        }
+    }
+}
+
+// ------------------------------------------------------------- F6-51 fuzzy jump
+
+/// Where a fuzzy-jump candidate came from. The order also acts as the ranking
+/// tie-break priority (earlier variants win an equal score).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum FuzzySource {
+    Tab,
+    Bookmark,
+    Recent,
+    Ancestor,
+    Entry,
+}
+
+impl FuzzySource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Tab => "タブ",
+            Self::Bookmark => "ブックマーク",
+            Self::Recent => "最近",
+            Self::Ancestor => "階層",
+            Self::Entry => "ファイル",
+        }
+    }
+}
+
+/// A path offered by the Ctrl+P overlay, together with its display name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FuzzyCandidate {
+    path: PathBuf,
+    label: String,
+    source: FuzzySource,
+}
+
+const FUZZY_MAX_RESULTS: usize = 12;
+const FUZZY_MAX_ANCESTORS: usize = 8;
+
+/// Case-insensitive subsequence score. `None` means the query is not a
+/// subsequence at all; higher scores mean tighter, earlier matches. An exact
+/// substring always outranks a scattered subsequence. GPUI-free by design so
+/// the ranking can be regression-tested headlessly (F6-51).
+fn fuzzy_score(candidate: &str, query: &str) -> Option<i32> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Some(0);
+    }
+    let haystack = candidate.to_lowercase();
+    let needle = query.to_lowercase();
+    if let Some(position) = haystack.find(&needle) {
+        return Some(100 + needle.chars().count() as i32 * 4 - (position.min(40) / 4) as i32);
+    }
+    let chars: Vec<char> = haystack.chars().collect();
+    let needle_chars: Vec<char> = needle.chars().collect();
+    let mut matched = 0usize;
+    let mut last: Option<usize> = None;
+    let mut score = 0i32;
+    for (index, ch) in chars.iter().enumerate() {
+        if matched == needle_chars.len() {
+            break;
+        }
+        if *ch != needle_chars[matched] {
+            continue;
+        }
+        score += 10;
+        if last == Some(index.saturating_sub(1)) {
+            score += 8; // consecutive characters
+        }
+        if index == 0 || !chars[index - 1].is_alphanumeric() {
+            score += 6; // start of a word or an extension
+        }
+        score -= (index.min(40) / 4) as i32; // earlier matches are better
+        last = Some(index);
+        matched += 1;
+    }
+    if matched == needle_chars.len() {
+        Some(score)
+    } else {
+        None
+    }
+}
+
+/// Build the candidate list from already-cached state only: tabs, bookmarks,
+/// recent directories, ancestors of the current directory and the visible
+/// entries. No filesystem I/O, so this is a pure, testable projection. The
+/// first occurrence of a path wins, giving the priority order its meaning.
+fn fuzzy_candidates(
+    cwd: &Path,
+    tabs: &[PathBuf],
+    bookmarks: &[PathBuf],
+    recent: &[PathBuf],
+    entries: &[Entry],
+    labels: &[(PathBuf, String)],
+) -> Vec<FuzzyCandidate> {
+    let label_for = |path: &Path| -> Option<&str> {
+        labels
+            .iter()
+            .find(|(candidate, _)| candidate == path)
+            .map(|(_, label)| label.as_str())
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut push = |path: PathBuf, source: FuzzySource| {
+        if path.as_os_str().is_empty() || !seen.insert(path.clone()) {
+            return;
+        }
+        let base = tab_label(&path);
+        let label = labeled_display_name(&base, label_for(&path));
+        out.push(FuzzyCandidate {
+            path,
+            label,
+            source,
+        });
+    };
+    for path in tabs {
+        push(path.clone(), FuzzySource::Tab);
+    }
+    for path in bookmarks {
+        push(path.clone(), FuzzySource::Bookmark);
+    }
+    for path in recent {
+        push(path.clone(), FuzzySource::Recent);
+    }
+    let mut ancestor = Some(cwd.to_path_buf());
+    for _ in 0..FUZZY_MAX_ANCESTORS {
+        let Some(path) = ancestor else { break };
+        if path.as_os_str().is_empty() {
+            break;
+        }
+        let next = parent_dir(&path);
+        let stop = next.as_ref().is_none_or(|parent| parent == &path);
+        push(path, FuzzySource::Ancestor);
+        if stop {
+            break;
+        }
+        ancestor = next;
+    }
+    for entry in entries {
+        push(entry.path.clone(), FuzzySource::Entry);
+    }
+    out
+}
+
+/// Indices of the best `limit` candidates for `query`. Empty queries keep the
+/// source priority order (tabs first) so the overlay is useful even before the
+/// user types anything. Ties are broken by source, then insertion order.
+fn rank_fuzzy(candidates: &[FuzzyCandidate], query: &str, limit: usize) -> Vec<usize> {
+    let mut scored: Vec<(i32, FuzzySource, usize)> = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let label = fuzzy_score(&candidate.label, query);
+        let path = fuzzy_score(&candidate.path.to_string_lossy(), query);
+        let score = match (label, path) {
+            (Some(a), Some(b)) => a.max(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => continue,
+        };
+        scored.push((score, candidate.source, index));
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, index)| index)
+        .collect()
+}
+
 /// Which listing the window currently shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewSource {
@@ -373,6 +833,19 @@ struct LocationState {
     /// Keeps the `InputEvent::PressEnter` subscription alive while open.
     _subscription: Subscription,
     error: Option<String>,
+}
+
+/// Fuzzy jump overlay (Ctrl+P): a query input plus the ranked candidate list.
+/// Dropping it closes the dialog and drops its input subscriptions.
+struct FuzzyState {
+    input: Entity<InputState>,
+    /// Keeps `InputEvent::Change` / `PressEnter` subscriptions alive.
+    _subscription: Subscription,
+    candidates: Vec<FuzzyCandidate>,
+    /// Indices into `candidates`, ranked for the current query.
+    results: Vec<usize>,
+    /// Cursor into `results` (not `candidates`), moved by Up / Down.
+    selected: usize,
 }
 
 /// Read-only text preview (Space / F3).
@@ -749,6 +1222,10 @@ struct Explorer {
     help_open: bool,
     /// Path input opened with Ctrl+L.
     location: Option<LocationState>,
+    /// Personalized key map (F6-51). Defaults to the shipped bindings.
+    keymap: KeyMap,
+    /// Ctrl+P fuzzy jump overlay state. `None` when closed.
+    fuzzy: Option<FuzzyState>,
     /// Text preview overlay (Space / F3).
     preview: Option<PreviewState>,
     /// Bounded undo/redo stack for reversible operations (rename, trash).
@@ -910,6 +1387,8 @@ impl Explorer {
             properties: None,
             help_open: false,
             location: None,
+            keymap: KeyMap::default_keymap(),
+            fuzzy: None,
             preview: None,
             undo: UndoStack::new(),
             undo_history_open: false,
@@ -1955,52 +2434,99 @@ impl Explorer {
         self.entries.get(self.selected)
     }
 
+    // ---------------------------------------------------------------- terminal
+
+    /// Launch the configured terminal emulator with `dir` as its working
+    /// directory. A disabled command or a failed spawn is reported on the
+    /// status bar instead of failing silently (F6-50).
+    fn open_terminal(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        let Some(argv) = self.settings.terminal_command_argv() else {
+            self.status = terminal_disabled_status();
+            cx.notify();
+            return;
+        };
+        let Some(mut command) = terminal_process(&argv, &dir) else {
+            self.status = terminal_disabled_status();
+            cx.notify();
+            return;
+        };
+        match command.spawn() {
+            Ok(_child) => self.status = terminal_started_status(&argv, &dir),
+            Err(error) => self.status = terminal_failed_status(&error, &dir),
+        }
+        cx.notify();
+    }
+
+    /// F4 entry point: use the focused row, or the current directory when the
+    /// listing is empty. Trash rows have no filesystem directory to reuse.
+    fn open_terminal_for_selection(&mut self, cx: &mut Context<Self>) {
+        if self.view == ViewSource::Trash {
+            self.status = "ゴミ箱ではターミナルを開けません".to_string();
+            cx.notify();
+            return;
+        }
+        let dir = terminal_target_dir(self.selected_entry(), &self.cwd);
+        self.open_terminal(dir, cx);
+    }
+
     // --------------------------------------------------------------- shortcuts
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
         // While the rename dialog is open the text input owns most keys; only
         // Escape is handled here (Enter arrives as `InputEvent::PressEnter`).
         if self.renaming.is_some() {
-            if event.keystroke.key == "escape" {
+            if key == "escape" {
                 self.cancel_rename(window, cx);
             }
             return;
         }
         if self.label_editor.is_some() {
             // The label input owns keys while open; only Escape closes it.
-            if event.keystroke.key == "escape" {
+            if key == "escape" {
                 self.close_label_editor(cx);
             }
             return;
         }
-        if event.keystroke.key == "f1" {
+        // F6-51: the fuzzy overlay owns the keyboard while open. Typing goes to
+        // its input (Change / PressEnter subscriptions); only navigation and
+        // dismissal are handled here. This guard runs before F1 so a second
+        // dialog can never be opened on top of the fuzzy overlay.
+        if self.fuzzy.is_some() {
+            match key {
+                "escape" => self.close_fuzzy(cx),
+                "up" => self.move_fuzzy_selection(-1, cx),
+                "down" => self.move_fuzzy_selection(1, cx),
+                _ => {}
+            }
+            return;
+        }
+        if key == "f1" {
             self.help_open = !self.help_open;
             cx.notify();
             return;
         }
         if self.help_open {
-            if event.keystroke.key == "escape" {
+            if key == "escape" {
                 self.help_open = false;
                 cx.notify();
             }
             return;
         }
         if self.location.is_some() {
-            if event.keystroke.key == "escape" {
+            if key == "escape" {
                 self.close_location(cx);
             }
             return;
         }
         if self.undo_history_open {
-            if event.keystroke.key == "escape" {
+            if key == "escape" {
                 self.undo_history_open = false;
                 cx.notify();
             }
             return;
         }
-        let keystroke = &event.keystroke;
-        let key = keystroke.key.as_str();
-        let modifiers = &keystroke.modifiers;
         if self.preview.is_some() {
             // The preview overlay owns the keyboard: route its keys through a
             // pure mapping so the normal keymap below is left untouched.
@@ -2014,94 +2540,21 @@ impl Explorer {
             return;
         }
         if self.properties.is_some() {
-            if event.keystroke.key == "escape" {
+            if key == "escape" {
                 self.close_properties(cx);
             }
             return;
         }
         if self.view == ViewSource::Search {
-            if event.keystroke.key == "escape" {
+            if key == "escape" {
                 self.close_search(cx);
             }
             return;
         }
-        if modifiers.control {
-            match (key, modifiers.shift) {
-                ("h", _) => self.toggle_hidden(cx),
-                ("a", false) => self.select_all(cx),
-                ("d", false) => self.toggle_current_bookmark(cx),
-                ("f", false) => self.open_search(window, cx),
-                ("f", true) => {
-                    if let Some(input) = self.search.name_filter.clone() {
-                        let focus = input.read(cx).focus_handle(cx).clone();
-                        focus.focus(window, cx);
-                        cx.notify();
-                    }
-                }
-                ("i", false) => self.open_selected_properties(cx),
-                ("l", false) => self.open_location(window, cx),
-                ("z", false) => self.undo_last(cx),
-                ("z", true) => self.redo_last(cx),
-                ("u", true) => {
-                    self.undo_history_open = !self.undo_history_open;
-                    cx.notify();
-                }
-                ("t", false) => self.new_tab(cx),
-                ("t", true) => self.restore_closed_tab(cx),
-                ("w", false) => self.close_tab(cx),
-                ("tab", false) => self.next_tab(cx),
-                ("tab", true) => self.prev_tab(cx),
-                ("pageup", true) => self.move_tab_left(cx),
-                ("pagedown", true) => self.move_tab_right(cx),
-                ("1", false) => self.set_view(ViewLayout::Details, cx),
-                ("2", false) => self.set_view(ViewLayout::Icons, cx),
-                ("r", _) => self.reload(cx),
-                ("n", true) => self.new_folder(cx),
-                ("c", false) => {
-                    if self.view == ViewSource::Trash {
-                        self.status = STATUS_TRASH_NO_COPY.to_string();
-                        cx.notify();
-                    } else {
-                        self.copy_selected(cx);
-                    }
-                }
-                ("x", false) => {
-                    if self.view == ViewSource::Trash {
-                        self.status = STATUS_TRASH_NO_CUT.to_string();
-                        cx.notify();
-                    } else {
-                        self.cut_selected(cx);
-                    }
-                }
-                ("v", false) => {
-                    if self.view == ViewSource::Trash {
-                        self.status = STATUS_TRASH_NO_PASTE.to_string();
-                        cx.notify();
-                    } else {
-                        self.paste(cx);
-                    }
-                }
-                ("enter", false) => {
-                    // Explicit restore shortcut, mirroring Enter in the trash
-                    // view; harmless in the directory/search views.
-                    if self.view == ViewSource::Trash
-                        && trash_key_action("enter", true) == TrashKeyAction::Restore
-                    {
-                        self.restore_selected(cx);
-                    }
-                }
-                ("q", _) => cx.quit(),
-                _ => {}
-            }
-            return;
-        }
-        if modifiers.alt {
-            match key {
-                "left" => self.go_back(cx),
-                "right" => self.go_forward(cx),
-                "up" => self.go_parent(cx),
-                _ => {}
-            }
+        // Escape is intentionally literal here: no rebind may remove the
+        // ability to cancel a running operation from the normal view.
+        if key == "escape" {
+            self.cancel_op(cx);
             return;
         }
         // Page step: how many 28px rows fit into the window viewport.
@@ -2111,18 +2564,39 @@ impl Explorer {
                 .floor()
                 .max(1.0) as isize
         };
-        match key {
-            "up" => self.move_selection(-1, modifiers.shift, cx),
-            "down" => self.move_selection(1, modifiers.shift, cx),
-            "pageup" => self.move_selection(-page_step, modifiers.shift, cx),
-            "pagedown" => self.move_selection(page_step, modifiers.shift, cx),
-            "home" => self.select_first(modifiers.shift, cx),
-            "end" => self.select_last(modifiers.shift, cx),
-            "enter" => self.open_selected(cx),
-            "backspace" => self.go_parent(cx),
-            "f5" => self.reload(cx),
-            "space" | "f3" => self.open_preview_selected(cx),
-            "f2" => {
+        // F6-51: one table lookup replaces the previous Ctrl / Alt / plain
+        // match cascade. Unknown keys resolve to `KeyAction::None` and stay
+        // no-ops, exactly as before.
+        let action = self
+            .keymap
+            .resolve(key, modifiers.control, modifiers.shift, modifiers.alt);
+        self.dispatch_key_action(action, modifiers.shift, page_step, window, cx);
+    }
+
+    /// Execute a keymap action. All context-sensitive guards (trash view,
+    /// search field focus) live here so the table itself stays pure and the
+    /// behaviour of every pre-existing shortcut is preserved (F6-51).
+    fn dispatch_key_action(
+        &mut self,
+        action: KeyAction,
+        shift: bool,
+        page_step: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use KeyAction::*;
+        match action {
+            MoveUp => self.move_selection(-1, shift, cx),
+            MoveDown => self.move_selection(1, shift, cx),
+            PageUp => self.move_selection(-page_step, shift, cx),
+            PageDown => self.move_selection(page_step, shift, cx),
+            SelectFirst => self.select_first(shift, cx),
+            SelectLast => self.select_last(shift, cx),
+            OpenSelected => self.open_selected(cx),
+            GoParent => self.go_parent(cx),
+            Reload => self.reload(cx),
+            OpenPreview => self.open_preview_selected(cx),
+            StartRename => {
                 if self.view == ViewSource::Trash {
                     self.status = STATUS_TRASH_NO_RENAME.to_string();
                     cx.notify();
@@ -2130,8 +2604,8 @@ impl Explorer {
                     self.start_rename(window, cx);
                 }
             }
-            "delete" => {
-                if trash_key_action(key, false) == TrashKeyAction::NoPurge
+            TrashSelected => {
+                if trash_key_action("delete", false) == TrashKeyAction::NoPurge
                     && self.view == ViewSource::Trash
                 {
                     // Permanent deletion is intentionally not offered; tell
@@ -2142,15 +2616,74 @@ impl Explorer {
                     self.trash_selected(window, cx);
                 }
             }
-            "escape" => self.cancel_op(cx),
-            key if self.view == ViewSource::Trash
-                && trash_key_action(key, false) == TrashKeyAction::Restore =>
-            {
-                // `R` is a plain-key restore alias; Enter is handled above by
-                // `open_selected`, which restores in the trash view.
-                self.restore_selected(cx);
+            RestoreSelected => {
+                // Plain `R` and Ctrl+Enter share this alias; it only acts in
+                // the trash view and is harmless everywhere else.
+                if self.view == ViewSource::Trash
+                    && trash_key_action("enter", true) == TrashKeyAction::Restore
+                {
+                    self.restore_selected(cx);
+                }
             }
-            _ => {}
+            ToggleHidden => self.toggle_hidden(cx),
+            SelectAll => self.select_all(cx),
+            ToggleBookmark => self.toggle_current_bookmark(cx),
+            OpenSearch => self.open_search(window, cx),
+            FocusSearchName => {
+                if let Some(input) = self.search.name_filter.clone() {
+                    let focus = input.read(cx).focus_handle(cx).clone();
+                    focus.focus(window, cx);
+                    cx.notify();
+                }
+            }
+            OpenProperties => self.open_selected_properties(cx),
+            OpenLocation => self.open_location(window, cx),
+            Undo => self.undo_last(cx),
+            Redo => self.redo_last(cx),
+            ToggleUndoHistory => {
+                self.undo_history_open = !self.undo_history_open;
+                cx.notify();
+            }
+            NewTab => self.new_tab(cx),
+            RestoreClosedTab => self.restore_closed_tab(cx),
+            CloseTab => self.close_tab(cx),
+            NextTab => self.next_tab(cx),
+            PrevTab => self.prev_tab(cx),
+            MoveTabLeft => self.move_tab_left(cx),
+            MoveTabRight => self.move_tab_right(cx),
+            DetailsView => self.set_view(ViewLayout::Details, cx),
+            IconsView => self.set_view(ViewLayout::Icons, cx),
+            NewFolder => self.new_folder(cx),
+            Copy => {
+                if self.view == ViewSource::Trash {
+                    self.status = STATUS_TRASH_NO_COPY.to_string();
+                    cx.notify();
+                } else {
+                    self.copy_selected(cx);
+                }
+            }
+            Cut => {
+                if self.view == ViewSource::Trash {
+                    self.status = STATUS_TRASH_NO_CUT.to_string();
+                    cx.notify();
+                } else {
+                    self.cut_selected(cx);
+                }
+            }
+            Paste => {
+                if self.view == ViewSource::Trash {
+                    self.status = STATUS_TRASH_NO_PASTE.to_string();
+                    cx.notify();
+                } else {
+                    self.paste(cx);
+                }
+            }
+            Quit => cx.quit(),
+            GoBack => self.go_back(cx),
+            GoForward => self.go_forward(cx),
+            FuzzyJump => self.open_fuzzy_jump(window, cx),
+            OpenTerminal => self.open_terminal_for_selection(cx),
+            None => {}
         }
     }
 
@@ -3613,6 +4146,271 @@ impl Explorer {
             bar = bar.child(div().text_xs().text_color(rgb(C_RED)).child(error.clone()));
         }
         Some(bar)
+    }
+
+    // -------------------------------------------------------------- fuzzy jump
+
+    /// Ctrl+P: build the candidate list from cached state and open the overlay.
+    /// No filesystem walk happens here; only confirming a candidate navigates.
+    fn open_fuzzy_jump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view != ViewSource::Directory {
+            self.status = "クイックジャンプはディレクトリ表示でのみ使えます".to_string();
+            cx.notify();
+            return;
+        }
+        if self.fuzzy.is_some() {
+            return;
+        }
+        let candidates = self.build_fuzzy_candidates();
+        let results = rank_fuzzy(&candidates, "", FUZZY_MAX_RESULTS);
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("ファイル名／フォルダ名であいまい検索…")
+        });
+        let subscription =
+            cx.subscribe(&input, |this, input, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
+                    let query = input.read(cx).value().to_string();
+                    this.apply_fuzzy_query(&query, cx);
+                }
+                InputEvent::PressEnter { .. } => this.confirm_fuzzy(cx),
+                _ => {}
+            });
+        let focus = input.read(cx).focus_handle(cx).clone();
+        focus.focus(window, cx);
+        self.fuzzy = Some(FuzzyState {
+            input,
+            _subscription: subscription,
+            candidates,
+            results,
+            selected: 0,
+        });
+        cx.notify();
+    }
+
+    /// Projection of the cached tabs / bookmarks / recent / ancestors /
+    /// entries into ranked-overlay candidates. Pure except for reading the
+    /// already-in-memory `Explorer` fields (F6-51).
+    fn build_fuzzy_candidates(&self) -> Vec<FuzzyCandidate> {
+        let labels: Vec<(PathBuf, String)> = self
+            .bookmarks
+            .iter()
+            .filter_map(|path| {
+                self.settings
+                    .bookmark_label(path)
+                    .map(|label| (path.clone(), label.to_string()))
+            })
+            .collect();
+        let tabs: Vec<PathBuf> = self.tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
+        fuzzy_candidates(
+            &self.cwd,
+            &tabs,
+            &self.bookmarks,
+            &self.recent,
+            &self.entries,
+            &labels,
+        )
+    }
+
+    fn close_fuzzy(&mut self, cx: &mut Context<Self>) {
+        self.fuzzy = None;
+        self.focus_list_on_next_render = true;
+        cx.notify();
+    }
+
+    fn apply_fuzzy_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        if let Some(fuzzy) = self.fuzzy.as_mut() {
+            fuzzy.results = rank_fuzzy(&fuzzy.candidates, query, FUZZY_MAX_RESULTS);
+            fuzzy.selected = 0;
+        }
+        cx.notify();
+    }
+
+    fn move_fuzzy_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(fuzzy) = self.fuzzy.as_mut() {
+            if fuzzy.results.is_empty() {
+                return;
+            }
+            let len = fuzzy.results.len() as isize;
+            fuzzy.selected = ((fuzzy.selected as isize + delta).rem_euclid(len)) as usize;
+        }
+        cx.notify();
+    }
+
+    /// Enter: confirm the highlighted candidate. The path is cloned first so
+    /// the `self.fuzzy` borrow ends before navigation mutates `self`.
+    fn confirm_fuzzy(&mut self, cx: &mut Context<Self>) {
+        let path = {
+            let Some(fuzzy) = self.fuzzy.as_ref() else {
+                return;
+            };
+            let Some(index) = fuzzy.results.get(fuzzy.selected) else {
+                return;
+            };
+            let Some(candidate) = fuzzy.candidates.get(*index) else {
+                return;
+            };
+            candidate.path.clone()
+        };
+        self.confirm_fuzzy_path(path, cx);
+    }
+
+    /// Navigate to a chosen candidate. Files reveal themselves by selecting
+    /// the row in their parent directory (the same mechanism as "new folder"),
+    /// so no external application is launched from a jump.
+    fn confirm_fuzzy_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.fuzzy = None;
+        self.focus_list_on_next_render = true;
+        if path.is_dir() {
+            self.navigate_to(path.clone(), cx);
+            self.status = format!("クイックジャンプ: {}", display_path(&path));
+        } else if let Some(parent) = path.parent() {
+            let parent = parent.to_path_buf();
+            if parent.is_dir() {
+                self.navigate_to(parent, cx);
+                // `set_cwd` clears the pending selection, so set it afterwards.
+                self.pending_select = Some(path.clone());
+                self.status = format!("クイックジャンプ: {}", display_path(&path));
+            } else {
+                self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
+            }
+        } else {
+            self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
+        }
+        cx.notify();
+    }
+
+    /// Ctrl+P overlay: input, ranked list and source badges. Clicking a row
+    /// confirms that exact path (not the current index), so a stale click
+    /// cannot select a different result after the query changed.
+    fn fuzzy_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let fuzzy = self.fuzzy.as_ref()?;
+        let close = cx.listener(|this, _: &ClickEvent, _window, cx| this.close_fuzzy(cx));
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _window, cx| this.close_fuzzy(cx)),
+            );
+        let mut list = div()
+            .id("fuzzy-results")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .max_h(px(380.0))
+            .overflow_y_scroll();
+        if fuzzy.results.is_empty() {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_sm()
+                    .text_color(rgb(C_MUTED))
+                    .child("一致する項目がありません（タブ・ブックマーク・最近・階層・このフォルダを検索）"),
+            );
+        }
+        for (rank, index) in fuzzy.results.iter().enumerate() {
+            let Some(candidate) = fuzzy.candidates.get(*index) else {
+                continue;
+            };
+            let path = candidate.path.clone();
+            let click = cx.listener(move |this: &mut Self, _: &ClickEvent, _window, cx| {
+                this.confirm_fuzzy_path(path.clone(), cx);
+            });
+            let selected = rank == fuzzy.selected;
+            list = list.child(
+                div()
+                    .id(("fuzzy-result", rank))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(if selected {
+                        rgb(C_OVERLAY)
+                    } else {
+                        rgb(C_MANTLE)
+                    })
+                    .on_click(click)
+                    .child(
+                        div()
+                            .w(px(96.0))
+                            .text_xs()
+                            .text_color(if selected {
+                                rgb(C_YELLOW)
+                            } else {
+                                rgb(C_MUTED)
+                            })
+                            .child(candidate.source.label()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(rgb(C_TEXT))
+                            .child(candidate.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(300.0))
+                            .truncate()
+                            .text_xs()
+                            .text_color(rgb(C_SUBTEXT))
+                            .child(display_path(&candidate.path)),
+                    ),
+            );
+        }
+        let body = div()
+            .id("fuzzy-dialog")
+            .w(px(760.0))
+            .bg(rgb(C_SURFACE))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(C_OVERLAY))
+            .shadow_lg()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("クイックジャンプ"),
+            )
+            .child(Input::new(&fuzzy.input).w_full())
+            .child(list)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(C_MUTED))
+                            .child("↑/↓ で選択 / Enter で移動 / Esc で閉じる"),
+                    )
+                    .child(Button::new("fuzzy-close").label("閉じる").on_click(close)),
+            );
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(body),
+        )
     }
 
     // -------------------------------------------------------------------- help
@@ -5138,6 +5936,7 @@ impl Explorer {
         move |menu, _window, _menu_cx| {
             let open_weak = weak.clone();
             let reveal_weak = weak.clone();
+            let terminal_weak = weak.clone();
             let copy_weak = weak.clone();
             let props_weak = weak.clone();
             let copy_sel_weak = weak.clone();
@@ -5151,6 +5950,7 @@ impl Explorer {
 
             let open_path = path.clone();
             let reveal_path = path.clone();
+            let terminal_path = path.clone();
             let copy_path = path.clone();
             let props_path = path.clone();
             let trash_paths = batch_paths.clone();
@@ -5175,6 +5975,19 @@ impl Explorer {
                         .on_click(move |_, _window, cx| {
                             let target = reveal_path.clone();
                             let _ = reveal_weak.update(cx, |this, cx| this.reveal(target, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("ターミナルで開く")
+                        .icon(Icon::new(IconName::Terminal))
+                        .on_click(move |_, _window, cx| {
+                            let target = terminal_path.clone();
+                            let _ = terminal_weak.update(cx, |this, cx| {
+                                // The clicked row is resolved by path, so a
+                                // re-sort while the menu is open cannot retarget.
+                                let dir = terminal_dir_for(&target, is_dir, &this.cwd);
+                                this.open_terminal(dir, cx);
+                            });
                         }),
                 )
                 .item(
@@ -6633,6 +7446,7 @@ impl Render for Explorer {
         let preview_dialog = self.preview_dialog(cx);
         let undo_history_dialog = self.undo_history_dialog(cx);
         let label_dialog = self.label_dialog(cx);
+        let fuzzy_dialog = self.fuzzy_dialog(cx);
 
         let grid_mode = self.settings.view == ViewLayout::Icons;
         // Column headers only make sense in the details list.
@@ -6734,6 +7548,7 @@ impl Render for Explorer {
             .children(preview_dialog)
             .children(undo_history_dialog)
             .children(label_dialog)
+            .children(fuzzy_dialog)
     }
 }
 
@@ -6984,10 +7799,13 @@ mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
-        build_places, classify_cli, clear_op_token, format_selected, install_op_token,
-        internal_drop_paths, kind_color, labeled_display_name, pending_rename_index,
-        read_properties_snapshot, saved_search_caption, saved_search_save_status, summarize_op,
-        tab_label, trash_batch, trash_delete_status, trash_key_action, CliAction, Explorer,
+        build_places, classify_cli, clear_op_token, format_selected, fuzzy_candidates, fuzzy_score,
+        install_op_token, internal_drop_paths, kind_color, labeled_display_name,
+        pending_rename_index, rank_fuzzy, read_properties_snapshot, saved_search_caption,
+        saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
+        trash_key_action, CliAction, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyMap,
         TrashKeyAction,
     };
     use crate::icons::FileKind;
@@ -7693,5 +8511,339 @@ mod tests {
         assert_eq!(labeled_display_name("item", None), "item");
         assert_eq!(labeled_display_name("item", Some("  ")), "item");
         assert_eq!(labeled_display_name("item", Some(" home ")), "[home] item");
+    }
+
+    // ------------------------------------------------------------------ F6-50
+    // The terminal launcher's pure pieces are GPUI-free: the target directory,
+    // the child-process argv/cwd contract and the status text are testable
+    // headlessly. Spawning is deliberately not faked here; the Command builder
+    // assertions below prove the path is never embedded in argv.
+
+    #[test]
+    fn terminal_dir_for_uses_selected_dir_or_file_parent() {
+        use std::path::Path;
+        let cwd = Path::new("/work/project");
+        assert_eq!(
+            terminal_dir_for(Path::new("/work/project/docs"), true, cwd),
+            PathBuf::from("/work/project/docs")
+        );
+        assert_eq!(
+            terminal_dir_for(Path::new("/work/project/src/main.rs"), false, cwd),
+            PathBuf::from("/work/project/src")
+        );
+        // A root path has no parent, so fall back to the listing's cwd.
+        assert_eq!(
+            terminal_dir_for(Path::new("/"), false, cwd),
+            PathBuf::from("/work/project")
+        );
+    }
+
+    #[test]
+    fn terminal_target_dir_prefers_focused_row_then_cwd() {
+        let cwd = PathBuf::from("/work/project");
+        let base = Entry {
+            name: OsString::from("item"),
+            name_text: "item".to_string(),
+            sort_key: "item".to_string(),
+            path: PathBuf::from("/work/project/item"),
+            is_dir: false,
+            is_symlink: false,
+            size: 0,
+            modified: None,
+        };
+        assert_eq!(terminal_target_dir(None, &cwd), cwd);
+        assert_eq!(
+            terminal_target_dir(Some(&base), &cwd),
+            PathBuf::from("/work/project")
+        );
+        let directory = Entry {
+            is_dir: true,
+            ..base
+        };
+        assert_eq!(
+            terminal_target_dir(Some(&directory), &cwd),
+            PathBuf::from("/work/project/item")
+        );
+    }
+
+    #[test]
+    fn terminal_process_passes_path_only_as_current_dir() {
+        use std::ffi::OsStr;
+        // A hostile-looking directory must never be spliced into argv.
+        let dir = PathBuf::from("/work/project/x'; touch /tmp/pwned #");
+        let argv = vec![
+            "konsole".to_string(),
+            "--title".to_string(),
+            "build".to_string(),
+        ];
+        let command = terminal_process(&argv, &dir).expect("non-empty argv builds a Command");
+        assert_eq!(command.get_program(), "konsole");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![OsStr::new("--title"), OsStr::new("build")]
+        );
+        assert_eq!(command.get_current_dir(), Some(dir.as_path()));
+        let args: String = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(!args.contains("touch"), "path leaked into argv: {args}");
+        // Empty argv is rejected instead of panicking on argv[0].
+        assert!(terminal_process(&[], &dir).is_none());
+    }
+
+    #[test]
+    fn terminal_statuses_report_reason_and_target() {
+        let argv = vec!["konsole".to_string(), "--title".to_string()];
+        let dir = PathBuf::from("/work/project");
+        let disabled = terminal_disabled_status();
+        assert!(disabled.contains("未設定"), "{disabled}");
+        assert!(disabled.contains("terminal_command"), "{disabled}");
+        let started = terminal_started_status(&argv, &dir);
+        assert!(started.contains("konsole --title"), "{started}");
+        assert!(started.contains("/work/project"), "{started}");
+        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "no emulator");
+        let failed = terminal_failed_status(&error, &dir);
+        assert!(failed.contains("no emulator"), "{failed}");
+        assert!(failed.contains("/work/project"), "{failed}");
+    }
+
+    #[test]
+    fn f4_terminal_binding_leaves_f6_51_bindings_intact() {
+        let keymap = KeyMap::default_keymap();
+        assert_eq!(
+            keymap.resolve("f4", false, false, false),
+            KeyAction::OpenTerminal
+        );
+        assert_eq!(keymap.resolve("f4", true, false, false), KeyAction::None);
+        // The shortcuts shipped by F6-51 keep their exact keystrokes.
+        assert_eq!(
+            keymap.resolve("p", true, false, false),
+            KeyAction::FuzzyJump
+        );
+        assert_eq!(keymap.resolve("p", true, true, false), KeyAction::None);
+        assert_eq!(
+            keymap.resolve("f3", false, false, false),
+            KeyAction::OpenPreview
+        );
+        assert_eq!(keymap.resolve("f5", false, false, false), KeyAction::Reload);
+    }
+
+    // F6-51: the keymap table and the fuzzy ranking are GPUI-free, so the
+    // regression surface (including every pre-existing shortcut) is testable
+    // headlessly.
+
+    #[test]
+    fn default_keymap_preserves_every_existing_shortcut() {
+        let keymap = KeyMap::default_keymap();
+        use KeyAction::*;
+
+        // Dialog-ownership keys stay outside the table so no rebind can take
+        // away the ability to close a dialog or cancel an operation.
+        assert_eq!(
+            keymap.resolve("escape", false, false, false),
+            KeyAction::None
+        );
+        assert_eq!(keymap.resolve("f1", false, false, false), KeyAction::None);
+
+        // Plain keys: Space / F3 / Esc / F1 / F2 / F5 are the regression
+        // critical ones named in F6-51.
+        assert_eq!(keymap.resolve("space", false, false, false), OpenPreview);
+        assert_eq!(keymap.resolve("f3", false, false, false), OpenPreview);
+        assert_eq!(keymap.resolve("f2", false, false, false), StartRename);
+        assert_eq!(keymap.resolve("f5", false, false, false), Reload);
+        assert_eq!(keymap.resolve("enter", false, false, false), OpenSelected);
+        assert_eq!(keymap.resolve("backspace", false, false, false), GoParent);
+        assert_eq!(keymap.resolve("delete", false, false, false), TrashSelected);
+        assert_eq!(keymap.resolve("r", false, false, false), RestoreSelected);
+        assert_eq!(keymap.resolve("up", false, true, false), MoveUp);
+        assert_eq!(keymap.resolve("pageup", false, false, false), PageUp);
+        assert_eq!(keymap.resolve("home", false, false, false), SelectFirst);
+        assert_eq!(keymap.resolve("end", false, false, false), SelectLast);
+
+        // Ctrl keys, including every shift-sensitive pair and the wildcards.
+        assert_eq!(keymap.resolve("h", true, false, false), ToggleHidden);
+        assert_eq!(keymap.resolve("h", true, true, false), ToggleHidden);
+        assert_eq!(keymap.resolve("a", true, false, false), SelectAll);
+        assert_eq!(keymap.resolve("d", true, false, false), ToggleBookmark);
+        assert_eq!(keymap.resolve("f", true, false, false), OpenSearch);
+        assert_eq!(keymap.resolve("f", true, true, false), FocusSearchName);
+        assert_eq!(keymap.resolve("i", true, false, false), OpenProperties);
+        assert_eq!(keymap.resolve("l", true, false, false), OpenLocation);
+        assert_eq!(keymap.resolve("z", true, false, false), Undo);
+        assert_eq!(keymap.resolve("z", true, true, false), Redo);
+        assert_eq!(keymap.resolve("u", true, true, false), ToggleUndoHistory);
+        assert_eq!(keymap.resolve("t", true, false, false), NewTab);
+        assert_eq!(keymap.resolve("t", true, true, false), RestoreClosedTab);
+        assert_eq!(keymap.resolve("w", true, false, false), CloseTab);
+        assert_eq!(keymap.resolve("tab", true, false, false), NextTab);
+        assert_eq!(keymap.resolve("tab", true, true, false), PrevTab);
+        assert_eq!(keymap.resolve("pageup", true, true, false), MoveTabLeft);
+        assert_eq!(keymap.resolve("pagedown", true, true, false), MoveTabRight);
+        assert_eq!(keymap.resolve("1", true, false, false), DetailsView);
+        assert_eq!(keymap.resolve("2", true, false, false), IconsView);
+        assert_eq!(keymap.resolve("r", true, false, false), Reload);
+        assert_eq!(keymap.resolve("n", true, true, false), NewFolder);
+        assert_eq!(keymap.resolve("c", true, false, false), Copy);
+        assert_eq!(keymap.resolve("x", true, false, false), Cut);
+        assert_eq!(keymap.resolve("v", true, false, false), Paste);
+        assert_eq!(keymap.resolve("enter", true, false, false), RestoreSelected);
+        assert_eq!(keymap.resolve("q", true, true, false), Quit);
+
+        // Alt navigation.
+        assert_eq!(keymap.resolve("left", false, false, true), GoBack);
+        assert_eq!(keymap.resolve("right", false, false, true), GoForward);
+        assert_eq!(keymap.resolve("up", false, false, true), GoParent);
+
+        // The new binding and unknown keys.
+        assert_eq!(keymap.resolve("p", true, false, false), FuzzyJump);
+        assert_eq!(keymap.resolve("p", true, true, false), KeyAction::None);
+        assert_eq!(keymap.resolve("x", false, false, false), KeyAction::None);
+    }
+
+    #[test]
+    fn default_keymap_has_no_ambiguous_duplicate_keystrokes() {
+        let keymap = KeyMap::default_keymap();
+        let mut seen = std::collections::HashSet::new();
+        for binding in &keymap.bindings {
+            let spec = (binding.key, binding.ctrl, binding.alt, binding.shift);
+            assert!(
+                seen.insert(spec),
+                "duplicate keystroke in default keymap: {spec:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keymap_rebind_is_personal_and_reversible() {
+        let mut keymap = KeyMap::default_keymap();
+        assert!(keymap.rebind(KeyAction::FuzzyJump, "p", true, true, false));
+        assert_eq!(keymap.resolve("p", true, true, false), KeyAction::FuzzyJump);
+        assert_eq!(keymap.resolve("p", true, false, false), KeyAction::None);
+
+        // Rebinding onto an occupied keystroke evicts the old owner so a
+        // keystroke never resolves to two actions.
+        assert!(keymap.rebind(KeyAction::FuzzyJump, "l", true, false, false));
+        assert_eq!(
+            keymap.resolve("l", true, false, false),
+            KeyAction::FuzzyJump
+        );
+        assert_eq!(keymap.resolve("p", true, true, false), KeyAction::None);
+
+        // Reserved dialog keys and unmapped actions are rejected.
+        assert!(!keymap.rebind(KeyAction::FuzzyJump, "escape", false, false, false));
+        assert!(!keymap.rebind(KeyAction::None, "p", true, false, false));
+
+        keymap.reset(KeyAction::FuzzyJump);
+        assert_eq!(
+            keymap.resolve("p", true, false, false),
+            KeyAction::FuzzyJump
+        );
+        // A displaced binding stays unbound until that action is reset too.
+        assert_eq!(keymap.resolve("l", true, false, false), KeyAction::None);
+        keymap.reset(KeyAction::OpenLocation);
+        assert_eq!(
+            keymap.resolve("l", true, false, false),
+            KeyAction::OpenLocation
+        );
+    }
+
+    #[test]
+    fn fuzzy_score_is_case_insensitive_subsequence_with_ranking() {
+        assert_eq!(fuzzy_score("main.rs", ""), Some(0));
+        assert!(fuzzy_score("README.md", "readme").is_some());
+        assert!(fuzzy_score("src/main.rs", "mn").is_some());
+        assert_eq!(fuzzy_score("main.rs", "zz"), None);
+        // An exact substring outranks a scattered subsequence of the same
+        // candidate, and word-boundary matches are accepted.
+        let exact = fuzzy_score("main.rs", "main").unwrap();
+        let loose = fuzzy_score("main.rs", "mns").unwrap();
+        assert!(exact > loose, "exact={exact} loose={loose}");
+        assert!(fuzzy_score("src/main.rs", "mr").is_some());
+    }
+
+    #[test]
+    fn fuzzy_candidates_dedupe_by_path_and_keep_source_priority() {
+        let cwd = PathBuf::from("/work/project");
+        let tabs = vec![cwd.clone(), PathBuf::from("/other/tab")];
+        let bookmarks = vec![cwd.clone(), PathBuf::from("/home/user")];
+        let recent = vec![PathBuf::from("/tmp/recent")];
+        let entry = Entry {
+            name: std::ffi::OsString::from("main.rs"),
+            name_text: "main.rs".to_string(),
+            sort_key: "main.rs".to_string(),
+            path: PathBuf::from("/work/project/main.rs"),
+            is_dir: false,
+            is_symlink: false,
+            size: 1,
+            modified: None,
+        };
+        let labels = vec![(PathBuf::from("/home/user"), "home".to_string())];
+        let candidates = fuzzy_candidates(
+            &cwd,
+            &tabs,
+            &bookmarks,
+            &recent,
+            std::slice::from_ref(&entry),
+            &labels,
+        );
+
+        // The current directory appears as a tab, bookmark and ancestor, but
+        // only the highest-priority source survives.
+        let count = candidates.iter().filter(|c| c.path == cwd).count();
+        assert_eq!(count, 1, "duplicate paths must be collapsed");
+        assert_eq!(
+            candidates.iter().find(|c| c.path == cwd).unwrap().source,
+            FuzzySource::Tab
+        );
+        let home = candidates
+            .iter()
+            .find(|c| c.path.as_path() == std::path::Path::new("/home/user"))
+            .unwrap();
+        assert_eq!(home.source, FuzzySource::Bookmark);
+        assert_eq!(home.label, "[home] user");
+        assert!(candidates
+            .iter()
+            .any(|c| c.path == entry.path && c.source == FuzzySource::Entry));
+        assert!(candidates.iter().any(|c| {
+            c.source == FuzzySource::Ancestor && c.path.as_path() == std::path::Path::new("/work")
+        }));
+    }
+
+    #[test]
+    fn rank_fuzzy_prefers_better_matches_and_bounds_results() {
+        let candidates = vec![
+            FuzzyCandidate {
+                path: PathBuf::from("/a/notes.txt"),
+                label: "notes.txt".to_string(),
+                source: FuzzySource::Entry,
+            },
+            FuzzyCandidate {
+                path: PathBuf::from("/b/notes.txt"),
+                label: "notes.txt".to_string(),
+                source: FuzzySource::Bookmark,
+            },
+            FuzzyCandidate {
+                path: PathBuf::from("/c/main.rs"),
+                label: "main.rs".to_string(),
+                source: FuzzySource::Tab,
+            },
+            FuzzyCandidate {
+                path: PathBuf::from("/d/zzz"),
+                label: "zzz".to_string(),
+                source: FuzzySource::Recent,
+            },
+        ];
+        let ranked = rank_fuzzy(&candidates, "notes", 10);
+        assert_eq!(ranked.len(), 2, "non-matching candidates are dropped");
+        assert_eq!(ranked[0], 1, "Bookmark beats Entry on an equal score");
+        assert_eq!(ranked[1], 0);
+        assert!(!ranked.contains(&3));
+
+        // Empty queries keep source priority (Tab first) and respect the cap.
+        let all = rank_fuzzy(&candidates, "", 2);
+        assert_eq!(all, vec![2, 1]);
+        assert!(rank_fuzzy(&candidates, "", 0).is_empty());
     }
 }
