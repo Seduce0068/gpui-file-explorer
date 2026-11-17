@@ -10,6 +10,7 @@ Comment[ja]=GPUI で作られた高速なファイルエクスプローラー
 Exec=gpui-file-explorer %f
 Icon=gpui-file-explorer
 Terminal=false
+MimeType=inode/directory;
 Categories=System;FileManager;FileTools;
 Keywords=files;explorer;manager;browser;
 Keywords[ja]=ファイル;エクスプローラー;ファイラー;
