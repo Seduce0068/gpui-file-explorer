@@ -65,7 +65,11 @@ status: complete
 最終状態（2026-11-17T07:29+09:00）: 全変更を `origin/main` へ push
 済み、`CI success`（run 43967966780）、ローカルとリモート完全一致。
 残る High 5 は修正済み CVE なしの unmaintained 警告のみで、
-**実質的に承認** と判定する。
+当時は **実質的に承認** と判定した。
+
+**2026-11-17 追記（第2回レビュー）**: 独立した再レビューで
+Critical 1 件・High 8 件が新たに検出され、上記判定は取り下げ、
+現在は **マージブロック** とする（詳細は末尾「第2回クロスレビュー」）。
 
 ## High 指摘（Phase2 前の必須改善項目）
 
@@ -457,3 +461,220 @@ status: complete
    main.rs の削除行はいずれもシグネチャ変更・移動に伴うもので回帰なし。
 7. リモートのオープン issue は 0 件（2026-11-17T06:56+09:00、
    `list_issues` state=OPEN）。外部にも未対応タスクは存在しない。
+
+## 第2回クロスレビュー（2026-11-17・全体再レビュー）
+
+前回レビュー以降、コード変更は無く直近 3 コミットは本レポートの
+更新のみ（`7c9b2e7`、`756b25c`、`8d8d5c2`）。今回はユーザー指示
+「全体を様々な観点でクロスレビュー。ulw」に基づき、`app/`・`poc/`・
+`packaging/`・`scripts/`・CI・ドキュメントを対象に、
+セキュリティ / アーキテクチャ / 運用保守の 3 視点を並列起動して
+再レビューした。子エージェントの指摘はすべて仮説として扱い、
+現行コードの該当行を直接読んで事実確認した。
+
+### 判定（第2回）
+
+- **Critical: 1 件** — 設定退避失敗時のデータロス経路。
+- **High: 8 件** — 一時ファイル 2 件、観測性 3 件、
+  設定前方互換 1 件、設計乖離 2 件。
+- **Medium: 16 件 / Low: 12 件**（重複統合後）。
+- **判定: マージブロック（リリース前の必須修正あり）**。
+  Critical 1 件と High 8 件は、いずれも既存動作を壊さず
+  追加修正できる範囲であり、修正後に再レビューすれば
+  承認へ昇格可能と判断する。
+- 前回の「実質的に承認」判定は、今回の独立レビューで
+  新たな Critical 1 件と High 8 件が検出されたため更新する。
+
+### Critical（C-1）設定退避失敗後にデフォルト設定で上書き
+
+- 箇所: `app/src/settings.rs:149-161`、`app/src/main.rs:627-628`
+- 事実確認: 破損 JSON を検出すると
+  `let _ = std::fs::rename(path, backup);`（`:160`）で退避し、
+  失敗しても握り潰して `Self::default()` を返す。直後に
+  `Explorer::new` が `this.settings.last_dir = ...;
+  this.settings.save();`（`main.rs:627-628`）を実行し、
+  `save_to()` の `rename(tmp, path)` が元ファイルを上書きする。
+- 重大度根拠: 退避先の名前衝突や NAME_MAX 超過など、
+  「backup への rename は失敗するが元パスへの rename は成功する」
+  ケースで、ブックマーク 50 件・タブ・検索履歴が不可逆に失われる。
+- 修正方針: 退避失敗時は元ファイルを残したまま
+  「読み取り専用セッション」フラグを立てて `save()` をスキップし、
+  ステータスバーと stderr の両方に退避先と失敗理由を表示する。
+- 出典: ops-reviewer C-1（親が実コードで確認）。
+
+### High 指摘（第2回）
+
+- **H-1 一時設定ファイルの O_EXCL 欠如**
+  （`settings.rs:218-223`）: `json.tmp-<pid>` は予測可能で
+  `create(true).truncate(true)` が既存 symlink を追従する。
+  設定値は UI 入力から部分的に制御可能で、同一ユーザーの
+  別プロセスが `.bashrc` 等への書き込みへ昇格し得る
+  （CWE-59/377）。`create_new(true)` または
+  `NamedTempFile` を推奨（security S-H1、親確認済み）。
+- **H-2 コピー用 `.partial-*` の O_EXCL 欠如**
+  （`ops.rs:272-284`）: `.partial-<pid>-<stats.files>` も
+  予測可能で `File::create` が symlink を追従して truncate する。
+  `dest` の O_EXCL 予約は `partial` には及ばない。
+  共有ディレクトリで他ユーザーの任意ファイル破壊があり得る
+  （security S-H2、親確認済み）。
+- **H-3 構造化ログの欠如とレポート記載の乖離**
+  （`Cargo.toml:13-23`、`main.rs:1920` 他）: `tracing` / `log`
+  依存が無く、全ログが `eprintln!` の生文字列。
+  タイムスタンプ・相関 ID・レベルが無く事後追跡できない。
+  前回レポート `:270-273` の「構造化ログの欠如、解消済み」は
+  実態（最低限の監査テキスト）と乖離している（ops H-1）。
+- **H-4 reconcile エラーの握り潰し**
+  （`main.rs:913-936`）: `let Ok(entries) = task.await else {
+  return };`（`:923`）が失敗を完全に破棄する。watcher の
+  取りこぼしを回復する唯一の保険が黙って失敗し得る
+  （ops H-2、親確認済み）。
+- **H-5 watcher 初期化エラーの固定文字列化**
+  （`watcher.rs:88-103`）: `new_debouncer(...).ok()`（`:92`）が
+  `notify::Error` を捨て、ENOSPC / EMFILE / permission の
+  実原因が失われる（ops H-3、親確認済み）。
+- **H-6 将来スキーマ設定の前方互換欠如**
+  （`settings.rs:175-186`、`main.rs:627-628`）: 未知 version を
+  警告のみで v1 として読み込み、直後の `save()` が
+  `version: 1` で書き戻す。serde が未知フィールドを無視するため
+  ロールバック時に v2 固有の設定が静かに失われる。
+  `app/README.md:355-356` は「ダウングレード検出は未実装」と
+  正直に記載しており、前回レポートの H-3「解消済み」と矛盾
+  （ops H-4 + arch L、親確認済み）。
+- **H-7 God Entity 化（設計書との乖離）**
+  （`main.rs:423, 496, 5370`）: `Explorer` は実測 39 フィールド
+  （子エージェントは「40 超」と報告したが実測は 39）、
+  `impl Explorer` は 4,873 行、`Render` は 103 行。
+  DESIGN.md §4.1 / ADR-011 が約束した `app.rs + model/* + fs/* +
+  ui/*` 分割は未達で、as-built 想定 1,200 行超の約 5 倍
+  （arch A-1、親が数値を修正して確認）。
+- **H-8 cwd / history / tabs の状態複製**
+  （`main.rs:425, 442, 463, 1047`）: 同一の論理状態が
+  `Explorer` と `tabs.active()` に二重保持され、
+  `sync_active_tab()` を 8 箇所の呼び出し側が手動同期する。
+  同期漏れで保存内容と表示が食い違う（arch A-2、親確認済み）。
+
+### Medium 指摘（重複統合・要約）
+
+- 進捗 / 監視チャネルが `unbounded` でバックプレッシャ無し
+  （`main.rs:533, 1815`、ops M-3 + arch M-2）。
+- 監視バッチ内の UI スレッド同期 I/O
+  （`main.rs:984`、`model.rs:155-157`、arch M-1）。
+- エラー型 3 系統混在（`FsError` / `OpError` / `String`、
+  arch M-3）。前回の「一部解消」から進展なし。
+- 一意名生成ロジックの重複（arch M-4）。
+- キー入力が `actions!` + `KeyBinding` 化されていない
+  （arch M-5、DESIGN.md §5.8 逸脱）。
+- `render()` が `apply_*_hooks` で状態変更（arch M-6、
+  前回レポートでも指摘済みで未解消）。
+- 世代ガードが `Explorer.generation` と
+  `LoadState.generation` の 2 系統（arch M-7）。
+- case-only rename の中継名が予測可能で NAME_MAX 超過も
+  （`ops.rs:661-663`、security M-1）。
+- Windows の O_EXCL 予約解除→rename 間の競合
+  （`ops.rs:326-338`、security M-2・要確認）。
+- `open_with_system` / `reveal_path` のシェル経由有無
+  （`main.rs:1346, 3421`、security M-3・要確認）。
+  gpui 側は platform 抽象経由で、ローカルレジストリでは
+  Linux 実装を特定できず **要確認を維持**。
+- SVG プレビューの外部エンティティ設定
+  （`preview.rs:83-89`、security M-4・要確認）。
+- `copy_recursive` / `remove_entry_safe` / `total_bytes_of` に
+  深さ上限が無く再帰スタック overflow の余地
+  （`ops.rs:382-429` 他、security M-5）。
+- 異常終了時の `.partial-*` 残存と起動時クリーンアップ欠如
+  （`ops.rs:272`、`main.rs` に掃除処理無し、ops M-4・親確認済み）。
+- `build-deb.sh --skip-build` が既存バイナリの `--version` を
+  検証せず誤配布の余地（ops M-5）。
+- `read_to_string` の EACCES が NotFound と同扱いで無通知
+  （`settings.rs:145-148`、ops M-2）。
+- ドキュメントの数値乖離（親の独自発見・訂正済み）:
+  本レポート総評の「5,588 行」は実測 5,909 行（`wc -l`）。
+  テスト数は「167 tests」でドキュメントと一致
+  （実実行 167 件 = 164 passed + 3 failed）。当初 `#[test]`
+  を grep して 173 件と数えたのは誤りで、実行数へ訂正した。
+  ops M-7 と統合。
+- Windows 実行時のテスト 3 件失敗（Runtime Proof で判明、
+  詳細は検証エビデンス）: symlink  tests 2 件とセッション
+  復元 test 1 件。いずれも Windows 固有のテスト期待値問題で
+  実装の回帰ではないが、クロスプラットフォーム宣言と整合しない。
+
+### Low 指摘（要約）
+
+- `unwatch` 失敗の握り潰し（`watcher.rs:130-132`）。
+- DEBOUNCE / RECONCILE_INTERVAL 等の定数ハードコード。
+- `scripts/check.sh` が `--app --poc` 同時指定で誤成功
+  （`run_app` / `run_poc` が両方 false になる）。
+- `build-deb.sh:149` の Maintainer が個人アドレス固定。
+- `GPUI_FE_DEBUG_*` フックが release にも残存（前回判断通り
+  現状維持だが、ランブックへの明記が必要）。
+- `ConflictPolicy::Fail` / `Skip` が本番未使用。
+- UI 文言リテラルが `strings.rs` に集約しきれていない。
+- DESIGN.md の変更履歴が v0.1 のまま（as-built 差分未反映）。
+- UI ヘッドレステスト不在（設計上 P2 先送りで合意済み）。
+- `build-deb.sh` の `out_dir="/"` 指定を拒否していない。
+- 設定の平文永続化（参考情報）。
+- CI の mutable タグ参照（AGENTS.md 方針に沿うため現状維持）。
+
+### 却下・格下げ（根拠付き）
+
+- **poc の `fs::metadata` による symlink 追従（security L-1）
+  → 却下**: `poc/src/main.rs:73-79` のコメント通り、
+  「リンク先ディレクトリへ遷移可能にする」設計意図であり、
+  app 側も `model.rs:39-41` で同じ方針。脆弱性ではない。
+- **arch の「Explorer は 40 超フィールド」→ 数値修正**:
+  実測は 39 フィールド。趣旨（責務集中）は High として維持。
+- **前回 H-3「設定マイグレーション解消済み」→ 格下げ**:
+  移行の「枠組み」のみで実変換アームは存在しない。
+  前方互換（H-6）として High に再分類した。
+- **前回「構造化ログ解消済み」→ 格下げ**: 最低限の stderr
+  テキストであり、tracing 導入は残課題（H-3）。
+
+### フォローアップ（第2回）
+
+1. C-1 を最優先で修正する（データロス防止）。
+2. H-1 / H-2 は `create_new(true)` または `tempfile` で
+   一時ファイルを安全化する。
+3. H-4 / H-5 はエラーを `LoadState::Error` または
+   `last_error` の実理由へ反映し、H-3 の tracing 導入と
+   同時に `op_id` を設計する。
+4. H-6 は未知 version で読み取り専用モードにし、
+   `review-report.md` の H-3 表記を「枠組みのみ」に修正する。
+5. H-7 / H-8 は次機能追加前に描画層抽出と単一真実源化へ
+   着手する（前回から未解消の設計負債）。
+6. 本レポート総評の行数（5,588 → 5,909 行）を訂正し、
+   Windows 実行で判明した 3 件のテスト失敗を
+   `README.md` / `app/README.md` の既知の制限へ追記する。
+
+### 検証エビデンス（第2回）
+
+- `bash scripts/check.sh --fast`（2026-11-17T10:20+09:00 完了、exit 101）:
+  - `app: cargo fmt --all -- --check` — 通過。
+  - `app: cargo check --all-targets --locked` — 通過
+    （`Finished dev profile in 8m 00s`）。
+  - `app: cargo test --all-targets --locked` — **失敗**。
+    `running 164 tests` の表示は成功分のみで、
+    実際は 167 件（164 passed / **3 failed** / 0 ignored、
+    `test result: FAILED`）。`set -e` のため以降の
+    `app` clippy / `poc` ゲートは未実行。
+  - 失敗 3 件:
+    1. `ops::dir_stats_tests::symlinks_are_counted_but_not_followed`
+       （`ops.rs:1064`、left 2 / right 4）。symlink 生成が
+       `#[cfg(unix)]`（`:1056-1060`）配下のため Windows では
+       2 が正しく、アサーションが Unix 前提。
+    2. `ops::tests::copy_directory_recursively_and_keep_symlink`
+       （`ops.rs:805`、left 2 / right 3）。同上
+       （`:792-793` が `#[cfg(unix)]`）。
+    3. `tests::restore_session_prefers_saved_tabs_then_cli_then_last_then_home`
+       （`main.rs:5897`、left `\\?\C:\...` / right `C:\...`）。
+       Windows のロングパス正規化（`\\?\` プレフィックス）を
+       テスト期待値が考慮していない。
+  - 判定: 3 件ともテスト側の Windows 非対応であり、
+    `dir_stats` / `copy_entry` / `restore_session` の実装
+    自体の回帰ではない（コードは `#[cfg(unix)]` で
+    期待値を分ける修正が必要）。CI は Linux（共有
+    `rust-gates.yml@v1`）のみのため本番ゲートは維持されるが、
+    README の「Windows 対応」記述との整合性は要検討。
+- `npx --no-install markdownlint-cli2 review-report.md`
+  （2026-11-17T10:20+09:00）: **0 issues / exit 0**。
+- `git status --short`: 変更は `review-report.md` のみ。
+  `.serena/` は untracked（MCP ローカル設定のため対象外）。
