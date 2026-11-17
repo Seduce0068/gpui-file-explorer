@@ -73,6 +73,8 @@ const C_LAVENDER: u32 = 0xb4befe;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(10);
 const SELF_OP_SUPPRESS: Duration = Duration::from_millis(1500);
+/// Throttle progress-bar updates so a fast copy does not flood the UI.
+const PROGRESS_THROTTLE: Duration = Duration::from_millis(80);
 
 /// Layout metrics shared by the list page-step and the icon grid. Keeping
 /// them named avoids drift between the row height and the grid cell height.
@@ -1849,7 +1851,7 @@ impl Explorer {
                     continue;
                 }
                 let first_update = last_bytes == 0;
-                if !first_update && last_report.elapsed() < Duration::from_millis(80) {
+                if !first_update && last_report.elapsed() < PROGRESS_THROTTLE {
                     continue;
                 }
                 last_report = Instant::now();
