@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T14:08:21+09:00
+verified: 2026-11-17T19:17:10+09:00
 status: complete
 ---
 
@@ -788,3 +788,6 @@ AGENTS.md §2 の事前調査（crates.io の live status、ローカルキャ�
 `cargo clippy --all-targets --locked -- -D warnings` = 成功、
 `cargo check --target x86_64-pc-windows-msvc --all-targets --locked`
 = 成功。実機起動で stderr 0 行（通常起動時はログなし）を確認。
+
+- 全変更を push（`fe26110..0024cbb`）、CI run 44022098945 が
+  **success**（9m10s、2026-11-17T14:18+09:00 完了）。
