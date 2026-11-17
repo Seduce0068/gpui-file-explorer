@@ -612,6 +612,7 @@ impl Explorer {
                     "GPUI_FE_DEBUG_BOOKMARKS",
                     "GPUI_FE_DEBUG_SEARCH",
                     "GPUI_FE_DEBUG_SEARCH_SCOPE",
+                    "GPUI_FE_DEBUG_SEARCH_NAME",
                     "GPUI_FE_DEBUG_GRID",
                     "GPUI_FE_DEBUG_PROPERTIES",
                     "GPUI_FE_DEBUG_PROPERTIES_SIZE",
@@ -5452,6 +5453,13 @@ impl Explorer {
                 if let Some(ext) = self.search.ext.clone() {
                     ext.update(cx, |state, cx| {
                         state.set_value(extension.clone(), window, cx);
+                    });
+                }
+            }
+            if let Ok(name) = std::env::var("GPUI_FE_DEBUG_SEARCH_NAME") {
+                if let Some(input) = self.search.name_filter.clone() {
+                    input.update(cx, |state, cx| {
+                        state.set_value(name.clone(), window, cx);
                     });
                 }
             }
