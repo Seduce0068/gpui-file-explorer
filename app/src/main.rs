@@ -235,9 +235,9 @@ use crate::strings::{
     STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
     STATUS_DROP_SAME_DIRECTORY, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_NOT_DIRECTORY,
     STATUS_NO_CLIPBOARD, STATUS_OP_RUNNING, STATUS_PATH_GONE, STATUS_REDO_NO_TARGET,
-    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TARGET_GONE,
-    STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_PASTE,
-    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_UNDO_FAILED,
+    STATUS_SEARCH_STALE, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT,
+    STATUS_TARGET_GONE, STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
+    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_UNDO_FAILED,
 };
 
 /// One sidebar "place".
@@ -989,6 +989,16 @@ impl Explorer {
                         // entries that vanished so the view cannot act on a
                         // deleted path. Full re-search is deferred to the user
                         // (documented limitation).
+                        // Rescan/rename cannot be applied to a search snapshot
+                        // safely; tell the user to re-run the search.
+                        if batch
+                            .iter()
+                            .any(|event| matches!(event, FsEvent::Rescan | FsEvent::Renamed { .. }))
+                        {
+                            this.status = STATUS_SEARCH_STALE.to_string();
+                            cx.notify();
+                            return;
+                        }
                         let removed = removed_paths(&batch);
                         if removed.is_empty() {
                             return;

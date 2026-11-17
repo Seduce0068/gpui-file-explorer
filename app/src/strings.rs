@@ -97,6 +97,8 @@ pub const LOADING: &str = "読み込み中…";
 
 /// Frequently used fixed status-bar messages.
 pub const STATUS_CHANGED: &str = "変更を検出しました";
+/// Shown when a search snapshot cannot be refreshed automatically.
+pub const STATUS_SEARCH_STALE: &str = "変更を検出しました（再検索が必要です）";
 pub const STATUS_TABS_ONLY_DIRECTORY: &str = "タブはディレクトリ表示でのみ操作できます";
 pub const STATUS_BOOKMARKS_ONLY_DIRECTORY: &str =
     "ブックマークはディレクトリ表示でのみ操作できます";
