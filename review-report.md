@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T13:35:24+09:00
+verified: 2026-11-17T13:47:32+09:00
 status: complete
 ---
 
@@ -758,3 +758,6 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 
 検証: `bash scripts/check.sh --fast` = **exit 0**（app 168 tests /
 poc 4 tests / clippy 警告なし）、Windows ターゲット check 成功。
+
+- 全変更を push（`5217dc9..d40d3bb`）、CI run 44018261819 が
+  **success**（10m26s、2026-11-17T13:46+09:00 完了）。
