@@ -670,7 +670,17 @@ pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
         if !same_file {
             return Err(OpError::AlreadyExists(target));
         }
-        let temp = parent.join(format!(".rename-{}-{}", std::process::id(), new_name));
+        // Short, unpredictable intermediate name: embedding `new_name` can
+        // exceed NAME_MAX, and a predictable path risks collision with a
+        // pre-planted file on a case-insensitive filesystem.
+        let temp = parent.join(format!(
+            ".rename-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
         fs::rename(src, &temp).map_err(|e| io_error(src, e))?;
         fs::rename(&temp, &target).map_err(|e| io_error(&target, e))?;
         return Ok(target);
