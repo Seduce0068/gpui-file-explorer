@@ -506,6 +506,61 @@ struct Explorer {
 }
 
 impl Explorer {
+    /// Read GPUI_FE_DEBUG_* hooks in debug builds only. Release builds
+    /// never honour them so a leaked variable cannot touch real files.
+    fn debug_hooks_from_env() -> DebugHooks {
+        #[cfg(not(debug_assertions))]
+        {
+            return DebugHooks::default();
+        }
+        #[cfg(debug_assertions)]
+        {
+            DebugHooks {
+                open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
+                select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
+                open_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH").is_some(),
+                restore_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH_RESTORE").is_some(),
+                progress_once: std::env::var_os("GPUI_FE_DEBUG_PROGRESS").is_some(),
+                grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
+                search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
+                properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
+                help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
+                location_once: std::env::var_os("GPUI_FE_DEBUG_LOCATION").is_some(),
+                preview_once: std::env::var_os("GPUI_FE_DEBUG_PREVIEW").is_some(),
+                preview_report: std::env::var_os("GPUI_FE_DEBUG_PREVIEW_REPORT").is_some(),
+                undo: std::env::var("GPUI_FE_DEBUG_UNDO").ok(),
+                undo_history_once: std::env::var_os("GPUI_FE_DEBUG_UNDO_HISTORY").is_some(),
+                properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
+                ephemeral: [
+                    "GPUI_FE_DEBUG_TABS",
+                    "GPUI_FE_DEBUG_RECENT",
+                    "GPUI_FE_DEBUG_BOOKMARKS",
+                    "GPUI_FE_DEBUG_SEARCH",
+                    "GPUI_FE_DEBUG_SEARCH_SCOPE",
+                    "GPUI_FE_DEBUG_SEARCH_NAME",
+                    "GPUI_FE_DEBUG_GRID",
+                    "GPUI_FE_DEBUG_PROPERTIES",
+                    "GPUI_FE_DEBUG_PROPERTIES_SIZE",
+                    "GPUI_FE_DEBUG_HELP",
+                    "GPUI_FE_DEBUG_DROP_PATH",
+                    "GPUI_FE_DEBUG_SORT",
+                    "GPUI_FE_DEBUG_SEARCH_HISTORY",
+                    "GPUI_FE_DEBUG_TAB_MOVE",
+                    "GPUI_FE_DEBUG_LOCATION",
+                    "GPUI_FE_DEBUG_PREVIEW",
+                    "GPUI_FE_DEBUG_PREVIEW_REPORT",
+                    "GPUI_FE_DEBUG_UNDO",
+                    "GPUI_FE_DEBUG_UNDO_HISTORY",
+                ]
+                .iter()
+                .any(|name| std::env::var_os(name).is_some()),
+                tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
+                drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
+                drop_target: std::env::var("GPUI_FE_DEBUG_DROP_TARGET").ok(),
+            }
+        }
+    }
+
     fn new(cx: &mut Context<Self>) -> Self {
         let mut settings = Settings::load();
         if std::env::var("GPUI_FE_DEBUG_SORT").is_ok_and(|value| value == "kind") {
@@ -590,49 +645,7 @@ impl Explorer {
             undo: UndoStack::new(),
             undo_history_open: false,
             focus_list_on_next_render: false,
-            debug: DebugHooks {
-                open_rename_once: std::env::var_os("GPUI_FE_DEBUG_RENAME").is_some(),
-                select_all_once: std::env::var_os("GPUI_FE_DEBUG_SELECT_ALL").is_some(),
-                open_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH").is_some(),
-                restore_trash_once: std::env::var_os("GPUI_FE_DEBUG_TRASH_RESTORE").is_some(),
-                progress_once: std::env::var_os("GPUI_FE_DEBUG_PROGRESS").is_some(),
-                grid_once: std::env::var_os("GPUI_FE_DEBUG_GRID").is_some(),
-                search_once: std::env::var_os("GPUI_FE_DEBUG_SEARCH").is_some(),
-                properties_once: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES").is_some(),
-                help_once: std::env::var_os("GPUI_FE_DEBUG_HELP").is_some(),
-                location_once: std::env::var_os("GPUI_FE_DEBUG_LOCATION").is_some(),
-                preview_once: std::env::var_os("GPUI_FE_DEBUG_PREVIEW").is_some(),
-                preview_report: std::env::var_os("GPUI_FE_DEBUG_PREVIEW_REPORT").is_some(),
-                undo: std::env::var("GPUI_FE_DEBUG_UNDO").ok(),
-                undo_history_once: std::env::var_os("GPUI_FE_DEBUG_UNDO_HISTORY").is_some(),
-                properties_size: std::env::var_os("GPUI_FE_DEBUG_PROPERTIES_SIZE").is_some(),
-                ephemeral: [
-                    "GPUI_FE_DEBUG_TABS",
-                    "GPUI_FE_DEBUG_RECENT",
-                    "GPUI_FE_DEBUG_BOOKMARKS",
-                    "GPUI_FE_DEBUG_SEARCH",
-                    "GPUI_FE_DEBUG_SEARCH_SCOPE",
-                    "GPUI_FE_DEBUG_SEARCH_NAME",
-                    "GPUI_FE_DEBUG_GRID",
-                    "GPUI_FE_DEBUG_PROPERTIES",
-                    "GPUI_FE_DEBUG_PROPERTIES_SIZE",
-                    "GPUI_FE_DEBUG_HELP",
-                    "GPUI_FE_DEBUG_DROP_PATH",
-                    "GPUI_FE_DEBUG_SORT",
-                    "GPUI_FE_DEBUG_SEARCH_HISTORY",
-                    "GPUI_FE_DEBUG_TAB_MOVE",
-                    "GPUI_FE_DEBUG_LOCATION",
-                    "GPUI_FE_DEBUG_PREVIEW",
-                    "GPUI_FE_DEBUG_PREVIEW_REPORT",
-                    "GPUI_FE_DEBUG_UNDO",
-                    "GPUI_FE_DEBUG_UNDO_HISTORY",
-                ]
-                .iter()
-                .any(|name| std::env::var_os(name).is_some()),
-                tabs_once: std::env::var_os("GPUI_FE_DEBUG_TABS").is_some(),
-                drop_path: std::env::var("GPUI_FE_DEBUG_DROP_PATH").ok(),
-                drop_target: std::env::var("GPUI_FE_DEBUG_DROP_TARGET").ok(),
-            },
+            debug: Self::debug_hooks_from_env(),
         };
 
         // Remember the directory we actually started in (also proves the
@@ -5351,6 +5364,15 @@ impl Explorer {
     /// Each hook clears its own flag, so it fires once per activation. Kept
     /// out of `render()` so the drawing path stays readable.
     fn apply_startup_hooks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Debug hooks can perform real filesystem operations (trash, drop
+        // external files, rename). Never run them in release builds even if a
+        // GPUI_FE_DEBUG_* variable leaks into the environment (F6-03).
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (window, cx);
+            return;
+        }
+        #[cfg(debug_assertions)]
         if self.debug.open_trash_once && self.view == ViewSource::Directory {
             self.debug.open_trash_once = false;
             self.enter_trash(cx);
@@ -5474,6 +5496,12 @@ impl Explorer {
 
     /// Development hooks evaluated after the bars and before the dialogs.
     fn apply_overlay_hooks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (window, cx);
+            return;
+        }
+        #[cfg(debug_assertions)]
         if self.debug.help_once {
             self.debug.help_once = false;
             self.help_open = true;
