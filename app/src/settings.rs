@@ -256,12 +256,16 @@ impl Settings {
 
     /// Persist to the platform config path. Failure is reported on stderr
     /// (journald on Linux) but never breaks the UI: settings are best-effort.
-    pub fn save(&self) {
+    /// Persist settings. Returns `false` when a real write failed (read-only
+    /// / ephemeral sessions count as success: nothing was expected to be saved).
+    pub fn save(&self) -> bool {
         if let Some(path) = Self::config_path() {
             if let Err(error) = self.save_to(&path) {
                 error!(path = %path.display(), %error, "failed to save settings");
+                return false;
             }
         }
+        true
     }
 
     /// Atomic write (tmp file + rename) so a crash never leaves a truncated
@@ -340,6 +344,17 @@ mod tests {
         assert!(!settings.show_hidden);
         assert_eq!(settings.view, ViewLayout::Details);
         assert!(settings.last_dir.is_none());
+    }
+
+    #[test]
+    fn save_reports_failure_on_unwritable_path() {
+        let dir = scratch("unwritable");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // A directory as the target path makes the final rename fail.
+        let settings = Settings::default();
+        assert!(settings.save_to(&dir).is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
