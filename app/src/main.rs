@@ -1871,7 +1871,7 @@ impl Explorer {
             }
             paths.push(path);
         }
-        if !missing.is_empty() {
+        if !missing.is_empty() && paths.is_empty() {
             self.clipboard = None;
             self.status = format!("{} 件は既に存在しません", missing.len());
             self.reload(cx);
@@ -1887,7 +1887,7 @@ impl Explorer {
             return;
         }
 
-        self.run_transfer(cwd.clone(), paths, cut, cx);
+        self.run_transfer(cwd.clone(), paths, cut, missing.len(), cx);
     }
 
     /// Copy (`cut == false`) or move (`cut == true`) `paths` into `destination`
@@ -1900,6 +1900,7 @@ impl Explorer {
         destination: PathBuf,
         paths: Vec<PathBuf>,
         cut: bool,
+        skipped: usize,
         cx: &mut Context<Self>,
     ) {
         let verb = if cut { "移動" } else { "コピー" };
@@ -2040,6 +2041,11 @@ impl Explorer {
                     Some(error) => format!("{verb}できません: {error}"),
                     None => summarize_op(verb, &stats),
                 };
+                let status = if skipped > 0 {
+                    format!("{status}（存在しない項目 {skipped} 件をスキップ）")
+                } else {
+                    status
+                };
                 this.suppress_for(SELF_OP_SUPPRESS);
                 if cut {
                     // Moved sources are gone; never keep a stale cut clipboard.
@@ -2140,7 +2146,7 @@ impl Explorer {
         if !notices.is_empty() {
             self.status = notices.join(" / ");
         }
-        self.run_transfer(destination, existing, false, cx);
+        self.run_transfer(destination, existing, false, 0, cx);
     }
 
     // ------------------------------------------------------------------ undo
