@@ -422,6 +422,102 @@ fn copy_recursive(
     )))
 }
 
+/// What a successful [`verify_transfer`] checked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VerifyStats {
+    /// Number of regular files and symlinks verified.
+    pub files: u64,
+    /// Number of directories verified (including the root).
+    pub dirs: u64,
+    /// Total byte length of the verified regular files.
+    pub bytes: u64,
+}
+
+fn verify_mismatch(path: &Path, what: &str) -> OpError {
+    OpError::InvalidTarget(format!(
+        "コピー先の{what}がコピー元と一致しません: {}",
+        path.display()
+    ))
+}
+
+fn verify_entry(src: &Path, dest: &Path, stats: &mut VerifyStats) -> Result<(), OpError> {
+    let src_meta = fs::symlink_metadata(src).map_err(|e| io_error(src, e))?;
+    let dest_meta = fs::symlink_metadata(dest).map_err(|e| match e.kind() {
+        ErrorKind::NotFound => {
+            OpError::InvalidTarget(format!("コピー先が存在しません: {}", dest.display()))
+        }
+        _ => io_error(dest, e),
+    })?;
+
+    let src_link = src_meta.file_type().is_symlink();
+    let dest_link = dest_meta.file_type().is_symlink();
+    if src_link || dest_link {
+        if !src_link || !dest_link {
+            return Err(verify_mismatch(dest, "種類"));
+        }
+        let src_target = fs::read_link(src).map_err(|e| io_error(src, e))?;
+        let dest_target = fs::read_link(dest).map_err(|e| io_error(dest, e))?;
+        if src_target != dest_target {
+            return Err(verify_mismatch(dest, "リンク先"));
+        }
+        stats.files += 1;
+        return Ok(());
+    }
+
+    if src_meta.is_dir() || dest_meta.is_dir() {
+        if !src_meta.is_dir() || !dest_meta.is_dir() {
+            return Err(verify_mismatch(dest, "種類"));
+        }
+        let mut src_names: Vec<std::ffi::OsString> = Vec::new();
+        for entry in fs::read_dir(src).map_err(|e| io_error(src, e))? {
+            src_names.push(entry.map_err(|e| io_error(src, e))?.file_name());
+        }
+        let mut dest_names: Vec<std::ffi::OsString> = Vec::new();
+        for entry in fs::read_dir(dest).map_err(|e| io_error(dest, e))? {
+            dest_names.push(entry.map_err(|e| io_error(dest, e))?.file_name());
+        }
+        src_names.sort();
+        dest_names.sort();
+        if src_names != dest_names {
+            return Err(verify_mismatch(dest, "子要素"));
+        }
+        for name in src_names {
+            verify_entry(&src.join(&name), &dest.join(&name), stats)?;
+        }
+        stats.dirs += 1;
+        return Ok(());
+    }
+
+    if src_meta.is_file() && dest_meta.is_file() {
+        if src_meta.len() != dest_meta.len() {
+            return Err(OpError::InvalidTarget(format!(
+                "コピー先のサイズが一致しません: {} ({} != {})",
+                dest.display(),
+                dest_meta.len(),
+                src_meta.len()
+            )));
+        }
+        stats.files += 1;
+        stats.bytes += src_meta.len();
+        return Ok(());
+    }
+
+    Err(verify_mismatch(dest, "種類"))
+}
+
+/// Verify a completed transfer: `dest` must exist and match `src` in type,
+/// symlink target, directory children and regular-file byte length.
+///
+/// Read-only and symlink-safe (never follows links). Called by [`copy_entry`]
+/// and the cross-device fallback of [`move_entry`] after the write finishes;
+/// a failed verification removes the destination so no truncated copy is left
+/// behind.
+pub fn verify_transfer(src: &Path, dest: &Path) -> Result<VerifyStats, OpError> {
+    let mut stats = VerifyStats::default();
+    verify_entry(src, dest, &mut stats)?;
+    Ok(stats)
+}
+
 /// Copy `src` into `dest_dir`, honouring `policy`. Returns counters for the
 /// caller's progress/status UI. `on_progress` is called once per copied file
 /// with the cumulative byte count.
@@ -454,6 +550,11 @@ pub fn copy_entry(
 
     let mut stats = OpStats::default();
     copy_recursive(src, &dest, cancel, &mut stats, progress)?;
+    if let Err(error) = verify_transfer(src, &dest) {
+        // Never leave a truncated or structurally different copy behind.
+        let _ = remove_entry_safe(&dest);
+        return Err(error);
+    }
     stats.created.insert(0, dest);
     progress(stats.bytes);
     Ok(stats)
@@ -623,6 +724,10 @@ pub fn move_entry(
                         let _ = remove_entry_safe(&dest);
                         return Err(copy_err);
                     }
+                    if let Err(verify_err) = verify_transfer(src, &dest) {
+                        let _ = remove_entry_safe(&dest);
+                        return Err(verify_err);
+                    }
                     on_progress(stats.bytes);
                     if cancel.is_cancelled() {
                         let _ = remove_entry_safe(&dest);
@@ -692,6 +797,22 @@ pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
     }
     fs::rename(src, &target).map_err(|e| io_error(src, e))?;
     Ok(target)
+}
+
+/// Minimal batch rename: apply [`rename_entry`] to every `(source, new_name)`
+/// pair in order and return the number of successful renames.
+///
+/// The operation stops at the first error. Earlier renames are **not** rolled
+/// back, so callers should validate names up front (for example with
+/// [`validate_file_name`]) and surface the partially-completed count.
+#[cfg_attr(not(test), expect(dead_code, reason = "engine API; used in ops tests"))]
+pub fn batch_rename(renames: &[(PathBuf, String)]) -> Result<usize, OpError> {
+    let mut done = 0usize;
+    for (src, new_name) in renames {
+        rename_entry(src, new_name)?;
+        done += 1;
+    }
+    Ok(done)
 }
 
 #[cfg(test)]
@@ -998,6 +1119,130 @@ mod tests {
         let renamed = rename_entry(&src, "c.txt").unwrap();
         assert_eq!(renamed, dir.join("c.txt"));
         assert_eq!(fs::read(renamed).unwrap(), b"a");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_transfer_accepts_matching_tree() {
+        let dir = scratch("verify-ok");
+        let src = dir.join("tree");
+        write(&src.join("sub/nested.txt"), b"nested");
+        write(&src.join("top.txt"), b"top");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("top.txt", src.join("link.txt")).unwrap();
+
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+        let stats = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap();
+        #[cfg(unix)]
+        assert_eq!(stats.files, 3);
+        #[cfg(not(unix))]
+        assert_eq!(stats.files, 2);
+
+        let verified = verify_transfer(&src, &dest_dir.join("tree")).unwrap();
+        #[cfg(unix)]
+        assert_eq!(verified.files, 3);
+        #[cfg(not(unix))]
+        assert_eq!(verified.files, 2);
+        assert_eq!(verified.dirs, 2);
+        assert_eq!(verified.bytes, 9); // "nested" (6) + "top" (3); symlinks count 0
+        assert!(verify_transfer(&src, &dest_dir.join("other")).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_transfer_detects_missing_destination() {
+        let dir = scratch("verify-missing");
+        let src = dir.join("a.txt");
+        write(&src, b"data");
+
+        let err = verify_transfer(&src, &dir.join("gone.txt")).unwrap_err();
+        assert!(
+            matches!(err, OpError::InvalidTarget(ref message) if message.contains("存在しません")),
+            "unexpected error: {err:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_transfer_detects_size_mismatch() {
+        let dir = scratch("verify-size");
+        let src = dir.join("a.bin");
+        let dest = dir.join("b.bin");
+        write(&src, b"12345");
+        write(&dest, b"123");
+
+        let err = verify_transfer(&src, &dest).unwrap_err();
+        assert!(
+            matches!(err, OpError::InvalidTarget(ref message) if message.contains("サイズ")),
+            "unexpected error: {err:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_transfer_detects_child_mismatch() {
+        let dir = scratch("verify-children");
+        let src = dir.join("src");
+        let dest = dir.join("dest");
+        write(&src.join("a.txt"), b"a");
+        write(&dest.join("b.txt"), b"a");
+
+        let err = verify_transfer(&src, &dest).unwrap_err();
+        assert!(
+            matches!(err, OpError::InvalidTarget(ref message) if message.contains("子要素")),
+            "unexpected error: {err:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_rename_renames_all_entries() {
+        let dir = scratch("batch-rename");
+        write(&dir.join("a.txt"), b"a");
+        write(&dir.join("b.txt"), b"b");
+
+        let done = batch_rename(&[
+            (dir.join("a.txt"), "one.txt".to_string()),
+            (dir.join("b.txt"), "two.txt".to_string()),
+        ])
+        .unwrap();
+        assert_eq!(done, 2);
+        assert!(!dir.join("a.txt").exists());
+        assert!(!dir.join("b.txt").exists());
+        assert_eq!(fs::read(dir.join("one.txt")).unwrap(), b"a");
+        assert_eq!(fs::read(dir.join("two.txt")).unwrap(), b"b");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_rename_stops_at_first_error_and_keeps_earlier_renames() {
+        let dir = scratch("batch-rename-partial");
+        write(&dir.join("a.txt"), b"a");
+        write(&dir.join("b.txt"), b"b");
+        write(&dir.join("taken.txt"), b"taken");
+
+        let err = batch_rename(&[
+            (dir.join("a.txt"), "one.txt".to_string()),
+            (dir.join("b.txt"), "taken.txt".to_string()),
+        ])
+        .unwrap_err();
+        assert!(matches!(err, OpError::AlreadyExists(_)));
+        assert_eq!(fs::read(dir.join("one.txt")).unwrap(), b"a");
+        assert!(dir.join("b.txt").exists());
 
         let _ = fs::remove_dir_all(&dir);
     }
