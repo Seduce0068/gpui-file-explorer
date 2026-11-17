@@ -814,7 +814,10 @@ mod tests {
             |_| {},
         )
         .unwrap();
+        #[cfg(unix)]
         assert_eq!(stats.files, 3); // top, nested, symlink
+        #[cfg(not(unix))]
+        assert_eq!(stats.files, 2); // symlink creation is Unix-only in this test
         assert_eq!(stats.dirs, 2);
         assert_eq!(fs::read(dest_dir.join("tree/top.txt")).unwrap(), b"top");
         assert_eq!(
@@ -1072,8 +1075,12 @@ mod dir_stats_tests {
         }
 
         let stats = dir_stats(&dir, &CancelFlag::new());
-        // real.txt + outside/secret.txt + 2 symlinks; link-dir is not followed.
+        // real.txt + outside/secret.txt + 2 symlinks (Unix only);
+        // link-dir is not followed.
+        #[cfg(unix)]
         assert_eq!(stats.files, 4);
+        #[cfg(not(unix))]
+        assert_eq!(stats.files, 2);
         assert_eq!(stats.dirs, 1); // outside (direct child), not link-dir
         assert_eq!(stats.bytes, 13);
 
