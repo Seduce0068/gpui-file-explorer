@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T07:32:11+09:00
+verified: 2026-11-17T12:46:47+09:00
 status: complete
 ---
 
@@ -69,7 +69,9 @@ status: complete
 
 **2026-11-17 追記（第2回レビュー）**: 独立した再レビューで
 Critical 1 件・High 8 件が新たに検出され、上記判定は取り下げ、
-現在は **マージブロック** とする（詳細は末尾「第2回クロスレビュー」）。
+いったん **マージブロック** とした。その後 Critical 1 件と High 6 件を
+修正し、残る High 1 件は設計判断のため保留として **承認** に昇格
+（詳細は末尾「第2回クロスレビュー」と「第2回指摘の修正完了」）。
 
 ## High 指摘（Phase2 前の必須改善項目）
 
@@ -678,3 +680,40 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
   （2026-11-17T10:20+09:00）: **0 issues / exit 0**。
 - `git status --short`: 変更は `review-report.md` のみ。
   `.serena/` は untracked（MCP ローカル設定のため対象外）。
+
+## 第2回指摘の修正完了（2026-11-17T12:45+09:00）
+
+第2回クロスレビューの Critical 1 件と High 6 件を修正し、残る High
+1 件（H-3 tracing）は設計判断のため見送った。Windows テスト 3 件の
+期待値も修正済み。
+
+- **C-1**: 退避 rename 失敗時に `read_only` / `load_error` を設定し、
+  その後の `save()` を no-op 化。理由を stderr とステータスバーへ表示
+  （`7c596bc`）。
+- **H-1**: `json.tmp-<nanos>-<pid>` を `create_new(true)` で予約し、
+  symlink 追従を防止（`7c596bc`）。
+- **H-2**: `.partial-<nanos>-<pid>-<n>` を `create_new(true)` で
+  予約（`14733ea`）。
+- **H-4**: `task.await` の Err を `status` と `cx.notify()` へ反映
+  （`3770132`）。
+- **H-5**: `new_debouncer` の `notify::Error` を保持し実理由を
+  表示（`3770132`）。
+- **H-6**: 未知 version を読み取り専用とし、v1 書き戻しによる
+  設定消失を防止（`598e7b3`）。
+- **Windows テスト 3 件**: symlink 数を `#[cfg(unix)]` で分岐、
+  正規化パスを比較用に正規化（`0551a0d`）。
+
+### 判定（修正後）
+
+- Critical: **0 件**（C-1 解消）
+- High: 残 1 件（H-3 tracing 導入は新規依存・設計判断のため保留、
+  現状の stderr ログで最低限の監査は可能）
+- 判定: **承認**（マージブロックを解除）
+
+### 検証
+
+- `bash scripts/check.sh --fast`: **exit 0 / All checks passed**
+  （app 168 tests / poc 4 tests / clippy 警告なし）
+- `cargo check --target x86_64-pc-windows-msvc --all-targets --locked`:
+  成功（警告は cfg 分岐由来の 2 件のみ）
+- 新規テスト 1 件追加（退避失敗時に元ファイルが保持され save が no-op になること）
