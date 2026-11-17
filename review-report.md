@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T13:27:38+09:00
+verified: 2026-11-17T13:35:24+09:00
 status: complete
 ---
 
@@ -744,3 +744,17 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 
 - 全変更を push（`4537022..261fffe`）、CI run 44016121848 が
   **success**（8m12s、2026-11-17T13:27+09:00 完了）。
+
+## 追加リファクタ（2026-11-17T13:35+09:00）
+
+- 一意名生成の `exists()` ループは、同一関数内の初期チェックと
+  ポリシー分岐で用途が異なるため統合せず現状維持（判断）。
+- `main.rs` のページステップ（行高 28px / クローム 140px）と
+  グリッド列計算（サイドバー 214px / セル 108px）を名前付き定数へ
+  抽出（`ROW_HEIGHT_PX` / `LIST_CHROME_HEIGHT_PX` /
+  `SIDEBAR_WIDTH_PX` / `GRID_CELL_WIDTH_PX`、`2e230a6`）。
+- `watcher.rs` の `DEBOUNCE` は既に定数化済み。テスト内の 5 秒
+  タイムアウトはテスト専用のため現状維持。
+
+検証: `bash scripts/check.sh --fast` = **exit 0**（app 168 tests /
+poc 4 tests / clippy 警告なし）、Windows ターゲット check 成功。
