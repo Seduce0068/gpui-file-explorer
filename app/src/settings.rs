@@ -208,10 +208,14 @@ impl Settings {
         match loaded_version {
             0 | 1 => {}
             future => {
-                eprintln!(
-                    "gpui-file-explorer: settings schema v{future} is not \
-                     supported; loading it as v{SCHEMA_VERSION}"
-                );
+                // A newer schema may contain fields serde ignores. Writing it
+                // back as v1 would silently drop those settings, so keep the
+                // session read-only (second cross-review H-6).
+                let reason =
+                    format!("設定スキーマ v{future} は未対応のため、書き込まずに読み込みました");
+                eprintln!("gpui-file-explorer: {reason}");
+                self.read_only = true;
+                self.load_error = Some(reason);
             }
         }
         self.version = SCHEMA_VERSION;
@@ -474,6 +478,12 @@ mod tests {
         assert_eq!(loaded.version, SCHEMA_VERSION);
         assert_eq!(loaded.view, ViewLayout::Icons);
         assert!(loaded.show_hidden);
+        // Future schema is read-only so a later save cannot drop unknown fields.
+        assert!(loaded.read_only);
+        assert!(loaded
+            .load_error
+            .as_deref()
+            .is_some_and(|s| s.contains("v42")));
         fs::remove_dir_all(&dir).unwrap();
     }
 
