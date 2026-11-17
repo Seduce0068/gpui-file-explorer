@@ -6,6 +6,22 @@
 //! headlessly (`cargo test`) and reused on any platform: the filesystem access
 //! is plain `std::fs`, and only the UI layer depends on gpui.
 
+// `error.rs` lives next to this file. Declaring it here (instead of in
+// `main.rs`) keeps the shared error type in scope without touching the UI
+// module list; `ops.rs` reaches the same type through `crate::model::AppError`.
+#[path = "error.rs"]
+pub mod error;
+
+// `FsErrorKind` is part of the pre-refactor `model` API; keep the re-export
+// even though the non-test build no longer names it directly (the shared
+// error module uses it internally).
+#[allow(unused_imports)]
+pub use error::{AppError, BoxedCause, FsErrorKind};
+
+/// Filesystem error type kept as an alias: existing callers still write
+/// `FsError::from_io(..)` and match on `FsError` variants through [`AppError`].
+pub type FsError = AppError;
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -13,66 +29,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use alphanumeric_sort::compare_str;
 use serde::{Deserialize, Serialize};
-
-/// Category of a filesystem error, independent of `std::io::ErrorKind`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FsErrorKind {
-    NotFound,
-    PermissionDenied,
-    NotADirectory,
-    Io,
-    Unknown,
-}
-
-/// A filesystem error carrying its path and a display message (DESIGN.md §5.5).
-#[derive(Clone, Debug)]
-pub struct FsError {
-    pub kind: FsErrorKind,
-    pub path: PathBuf,
-    pub os_message: Option<String>,
-}
-
-impl FsError {
-    /// Map an `io::Error` to a stable kind without leaking `io` types upward.
-    pub fn from_io(path: PathBuf, err: &std::io::Error) -> Self {
-        use std::io::ErrorKind;
-        let kind = match err.kind() {
-            ErrorKind::NotFound => FsErrorKind::NotFound,
-            ErrorKind::PermissionDenied => FsErrorKind::PermissionDenied,
-            ErrorKind::NotADirectory => FsErrorKind::NotADirectory,
-            ErrorKind::Other => FsErrorKind::Unknown,
-            _ => FsErrorKind::Io,
-        };
-        Self {
-            kind,
-            path,
-            os_message: Some(err.to_string()),
-        }
-    }
-
-    /// Japanese message including the affected path.
-    pub fn message_ja(&self) -> String {
-        let reason = match self.kind {
-            FsErrorKind::NotFound => "見つかりません",
-            FsErrorKind::PermissionDenied => "アクセスが拒否されました",
-            FsErrorKind::NotADirectory => "ディレクトリではありません",
-            FsErrorKind::Io => "読み取れませんでした",
-            FsErrorKind::Unknown => "エラーが発生しました",
-        };
-        match &self.os_message {
-            Some(message) if !message.is_empty() => {
-                format!("{}: {reason} ({message})", display_path(&self.path))
-            }
-            _ => format!("{}: {reason}", display_path(&self.path)),
-        }
-    }
-}
-
-impl std::fmt::Display for FsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message_ja())
-    }
-}
 
 /// One entry of a directory listing.
 #[derive(Clone, Debug)]
@@ -727,8 +683,8 @@ mod tests {
         breadcrumb_segments, clamp_index, compare_names, create_unique_folder, display_path,
         fingerprint, first_index, human_age, human_datetime, human_size, is_hidden_name,
         kind_label, last_index, parent_dir, read_entries, sort_entries, step_selection,
-        unique_child_name, visible_entries, Entry, FsError, FsErrorKind, SortDir, SortKey,
-        SortOrder, SortSpec,
+        unique_child_name, visible_entries, AppError, Entry, FsError, FsErrorKind, SortDir,
+        SortKey, SortOrder, SortSpec,
     };
     use std::ffi::OsString;
     use std::fs;
@@ -803,8 +759,12 @@ mod tests {
         let missing = scratch_dir("missing");
         let _ = fs::remove_dir_all(&missing);
         let error = read_entries(&missing).expect_err("missing dir must fail");
-        assert_eq!(error.kind, FsErrorKind::NotFound);
-        assert_eq!(error.path, missing);
+        assert_eq!(error.fs_kind(), Some(FsErrorKind::NotFound));
+        assert_eq!(error.fs_path(), Some(missing.as_path()));
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "the underlying io::Error must stay reachable through source()"
+        );
         assert!(error.message_ja().contains("見つかりません"));
         assert!(error.to_string().contains("見つかりません"));
         assert!(
@@ -821,27 +781,27 @@ mod tests {
             PathBuf::from("/tmp/x"),
             &Error::from(ErrorKind::PermissionDenied),
         );
-        assert_eq!(err.kind, FsErrorKind::PermissionDenied);
-        assert_eq!(err.os_message.as_deref(), Some("permission denied"));
+        assert_eq!(err.fs_kind(), Some(FsErrorKind::PermissionDenied));
+        assert_eq!(err.fs_os_message(), Some("permission denied"));
 
         let err = FsError::from_io(PathBuf::from("/tmp/x"), &Error::from(ErrorKind::NotFound));
-        assert_eq!(err.kind, FsErrorKind::NotFound);
+        assert_eq!(err.fs_kind(), Some(FsErrorKind::NotFound));
 
         let err = FsError::from_io(PathBuf::from("/tmp/x"), &Error::other("custom"));
-        assert_eq!(err.kind, FsErrorKind::Unknown);
+        assert_eq!(err.fs_kind(), Some(FsErrorKind::Unknown));
 
         let err = FsError::from_io(
             PathBuf::from("/tmp/x"),
             &Error::from(ErrorKind::NotADirectory),
         );
-        assert_eq!(err.kind, FsErrorKind::NotADirectory);
+        assert_eq!(err.fs_kind(), Some(FsErrorKind::NotADirectory));
         assert!(err.message_ja().contains("ディレクトリではありません"));
 
         let err = FsError::from_io(
             PathBuf::from("/tmp/x"),
             &Error::from(ErrorKind::InvalidInput),
         );
-        assert_eq!(err.kind, FsErrorKind::Io);
+        assert_eq!(err.fs_kind(), Some(FsErrorKind::Io));
         assert!(err.message_ja().contains("読み取れませんでした"));
 
         let denied = FsError::from_io(
@@ -853,15 +813,16 @@ mod tests {
         assert!(unknown.message_ja().contains("エラーが発生しました"));
 
         // No OS detail: the message stays short without an empty "()".
-        let plain = FsError {
+        let plain = AppError::Fs {
             kind: FsErrorKind::NotFound,
             path: PathBuf::from("/tmp/x"),
             os_message: None,
         };
         assert_eq!(plain.message_ja(), "/tmp/x: 見つかりません");
-        let empty_detail = FsError {
+        let empty_detail = AppError::Fs {
+            kind: FsErrorKind::NotFound,
+            path: PathBuf::from("/tmp/x"),
             os_message: Some(String::new()),
-            ..plain
         };
         assert_eq!(empty_detail.message_ja(), "/tmp/x: 見つかりません");
     }

@@ -21,7 +21,7 @@ mod trash_view;
 mod undo;
 mod watcher;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -503,6 +503,70 @@ fn trash_batch(
     (trashed, failures, cancel.is_cancelled())
 }
 
+/// Metadata collected for the read-only properties dialog.
+///
+/// All fields are plain data so the blocking reads can happen on the background
+/// executor and only the finished snapshot is applied on the UI thread.
+#[derive(Debug)]
+struct PropertiesSnapshot {
+    is_symlink: bool,
+    is_dir: bool,
+    size: Option<u64>,
+    modified: Option<SystemTime>,
+    permissions: Option<String>,
+    symlink_target: Option<PathBuf>,
+}
+
+/// Read a file's metadata for the properties dialog.
+///
+/// Blocking: call from the background executor only, never from render. The
+/// order and fallbacks mirror the previous inline implementation exactly.
+fn read_properties_snapshot(path: &Path) -> Result<PropertiesSnapshot, ()> {
+    // `symlink_metadata` sees broken links too and never follows them.
+    let link_metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
+    let is_symlink = link_metadata.file_type().is_symlink();
+    let metadata = std::fs::metadata(path).ok().or(Some(link_metadata.clone()));
+    let size = if link_metadata.is_dir() {
+        None
+    } else {
+        metadata.as_ref().map(|metadata| metadata.len())
+    };
+    let modified = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.modified().ok());
+    #[cfg(unix)]
+    let permissions = {
+        use std::os::unix::fs::PermissionsExt;
+        metadata
+            .as_ref()
+            .map(|metadata| model::permissions_string(metadata.permissions().mode() & 0o777))
+    };
+    #[cfg(not(unix))]
+    let permissions: Option<String> = None;
+    let symlink_target = if is_symlink {
+        std::fs::read_link(path).ok()
+    } else {
+        None
+    };
+    Ok(PropertiesSnapshot {
+        is_symlink,
+        is_dir: link_metadata.is_dir(),
+        size,
+        modified,
+        permissions,
+        symlink_target,
+    })
+}
+
+/// Resolve the trash ids of freshly trashed paths from a previously read
+/// listing. Blocking: call from the background executor only. An empty result
+/// (including a failed listing) leaves the undo entry empty, as before (F6-15).
+fn record_trashed_paths(trashed: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    trash_view::list()
+        .map(|items| trash_view::record_ids(&items, trashed))
+        .unwrap_or_default()
+}
+
 struct Explorer {
     settings: Settings,
     cwd: PathBuf,
@@ -709,7 +773,9 @@ impl Explorer {
             watcher,
             suppress_until: None,
             places,
-            mounts: mounts::list_mounts(),
+            // Populated asynchronously by `refresh_mounts` via the initial
+            // `reload` below; reading /proc/mounts here would block the UI.
+            mounts: Vec::new(),
             tabs,
             recent: Vec::new(),
             bookmarks: Vec::new(),
@@ -761,7 +827,7 @@ impl Explorer {
         let generation = self.generation;
         self.load = LoadState::Loading { generation };
         self.refresh_places();
-        self.refresh_mounts();
+        self.refresh_mounts(cx);
         self.refresh_recent();
         self.refresh_bookmarks();
         self.update_watcher();
@@ -1012,9 +1078,25 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Re-read the mount list. Called from `reload` only — never from render.
-    fn refresh_mounts(&mut self) {
-        self.mounts = mounts::list_mounts();
+    /// Re-read the mount list off the UI thread.
+    ///
+    /// `/proc/mounts` is a blocking filesystem read; it now runs on the GPUI
+    /// background executor and the result is applied only if the reload that
+    /// requested it is still current. Called from `reload` only — never render.
+    fn refresh_mounts(&mut self, cx: &mut Context<Self>) {
+        let generation = self.generation;
+        let background = cx.background_spawn(async move { mounts::list_mounts() });
+        cx.spawn(async move |this, cx| {
+            let mounts = background.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.mounts = mounts;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 10-second reconciliation: re-read the directory in the background and
@@ -2447,31 +2529,32 @@ impl Explorer {
         match mode {
             "trash" => {
                 let path = entry.path.clone();
-                match trash_view::delete(&path) {
-                    Ok(()) => {
-                        let recorded = trash_view::list()
-                            .ok()
-                            .and_then(|items| {
-                                items
-                                    .iter()
-                                    .find(|item| item.original_path() == path)
-                                    .map(|item| {
-                                        vec![(path.clone(), item.id.to_string_lossy().into_owned())]
-                                    })
-                            })
-                            .unwrap_or_default();
+                let report_path = path.clone();
+                // Both the deletion and the listing are blocking trash I/O.
+                let background = cx.background_spawn(async move {
+                    match trash_view::delete(&path) {
+                        Ok(()) => Ok(record_trashed_paths(std::slice::from_ref(&path))),
+                        Err(error) => Err(error),
+                    }
+                });
+                cx.spawn(async move |this, cx| match background.await {
+                    Ok(recorded) => {
                         eprintln!(
                             "undo-report: trashed {} recorded={}",
-                            path.display(),
+                            report_path.display(),
                             recorded.len()
                         );
-                        if !recorded.is_empty() {
-                            self.undo.push(UndoAction::Trash { items: recorded });
-                            self.undo_last(cx);
+                        if recorded.is_empty() {
+                            return;
                         }
+                        let _ = this.update(cx, |this, cx| {
+                            this.undo.push(UndoAction::Trash { items: recorded });
+                            this.undo_last(cx);
+                        });
                     }
                     Err(error) => eprintln!("undo-report: trash failed: {error}"),
-                }
+                })
+                .detach();
             }
             _ => {
                 let from = entry.path.clone();
@@ -2758,6 +2841,16 @@ impl Explorer {
                 });
                 let task = cx.spawn(async move |this, cx| {
                     let result = background.await;
+                    // Resolve the newly created trash ids on the background
+                    // executor; the UI thread only consumes the final mapping.
+                    let recorded = match &result {
+                        Some((trashed, _)) if !trashed.is_empty() => {
+                            let paths = trashed.clone();
+                            cx.background_spawn(async move { record_trashed_paths(&paths) })
+                                .await
+                        }
+                        _ => Vec::new(),
+                    };
                     let _ = this.update(cx, |this, cx| {
                         if !this.finish_op(&token, false) {
                             return;
@@ -2782,24 +2875,6 @@ impl Explorer {
                             // Always record the redo, even when the trash
                             // listing fails: otherwise the operation silently
                             // vanishes from the undo stack (F6-15).
-                            let recorded: Vec<(PathBuf, String)> = trash_view::list()
-                                .map(|items| {
-                                    trashed
-                                        .iter()
-                                        .filter_map(|path| {
-                                            items
-                                                .iter()
-                                                .find(|item| item.original_path() == *path)
-                                                .map(|item| {
-                                                    (
-                                                        path.clone(),
-                                                        item.id.to_string_lossy().into_owned(),
-                                                    )
-                                                })
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
                             this.undo.push_undo(UndoAction::Trash { items: recorded });
                             this.status = if failures.is_empty() {
                                 format!("{label}をやり直しました（{} 件）", trashed.len())
@@ -3267,67 +3342,62 @@ impl Explorer {
 
     /// Open the read-only properties dialog for `path`.
     ///
-    /// Metadata is read once here (never from render). Symlinks are inspected
-    /// with `symlink_metadata` and their target with `read_link`.
+    /// The blocking metadata reads run on the background executor; only the
+    /// finished snapshot is applied here (never from render).
     fn open_properties(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let link_metadata = std::fs::symlink_metadata(&path);
-        let Ok(link_metadata) = link_metadata else {
-            self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
-            self.reload(cx);
-            return;
-        };
-        let is_symlink = link_metadata.file_type().is_symlink();
-        let metadata = std::fs::metadata(&path)
-            .ok()
-            .or(Some(link_metadata.clone()));
-        let kind = if is_symlink {
-            "シンボリックリンク"
-        } else if link_metadata.is_dir() {
-            "フォルダ"
-        } else {
-            "ファイル"
-        };
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| display_path(&path));
-        let size = if link_metadata.is_dir() {
-            None
-        } else {
-            metadata.as_ref().map(|metadata| metadata.len())
-        };
-        let modified = metadata
-            .as_ref()
-            .and_then(|metadata| metadata.modified().ok());
-        #[cfg(unix)]
-        let permissions = {
-            use std::os::unix::fs::PermissionsExt;
-            metadata
-                .as_ref()
-                .map(|metadata| model::permissions_string(metadata.permissions().mode() & 0o777))
-        };
-        #[cfg(not(unix))]
-        let permissions: Option<String> = None;
-        let symlink_target = if is_symlink {
-            std::fs::read_link(&path).ok()
-        } else {
-            None
-        };
-        self.properties = Some(PropsState {
-            name,
-            path,
-            kind,
-            is_dir: link_metadata.is_dir(),
-            size,
-            modified,
-            permissions,
-            symlink_target,
-            size_loading: false,
-            dir_size: None,
-            size_task: None,
-            size_cancel: None,
-        });
-        cx.notify();
+        self.open_properties_impl(path, cx, false);
+    }
+
+    /// Debug-hook variant: kick off the recursive size scan as soon as the
+    /// metadata snapshot lands, preserving the old synchronous hand-off to
+    /// `start_dir_size` without blocking the UI thread.
+    fn open_properties_with_size(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.open_properties_impl(path, cx, true);
+    }
+
+    fn open_properties_impl(&mut self, path: PathBuf, cx: &mut Context<Self>, start_size: bool) {
+        let read_path = path.clone();
+        let background = cx.background_spawn(async move { read_properties_snapshot(&read_path) });
+        cx.spawn(async move |this, cx| {
+            let result = background.await;
+            let _ = this.update(cx, |this, cx| {
+                let Ok(snapshot) = result else {
+                    this.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
+                    this.reload(cx);
+                    return;
+                };
+                let kind = if snapshot.is_symlink {
+                    "シンボリックリンク"
+                } else if snapshot.is_dir {
+                    "フォルダ"
+                } else {
+                    "ファイル"
+                };
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| display_path(&path));
+                this.properties = Some(PropsState {
+                    name,
+                    path,
+                    kind,
+                    is_dir: snapshot.is_dir,
+                    size: snapshot.size,
+                    modified: snapshot.modified,
+                    permissions: snapshot.permissions,
+                    symlink_target: snapshot.symlink_target,
+                    size_loading: false,
+                    dir_size: None,
+                    size_task: None,
+                    size_cancel: None,
+                });
+                if start_size {
+                    this.start_dir_size(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn open_selected_properties(&mut self, cx: &mut Context<Self>) {
@@ -3850,6 +3920,15 @@ impl Explorer {
                 let (trashed, failures, cancelled) = background
                     .spawn(async move { trash_batch(targets, &cancel) })
                     .await;
+                // Resolve trash ids off the UI thread while the listing is
+                // still fresh; the update closure only uses the final mapping.
+                let recorded = if trashed.is_empty() {
+                    Vec::new()
+                } else {
+                    let paths = trashed.clone();
+                    cx.background_spawn(async move { record_trashed_paths(&paths) })
+                        .await
+                };
                 let _ = this_for_task.update(cx, |this, cx| {
                     if !this.finish_op(&token, false) {
                         return;
@@ -3902,20 +3981,8 @@ impl Explorer {
                             ));
                         }
                         this.status = message;
-                        if let Ok(items) = trash_view::list() {
-                            let recorded: Vec<(PathBuf, String)> = trashed
-                                .iter()
-                                .filter_map(|path| {
-                                    items.iter().find(|item| item.original_path() == *path).map(
-                                        |item| {
-                                            (path.clone(), item.id.to_string_lossy().into_owned())
-                                        },
-                                    )
-                                })
-                                .collect();
-                            if !recorded.is_empty() {
-                                this.undo.push(UndoAction::Trash { items: recorded });
-                            }
+                        if !recorded.is_empty() {
+                            this.undo.push(UndoAction::Trash { items: recorded });
                         }
                         this.all_entries
                             .retain(|entry| !trashed.contains(&entry.path));
@@ -5711,9 +5778,10 @@ impl Explorer {
             if self.debug.properties_once && !self.load.is_loading() && !self.entries.is_empty() {
                 self.debug.properties_once = false;
                 let path = self.entries[0].path.clone();
-                self.open_properties(path, cx);
                 if self.debug.properties_size {
-                    self.start_dir_size(cx);
+                    self.open_properties_with_size(path, cx);
+                } else {
+                    self.open_properties(path, cx);
                 }
             }
             if let Some(path) = self.debug.drop_path.take() {
@@ -6112,7 +6180,7 @@ mod tests {
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
         build_places, classify_cli, clear_op_token, format_selected, install_op_token, kind_color,
-        summarize_op, tab_label, trash_batch, CliAction, Explorer,
+        read_properties_snapshot, summarize_op, tab_label, trash_batch, CliAction, Explorer,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -6511,6 +6579,92 @@ mod tests {
         assert!(trashed.is_empty());
         assert!(failures.is_empty());
         assert!(file.exists(), "Esc must stop before the first deletion");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // F6-18: the properties metadata read now runs on the background executor.
+    // These tests exercise the exact snapshot function that got moved, so the
+    // dialog keeps showing the same values after the offload.
+
+    fn f618_temp_dir(tag: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-f6-18-{tag}-{}-{stamp}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn properties_snapshot_reads_file_metadata() {
+        let dir = f618_temp_dir("file");
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, b"abcd").unwrap();
+
+        let snapshot = read_properties_snapshot(&file).unwrap();
+        assert!(!snapshot.is_symlink);
+        assert!(!snapshot.is_dir);
+        assert_eq!(snapshot.size, Some(4));
+        assert!(snapshot.modified.is_some());
+        assert_eq!(snapshot.symlink_target, None);
+        #[cfg(unix)]
+        assert!(snapshot.permissions.is_some());
+        #[cfg(not(unix))]
+        assert!(snapshot.permissions.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn properties_snapshot_handles_dirs_and_missing_paths() {
+        let dir = f618_temp_dir("dir");
+        let snapshot = read_properties_snapshot(&dir).unwrap();
+        assert!(snapshot.is_dir);
+        assert!(!snapshot.is_symlink);
+        assert_eq!(snapshot.size, None, "directory size is computed separately");
+
+        assert!(read_properties_snapshot(&dir.join("missing")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn properties_snapshot_follows_symlink_target_for_size() {
+        use std::os::unix::fs::symlink;
+
+        let dir = f618_temp_dir("link");
+        let file = dir.join("target.txt");
+        std::fs::write(&file, b"12345").unwrap();
+        let link = dir.join("link.txt");
+        symlink(&file, &link).unwrap();
+
+        let snapshot = read_properties_snapshot(&link).unwrap();
+        assert!(snapshot.is_symlink);
+        assert!(!snapshot.is_dir);
+        assert_eq!(snapshot.symlink_target, Some(file));
+        assert_eq!(
+            snapshot.size,
+            Some(5),
+            "metadata follows the symlink target"
+        );
+
+        let broken = dir.join("broken");
+        symlink(dir.join("nope"), &broken).unwrap();
+        let broken_snapshot = read_properties_snapshot(&broken).unwrap();
+        assert!(broken_snapshot.is_symlink);
+        // Broken target: `metadata()` fails, so the preserved fallback is the
+        // symlink's own metadata (its len is the target path length).
+        assert!(broken_snapshot.size.is_some());
+        assert!(
+            broken_snapshot.symlink_target.is_some(),
+            "read_link works on broken links"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

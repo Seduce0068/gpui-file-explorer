@@ -25,6 +25,8 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::model::{AppError, BoxedCause};
+
 /// Size of the chunks used when copying file contents.
 pub const COPY_CHUNK_SIZE: usize = 64 * 1024;
 
@@ -62,34 +64,11 @@ pub enum ConflictPolicy {
 }
 
 /// A failure of a filesystem operation. Messages are user-displayable.
-#[derive(Debug)]
-pub enum OpError {
-    NotFound(PathBuf),
-    PermissionDenied(PathBuf),
-    AlreadyExists(PathBuf),
-    InvalidTarget(String),
-    Unsupported(String),
-    Cancelled,
-    Io { path: PathBuf, message: String },
-}
-
-impl std::fmt::Display for OpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound(path) => write!(f, "見つかりません: {}", path.display()),
-            Self::PermissionDenied(path) => {
-                write!(f, "アクセスが拒否されました: {}", path.display())
-            }
-            Self::AlreadyExists(path) => write!(f, "既に存在します: {}", path.display()),
-            Self::InvalidTarget(reason) => write!(f, "操作できません: {reason}"),
-            Self::Unsupported(reason) => write!(f, "未対応の操作です: {reason}"),
-            Self::Cancelled => write!(f, "操作はキャンセルされました"),
-            Self::Io { path, message } => write!(f, "{}: {message}", path.display()),
-        }
-    }
-}
-
-impl std::error::Error for OpError {}
+///
+/// Kept as a type alias: callers still construct `OpError::NotFound(..)` and
+/// match on `OpError::Cancelled`, but the type is now the shared [`AppError`],
+/// whose `source()` exposes the underlying `io::Error` when one exists.
+pub type OpError = AppError;
 
 /// Counters and lists describing a completed (or partially completed) operation.
 #[derive(Debug, Default, Clone)]
@@ -107,7 +86,9 @@ pub struct OpStats {
 }
 
 fn io_error(path: &Path, err: std::io::Error) -> OpError {
-    match err.kind() {
+    // Plain variants keep the original status text; `with_cause` swaps in the
+    // cause-carrying counterpart so `source()` exposes the original failure.
+    let plain = match err.kind() {
         std::io::ErrorKind::NotFound => OpError::NotFound(path.to_path_buf()),
         std::io::ErrorKind::PermissionDenied => OpError::PermissionDenied(path.to_path_buf()),
         std::io::ErrorKind::AlreadyExists => OpError::AlreadyExists(path.to_path_buf()),
@@ -125,7 +106,8 @@ fn io_error(path: &Path, err: std::io::Error) -> OpError {
             path: path.to_path_buf(),
             message: err.to_string(),
         },
-    }
+    };
+    plain.with_cause(BoxedCause::new(err))
 }
 
 /// Validate a single file name (not a path): no separators, no `.`/`..`,
@@ -1135,31 +1117,54 @@ mod dir_stats_tests {
     fn io_error_maps_common_kinds() {
         let path = Path::new("/tmp/example");
         let not_found = io_error(path, std::io::Error::from(std::io::ErrorKind::NotFound));
-        assert!(matches!(not_found, OpError::NotFound(_)));
+        assert!(matches!(
+            not_found,
+            OpError::NotFound(_) | OpError::NotFoundCause(_, _)
+        ));
+        assert!(std::error::Error::source(&not_found).is_some());
 
         let denied = io_error(
             path,
             std::io::Error::from(std::io::ErrorKind::PermissionDenied),
         );
-        assert!(matches!(denied, OpError::PermissionDenied(_)));
+        assert!(matches!(
+            denied,
+            OpError::PermissionDenied(_) | OpError::PermissionDeniedCause(_, _)
+        ));
 
         let exists = io_error(
             path,
             std::io::Error::from(std::io::ErrorKind::AlreadyExists),
         );
-        assert!(matches!(exists, OpError::AlreadyExists(_)));
+        assert!(matches!(
+            exists,
+            OpError::AlreadyExists(_) | OpError::AlreadyExistsCause(_, _)
+        ));
 
         let cross = io_error(
             path,
             std::io::Error::from(std::io::ErrorKind::CrossesDevices),
         );
-        assert!(matches!(cross, OpError::Unsupported(_)));
+        assert!(matches!(
+            cross,
+            OpError::Unsupported(_) | OpError::UnsupportedCause(_, _)
+        ));
 
         let is_dir = io_error(path, std::io::Error::from(std::io::ErrorKind::IsADirectory));
-        assert!(matches!(is_dir, OpError::InvalidTarget(_)));
+        assert!(matches!(
+            is_dir,
+            OpError::InvalidTarget(_) | OpError::InvalidTargetCause(_, _)
+        ));
 
         let other = io_error(path, std::io::Error::other("boom"));
-        assert!(matches!(other, OpError::Io { .. }));
+        assert!(matches!(
+            other,
+            OpError::Io { .. } | OpError::IoCause { .. }
+        ));
+        assert_eq!(
+            std::error::Error::source(&other).map(ToString::to_string),
+            Some("boom".to_string())
+        );
     }
 
     #[test]
