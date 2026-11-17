@@ -145,6 +145,31 @@ fn display_name_for(
     entry.name_text.clone()
 }
 
+/// Caption of a saved-search chip. The name comes first so the list can be
+/// scanned quickly, with the saved query shown for confirmation (F6-49).
+fn saved_search_caption(name: &str, query: &str) -> String {
+    format!("{name}: {query}")
+}
+
+/// Status shown after a saved-search save click. Rejected saves are reported
+/// explicitly so a click is never silently ignored (F6-49).
+fn saved_search_save_status(name: &str, stored: bool) -> String {
+    if stored {
+        format!("検索を保存しました: {name}")
+    } else {
+        format!("検索を保存できませんでした: {name}（名前または検索語が無効です）")
+    }
+}
+
+/// Row name with a bookmark label prefixed. The original name stays visible so
+/// the underlying entry can still be recognised (F6-49).
+fn labeled_display_name(base: &str, label: Option<&str>) -> String {
+    match label {
+        Some(label) if !label.trim().is_empty() => format!("[{}] {}", label.trim(), base),
+        _ => base.to_owned(),
+    }
+}
+
 /// Label for a tab: the directory's last component, or "ルート" for `/`.
 fn tab_label(path: &std::path::Path) -> String {
     if path == std::path::Path::new("/") {
@@ -334,6 +359,14 @@ struct RenameState {
     error: Option<String>,
 }
 
+/// Inline bookmark-label editor (F6-49). Dropping it closes the dialog.
+struct LabelState {
+    path: PathBuf,
+    input: Entity<InputState>,
+    /// Keeps the `InputEvent::PressEnter` subscription alive while open.
+    _subscription: Subscription,
+}
+
 /// Location bar (Ctrl+L): a path input with validation error.
 struct LocationState {
     input: Entity<InputState>,
@@ -396,6 +429,8 @@ struct ClipboardSlot {
 struct SearchState {
     input: Option<Entity<InputState>>,
     subscription: Option<Subscription>,
+    /// Name field of the saved-search bar (F6-49).
+    save_name: Option<Entity<InputState>>,
     ext: Option<Entity<InputState>>,
     ext_subscription: Option<Subscription>,
     name_filter: Option<Entity<InputState>>,
@@ -706,6 +741,8 @@ struct Explorer {
     op_progress: Option<(u64, u64)>,
     /// Inline rename dialog (F2 / context menu). `None` when closed.
     renaming: Option<RenameState>,
+    /// Inline bookmark-label editor (F6-49). `None` when closed.
+    label_editor: Option<LabelState>,
     /// Read-only properties dialog state.
     properties: Option<PropsState>,
     /// Whether the F1 keyboard help overlay is open.
@@ -869,6 +906,7 @@ impl Explorer {
             op_token: 0,
             op_progress: None,
             renaming: None,
+            label_editor: None,
             properties: None,
             help_open: false,
             location: None,
@@ -1161,6 +1199,105 @@ impl Explorer {
             format!("ブックマークを解除しました: {}", display_path(&path))
         };
         cx.notify();
+    }
+
+    /// Toggle a bookmark for an arbitrary directory row (F6-49). The sidebar
+    /// cache is refreshed immediately so the label UI sees the new entry.
+    fn toggle_bookmark_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        let added = self.settings.toggle_bookmark(path);
+        let _ = self.save_settings();
+        self.refresh_bookmarks();
+        self.status = if added {
+            format!("ブックマークに追加しました: {}", display_path(path))
+        } else {
+            format!("ブックマークを解除しました: {}", display_path(path))
+        };
+        cx.notify();
+    }
+
+    /// Open the inline label editor for a directory row (F6-49).
+    fn open_label_editor(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.label_editor.is_some() {
+            return;
+        }
+        let existing = self
+            .settings
+            .bookmark_label(&path)
+            .unwrap_or("")
+            .to_string();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(existing));
+        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.commit_label_editor(cx);
+            }
+        });
+        let focus = input.read(cx).focus_handle(cx).clone();
+        focus.focus(window, cx);
+        self.label_editor = Some(LabelState {
+            path,
+            input,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    /// Apply the typed label. A blank value removes the label, matching
+    /// `Settings::set_bookmark_label`'s own contract (F6-49).
+    fn commit_label_editor(&mut self, cx: &mut Context<Self>) {
+        let (path, value) = {
+            let Some(editor) = self.label_editor.as_ref() else {
+                return;
+            };
+            (
+                editor.path.clone(),
+                editor.input.read(cx).value().to_string(),
+            )
+        };
+        let label = value.trim().to_string();
+        let changed = if label.is_empty() {
+            self.settings.remove_bookmark_label(&path)
+        } else {
+            self.settings.set_bookmark_label(&path, &label)
+        };
+        if changed {
+            let _ = self.save_settings();
+        }
+        self.label_editor = None;
+        self.status = if label.is_empty() {
+            if changed {
+                format!("ラベルを削除しました: {}", display_path(&path))
+            } else {
+                format!("ラベルは設定されていません: {}", display_path(&path))
+            }
+        } else if changed {
+            format!("ラベルを設定しました: {label}（{}）", display_path(&path))
+        } else {
+            format!("ラベルを設定できませんでした: {}", display_path(&path))
+        };
+        cx.notify();
+    }
+
+    /// Remove a label directly from the row context menu (F6-49).
+    fn clear_bookmark_label(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let removed = self.settings.remove_bookmark_label(path);
+        if removed {
+            let _ = self.save_settings();
+        }
+        self.status = if removed {
+            format!("ラベルを削除しました: {}", display_path(path))
+        } else {
+            format!("ラベルは設定されていません: {}", display_path(path))
+        };
+        cx.notify();
+    }
+
+    fn close_label_editor(&mut self, cx: &mut Context<Self>) {
+        if self.label_editor.take().is_some() {
+            cx.notify();
+        }
     }
 
     /// Re-read the mount list off the UI thread.
@@ -1826,6 +1963,13 @@ impl Explorer {
         if self.renaming.is_some() {
             if event.keystroke.key == "escape" {
                 self.cancel_rename(window, cx);
+            }
+            return;
+        }
+        if self.label_editor.is_some() {
+            // The label input owns keys while open; only Escape closes it.
+            if event.keystroke.key == "escape" {
+                self.close_label_editor(cx);
             }
             return;
         }
@@ -4071,6 +4215,93 @@ impl Explorer {
         )
     }
 
+    /// Modal overlay for the bookmark-label editor (F6-49).
+    fn label_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let editor = self.label_editor.as_ref()?;
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.close_label_editor(cx);
+                }),
+            );
+        let cancel = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.close_label_editor(cx);
+        });
+        let confirm = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.commit_label_editor(cx);
+        });
+        let remove = {
+            let path = editor.path.clone();
+            cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                this.clear_bookmark_label(&path, cx);
+                this.label_editor = None;
+                cx.notify();
+            })
+        };
+        let form = div()
+            .w(px(480.0))
+            .bg(rgb(C_SURFACE))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(C_OVERLAY))
+            .shadow_lg()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("ブックマークラベル"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(C_SUBTEXT))
+                    .truncate()
+                    .child(display_path(&editor.path)),
+            )
+            .child(Input::new(&editor.input).w_full())
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("label-cancel")
+                            .label("キャンセル")
+                            .on_click(cancel),
+                    )
+                    .child(Button::new("label-remove").label("削除").on_click(remove))
+                    .child(Button::new("label-confirm").label("設定").on_click(confirm)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("Enter で確定 / 空にして確定すると削除 / Esc でキャンセル"),
+            );
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(form),
+        )
+    }
+
     fn reveal(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if !path.exists() {
             self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
@@ -4287,6 +4518,9 @@ impl Explorer {
         );
         self.search.name_filter = Some(name_input);
         self.search.name_filter_subscription = Some(name_subscription);
+        // The save-name field is read when "保存" is clicked; no subscription
+        // is needed (F6-49).
+        self.search.save_name = Some(cx.new(|cx| InputState::new(window, cx)));
         self.search.kind = SearchKind::All;
         self.search.mode = SearchMode::Name;
         self.search.scope = SearchScope::Current;
@@ -4507,6 +4741,7 @@ impl Explorer {
         self.search.ext_subscription = None;
         self.search.name_filter = None;
         self.search.name_filter_subscription = None;
+        self.search.save_name = None;
         self.search.kind = SearchKind::All;
         self.search.mode = SearchMode::Name;
         self.search.scope = SearchScope::Current;
@@ -4700,6 +4935,130 @@ impl Explorer {
         Some(row)
     }
 
+    /// Save the current query under the typed name (F6-49).
+    fn save_current_search(&mut self, cx: &mut Context<Self>) {
+        let (Some(name_input), Some(query_input)) =
+            (self.search.save_name.clone(), self.search.input.clone())
+        else {
+            return;
+        };
+        let name = name_input.read(cx).value().trim().to_string();
+        let query = query_input.read(cx).value().trim().to_string();
+        let stored = if name.is_empty() || query.is_empty() {
+            false
+        } else {
+            self.settings.save_search(&name, &query)
+        };
+        if stored {
+            let _ = self.save_settings();
+        }
+        self.status = if name.is_empty() {
+            "保存する検索名を入力してください".to_string()
+        } else if query.is_empty() {
+            "検索語を入力してから保存してください".to_string()
+        } else {
+            saved_search_save_status(&name, stored)
+        };
+        cx.notify();
+    }
+
+    /// Recall a saved search: load its query into the search input and run it
+    /// with the currently selected mode/scope/filters (F6-49).
+    fn recall_saved_search(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(query) = self
+            .settings
+            .saved_search(name)
+            .map(|search| search.query.clone())
+        else {
+            self.status = format!("保存検索が見つかりません: {name}");
+            cx.notify();
+            return;
+        };
+        if let Some(input) = self.search.input.clone() {
+            input.update(cx, |state, cx| state.set_value(query, window, cx));
+        }
+        self.run_search(cx);
+    }
+
+    /// Delete a saved search by name (F6-49).
+    fn delete_saved_search(&mut self, name: &str, cx: &mut Context<Self>) {
+        let removed = self.settings.remove_search(name);
+        if removed {
+            let _ = self.save_settings();
+        }
+        self.status = if removed {
+            format!("保存検索を削除しました: {name}")
+        } else {
+            format!("保存検索が見つかりません: {name}")
+        };
+        cx.notify();
+    }
+
+    /// Bar for saving, recalling and deleting named searches. Shown together
+    /// with the search bar; chips mirror `settings.saved_searches` (F6-49).
+    fn saved_search_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
+        // Both fields live only while the search bar is open.
+        self.search.input.as_ref()?;
+        let name_input = self.search.save_name.as_ref()?;
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .bg(rgb(C_MANTLE))
+            .border_b_1()
+            .border_color(rgb(C_SURFACE))
+            .child(div().text_xs().text_color(rgb(C_MUTED)).child("保存検索:"))
+            .child(div().w(px(110.0)).child(Input::new(name_input)))
+            .child(
+                Button::new("save-search")
+                    .label("保存")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                        this.save_current_search(cx);
+                    })),
+            );
+        for (index, search) in self.settings.saved_searches.iter().enumerate() {
+            let name = search.name.clone();
+            let recall_name = name.clone();
+            let delete_name = name.clone();
+            let caption = saved_search_caption(&search.name, &search.query);
+            row = row
+                .child(
+                    div()
+                        .id(("saved-search-recall", index))
+                        .px_2()
+                        .py_0p5()
+                        .rounded_md()
+                        .bg(rgb(C_BASE))
+                        .text_xs()
+                        .text_color(rgb(C_SUBTEXT))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                        .child(caption)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.recall_saved_search(&recall_name, window, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("saved-search-delete", index))
+                        .px_1()
+                        .py_0p5()
+                        .rounded_md()
+                        .text_xs()
+                        .text_color(rgb(C_MUTED))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_RED)))
+                        .child("×")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                            this.delete_saved_search(&delete_name, cx);
+                        })),
+                );
+        }
+        Some(row)
+    }
+
     // ------------------------------------------------------------------- trash
 
     fn restore_selected(&mut self, cx: &mut Context<Self>) {
@@ -4801,104 +5160,149 @@ impl Explorer {
                 "既定のアプリで開く"
             };
 
-            menu.item(
-                PopupMenuItem::new(open_label)
-                    .icon(Icon::new(IconName::ExternalLink))
-                    .on_click(move |_, _window, cx| {
-                        let target = open_path.clone();
-                        let _ = open_weak.update(cx, |this, cx| this.open_path(target, cx));
-                    }),
-            )
-            .item(
-                PopupMenuItem::new("ファイルマネージャで表示")
-                    .icon(Icon::new(IconName::FolderOpen))
-                    .on_click(move |_, _window, cx| {
-                        let target = reveal_path.clone();
-                        let _ = reveal_weak.update(cx, |this, cx| this.reveal(target, cx));
-                    }),
-            )
-            .item(
-                PopupMenuItem::new("パスをコピー")
-                    .icon(Icon::new(IconName::Copy))
-                    .on_click(move |_, _window, cx| {
-                        let target = copy_path.clone();
-                        let _ = copy_weak.update(cx, |this, cx| this.copy_path(target, cx));
-                    }),
-            )
-            .item(
-                PopupMenuItem::new("操作の履歴")
-                    .icon(Icon::new(IconName::Clock))
-                    .on_click(move |_, _window, cx| {
-                        let _ = history_weak.update(cx, |this, cx| {
-                            this.undo_history_open = true;
-                            cx.notify();
-                        });
-                    }),
-            )
-            .item(
-                PopupMenuItem::new("元に戻す")
-                    .icon(Icon::new(IconName::Undo2))
-                    .on_click(move |_, _window, cx| {
-                        let _ = undo_weak.update(cx, |this, cx| this.undo_last(cx));
-                    }),
-            )
-            .item(
-                PopupMenuItem::new("プロパティ")
-                    .icon(Icon::new(IconName::Info))
-                    .on_click(move |_, _window, cx| {
-                        let target = props_path.clone();
-                        let _ = props_weak.update(cx, |this, cx| this.open_properties(target, cx));
-                    }),
-            )
-            .item(
-                PopupMenuItem::new(format!("コピー{batch_suffix}"))
-                    .icon(Icon::new(IconName::ClipboardCopy))
-                    .on_click(move |_, _window, cx| {
-                        let _ = copy_sel_weak.update(cx, |this, cx| this.copy_selected(cx));
-                    }),
-            )
-            .item(
-                PopupMenuItem::new(format!("切り取り{batch_suffix}"))
-                    .icon(Icon::new(IconName::ClipboardMinus))
-                    .on_click(move |_, _window, cx| {
-                        let _ = cut_sel_weak.update(cx, |this, cx| this.cut_selected(cx));
-                    }),
-            )
-            .item(
-                PopupMenuItem::new("貼り付け")
-                    .icon(Icon::new(IconName::ClipboardPaste))
-                    .on_click(move |_, _window, cx| {
-                        let _ = paste_weak.update(cx, |this, cx| this.paste(cx));
-                    }),
-            )
-            .item(
-                PopupMenuItem::new("名前変更")
-                    .icon(Icon::new(IconName::Pencil))
-                    .on_click(move |_, _window, cx| {
-                        let _ = rename_weak.update_in(cx, |this, window, cx| {
-                            this.start_rename(window, cx);
-                        });
-                    }),
-            )
-            .separator()
-            .item(
-                PopupMenuItem::new(format!("ゴミ箱へ移動{batch_suffix}"))
-                    .icon(Icon::new(IconName::Trash))
-                    .on_click(move |_, _window, cx| {
-                        let targets = trash_paths.clone();
-                        let _ = trash_weak.update_in(cx, |this, window, cx| {
-                            this.trash_paths(targets, window, cx);
-                        });
-                    }),
-            )
-            .separator()
-            .item(
-                PopupMenuItem::new("新規フォルダ")
-                    .icon(Icon::new(IconName::FolderPlus))
-                    .on_click(move |_, _window, cx| {
-                        let _ = new_folder_weak.update(cx, |this, cx| this.new_folder(cx));
-                    }),
-            )
+            let mut menu = menu
+                .item(
+                    PopupMenuItem::new(open_label)
+                        .icon(Icon::new(IconName::ExternalLink))
+                        .on_click(move |_, _window, cx| {
+                            let target = open_path.clone();
+                            let _ = open_weak.update(cx, |this, cx| this.open_path(target, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("ファイルマネージャで表示")
+                        .icon(Icon::new(IconName::FolderOpen))
+                        .on_click(move |_, _window, cx| {
+                            let target = reveal_path.clone();
+                            let _ = reveal_weak.update(cx, |this, cx| this.reveal(target, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("パスをコピー")
+                        .icon(Icon::new(IconName::Copy))
+                        .on_click(move |_, _window, cx| {
+                            let target = copy_path.clone();
+                            let _ = copy_weak.update(cx, |this, cx| this.copy_path(target, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("操作の履歴")
+                        .icon(Icon::new(IconName::Clock))
+                        .on_click(move |_, _window, cx| {
+                            let _ = history_weak.update(cx, |this, cx| {
+                                this.undo_history_open = true;
+                                cx.notify();
+                            });
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("元に戻す")
+                        .icon(Icon::new(IconName::Undo2))
+                        .on_click(move |_, _window, cx| {
+                            let _ = undo_weak.update(cx, |this, cx| this.undo_last(cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("プロパティ")
+                        .icon(Icon::new(IconName::Info))
+                        .on_click(move |_, _window, cx| {
+                            let target = props_path.clone();
+                            let _ =
+                                props_weak.update(cx, |this, cx| this.open_properties(target, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(format!("コピー{batch_suffix}"))
+                        .icon(Icon::new(IconName::ClipboardCopy))
+                        .on_click(move |_, _window, cx| {
+                            let _ = copy_sel_weak.update(cx, |this, cx| this.copy_selected(cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(format!("切り取り{batch_suffix}"))
+                        .icon(Icon::new(IconName::ClipboardMinus))
+                        .on_click(move |_, _window, cx| {
+                            let _ = cut_sel_weak.update(cx, |this, cx| this.cut_selected(cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("貼り付け")
+                        .icon(Icon::new(IconName::ClipboardPaste))
+                        .on_click(move |_, _window, cx| {
+                            let _ = paste_weak.update(cx, |this, cx| this.paste(cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("名前変更")
+                        .icon(Icon::new(IconName::Pencil))
+                        .on_click(move |_, _window, cx| {
+                            let _ = rename_weak.update_in(cx, |this, window, cx| {
+                                this.start_rename(window, cx);
+                            });
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(format!("ゴミ箱へ移動{batch_suffix}"))
+                        .icon(Icon::new(IconName::Trash))
+                        .on_click(move |_, _window, cx| {
+                            let targets = trash_paths.clone();
+                            let _ = trash_weak.update_in(cx, |this, window, cx| {
+                                this.trash_paths(targets, window, cx);
+                            });
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("新規フォルダ")
+                        .icon(Icon::new(IconName::FolderPlus))
+                        .on_click(move |_, _window, cx| {
+                            let _ = new_folder_weak.update(cx, |this, cx| this.new_folder(cx));
+                        }),
+                );
+            if is_dir {
+                // Personalization entries (F6-49): bookmarks and their labels
+                // are resolved by path at click time, just like the actions
+                // above, so a re-sort while the menu is open cannot retarget.
+                let bookmark_weak = weak.clone();
+                let label_weak = weak.clone();
+                let clear_label_weak = weak.clone();
+                let bookmark_path = path.clone();
+                let label_path = path.clone();
+                let clear_label_path = path.clone();
+                menu = menu
+                    .separator()
+                    .item(
+                        PopupMenuItem::new("ブックマークを追加/解除")
+                            .icon(Icon::new(IconName::Star))
+                            .on_click(move |_, _window, cx| {
+                                let target = bookmark_path.clone();
+                                let _ = bookmark_weak
+                                    .update(cx, |this, cx| this.toggle_bookmark_path(&target, cx));
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new("ラベルを設定…")
+                            .icon(Icon::new(IconName::Pencil))
+                            .on_click(move |_, _window, cx| {
+                                let target = label_path.clone();
+                                let _ = label_weak.update_in(cx, |this, window, cx| {
+                                    this.open_label_editor(target, window, cx);
+                                });
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new("ラベルを削除")
+                            .icon(Icon::new(IconName::Trash))
+                            .on_click(move |_, _window, cx| {
+                                let target = clear_label_path.clone();
+                                let _ = clear_label_weak.update(cx, |this, cx| {
+                                    this.clear_bookmark_label(&target, cx);
+                                });
+                            }),
+                    );
+            }
+            menu
         }
     }
 
@@ -5039,6 +5443,10 @@ impl Explorer {
             Some(line) if this.view == ViewSource::Search => format!("{display_name}:{line}"),
             _ => display_name,
         };
+        // F6-49: bookmark labels prefix the row name; the real name stays
+        // visible so the underlying entry can still be identified.
+        let bookmark_label = this.settings.bookmark_label(&entry.path).map(str::to_owned);
+        let display_name = labeled_display_name(&display_name, bookmark_label.as_deref());
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
@@ -5252,6 +5660,10 @@ impl Explorer {
             Some(line) if this.view == ViewSource::Search => format!("{display_name}:{line}"),
             _ => display_name,
         };
+        // F6-49: bookmark labels prefix the row name; the real name stays
+        // visible so the underlying entry can still be identified.
+        let bookmark_label = this.settings.bookmark_label(&entry.path).map(str::to_owned);
+        let display_name = labeled_display_name(&display_name, bookmark_label.as_deref());
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
@@ -5464,7 +5876,8 @@ impl Explorer {
             );
             for (index, path) in self.bookmarks.iter().enumerate() {
                 let active = self.view == ViewSource::Directory && path == &self.cwd;
-                let label = tab_label(path);
+                let label =
+                    labeled_display_name(&tab_label(path), self.settings.bookmark_label(path));
                 let target = path.clone();
                 sidebar = sidebar.child(
                     div()
@@ -5502,7 +5915,8 @@ impl Explorer {
             );
             for (index, path) in recent.iter().enumerate() {
                 let active = self.view == ViewSource::Directory && path == &self.cwd;
-                let label = tab_label(path);
+                let label =
+                    labeled_display_name(&tab_label(path), self.settings.bookmark_label(path));
                 let target = path.clone();
                 sidebar = sidebar.child(
                     div()
@@ -6210,6 +6624,7 @@ impl Render for Explorer {
         let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar(cx);
         let search_history_bar = self.search_history_bar(cx);
+        let saved_search_bar = self.saved_search_bar(cx);
         let location_bar = self.location_bar();
         self.apply_overlay_hooks(window, cx);
         let rename_dialog = self.rename_dialog(cx);
@@ -6217,6 +6632,7 @@ impl Render for Explorer {
         let help_dialog = self.help_dialog(cx);
         let preview_dialog = self.preview_dialog(cx);
         let undo_history_dialog = self.undo_history_dialog(cx);
+        let label_dialog = self.label_dialog(cx);
 
         let grid_mode = self.settings.view == ViewLayout::Icons;
         // Column headers only make sense in the details list.
@@ -6308,6 +6724,7 @@ impl Render for Explorer {
             .children(tab_bar)
             .children(search_bar)
             .children(search_history_bar)
+            .children(saved_search_bar)
             .children(location_bar)
             .child(body)
             .child(self.status_bar(cx))
@@ -6316,6 +6733,7 @@ impl Render for Explorer {
             .children(help_dialog)
             .children(preview_dialog)
             .children(undo_history_dialog)
+            .children(label_dialog)
     }
 }
 
@@ -6567,9 +6985,10 @@ mod tests {
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
         build_places, classify_cli, clear_op_token, format_selected, install_op_token,
-        internal_drop_paths, kind_color, pending_rename_index, read_properties_snapshot,
-        summarize_op, tab_label, trash_batch, trash_delete_status, trash_key_action, CliAction,
-        Explorer, TrashKeyAction,
+        internal_drop_paths, kind_color, labeled_display_name, pending_rename_index,
+        read_properties_snapshot, saved_search_caption, saved_search_save_status, summarize_op,
+        tab_label, trash_batch, trash_delete_status, trash_key_action, CliAction, Explorer,
+        TrashKeyAction,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -7191,5 +7610,88 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // F6-49: the personalization wiring uses these pure helpers plus the real
+    // Settings API from the panels, so the whole path is covered headlessly.
+
+    #[test]
+    fn saved_search_ui_caption_and_status_are_explicit() {
+        assert_eq!(
+            saved_search_caption("Todos", "TODO name:rs"),
+            "Todos: TODO name:rs"
+        );
+        let ok = saved_search_save_status("Todos", true);
+        let rejected = saved_search_save_status("Todos", false);
+        assert!(ok.contains("Todos") && ok.contains("保存しました"), "{ok}");
+        assert!(
+            rejected.contains("Todos") && rejected.contains("できませんでした"),
+            "{rejected}"
+        );
+    }
+
+    #[test]
+    fn saved_search_wiring_roundtrips_through_settings() {
+        use crate::settings::Settings;
+
+        let mut settings = Settings::default();
+        assert!(settings.save_search("Todos", "TODO"));
+        let found = settings
+            .saved_search("todos")
+            .expect("lookup is case-insensitive");
+        assert_eq!(found.query, "TODO");
+        assert_eq!(
+            saved_search_caption(&found.name, &found.query),
+            "Todos: TODO"
+        );
+        // Saving the same name again updates the entry instead of duplicating it.
+        assert!(settings.save_search("TODOS", "name:rs"));
+        assert_eq!(settings.saved_searches.len(), 1);
+        assert_eq!(settings.saved_search("todos").unwrap().query, "name:rs");
+        assert!(settings.remove_search("todos"));
+        assert!(settings.saved_search("Todos").is_none());
+        assert!(!settings.remove_search("Todos"));
+    }
+
+    #[test]
+    fn bookmark_label_wiring_reaches_row_names() {
+        use crate::settings::Settings;
+        use std::path::Path;
+
+        let mut settings = Settings::default();
+        let path = Path::new("/work/project");
+        assert_eq!(
+            labeled_display_name("project", settings.bookmark_label(path)),
+            "project"
+        );
+        assert!(settings.set_bookmark_label(path, " work "));
+        assert_eq!(settings.bookmark_label(path), Some("work"));
+        // Sidebar rows use the tab label as their base; list rows use the
+        // entry/relative-search name. Both keep the original text visible.
+        assert_eq!(
+            labeled_display_name(&tab_label(path), settings.bookmark_label(path)),
+            "[work] project"
+        );
+        assert_eq!(
+            labeled_display_name("src/main.rs", settings.bookmark_label(path)),
+            "[work] src/main.rs"
+        );
+        // A blank label clears the value, so rows fall back to their base name.
+        assert!(settings.set_bookmark_label(path, "  "));
+        assert!(settings.bookmark_label(path).is_none());
+        assert_eq!(
+            labeled_display_name("project", settings.bookmark_label(path)),
+            "project"
+        );
+        assert!(settings.set_bookmark_label(path, "work"));
+        assert!(settings.remove_bookmark_label(path));
+        assert!(!settings.remove_bookmark_label(path));
+    }
+
+    #[test]
+    fn bookmark_label_helper_ignores_blank_values() {
+        assert_eq!(labeled_display_name("item", None), "item");
+        assert_eq!(labeled_display_name("item", Some("  ")), "item");
+        assert_eq!(labeled_display_name("item", Some(" home ")), "[home] item");
     }
 }
