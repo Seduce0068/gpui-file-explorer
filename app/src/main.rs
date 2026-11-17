@@ -495,7 +495,7 @@ fn trash_batch(
         if cancel.is_cancelled() {
             return (trashed, failures, true);
         }
-        match trash::delete(&path) {
+        match trash_view::delete(&path) {
             Ok(()) => trashed.push(path),
             Err(error) => failures.push((path, error.to_string())),
         }
@@ -517,7 +517,7 @@ struct Explorer {
     /// Current listing source (real directory or the system trash).
     view: ViewSource,
     /// Trash items backing the virtual listing (empty in directory view).
-    trash_items: Vec<trash::TrashItem>,
+    trash_items: Vec<trash_view::TrashItem>,
     /// Recursive search state (active only while `view == Search`).
     search: SearchState,
     /// Content-search line numbers keyed by path (display concern, not Entry).
@@ -2447,7 +2447,7 @@ impl Explorer {
         match mode {
             "trash" => {
                 let path = entry.path.clone();
-                match trash::delete(&path) {
+                match trash_view::delete(&path) {
                     Ok(()) => {
                         let recorded = trash_view::list()
                             .ok()
@@ -4411,7 +4411,7 @@ impl Explorer {
         if self.view != ViewSource::Trash {
             return;
         }
-        let items: Vec<trash::TrashItem> = self
+        let items: Vec<trash_view::TrashItem> = self
             .trash_items
             .iter()
             .filter(|item| paths.contains(&PathBuf::from(&item.id)))

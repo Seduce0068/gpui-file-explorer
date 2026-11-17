@@ -15,7 +15,6 @@ gpui-kit = "=0.9.1"
 alphanumeric-sort = "1.5"
 notify = "8.2"
 notify-debouncer-full = "0.7"
-trash = "5.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
@@ -25,6 +24,14 @@ chrono = "0.4"
 # `tracing-subscriber` adds level/timestamp formatting and RUST_LOG filtering.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# `trash` 5.3.0 only builds where its platform backend exists. Its `os_limited`
+# API is gated to Windows or Freedesktop Unix, and macOS / iOS / Android have
+# no backend at all. Keep it out of those targets so the app compiles there;
+# `app/src/trash_view.rs` provides matching no-op fallbacks. The gate mirrors
+# the crate's own cfg (default `freedesktop` feature is enabled for the dep).
+[target.'cfg(any(target_os = "windows", all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))'.dependencies]
+trash = "5.3"
 
 [profile.dev]
 # GPUI + wgpu の debuginfo は巨大（debug=1 で 1.76GiB のバイナリ、target/ は 21GiB）。

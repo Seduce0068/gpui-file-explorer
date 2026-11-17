@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# cargo-deny の設定。リポジトリ直下に置くことで app/ と poc/ の両 Cargo
+# プロジェクトから親ディレクトリ探索で共通利用される。
+# 下記 allow は既存 dependency graph に対して `cargo deny check` が通る
+# 最小限のライセンス集合を基準にしている（新規ライセンスは明示的に追加する）。
+#
+# 注: poc/ のルートクレートは Cargo.toml に license フィールドが無く
+# （本タスクの書き込み対象外）、licenses check は unlicensed で失敗する。
+# poc/ では advisories / bans / sources のみを実行する（check.sh を参照）。
+
+[advisories]
+# yanked crate は検出しても警告に留める（既存ロックファイルの更新を強制しない）。
+yanked = "warn"
+# 推移依存の unmaintained は upstream (gpui-kit) に委ね、直接依存のみを失敗対象にする。
+unmaintained = "workspace"
+# chrono は app/ の直接依存だが、gpui-kit 0.9.1 / trash 5.3 も使用しており
+# Cargo.toml を変更できない本タスクでは安全なアップグレード先がない。
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono: gpui-kit/trash の推移依存でもあり、直接依存の削除は別タスク（F6 系）で対応する" },
+]
+# 同じ設定を app/ と poc/ で共有するため、片方に無い advisory の ignore は警告しない。
+unused-ignored-advisory = "allow"
+
+[bans]
+# 大規模な GPUI 系 dependency graph では複数バージョンの共存が避けられないため
+# 検出は警告に留め、ビルドは失敗させない。
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+# crates.io 正規レジストリ以外と git 依存は原則拒否。
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[licenses]
+# 本プロジェクト自身のライセンス (AGPL-3.0-or-later) と、既存依存が実際に
+# 使用しているライセンスのみを列挙する。
+allow = [
+    "0BSD",
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+exceptions = []
