@@ -24,6 +24,7 @@ cd "${repo_root}"
 run_app=true
 run_poc=true
 run_audit=true
+selected_scope=false
 
 for argument in "$@"; do
   case "${argument}" in
@@ -31,8 +32,22 @@ for argument in "$@"; do
       # cargo audit needs the RustSec database; skip it when offline.
       run_audit=false
       ;;
-    --app) run_poc=false ;;
-    --poc) run_app=false ;;
+    --app)
+      if [ "${selected_scope}" = true ]; then
+        echo "error: --app and --poc are mutually exclusive" >&2
+        exit 2
+      fi
+      selected_scope=true
+      run_poc=false
+      ;;
+    --poc)
+      if [ "${selected_scope}" = true ]; then
+        echo "error: --app and --poc are mutually exclusive" >&2
+        exit 2
+      fi
+      selected_scope=true
+      run_app=false
+      ;;
     -h | --help)
       sed -n '3,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
