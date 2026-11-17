@@ -658,7 +658,9 @@ impl Explorer {
         // Remember the directory we actually started in (also proves the
         // settings file round-trips on the very first launch).
         this.settings.last_dir = Some(this.cwd.clone());
-        this.settings.save();
+        if !this.settings.save() {
+            this.status = "設定を保存できませんでした（詳細は stderr を参照）".to_string();
+        }
         if let Some(reason) = this.settings.load_error.as_deref() {
             this.status = format!("設定を読み取り専用で開きました: {reason}");
         }
@@ -926,7 +928,7 @@ impl Explorer {
         let was_bookmarked = self.settings.is_bookmarked(&path);
         let added = self.settings.toggle_bookmark(&path);
         debug_assert_eq!(added, !was_bookmarked);
-        self.settings.save();
+        let _ = self.settings.save();
         self.refresh_bookmarks();
         self.status = if added {
             format!("ブックマークに追加しました: {}", display_path(&path))
@@ -1161,7 +1163,7 @@ impl Explorer {
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
         self.persist_tabs();
-        self.settings.save();
+        let _ = self.settings.save();
         self.reload(cx);
     }
 
@@ -1245,7 +1247,7 @@ impl Explorer {
         self.sync_active_tab();
         if self.tabs.move_active_left() {
             self.persist_tabs();
-            self.settings.save();
+            let _ = self.settings.save();
             self.status = STATUS_TAB_MOVED_LEFT.to_string();
             cx.notify();
         }
@@ -1255,7 +1257,7 @@ impl Explorer {
         self.sync_active_tab();
         if self.tabs.move_active_right() {
             self.persist_tabs();
-            self.settings.save();
+            let _ = self.settings.save();
             self.status = STATUS_TAB_MOVED_RIGHT.to_string();
             cx.notify();
         }
@@ -1349,7 +1351,7 @@ impl Explorer {
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
         self.persist_tabs();
-        self.settings.save();
+        let _ = self.settings.save();
         self.reload(cx);
     }
 
@@ -1515,7 +1517,7 @@ impl Explorer {
             return;
         }
         self.settings.view = mode;
-        self.settings.save();
+        let _ = self.settings.save();
         cx.notify();
     }
 
@@ -1732,7 +1734,7 @@ impl Explorer {
 
     fn toggle_hidden(&mut self, cx: &mut Context<Self>) {
         self.settings.show_hidden = !self.settings.show_hidden;
-        self.settings.save();
+        let _ = self.settings.save();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
         self.rebuild_view(keep);
         self.status = if self.settings.show_hidden {
@@ -1746,7 +1748,7 @@ impl Explorer {
     fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
         let order = self.settings.sort.order().toggled(key);
         self.settings.sort = SortSpec::from_order(order);
-        self.settings.save();
+        let _ = self.settings.save();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
         self.rebuild_view(keep);
         cx.notify();
@@ -3881,7 +3883,7 @@ impl Explorer {
                 this.apply_search_filter(cx);
                 this.settings.record_search(&this.search.query);
                 if !this.debug.ephemeral {
-                    this.settings.save();
+                    let _ = this.settings.save();
                 }
             });
         });
