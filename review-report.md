@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T19:17:10+09:00
+verified: 2026-11-17T19:34:04+09:00
 status: complete
 ---
 
@@ -791,3 +791,8 @@ AGENTS.md §2 の事前調査（crates.io の live status、ローカルキャ�
 
 - 全変更を push（`fe26110..0024cbb`）、CI run 44022098945 が
   **success**（9m10s、2026-11-17T14:18+09:00 完了）。
+
+- 外部セッションが Cargo プロファイルを統一
+  （`debug = "line-tables-only"` / `release.strip = true`、
+  `19b5f1d`）。tracing 導入と競合なく統合済み。
+- 最新コミットに対する CI run 44063705679 が **success**（8m17s、2026-11-17T19:27+09:00 完了）。
