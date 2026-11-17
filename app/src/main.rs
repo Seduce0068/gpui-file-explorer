@@ -432,6 +432,77 @@ impl LoadState {
     }
 }
 
+/// Identity of one background operation.
+///
+/// Every long-running or destructive action (transfer, trash, undo, redo,
+/// trash-view restore, rename) claims the shared sentinel through
+/// [`Explorer::begin_op`] and keeps a clone of this token. Completion handlers
+/// call [`Explorer::finish_op`], which clears the sentinel only while `id`
+/// still matches, so a late callback can never cancel a newer operation.
+#[derive(Clone, Debug)]
+struct OpToken {
+    id: u64,
+    cancel: Arc<CancelFlag>,
+}
+
+#[cfg(test)]
+impl OpToken {
+    fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    fn cancel(&self) {
+        self.cancel.cancel();
+    }
+}
+
+/// Install a fresh cancellation flag and bump the *monotonic* operation id.
+/// Kept as a free function so the stale-completion rule is unit-testable
+/// without a GPUI context.
+fn install_op_token(id: &mut u64, cancel: &mut Option<Arc<CancelFlag>>) -> OpToken {
+    *id = id.wrapping_add(1);
+    let flag = Arc::new(CancelFlag::new());
+    *cancel = Some(flag.clone());
+    OpToken {
+        id: *id,
+        cancel: flag,
+    }
+}
+
+/// Clear the sentinel only when `token` still identifies the current op.
+///
+/// The id is deliberately **not** reset to zero: a stale completion carrying
+/// the old id must stay distinguishable from a freshly started operation.
+fn clear_op_token(current: u64, cancel: &mut Option<Arc<CancelFlag>>, token: &OpToken) -> bool {
+    if current != token.id {
+        return false;
+    }
+    *cancel = None;
+    true
+}
+
+/// Move `paths` to the system trash one by one, honouring Esc between items.
+///
+/// Blocking: call from the background executor only. Returns the successfully
+/// trashed paths, the failures and whether cancellation was observed.
+fn trash_batch(
+    paths: Vec<PathBuf>,
+    cancel: &CancelFlag,
+) -> (Vec<PathBuf>, Vec<(PathBuf, String)>, bool) {
+    let mut trashed = Vec::new();
+    let mut failures = Vec::new();
+    for path in paths {
+        if cancel.is_cancelled() {
+            return (trashed, failures, true);
+        }
+        match trash::delete(&path) {
+            Ok(()) => trashed.push(path),
+            Err(error) => failures.push((path, error.to_string())),
+        }
+    }
+    (trashed, failures, cancel.is_cancelled())
+}
+
 struct Explorer {
     settings: Settings,
     cwd: PathBuf,
@@ -486,6 +557,8 @@ struct Explorer {
     op_task: Option<Task<()>>,
     /// Cancellation flag of the running operation (Esc cancels).
     op_cancel: Option<Arc<CancelFlag>>,
+    /// Monotonic id of the running operation; stale completions are ignored.
+    op_token: u64,
     /// Byte progress of the running copy/move: (done, total). `None` when idle.
     op_progress: Option<(u64, u64)>,
     /// Inline rename dialog (F2 / context menu). `None` when closed.
@@ -643,6 +716,7 @@ impl Explorer {
             clipboard: None,
             op_task: None,
             op_cancel: None,
+            op_token: 0,
             op_progress: None,
             renaming: None,
             properties: None,
@@ -1843,7 +1917,41 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Cancel the running paste operation, if any (Esc).
+    /// Claim the shared operation sentinel for a new background operation.
+    ///
+    /// All long-running actions go through here, so a trash confirmation, an
+    /// undo or a rename can no longer bypass the exclusive guard used by paste
+    /// and drop. `None` means another operation still owns the sentinel.
+    fn begin_op(&mut self, cx: &mut Context<Self>) -> Option<OpToken> {
+        if self.op_task.is_some() {
+            self.status = STATUS_OP_RUNNING.to_string();
+            cx.notify();
+            return None;
+        }
+        Some(install_op_token(&mut self.op_token, &mut self.op_cancel))
+    }
+
+    /// Whether `token` still identifies the operation owning the sentinel.
+    fn is_current_op(&self, token: &OpToken) -> bool {
+        self.op_token == token.id
+    }
+
+    /// Clear the sentinel only if `token` still owns it; a stale completion
+    /// must not clear a newer operation's flag or drop its task handle.
+    /// Returns `true` when the caller may apply its result.
+    fn finish_op(&mut self, token: &OpToken, had_progress: bool) -> bool {
+        if !clear_op_token(self.op_token, &mut self.op_cancel, token) {
+            return false;
+        }
+        self.op_task = None;
+        if had_progress {
+            self.op_progress = None;
+        }
+        true
+    }
+
+    /// Cancel the running operation, if any (Esc). Shared by every action on
+    /// the `op_task` / `op_cancel` pipeline, not just paste.
     fn cancel_op(&mut self, cx: &mut Context<Self>) {
         let Some(cancel) = &self.op_cancel else {
             return;
@@ -1921,6 +2029,9 @@ impl Explorer {
         skipped: usize,
         cx: &mut Context<Self>,
     ) {
+        let Some(token) = self.begin_op(cx) else {
+            return;
+        };
         let verb = if cut { "移動" } else { "コピー" };
         let target_prefix = if destination == self.cwd {
             String::new()
@@ -1930,14 +2041,13 @@ impl Explorer {
         self.status = format!("{verb}中…（Esc でキャンセル）");
         cx.notify();
 
-        let cancel = Arc::new(CancelFlag::new());
-        self.op_cancel = Some(cancel.clone());
-
         // Byte progress from the background copy/move is forwarded through a
         // channel and throttled to ~80 ms so the UI is not flooded with
         // notifications. The pump stops when the operation drops its sender.
         let (progress_tx, progress_rx) = async_channel::unbounded::<(u64, u64)>();
         let progress_verb = verb;
+        let progress_token = token.clone();
+        let task_cancel = token.cancel.clone();
         cx.spawn(async move |this, cx| {
             let mut last_report = Instant::now();
             let mut last_bytes = 0u64;
@@ -1952,9 +2062,10 @@ impl Explorer {
                 last_report = Instant::now();
                 last_bytes = done;
                 let _ = this.update(cx, |this, cx| {
-                    // Ignore progress that arrives after the operation settled
-                    // (the final status message must not be overwritten).
-                    if this.op_cancel.is_none() {
+                    // Ignore progress that arrives after this operation settled
+                    // or lost the sentinel to a newer one (the final status
+                    // message must not be overwritten).
+                    if !this.is_current_op(&progress_token) {
                         return;
                     }
                     this.op_progress = Some((done, total));
@@ -1969,7 +2080,6 @@ impl Explorer {
         })
         .detach();
 
-        let task_cancel = cancel.clone();
         let destination_for_task = destination.clone();
         let destination_for_ui = destination.clone();
         let progress_tx_for_task = progress_tx.clone();
@@ -2034,9 +2144,9 @@ impl Explorer {
         let task = cx.spawn(async move |this, cx| {
             let (stats, first_error, first_created) = background.await;
             let _ = this.update(cx, |this, cx| {
-                this.op_task = None;
-                this.op_cancel = None;
-                this.op_progress = None;
+                if !this.finish_op(&token, true) {
+                    return;
+                }
                 let error_text = first_error
                     .as_ref()
                     .map(ToString::to_string)
@@ -2426,15 +2536,30 @@ impl Explorer {
                     cx.notify();
                     return;
                 }
+                let Some(token) = self.begin_op(cx) else {
+                    self.undo.push_undo(retry.clone());
+                    return;
+                };
+                self.status = format!("{label}を元に戻しています…（Esc でキャンセル）");
+                cx.notify();
                 let rename_source = current.clone();
-                let background =
-                    cx.background_spawn(async move { ops::rename_entry(&rename_source, &name) });
+                let cancel = token.cancel.clone();
+                let background = cx.background_spawn(async move {
+                    if cancel.is_cancelled() {
+                        None
+                    } else {
+                        Some(ops::rename_entry(&rename_source, &name))
+                    }
+                });
                 let action_for_redo = UndoAction::Rename { from, to: current };
-                cx.spawn(async move |this, cx| {
+                let task = cx.spawn(async move |this, cx| {
                     let result = background.await;
                     let _ = this.update(cx, |this, cx| {
+                        if !this.finish_op(&token, false) {
+                            return;
+                        }
                         match result {
-                            Ok(restored) => {
+                            Some(Ok(restored)) => {
                                 this.suppress_for(SELF_OP_SUPPRESS);
                                 this.undo.push_redo(action_for_redo);
                                 eprintln!(
@@ -2448,27 +2573,46 @@ impl Explorer {
                                 this.pending_select = Some(restored);
                                 this.reload(cx);
                             }
-                            Err(error) => {
+                            None => {
+                                this.undo.push_undo(action_for_redo);
+                                this.status = "キャンセルしました".to_string();
+                            }
+                            Some(Err(error)) => {
                                 this.undo.push_undo(action_for_redo);
                                 this.status = format!("{STATUS_UNDO_FAILED}: {error}");
                             }
                         }
                         cx.notify();
                     });
-                })
-                .detach();
+                });
+                self.op_task = Some(task);
             }
             UndoAction::Trash { items } => {
                 let action_for_redo = UndoAction::Trash {
                     items: items.clone(),
                 };
-                let background =
-                    cx.background_spawn(async move { trash_view::restore_by_id(&items) });
-                cx.spawn(async move |this, cx| {
+                let Some(token) = self.begin_op(cx) else {
+                    self.undo.push_undo(retry);
+                    return;
+                };
+                self.status = format!("{label}を元に戻しています…（Esc でキャンセル）");
+                cx.notify();
+                let cancel = token.cancel.clone();
+                let background = cx.background_spawn(async move {
+                    if cancel.is_cancelled() {
+                        None
+                    } else {
+                        Some(trash_view::restore_by_id(&items))
+                    }
+                });
+                let task = cx.spawn(async move |this, cx| {
                     let result = background.await;
                     let _ = this.update(cx, |this, cx| {
+                        if !this.finish_op(&token, false) {
+                            return;
+                        }
                         match result {
-                            Ok((restored, missing)) => {
+                            Some(Ok((restored, missing))) => {
                                 this.suppress_for(SELF_OP_SUPPRESS);
                                 if restored > 0 {
                                     this.undo.push_redo(action_for_redo);
@@ -2487,15 +2631,19 @@ impl Explorer {
                                 };
                                 this.reload(cx);
                             }
-                            Err(error) => {
+                            None => {
+                                this.undo.push_undo(action_for_redo);
+                                this.status = "キャンセルしました".to_string();
+                            }
+                            Some(Err(error)) => {
                                 this.undo.push_undo(action_for_redo);
                                 this.status = format!("{STATUS_UNDO_FAILED}: {error}");
                             }
                         }
                         cx.notify();
                     });
-                })
-                .detach();
+                });
+                self.op_task = Some(task);
             }
         }
         cx.notify();
@@ -2514,6 +2662,7 @@ impl Explorer {
             return;
         };
         let label = action.label();
+        let retry = action.clone();
         match action {
             UndoAction::Rename { from, to } => {
                 // Redo performs the rename again: from -> to.
@@ -2526,13 +2675,28 @@ impl Explorer {
                     from: from.clone(),
                     to: to.clone(),
                 };
-                let background =
-                    cx.background_spawn(async move { ops::rename_entry(&current, &name) });
-                cx.spawn(async move |this, cx| {
+                let Some(token) = self.begin_op(cx) else {
+                    self.undo.push_redo(retry);
+                    return;
+                };
+                self.status = format!("{label}をやり直しています…（Esc でキャンセル）");
+                cx.notify();
+                let cancel = token.cancel.clone();
+                let background = cx.background_spawn(async move {
+                    if cancel.is_cancelled() {
+                        None
+                    } else {
+                        Some(ops::rename_entry(&current, &name))
+                    }
+                });
+                let task = cx.spawn(async move |this, cx| {
                     let result = background.await;
                     let _ = this.update(cx, |this, cx| {
+                        if !this.finish_op(&token, false) {
+                            return;
+                        }
                         match result {
-                            Ok(redone) => {
+                            Some(Ok(redone)) => {
                                 this.suppress_for(SELF_OP_SUPPRESS);
                                 this.undo.push_undo(action_for_undo);
                                 tracing::info!(
@@ -2546,15 +2710,19 @@ impl Explorer {
                                 this.pending_select = Some(redone);
                                 this.reload(cx);
                             }
-                            Err(error) => {
+                            None => {
+                                this.undo.push_redo(action_for_undo);
+                                this.status = "キャンセルしました".to_string();
+                            }
+                            Some(Err(error)) => {
                                 this.undo.push_redo(action_for_undo);
                                 this.status = format!("やり直せません: {error}");
                             }
                         }
                         cx.notify();
                     });
-                })
-                .detach();
+                });
+                self.op_task = Some(task);
             }
             UndoAction::Trash { items } => {
                 // Redo means trashing the restored paths again; look them up by
@@ -2573,21 +2741,32 @@ impl Explorer {
                 let action_for_undo = UndoAction::Trash {
                     items: items.clone(),
                 };
+                let Some(token) = self.begin_op(cx) else {
+                    self.undo.push_redo(retry);
+                    return;
+                };
+                self.status = format!("{label}をやり直しています…（Esc でキャンセル）");
+                cx.notify();
+                let cancel = token.cancel.clone();
                 let background = cx.background_spawn(async move {
-                    let mut trashed: Vec<PathBuf> = Vec::new();
-                    let mut failures: Vec<(PathBuf, String)> = Vec::new();
-                    for path in paths {
-                        match trash::delete(&path) {
-                            Ok(()) => trashed.push(path),
-                            Err(error) => failures.push((path, error.to_string())),
-                        }
+                    let (trashed, failures, cancelled) = trash_batch(paths, &cancel);
+                    if cancelled {
+                        None
+                    } else {
+                        Some((trashed, failures))
                     }
-                    (trashed, failures)
                 });
-                cx.spawn(async move |this, cx| {
+                let task = cx.spawn(async move |this, cx| {
                     let result = background.await;
                     let _ = this.update(cx, |this, cx| {
-                        let (trashed, failures) = result;
+                        if !this.finish_op(&token, false) {
+                            return;
+                        }
+                        let Some((trashed, failures)) = result else {
+                            this.undo.push_redo(action_for_undo);
+                            this.status = "キャンセルしました".to_string();
+                            return;
+                        };
                         tracing::info!(
                             op = "redo",
                             action = "trash",
@@ -2642,8 +2821,8 @@ impl Explorer {
                         }
                         cx.notify();
                     });
-                })
-                .detach();
+                });
+                self.op_task = Some(task);
             }
         }
         cx.notify();
@@ -3377,6 +3556,11 @@ impl Explorer {
     /// before spawning, and the engine refuses to overwrite. On error the
     /// dialog stays open and the original file is untouched.
     fn confirm_rename(&mut self, cx: &mut Context<Self>) {
+        if self.op_task.is_some() {
+            self.status = STATUS_OP_RUNNING.to_string();
+            cx.notify();
+            return;
+        }
         let Some(rename) = self.renaming.as_ref() else {
             return;
         };
@@ -3401,15 +3585,29 @@ impl Explorer {
             return;
         }
 
+        let Some(token) = self.begin_op(cx) else {
+            return;
+        };
+        self.status = "名前を変更しています…（Esc でキャンセル）".to_string();
+        cx.notify();
         let rename_source = target.clone();
-        let background =
-            cx.background_spawn(async move { ops::rename_entry(&rename_source, &value) });
+        let cancel = token.cancel.clone();
+        let background = cx.background_spawn(async move {
+            if cancel.is_cancelled() {
+                None
+            } else {
+                Some(ops::rename_entry(&rename_source, &value))
+            }
+        });
         let rename_original = target;
-        cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let result = background.await;
             let _ = this.update(cx, |this, cx| {
+                if !this.finish_op(&token, false) {
+                    return;
+                }
                 match result {
-                    Ok(new_path) => {
+                    Some(Ok(new_path)) => {
                         this.suppress_for(SELF_OP_SUPPRESS);
                         tracing::info!(
                             op = "rename",
@@ -3433,17 +3631,25 @@ impl Explorer {
                         this.reload(cx);
                         this.restore_focus_next_frame();
                     }
-                    Err(error) => {
+                    None => {
+                        this.status = "キャンセルしました".to_string();
+                        this.close_rename(cx);
+                    }
+                    Some(Err(error)) => {
                         this.set_rename_error(&format!("変更できません: {error}"), cx);
+                        this.status = format!("変更できません: {error}");
                     }
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        });
+        self.op_task = Some(task);
     }
 
     fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Esc must also stop a rename that was already submitted and is now
+        // running in the background, not merely close the dialog.
+        self.cancel_op(cx);
         if self.renaming.take().is_some() {
             self.focus_handle.focus(window, cx);
             cx.notify();
@@ -3583,6 +3789,11 @@ impl Explorer {
     /// Safety: confirmation is always shown (with the item count), sources are
     /// re-checked before deletion, and permanent deletion is never performed.
     fn trash_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.op_task.is_some() {
+            self.status = STATUS_OP_RUNNING.to_string();
+            cx.notify();
+            return;
+        }
         let mut existing: Vec<PathBuf> = Vec::new();
         for path in paths {
             if path.exists() || path.is_symlink() {
@@ -3627,78 +3838,96 @@ impl Explorer {
             if answer != 1 {
                 return;
             }
-            let targets = existing.clone();
-            let result = background
-                .spawn(async move {
-                    let mut trashed: Vec<PathBuf> = Vec::new();
-                    let mut failures: Vec<(PathBuf, String)> = Vec::new();
-                    for path in targets {
-                        match trash::delete(&path) {
-                            Ok(()) => trashed.push(path),
-                            Err(error) => failures.push((path, error.to_string())),
-                        }
+            // Re-check after the modal prompt: another operation may have
+            // claimed the sentinel while the user was answering.
+            let Some(token) = this.update(cx, |this, cx| this.begin_op(cx)).ok().flatten() else {
+                return;
+            };
+            let targets = existing;
+            let cancel = token.cancel.clone();
+            let this_for_task = this.clone();
+            let task = cx.spawn(async move |cx| {
+                let (trashed, failures, cancelled) = background
+                    .spawn(async move { trash_batch(targets, &cancel) })
+                    .await;
+                let _ = this_for_task.update(cx, |this, cx| {
+                    if !this.finish_op(&token, false) {
+                        return;
                     }
-                    (trashed, failures)
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                let (trashed, failures) = result;
-                if trashed.is_empty() {
-                    this.load = LoadState::Error {
-                        generation: this.generation,
-                        error: format!(
-                            "ゴミ箱へ移動できません: {}",
-                            failures
-                                .first()
-                                .map(|(_, message)| message.clone())
-                                .unwrap_or_default()
-                        ),
-                    };
-                } else {
-                    this.suppress_for(SELF_OP_SUPPRESS);
-                    let mut message = if trashed.len() == 1 {
-                        format!(
-                            "「{}」をゴミ箱へ移動しました",
-                            trashed[0]
+                    if trashed.is_empty() && !cancelled {
+                        this.load = LoadState::Error {
+                            generation: this.generation,
+                            error: format!(
+                                "ゴミ箱へ移動できません: {}",
+                                failures
+                                    .first()
+                                    .map(|(_, message)| message.clone())
+                                    .unwrap_or_default()
+                            ),
+                        };
+                    } else {
+                        if !trashed.is_empty() {
+                            this.suppress_for(SELF_OP_SUPPRESS);
+                        }
+                        let mut message = if cancelled {
+                            if trashed.is_empty() {
+                                "キャンセルしました".to_string()
+                            } else {
+                                format!(
+                                    "キャンセルしました（{} 件をゴミ箱へ移動済み）",
+                                    trashed.len()
+                                )
+                            }
+                        } else if trashed.len() == 1 {
+                            format!(
+                                "「{}」をゴミ箱へ移動しました",
+                                trashed[0]
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_default()
+                            )
+                        } else {
+                            format!("{} 件をゴミ箱へ移動しました", trashed.len())
+                        };
+                        if let Some((path, reason)) = failures.first() {
+                            let name = path
                                 .file_name()
                                 .map(|name| name.to_string_lossy().into_owned())
-                                .unwrap_or_default()
-                        )
-                    } else {
-                        format!("{} 件をゴミ箱へ移動しました", trashed.len())
-                    };
-                    if let Some((path, reason)) = failures.first() {
-                        let name = path
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| display_path(path));
-                        message.push_str(&format!(
-                            "（{} 件失敗: 「{}」: {}）",
-                            failures.len(),
-                            name,
-                            reason
-                        ));
-                    }
-                    this.status = message;
-                    if let Ok(items) = trash_view::list() {
-                        let recorded: Vec<(PathBuf, String)> = trashed
-                            .iter()
-                            .filter_map(|path| {
-                                items.iter().find(|item| item.original_path() == *path).map(
-                                    |item| (path.clone(), item.id.to_string_lossy().into_owned()),
-                                )
-                            })
-                            .collect();
-                        if !recorded.is_empty() {
-                            this.undo.push(UndoAction::Trash { items: recorded });
+                                .unwrap_or_else(|| display_path(path));
+                            message.push_str(&format!(
+                                "（{} 件失敗: 「{}」: {}）",
+                                failures.len(),
+                                name,
+                                reason
+                            ));
                         }
+                        this.status = message;
+                        if let Ok(items) = trash_view::list() {
+                            let recorded: Vec<(PathBuf, String)> = trashed
+                                .iter()
+                                .filter_map(|path| {
+                                    items.iter().find(|item| item.original_path() == *path).map(
+                                        |item| {
+                                            (path.clone(), item.id.to_string_lossy().into_owned())
+                                        },
+                                    )
+                                })
+                                .collect();
+                            if !recorded.is_empty() {
+                                this.undo.push(UndoAction::Trash { items: recorded });
+                            }
+                        }
+                        this.all_entries
+                            .retain(|entry| !trashed.contains(&entry.path));
+                        this.fingerprint = fingerprint(&this.all_entries);
+                        this.rebuild_view(None);
+                        this.reload(cx);
                     }
-                    this.all_entries
-                        .retain(|entry| !trashed.contains(&entry.path));
-                    this.fingerprint = fingerprint(&this.all_entries);
-                    this.rebuild_view(None);
-                    this.reload(cx);
-                }
+                    cx.notify();
+                });
+            });
+            let _ = this.update(cx, |this, cx| {
+                this.op_task = Some(task);
                 cx.notify();
             });
         })
@@ -4194,21 +4423,38 @@ impl Explorer {
             return;
         }
         let count = items.len();
-        self.status = format!("{count} 件を復元中…");
+        let Some(token) = self.begin_op(cx) else {
+            return;
+        };
+        self.status = format!("{count} 件を復元中…（Esc でキャンセル）");
         cx.notify();
-        let background = cx.background_spawn(async move { trash_view::restore(items) });
-        cx.spawn(async move |this, cx| {
+        let cancel = token.cancel.clone();
+        let background = cx.background_spawn(async move {
+            if cancel.is_cancelled() {
+                None
+            } else {
+                Some(trash_view::restore(items))
+            }
+        });
+        let task = cx.spawn(async move |this, cx| {
             let result = background.await;
             let _ = this.update(cx, |this, cx| {
+                if !this.finish_op(&token, false) {
+                    return;
+                }
                 this.status = match result {
-                    Ok(()) => format!("{count} 件を元の場所へ復元しました"),
-                    Err(error) => format!("復元できません: {error}"),
+                    None => "キャンセルしました".to_string(),
+                    Some(Ok(())) => {
+                        this.suppress_for(SELF_OP_SUPPRESS);
+                        format!("{count} 件を元の場所へ復元しました")
+                    }
+                    Some(Err(error)) => format!("復元できません: {error}"),
                 };
                 this.reload(cx);
                 cx.notify();
             });
-        })
-        .detach();
+        });
+        self.op_task = Some(task);
     }
 
     // ------------------------------------------------------------- context menu
@@ -5865,8 +6111,8 @@ mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
-        build_places, classify_cli, format_selected, kind_color, summarize_op, tab_label,
-        CliAction, Explorer,
+        build_places, classify_cli, clear_op_token, format_selected, install_op_token, kind_color,
+        summarize_op, tab_label, trash_batch, CliAction, Explorer,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -6188,6 +6434,83 @@ mod tests {
 
         let (_, start, _) = restore_session(&[], 0, None, None, Some(dir.clone()));
         assert_eq!(start, dir, "home is the final fallback");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // F6-09: the shared operation sentinel must survive overlapping
+    // completion handlers and must be observable by every action, not only
+    // paste/copy (trash, undo, redo, restore and rename share it now).
+
+    #[test]
+    fn stale_completion_keeps_a_newer_operation_sentinel() {
+        let mut id = 0;
+        let mut cancel = None;
+        let first = install_op_token(&mut id, &mut cancel);
+        assert_eq!(first.id, 1);
+        assert!(cancel.is_some());
+
+        // The UI guard normally prevents this, but a late callback from the
+        // first operation must still leave the newer operation cancellable.
+        let second = install_op_token(&mut id, &mut cancel);
+        assert_eq!(second.id, 2);
+        assert!(!clear_op_token(id, &mut cancel, &first));
+        assert!(cancel.is_some(), "stale callback cleared a live flag");
+
+        assert!(clear_op_token(id, &mut cancel, &second));
+        assert!(cancel.is_none());
+    }
+
+    #[test]
+    fn operation_ids_are_never_reused_after_completion() {
+        let mut id = 0;
+        let mut cancel = None;
+        let first = install_op_token(&mut id, &mut cancel);
+        assert!(clear_op_token(id, &mut cancel, &first));
+
+        let second = install_op_token(&mut id, &mut cancel);
+        assert_eq!(second.id, 2, "monotonic ids prevent an ABA mix-up");
+        assert!(!clear_op_token(id, &mut cancel, &first));
+        assert!(clear_op_token(id, &mut cancel, &second));
+    }
+
+    #[test]
+    fn esc_flag_is_shared_between_token_holders() {
+        let mut id = 0;
+        let mut cancel = None;
+        let token = install_op_token(&mut id, &mut cancel);
+        let background_view = token.cancel.clone();
+        assert!(!token.is_cancelled());
+        token.cancel(); // what Esc does through the sentinel
+        assert!(background_view.is_cancelled());
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn cancelled_trash_batch_does_not_delete_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-f6-09-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("keep.txt");
+        std::fs::write(&file, b"keep").unwrap();
+
+        let mut id = 0;
+        let mut cancel = None;
+        let token = install_op_token(&mut id, &mut cancel);
+        token.cancel();
+
+        let (trashed, failures, cancelled) = trash_batch(vec![file.clone()], &token.cancel);
+        assert!(cancelled);
+        assert!(trashed.is_empty());
+        assert!(failures.is_empty());
+        assert!(file.exists(), "Esc must stop before the first deletion");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
