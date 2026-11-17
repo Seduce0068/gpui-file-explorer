@@ -2,6 +2,10 @@
 # 個人リポジトリ共通の再利用可能ワークフロー（rust-gates.yml）へ委譲する。
 # ゲート: fmt → check → test → clippy → cargo audit → poc/ の追加ゲート。
 # GPUI 系のビルドに必要な Linux 開発パッケージのみ導入する。
+#
+# 共有ワークフローには cargo-deny / cargo-vet 用の入力が無いため
+# （2026-11 時点）、サプライチェーン監査のみ別ジョブで実行する。
+# 共通ワークフロー側に入力が追加された場合は委譲して本ジョブを削除する。
 name: CI
 
 on:
@@ -41,3 +45,44 @@ jobs:
         (cd ../poc && cargo check --all-targets --locked)
         (cd ../poc && cargo test --all-targets --locked)
         (cd ../poc && cargo clippy --all-targets --locked -- -D warnings)
+
+  supply-chain:
+    name: Supply-chain audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: 監査ツールの導入
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          # cargo-audit は gates ジョブ（audit: true）で実行済み。
+          tool: |
+            cargo-deny
+            cargo-vet
+
+      - name: 依存監査（cargo deny / app）
+        working-directory: app
+        run: cargo deny check
+
+      - name: 依存監査（cargo deny / poc）
+        working-directory: poc
+        # poc/ のルートクレートは Cargo.toml に license が無いため licenses は除外（deny.toml 参照）。
+        run: cargo deny check advisories bans sources
+
+      - name: 依存監査（cargo audit / poc）
+        working-directory: poc
+        run: cargo audit
+
+      - name: 依存監査（cargo vet、store が存在する場合のみ）
+        working-directory: app
+        run: |
+          set -euo pipefail
+          if [ ! -f supply-chain/config.toml ]; then
+            echo "::notice::app/supply-chain/config.toml が無いため cargo vet をスキップする（cargo vet init で有効化）。"
+            exit 0
+          fi
+          cargo vet check
