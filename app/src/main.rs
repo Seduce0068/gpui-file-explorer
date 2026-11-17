@@ -5042,6 +5042,7 @@ impl Explorer {
 
         let back = icon_button(
             "nav-back",
+            "戻る",
             IconName::ArrowLeft,
             self.history.can_go_back() || self.view == ViewSource::Trash,
             cx.listener(|this, _event, window, cx| {
@@ -5051,6 +5052,7 @@ impl Explorer {
         );
         let forward = icon_button(
             "nav-forward",
+            "進む",
             IconName::ArrowRight,
             self.history.can_go_forward() || self.view == ViewSource::Trash,
             cx.listener(|this, _event, window, cx| {
@@ -5060,6 +5062,7 @@ impl Explorer {
         );
         let up = icon_button(
             "nav-up",
+            "親フォルダ",
             IconName::ArrowUp,
             self.view == ViewSource::Trash || parent_dir(&self.cwd).is_some(),
             cx.listener(|this, _event, window, cx| {
@@ -5069,6 +5072,7 @@ impl Explorer {
         );
         let refresh = icon_button(
             "refresh",
+            "再読込",
             IconName::RefreshCw,
             true,
             cx.listener(|this, _event, window, cx| {
@@ -5078,6 +5082,7 @@ impl Explorer {
         );
         let undo_button = icon_button(
             "undo",
+            "元に戻す",
             IconName::Undo2,
             self.undo.can_undo(),
             cx.listener(|this, _event, window, cx| {
@@ -5087,6 +5092,7 @@ impl Explorer {
         );
         let redo_button = icon_button(
             "redo",
+            "やり直す",
             IconName::Redo2,
             self.undo.can_redo(),
             cx.listener(|this, _event, window, cx| {
@@ -5116,6 +5122,7 @@ impl Explorer {
         );
         let new_folder = icon_button(
             "new-folder",
+            "新規フォルダ",
             IconName::FolderPlus,
             self.view == ViewSource::Directory,
             cx.listener(|this, _event, window, cx| {
@@ -5130,6 +5137,7 @@ impl Explorer {
         };
         let toggle_hidden = icon_button(
             "toggle-hidden",
+            "隠しファイル切替",
             hidden_icon,
             true,
             cx.listener(|this, _event, window, cx| {
@@ -5371,12 +5379,14 @@ fn icon_button_active(
 
 fn icon_button(
     id: &'static str,
+    label: &'static str,
     icon: IconName,
     enabled: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     div()
         .id(id)
+        .aria_label(label)
         .flex()
         .items_center()
         .justify_center()
