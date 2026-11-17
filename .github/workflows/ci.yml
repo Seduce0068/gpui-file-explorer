@@ -73,9 +73,9 @@ jobs:
         # poc/ のルートクレートは Cargo.toml に license が無いため licenses は除外（deny.toml 参照）。
         run: cargo deny check advisories bans sources
 
-      - name: 依存監査（cargo audit / poc）
-        working-directory: poc
-        run: cargo audit
+      # poc/ の脆弱性監査は上の cargo deny advisories で実施。cargo-audit は
+      # gates ジョブ（app/、audit: true）のみで導入・実行するため、ここでは
+      # 呼ばない（tool 未導入で exit 101 になる）。
 
       - name: 依存監査（cargo vet、store が存在する場合のみ）
         working-directory: app
