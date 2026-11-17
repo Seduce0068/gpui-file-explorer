@@ -1185,6 +1185,18 @@ impl Explorer {
         }
     }
 
+    fn restore_closed_tab(&mut self, cx: &mut Context<Self>) {
+        self.sync_active_tab();
+        if let Some(cwd) = self.tabs.restore_last_closed() {
+            let tab = self.tabs.active().clone();
+            self.load_tab(tab, cx);
+            self.status = format!("タブを復元しました: {}", display_path(&cwd));
+        } else {
+            self.status = "復元できるタブがありません".to_string();
+        }
+        cx.notify();
+    }
+
     fn next_tab(&mut self, cx: &mut Context<Self>) {
         self.sync_active_tab();
         let tab = self.tabs.next();
@@ -1598,6 +1610,7 @@ impl Explorer {
                     cx.notify();
                 }
                 ("t", false) => self.new_tab(cx),
+                ("t", true) => self.restore_closed_tab(cx),
                 ("w", false) => self.close_tab(cx),
                 ("tab", false) => self.next_tab(cx),
                 ("tab", true) => self.prev_tab(cx),

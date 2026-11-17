@@ -27,6 +27,8 @@ impl Tab {
 pub struct Tabs {
     tabs: Vec<Tab>,
     active: usize,
+    /// Recently closed tab directories, most recent last. In-memory only.
+    closed: Vec<PathBuf>,
 }
 
 impl Tabs {
@@ -34,6 +36,7 @@ impl Tabs {
         Self {
             tabs: vec![Tab::new(cwd)],
             active: 0,
+            closed: Vec::new(),
         }
     }
 
@@ -46,7 +49,11 @@ impl Tabs {
         }
         let tabs: Vec<Tab> = paths.into_iter().map(Tab::new).collect();
         let active = active.min(tabs.len() - 1);
-        Some(Self { tabs, active })
+        Some(Self {
+            tabs,
+            active,
+            closed: Vec::new(),
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -97,11 +104,20 @@ impl Tabs {
         if self.tabs.len() <= 1 {
             return None;
         }
-        self.tabs.remove(self.active);
+        let closed = self.tabs.remove(self.active).cwd;
+        self.closed.push(closed);
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
         }
         Some(self.tabs[self.active].clone())
+    }
+
+    /// Reopen the most recently closed tab. Returns its directory, or `None`
+    /// when there is nothing to restore.
+    pub fn restore_last_closed(&mut self) -> Option<PathBuf> {
+        let cwd = self.closed.pop()?;
+        self.new_tab(cwd.clone());
+        Some(cwd)
     }
 
     /// Move the active tab one position to the left. Returns `false` when it
@@ -196,6 +212,25 @@ mod tests {
         assert_eq!(next.cwd, p("/b"));
         assert_eq!(tabs.len(), 2);
         assert_eq!(tabs.active_index(), 1);
+    }
+
+    #[test]
+    fn restore_last_closed_reopens_most_recent_tab() {
+        let mut tabs = Tabs::new(p("/a"));
+        tabs.new_tab(p("/b"));
+        tabs.new_tab(p("/c"));
+        // Close /c then /b; the most recent closed is /b.
+        tabs.close_active();
+        tabs.close_active();
+        assert_eq!(tabs.len(), 1);
+
+        assert_eq!(tabs.restore_last_closed(), Some(p("/b")));
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.active().cwd, p("/b"));
+
+        assert_eq!(tabs.restore_last_closed(), Some(p("/c")));
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(tabs.restore_last_closed(), None);
     }
 
     #[test]

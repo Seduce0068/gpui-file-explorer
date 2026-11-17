@@ -62,6 +62,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "タブ・ブックマーク",
         &[
             ("Ctrl+T / Ctrl+W", "タブを開く / 閉じる"),
+            ("Ctrl+Shift+T", "閉じたタブを復元"),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "次のタブ / 前のタブ"),
             ("Ctrl+Shift+PageUp / PageDown", "タブを左 / 右へ移動"),
             ("Ctrl+D", "現在のディレクトリをブックマーク"),
