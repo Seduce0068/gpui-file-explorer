@@ -923,7 +923,21 @@ impl Explorer {
         let dir = self.cwd.clone();
         let task = cx.background_spawn(async move { read_entries(&dir) });
         cx.spawn(async move |this, cx| {
-            let Ok(entries) = task.await else { return };
+            let entries = match task.await {
+                Ok(entries) => entries,
+                Err(error) => {
+                    // The reconcile is the fallback for watcher events we
+                    // missed; surface its failure instead of silently losing
+                    // it (second cross-review H-4).
+                    let _ = this.update(cx, |this, cx| {
+                        if this.generation == generation {
+                            this.status = format!("再スキャンに失敗しました: {error}");
+                            cx.notify();
+                        }
+                    });
+                    return;
+                }
+            };
             let _ = this.update(cx, |this, cx| {
                 if this.generation != generation || this.load.is_loading() {
                     return;

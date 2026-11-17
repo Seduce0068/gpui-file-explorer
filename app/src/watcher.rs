@@ -86,19 +86,26 @@ impl DirWatcher {
     /// Create the debounced watcher. `on_change` is called (from the watcher
     /// thread) with normalized events after every debounced batch.
     pub fn new(on_change: impl Fn(Vec<FsEvent>) + Send + 'static) -> Self {
-        let debouncer = new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
+        match new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
             on_change(normalize_events(&result));
-        })
-        .ok();
-        let last_error = if debouncer.is_some() {
-            None
-        } else {
-            Some("ファイル監視を初期化できませんでした".to_string())
-        };
-        Self {
-            debouncer,
-            watched: Vec::new(),
-            last_error,
+        }) {
+            Ok(debouncer) => Self {
+                debouncer: Some(debouncer),
+                watched: Vec::new(),
+                last_error: None,
+            },
+            Err(error) => {
+                // Preserve the underlying cause (ENOSPC / EMFILE / permission)
+                // instead of a fixed string so the status bar is actionable
+                // (second cross-review H-5).
+                let reason = format!("ファイル監視を初期化できませんでした: {error}");
+                eprintln!("gpui-file-explorer: {reason}");
+                Self {
+                    debouncer: None,
+                    watched: Vec::new(),
+                    last_error: Some(reason),
+                }
+            }
         }
     }
 
