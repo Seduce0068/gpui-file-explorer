@@ -28,6 +28,18 @@ pub enum FsEvent {
     Rescan,
 }
 
+/// Collect every path reported as removed in a batch of events. Used by the
+/// search view to drop vanished results without a full re-search.
+pub fn removed_paths(events: &[FsEvent]) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
+    for event in events {
+        if let FsEvent::Removed(paths) = event {
+            removed.extend(paths.iter().cloned());
+        }
+    }
+    removed
+}
+
 /// Convert a debouncer result into UI-facing events. Errors and unknown kinds
 /// become `Rescan` so the caller can safely fall back to a full reload.
 pub fn normalize_events(result: &DebounceEventResult) -> Vec<FsEvent> {
@@ -325,5 +337,26 @@ mod tests {
         watcher.watch(std::slice::from_ref(&dir));
         assert_eq!(watcher.watched_paths(), std::slice::from_ref(&dir));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn removed_paths_collects_only_removals() {
+        use super::removed_paths;
+        let events = vec![
+            FsEvent::Created(vec![PathBuf::from("/a")]),
+            FsEvent::Removed(vec![PathBuf::from("/b"), PathBuf::from("/c")]),
+            FsEvent::Modified(vec![PathBuf::from("/d")]),
+            FsEvent::Removed(vec![PathBuf::from("/e")]),
+            FsEvent::Rescan,
+        ];
+        assert_eq!(
+            removed_paths(&events),
+            vec![
+                PathBuf::from("/b"),
+                PathBuf::from("/c"),
+                PathBuf::from("/e")
+            ]
+        );
+        assert!(removed_paths(&[]).is_empty());
     }
 }
