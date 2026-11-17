@@ -72,6 +72,11 @@ cd app
 ウィンドウは 1100x700（コンテンツ）、Wayland `app_id` / KWin `resourceClass` は
 `gpui-file-explorer` です。閉じると終了します。
 
+操作・エラーのログは `tracing` の構造化イベント（レベル・タイムスタンプ付き）
+で stderr に出ます。既定は `info` レベルで、通常起動時は操作を行うまで
+出力はありません。`RUST_LOG=debug` 等で詳細度を変更できます
+（例: `RUST_LOG=debug ./target/debug/gpui-file-explorer`）。
+
 ## キーバインド
 
 | キー | 動作 |

@@ -21,6 +21,10 @@ serde_json = "1"
 dirs = "6"
 async-channel = "2.5"
 chrono = "0.4"
+# Structured logging: `tracing` is already a transitive dependency via gpui;
+# `tracing-subscriber` adds level/timestamp formatting and RUST_LOG filtering.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [profile.dev]
 # GPUI + wgpu の debuginfo は巨大（PoC で debug バイナリ 745MiB）。

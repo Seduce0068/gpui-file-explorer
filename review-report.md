@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T13:47:32+09:00
+verified: 2026-11-17T14:08:21+09:00
 status: complete
 ---
 
@@ -70,8 +70,9 @@ status: complete
 **2026-11-17 追記（第2回レビュー）**: 独立した再レビューで
 Critical 1 件・High 8 件が新たに検出され、上記判定は取り下げ、
 いったん **マージブロック** とした。その後 Critical 1 件と High 6 件を
-修正し、残る High 1 件は設計判断のため保留として **承認** に昇格
-（詳細は末尾「第2回クロスレビュー」と「第2回指摘の修正完了」）。
+修正し、残る High 1 件（H-3 tracing）も 2026-11-17T14:05 に導入して
+**承認** に昇格（詳細は末尾「第2回クロスレビュー」、
+「第2回指摘の修正完了」、および「H-3 構造化ログの導入」）。
 
 ## High 指摘（Phase2 前の必須改善項目）
 
@@ -761,3 +762,29 @@ poc 4 tests / clippy 警告なし）、Windows ターゲット check 成功。
 
 - 全変更を push（`5217dc9..d40d3bb`）、CI run 44018261819 が
   **success**（10m26s、2026-11-17T13:46+09:00 完了）。
+
+## H-3 構造化ログの導入（2026-11-17T14:05+09:00）
+
+第2回レビューで唯一保留していた High 3（構造化ログ欠如）を解消した。
+AGENTS.md §2 の事前調査（crates.io の live status、ローカルキャッシュ、
+ライセンス互換、推移依存の有無）を行い、最小構成で導入した。
+
+- `tracing` 0.1 / `tracing-subscriber` 0.3（`fmt` + `env-filter`）を直接
+  依存へ追加。`tracing` は gpui 経由で既にロックファイル内に存在し、
+  実質的な新規追加は subscriber とその推移依存のみ。
+- `main()` で `init_logging()` を呼び、レベル・タイムスタンプ付きの
+  構造化イベントを stderr へ出力。`RUST_LOG` で詳細度を変更可能。
+- 操作完了（copy/move/rename/redo）とエラー（設定退避失敗、
+  設定保存失敗、未知スキーマ、監視初期化失敗、ウィンドウ生成失敗）を
+  `tracing` のフィールド付きイベントへ変換。デバッグフックの
+  `undo-report` / `preview-report` はスクリーンショット検証用に
+  `eprintln!` を維持。
+- `app/NOTICE.md` へライセンスを追記、`app/README.md` へ `RUST_LOG`
+  の使い方を記載。
+
+判定: High 残 0 件 → **承認**（全指摘対応完了）。
+
+検証: `cargo test --all-targets --locked` = 168 passed / 0 failed、
+`cargo clippy --all-targets --locked -- -D warnings` = 成功、
+`cargo check --target x86_64-pc-windows-msvc --all-targets --locked`
+= 成功。実機起動で stderr 0 行（通常起動時はログなし）を確認。

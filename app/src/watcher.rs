@@ -11,6 +11,7 @@ use std::time::Duration;
 use notify_debouncer_full::notify::event::{EventKind, ModifyKind, RenameMode};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
+use tracing::error;
 
 type FileEventWatcher = Debouncer<RecommendedWatcher, RecommendedCache>;
 
@@ -99,7 +100,7 @@ impl DirWatcher {
                 // instead of a fixed string so the status bar is actionable
                 // (second cross-review H-5).
                 let reason = format!("ファイル監視を初期化できませんでした: {error}");
-                eprintln!("gpui-file-explorer: {reason}");
+                error!(%reason, "watcher initialization failed");
                 Self {
                     debouncer: None,
                     watched: Vec::new(),
