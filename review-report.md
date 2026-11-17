@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T19:34:04+09:00
+verified: 2026-11-17T21:23:06+09:00
 status: complete
 ---
 
@@ -576,11 +576,17 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 - Windows の O_EXCL 予約解除→rename 間の競合
   （`ops.rs:326-338`、security M-2・要確認）。
 - `open_with_system` / `reveal_path` のシェル経由有無
-  （`main.rs:1346, 3421`、security M-3・要確認）。
-  gpui 側は platform 抽象経由で、ローカルレジストリでは
-  Linux 実装を特定できず **要確認を維持**。
+  （`main.rs:1346, 3421`、security M-3）: **確認済み・リスクなし**。
+  `gpui-pre-linux 0.3.12` の `run_open_commands`（platform.rs:1182）は
+  `open::commands()` が返す `std::process::Command` を
+  `smol::process::Command::spawn()` で直接実行しており、`sh -c` 等の
+  シェルを経由しない（2026-11-17T21:08+09:00、ローカルレジストリ確認）。
 - SVG プレビューの外部エンティティ設定
-  （`preview.rs:83-89`、security M-4・要確認）。
+  （`preview.rs:83-89`、security M-4）: **確認済み・リスクなし**。
+  `gpui-pre-0.3.12` の `svg_renderer.render_single_frame(&bytes, 1.0)`
+  （platform.rs:3504）は SVG バイトのみを受け取り、ベース URL / ファイル
+  パスを渡さない。`usvg` は `default-features = false` で外部エンティティ
+  解決機能が無効（2026-11-17T21:19+09:00、ローカルレジストリ確認）。
 - `copy_recursive` / `remove_entry_safe` / `total_bytes_of` に
   深さ上限が無く再帰スタック overflow の余地
   （`ops.rs:382-429` 他、security M-5）。
