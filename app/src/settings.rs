@@ -290,9 +290,21 @@ impl Settings {
             .write(true)
             .create_new(true)
             .open(&tmp)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
+        // Settings contain bookmarks / recent paths; keep them private.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
+        let result = (|| -> std::io::Result<()> {
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
+        })();
         drop(file);
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
         std::fs::rename(&tmp, path)
     }
 }
@@ -339,6 +351,12 @@ mod tests {
             ..Settings::default()
         };
         settings.save_to(&path).expect("save should succeed");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "settings file must be private");
+        }
         let loaded = Settings::load_from(&path);
         assert_eq!(loaded, settings);
         fs::remove_dir_all(&dir).unwrap();
