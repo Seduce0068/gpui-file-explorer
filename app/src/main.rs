@@ -562,7 +562,10 @@ impl Explorer {
     }
 
     fn new(cx: &mut Context<Self>) -> Self {
+        let debug = Self::debug_hooks_from_env();
         let mut settings = Settings::load();
+        // Any active debug hook must never write to the real settings file.
+        settings.ephemeral = debug.ephemeral;
         if std::env::var("GPUI_FE_DEBUG_SORT").is_ok_and(|value| value == "kind") {
             settings.sort = SortSpec {
                 key: SortKey::Kind,
@@ -645,7 +648,7 @@ impl Explorer {
             undo: UndoStack::new(),
             undo_history_open: false,
             focus_list_on_next_render: false,
-            debug: Self::debug_hooks_from_env(),
+            debug,
         };
 
         // Remember the directory we actually started in (also proves the
