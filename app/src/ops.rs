@@ -269,8 +269,16 @@ fn copy_file_atomic(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "copy".to_string());
+    // O_EXCL reservation with an unpredictable name: `File::create` on a
+    // predictable `.partial-*` path follows a pre-planted symlink and can
+    // truncate an unrelated file (CWE-59). nanos + PID + file counter keep
+    // concurrent copies distinct without colliding with stale temp files.
     let partial = parent.join(format!(
-        ".{file_name}.partial-{}-{}",
+        ".{file_name}.partial-{}-{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0),
         std::process::id(),
         stats.files
     ));
@@ -281,7 +289,11 @@ fn copy_file_atomic(
     let base_bytes = stats.bytes;
     let result = (|| -> Result<u64, OpError> {
         let mut input = fs::File::open(src).map_err(|e| io_error(src, e))?;
-        let mut output = fs::File::create(&partial).map_err(|e| io_error(&partial, e))?;
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+            .map_err(|e| io_error(&partial, e))?;
         let mut buffer = vec![0u8; COPY_CHUNK_SIZE];
         let mut total = 0u64;
         loop {
