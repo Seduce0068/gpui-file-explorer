@@ -39,12 +39,21 @@ impl SearchKind {
     }
 }
 
-/// Filter already-collected search results by kind and optional extension.
-/// The extension is case-insensitive and may be given with or without a
-/// leading dot (`rs`, `.rs`); an empty extension means "no extension filter".
-pub fn filter_results(entries: &[Entry], kind: SearchKind, extension: Option<&str>) -> Vec<Entry> {
+/// Filter already-collected search results by kind, optional extension and
+/// optional name substring. The extension is case-insensitive and may be given
+/// with or without a leading dot (`rs`, `.rs`); an empty extension means "no
+/// extension filter". The name filter is a case-insensitive substring match.
+pub fn filter_results(
+    entries: &[Entry],
+    kind: SearchKind,
+    extension: Option<&str>,
+    name: Option<&str>,
+) -> Vec<Entry> {
     let extension = extension
         .map(|value| value.trim().trim_start_matches('.').to_lowercase())
+        .filter(|value| !value.is_empty());
+    let name = name
+        .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty());
     entries
         .iter()
@@ -54,6 +63,10 @@ pub fn filter_results(entries: &[Entry], kind: SearchKind, extension: Option<&st
                 .name_text
                 .to_lowercase()
                 .ends_with(&format!(".{extension}")),
+            None => true,
+        })
+        .filter(|entry| match &name {
+            Some(name) => entry.name_text.to_lowercase().contains(name),
             None => true,
         })
         .cloned()
@@ -591,15 +604,15 @@ mod filter_tests {
             entry("b.rs", false),
         ];
         assert_eq!(
-            names(&filter_results(&entries, SearchKind::All, None)).len(),
+            names(&filter_results(&entries, SearchKind::All, None, None)).len(),
             3
         );
         assert_eq!(
-            names(&filter_results(&entries, SearchKind::Files, None)),
+            names(&filter_results(&entries, SearchKind::Files, None, None)),
             vec!["a.txt", "b.rs"]
         );
         assert_eq!(
-            names(&filter_results(&entries, SearchKind::Dirs, None)),
+            names(&filter_results(&entries, SearchKind::Dirs, None, None)),
             vec!["docs"]
         );
     }
@@ -612,16 +625,59 @@ mod filter_tests {
             entry("c.rs.bak", false),
         ];
         assert_eq!(
-            names(&filter_results(&entries, SearchKind::All, Some("txt"))),
+            names(&filter_results(
+                &entries,
+                SearchKind::All,
+                Some("txt"),
+                None
+            )),
             vec!["a.TXT"]
         );
         assert_eq!(
-            names(&filter_results(&entries, SearchKind::All, Some(".RS"))),
+            names(&filter_results(
+                &entries,
+                SearchKind::All,
+                Some(".RS"),
+                None
+            )),
             vec!["b.rs"]
         );
         assert_eq!(
-            names(&filter_results(&entries, SearchKind::All, Some(""))).len(),
+            names(&filter_results(&entries, SearchKind::All, Some(""), None)).len(),
             3
+        );
+    }
+
+    #[test]
+    fn filters_by_name_substring_case_insensitively() {
+        let entries = vec![
+            entry("report-2026.txt", false),
+            entry("REPORT-draft.txt", false),
+            entry("notes.md", false),
+        ];
+        assert_eq!(
+            names(&filter_results(
+                &entries,
+                SearchKind::All,
+                None,
+                Some("report")
+            )),
+            vec!["report-2026.txt", "REPORT-draft.txt"]
+        );
+        // Empty and whitespace-only filters are ignored.
+        assert_eq!(
+            names(&filter_results(&entries, SearchKind::All, None, Some("  "))).len(),
+            3
+        );
+        // Name and extension filters combine.
+        assert_eq!(
+            names(&filter_results(
+                &entries,
+                SearchKind::All,
+                Some("md"),
+                Some("note")
+            )),
+            vec!["notes.md"]
         );
     }
 
@@ -629,10 +685,15 @@ mod filter_tests {
     fn combines_kind_and_extension() {
         let entries = vec![entry("dir.rs", true), entry("file.rs", false)];
         assert_eq!(
-            names(&filter_results(&entries, SearchKind::Files, Some("rs"))),
+            names(&filter_results(
+                &entries,
+                SearchKind::Files,
+                Some("rs"),
+                None
+            )),
             vec!["file.rs"]
         );
-        assert!(filter_results(&entries, SearchKind::Dirs, Some("txt")).is_empty());
+        assert!(filter_results(&entries, SearchKind::Dirs, Some("txt"), None).is_empty());
     }
 }
 

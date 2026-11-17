@@ -360,6 +360,8 @@ struct SearchState {
     subscription: Option<Subscription>,
     ext: Option<Entity<InputState>>,
     ext_subscription: Option<Subscription>,
+    name_filter: Option<Entity<InputState>>,
+    name_filter_subscription: Option<Subscription>,
     kind: SearchKind,
     mode: SearchMode,
     scope: SearchScope,
@@ -1580,6 +1582,13 @@ impl Explorer {
                 ("a", false) => self.select_all(cx),
                 ("d", false) => self.toggle_current_bookmark(cx),
                 ("f", false) => self.open_search(window, cx),
+                ("f", true) => {
+                    if let Some(input) = self.search.name_filter.clone() {
+                        let focus = input.read(cx).focus_handle(cx).clone();
+                        focus.focus(window, cx);
+                        cx.notify();
+                    }
+                }
                 ("i", false) => self.open_selected_properties(cx),
                 ("l", false) => self.open_location(window, cx),
                 ("z", false) => self.undo_last(cx),
@@ -3673,6 +3682,17 @@ impl Explorer {
         self.search.subscription = Some(subscription);
         self.search.ext = Some(ext_input);
         self.search.ext_subscription = Some(ext_subscription);
+        let name_input = cx.new(|cx| InputState::new(window, cx));
+        let name_subscription = cx.subscribe(
+            &name_input,
+            |this, _input, event: &InputEvent, cx| match event {
+                InputEvent::Change => this.apply_search_filter(cx),
+                InputEvent::PressEnter { .. } => this.run_search(cx),
+                _ => {}
+            },
+        );
+        self.search.name_filter = Some(name_input);
+        self.search.name_filter_subscription = Some(name_subscription);
         self.search.kind = SearchKind::All;
         self.search.mode = SearchMode::Name;
         self.search.scope = SearchScope::Current;
@@ -3820,7 +3840,17 @@ impl Explorer {
             .ext
             .as_ref()
             .map(|input| input.read(cx).value().to_string());
-        let filtered = filter_results(&self.all_entries, self.search.kind, extension.as_deref());
+        let name_filter = self
+            .search
+            .name_filter
+            .as_ref()
+            .map(|input| input.read(cx).value().to_string());
+        let filtered = filter_results(
+            &self.all_entries,
+            self.search.kind,
+            extension.as_deref(),
+            name_filter.as_deref(),
+        );
         let paths: Vec<PathBuf> = filtered.iter().map(|entry| entry.path.clone()).collect();
         self.selection.retain(&paths);
         self.entries = filtered;
@@ -3872,6 +3902,8 @@ impl Explorer {
         self.search.subscription = None;
         self.search.ext = None;
         self.search.ext_subscription = None;
+        self.search.name_filter = None;
+        self.search.name_filter_subscription = None;
         self.search.kind = SearchKind::All;
         self.search.mode = SearchMode::Name;
         self.search.scope = SearchScope::Current;
@@ -3988,6 +4020,14 @@ impl Explorer {
                 .child(div().text_xs().text_color(rgb(C_MUTED)).child("拡張子:"))
                 .child(div().w(px(110.0)).child(Input::new(ext)))
         });
+        let name_input = self.search.name_filter.as_ref().map(|input| {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(div().text_xs().text_color(rgb(C_MUTED)).child("名前:"))
+                .child(div().w(px(110.0)).child(Input::new(input)))
+        });
         Some(
             div()
                 .flex()
@@ -4004,6 +4044,7 @@ impl Explorer {
                 .child(scopes)
                 .children((self.search.mode == SearchMode::Name).then_some(kinds))
                 .children(extension_input)
+                .children(name_input)
                 .child(div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
         )
     }
