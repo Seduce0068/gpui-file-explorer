@@ -105,7 +105,7 @@ mkdir -p "${stage}/DEBIAN" "${stage}/usr/bin" "${stage}/usr/share/applications"
 
 if [ "${skip_build}" -eq 0 ]; then
   echo "release ビルド中…"
-  cargo build --release --manifest-path "${app_dir}/Cargo.toml"
+  cargo build --release --locked --manifest-path "${app_dir}/Cargo.toml"
 fi
 [ -x "${binary}" ] || die "release バイナリがありません: ${binary}（--skip-build を外して再実行してください）"
 
