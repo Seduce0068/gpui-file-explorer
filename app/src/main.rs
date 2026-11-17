@@ -2378,6 +2378,7 @@ impl Explorer {
         };
         let label = action.label();
         let affected = action.len();
+        let retry = action.clone();
         match action {
             UndoAction::Rename { from, to } => {
                 let target = from.clone();
@@ -2389,12 +2390,15 @@ impl Explorer {
                 if !current.exists() {
                     self.status =
                         format!("元に戻せません: {} が存在しません", display_path(&current));
+                    // Keep the action so a later retry or other undo is possible.
+                    self.undo.push_undo(retry.clone());
                     cx.notify();
                     return;
                 }
                 if target.exists() {
                     self.status =
                         format!("元に戻せません: {} が既に存在します", display_path(&target));
+                    self.undo.push_undo(retry.clone());
                     cx.notify();
                     return;
                 }
