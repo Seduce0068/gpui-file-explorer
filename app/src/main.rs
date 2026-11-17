@@ -3898,12 +3898,19 @@ impl Explorer {
         self.selection.retain(&paths);
         self.entries = filtered;
         self.fingerprint = fingerprint(&self.entries);
-        self.selected = 0;
         if self.selection.is_empty() {
             if let Some(entry) = self.entries.first() {
                 self.selection.select_single(entry.path.clone());
             }
         }
+        // Keep the focused row in sync with the surviving selection instead of
+        // always resetting to 0 (third cross-review F6-08).
+        self.selected = self
+            .selection
+            .paths()
+            .first()
+            .and_then(|path| self.entries.iter().position(|entry| &entry.path == path))
+            .unwrap_or(0);
         self.scroll_handle
             .scroll_to_item(0, ScrollStrategy::Nearest);
         let mode_label = if self.search.mode == SearchMode::Content {
