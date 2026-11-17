@@ -90,6 +90,16 @@ if [ "${skip_build}" -eq 0 ]; then
 fi
 [ -x "${binary}" ] || die "release バイナリがありません: ${binary}（--skip-build を外して再実行してください）"
 
+# Verify the existing binary actually matches this source version before it is
+# packaged. Without this, --skip-build can silently ship a stale binary.
+if ! binary_version="$("${binary}" --version 2>/dev/null)"; then
+  die "release バイナリの --version が失敗しました: ${binary}"
+fi
+case "${binary_version}" in
+  "${pkg} ${version}") ;;
+  *) die "release バイナリのバージョン不一致: ${binary_version}（expected: ${pkg} ${version}）" ;;
+esac
+
 echo "パッケージを構成中…"
 install -Dm755 "${binary}" "${stage}/usr/bin/${pkg}"
 install -Dm644 "${repo_root}/packaging/linux/${pkg}.desktop" \
