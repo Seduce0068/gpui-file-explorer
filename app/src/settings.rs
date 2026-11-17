@@ -75,6 +75,9 @@ pub struct Settings {
     /// Human-readable reason for `read_only`, shown in the status bar.
     #[serde(skip)]
     pub load_error: Option<String>,
+    /// When set (debug hooks active), never write to disk. Not persisted.
+    #[serde(skip)]
+    pub ephemeral: bool,
 }
 
 impl Default for Settings {
@@ -92,6 +95,7 @@ impl Default for Settings {
             recent_searches: Vec::new(),
             read_only: false,
             load_error: None,
+            ephemeral: false,
         }
     }
 }
@@ -264,6 +268,9 @@ impl Settings {
     /// settings file behind. The tmp file is flushed with `sync_all()` before
     /// the rename; a directory fsync is not performed (best-effort).
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        if self.ephemeral {
+            return Ok(());
+        }
         if self.read_only {
             if let Some(reason) = &self.load_error {
                 warn!(%reason, "settings are read-only; not saved");
@@ -333,6 +340,21 @@ mod tests {
         assert!(!settings.show_hidden);
         assert_eq!(settings.view, ViewLayout::Details);
         assert!(settings.last_dir.is_none());
+    }
+
+    #[test]
+    fn ephemeral_settings_never_write_to_disk() {
+        let dir = scratch("ephemeral");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let settings = Settings {
+            ephemeral: true,
+            ..Settings::default()
+        };
+        settings.save_to(&path).unwrap();
+        assert!(!path.exists(), "ephemeral settings must not create a file");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
