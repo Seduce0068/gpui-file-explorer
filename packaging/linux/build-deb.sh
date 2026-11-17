@@ -74,13 +74,32 @@ stage="${out_dir}/${pkg}_${deb_version}_${arch}"
 deb="${stage}.deb"
 binary="${app_dir}/target/release/${pkg}"
 
-# Guard: never delete anything outside the chosen output directory.
+# Guard: never delete anything outside the chosen output directory. Normalize
+# to an absolute path first so relative inputs (`.`, `..`) cannot bypass the
+# check, and reject root/home/repo-root/its parents outright: the staging path
+# would otherwise pass the prefix check while `rm -rf` targets a broad
+# location.
+if [ -z "${out_dir}" ]; then
+  die "出力ディレクトリが空です"
+fi
+mkdir -p -- "${out_dir}"
+if ! out_dir_abs="$(cd -- "${out_dir}" 2>/dev/null && pwd -P)"; then
+  die "出力ディレクトリを解決できません: ${out_dir}"
+fi
+repo_root_abs="$(cd -- "${repo_root}" && pwd -P)"
+parent_of_repo="$(dirname -- "${repo_root_abs}")"
+case "${out_dir_abs}" in
+  "/" | "${repo_root_abs}" | "${parent_of_repo}" | "${HOME}" | "${HOME}/")
+    die "安全でない出力ディレクトリ: ${out_dir}" ;;
+esac
+out_dir="${out_dir_abs}"
+stage="${out_dir}/${pkg}_${deb_version}_${arch}"
+deb="${stage}.deb"
 case "${stage}" in
   "${out_dir}"/*) ;;
   *) die "安全でないステージングパス: ${stage}" ;;
 esac
 
-mkdir -p "${out_dir}"
 rm -rf -- "${stage}"
 mkdir -p "${stage}/DEBIAN" "${stage}/usr/bin" "${stage}/usr/share/applications"
 
