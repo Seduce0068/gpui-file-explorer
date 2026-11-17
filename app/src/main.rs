@@ -976,13 +976,48 @@ impl Explorer {
                     batch.push(more);
                 }
                 let updated = this.update(cx, |this, cx| {
-                    if this.is_suppressed()
-                        || this.view != ViewSource::Directory
-                        || this.op_cancel.is_some()
-                    {
+                    if this.is_suppressed() || this.op_cancel.is_some() {
+                        return;
+                    }
+                    let search_view = this.view == ViewSource::Search;
+                    if !search_view && this.view != ViewSource::Directory {
                         return;
                     }
                     let batch: Vec<FsEvent> = batch.into_iter().flatten().collect();
+                    if search_view {
+                        // A search result set is a snapshot; at least drop
+                        // entries that vanished so the view cannot act on a
+                        // deleted path. Full re-search is deferred to the user
+                        // (documented limitation).
+                        let mut removed = Vec::new();
+                        for event in &batch {
+                            if let FsEvent::Removed(paths) = event {
+                                removed.extend(paths.iter().cloned());
+                            }
+                        }
+                        if removed.is_empty() {
+                            return;
+                        }
+                        let before = this.all_entries.len();
+                        this.all_entries
+                            .retain(|entry| !removed.contains(&entry.path));
+                        for path in &removed {
+                            this.search_lines.remove(path);
+                        }
+                        if this.all_entries.len() == before {
+                            return;
+                        }
+                        let remaining: Vec<PathBuf> = this
+                            .all_entries
+                            .iter()
+                            .map(|entry| entry.path.clone())
+                            .collect();
+                        this.selection.retain(&remaining);
+                        this.apply_search_filter(cx);
+                        this.status = STATUS_CHANGED.to_string();
+                        cx.notify();
+                        return;
+                    }
                     if batch
                         .iter()
                         .any(|event| matches!(event, FsEvent::Rescan | FsEvent::Renamed { .. }))
