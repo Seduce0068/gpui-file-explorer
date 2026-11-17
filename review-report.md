@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T12:57:34+09:00
+verified: 2026-11-17T13:16:32+09:00
 status: complete
 ---
 
@@ -720,3 +720,24 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 - 全変更を `origin/main` へ push（2026-11-17T12:47+09:00、
   `7c9b2e7..8167ea7`）、CI run 44012616027 が **success**（8m43s）。
   ローカルとリモート完全一致（ahead 0）。
+
+## 第2回 Low/Medium の追加修正（2026-11-17T13:16+09:00）
+
+承認後に残っていた低リスクの指摘も解消した。
+
+- `scripts/check.sh`: `--app` と `--poc` の同時指定を拒否（従来は
+  両方 false になり何も検証せず成功していた）。`3eee87f`。
+- `build-deb.sh`: `--skip-build` 時に既存バイナリの `--version` を
+  Cargo.toml のバージョンと照合し、古いバイナリの誤配布を防止
+  （`2087617`）。さらに `out_dir` を絶対パス化してから
+  `/` / リポジトリ直下 / 親ディレクトリ / `$HOME` を拒否
+  （`.` や `..` による回避も遮断、`a935ea9`）。
+- `ops.rs`: case-only rename の中継名を短い予測不能名へ変更
+  （NAME_MAX 超過と衝突リスクを解消、`ee100dd`）。
+- `watcher.rs`: `unwatch` 失敗を捨てず `last_error` へ反映
+  （`a8e0eeb`）。
+
+検証: `bash scripts/check.sh --fast` = **exit 0 / All checks passed**
+（app 168 tests / poc 4 tests / clippy 警告なし）。
+`cargo check --target x86_64-pc-windows-msvc --all-targets --locked` = 成功。
+各スクリプトは `bash -n` / `shellcheck` 通過。
