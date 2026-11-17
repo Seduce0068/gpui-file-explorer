@@ -27,9 +27,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [profile.dev]
-# GPUI + wgpu の debuginfo は巨大（PoC で debug バイナリ 745MiB）。
-# 試作のビルド時間・容量を抑えるため依存の debuginfo は生成しない。
-debug = 1
+# GPUI + wgpu の debuginfo は巨大（debug=1 で 1.76GiB のバイナリ、target/ は 21GiB）。
+# バックトレースは残しつつ行テーブルのみに抑制する。
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
-debug = 0
+debug = false
+
+[profile.release]
+strip = true
