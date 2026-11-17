@@ -3757,7 +3757,10 @@ impl Explorer {
         if root_count <= 1 {
             global_cap
         } else {
-            global_cap.div_ceil(root_count).clamp(1, 500)
+            // Divide the global cap fairly. Capping each root at 500 made a
+            // 2-root search stop at 1000 even though the global cap was 2000
+            // (third cross-review F6-07).
+            global_cap.div_ceil(root_count).max(1)
         }
     }
 
@@ -6042,7 +6045,7 @@ mod tests {
     fn per_root_cap_is_fair_across_roots() {
         assert_eq!(Explorer::per_root_cap(2000, 0), 2000);
         assert_eq!(Explorer::per_root_cap(2000, 1), 2000);
-        assert_eq!(Explorer::per_root_cap(2000, 2), 500);
+        assert_eq!(Explorer::per_root_cap(2000, 2), 1000);
         assert_eq!(Explorer::per_root_cap(2000, 4), 500);
         assert_eq!(Explorer::per_root_cap(2000, 10), 200);
         assert_eq!(Explorer::per_root_cap(2000, 100), 20);
