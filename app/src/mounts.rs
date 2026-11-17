@@ -133,14 +133,22 @@ pub fn parse_mounts(text: &str) -> Vec<MountPoint> {
     mounts
 }
 
+/// Read a mounts-style file into a string.
+///
+/// Blocking: this touches the filesystem on the calling thread. UI code must
+/// offload it (e.g. `cx.background_spawn(async { mounts::list_mounts() })`).
+/// The path argument lets tests exercise the exact read-then-parse path used
+/// by [`list_mounts`] without depending on the host's mount table.
+#[cfg(target_os = "linux")]
+fn read_mounts_file(path: impl AsRef<std::path::Path>) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
 /// List the visible mounts on the current system. Blocking: call from the
-/// background executor or during startup/reload (not from render).
+/// background executor only — `/proc/mounts` is read on the calling thread.
 #[cfg(target_os = "linux")]
 pub fn list_mounts() -> Vec<MountPoint> {
-    match std::fs::read_to_string("/proc/mounts") {
-        Ok(text) => parse_mounts(&text),
-        Err(_) => Vec::new(),
-    }
+    parse_mounts(&read_mounts_file("/proc/mounts"))
 }
 
 /// Non-Linux platforms: no volume discovery yet (the sidebar simply omits the
@@ -212,5 +220,35 @@ overlay /var/lib/docker/overlay2/abc overlay rw 0 0
         if cfg!(not(target_os = "linux")) {
             assert!(list_mounts().is_empty());
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn read_mounts_file_feeds_the_parser() {
+        // The offloaded `list_mounts()` is read-then-parse; prove the two steps
+        // still compose on a fixture instead of relying on the host mount table.
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("gpui-fe-mounts-{}-{stamp}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mounts");
+        std::fs::write(&file, SAMPLE).unwrap();
+
+        let mounts = parse_mounts(&read_mounts_file(&file));
+        assert_eq!(
+            mounts
+                .iter()
+                .map(|mount| mount.path.display().to_string())
+                .collect::<Vec<_>>(),
+            vec!["/", "/boot/efi", "/media/koppe/USB Drive", "/mnt/timeshift"]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

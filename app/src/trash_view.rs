@@ -41,10 +41,13 @@ mod platform {
 
     pub use trash::TrashItem;
 
+    /// Blocking: walks the trash directories on the calling thread. UI code
+    /// must offload this with `cx.background_spawn(async { trash_view::list() })`.
     pub fn list() -> Result<Vec<TrashItem>, String> {
         trash::os_limited::list().map_err(|error| error.to_string())
     }
 
+    /// Blocking: call from the background executor, never from render/UI code.
     pub fn restore(items: Vec<TrashItem>) -> Result<(), String> {
         trash::os_limited::restore_all(items).map_err(|error| error.to_string())
     }
@@ -53,6 +56,7 @@ mod platform {
         trash::delete(path).map_err(|error| error.to_string())
     }
 
+    /// Blocking: calls [`list`] internally, so offload it from the UI thread.
     pub fn restore_by_id(entries: &[(PathBuf, String)]) -> Result<(usize, usize), String> {
         let items = list()?;
         let mut to_restore: Vec<TrashItem> = Vec::new();
@@ -152,6 +156,25 @@ pub fn entries_from_items(items: &[TrashItem]) -> Vec<Entry> {
     entries
 }
 
+/// Map already-trashed paths to their trash ids using a listing read earlier.
+///
+/// Pure (no filesystem access): callers can take a snapshot with the blocking
+/// [`list`] on the background executor and reuse the ids here for undo
+/// bookkeeping without ever walking the trash directories on the UI thread.
+/// Paths with no matching item are skipped, matching the previous inline
+/// behaviour (an empty result simply means the undo entry stays empty).
+pub fn record_ids(items: &[TrashItem], paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            items
+                .iter()
+                .find(|item| item.original_path() == *path)
+                .map(|item| (path.clone(), item.id.to_string_lossy().into_owned()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +211,33 @@ mod tests {
     fn negative_timestamps_map_to_none() {
         let entries = entries_from_items(&[item("/trash/info/x.trashinfo", "x", "/home/u", -1)]);
         assert_eq!(entries[0].modified, None);
+    }
+
+    #[test]
+    fn record_ids_maps_only_paths_present_in_the_snapshot() {
+        let items = vec![
+            item("/trash/info/a.trashinfo", "a.txt", "/tmp/t", 100),
+            item("/trash/info/b.trashinfo", "b.txt", "/tmp/t", 200),
+        ];
+        let paths = vec![
+            PathBuf::from("/tmp/t/b.txt"),
+            PathBuf::from("/tmp/t/missing.txt"),
+            PathBuf::from("/tmp/t/a.txt"),
+        ];
+        assert_eq!(
+            record_ids(&items, &paths),
+            vec![
+                (
+                    PathBuf::from("/tmp/t/b.txt"),
+                    "/trash/info/b.trashinfo".to_string()
+                ),
+                (
+                    PathBuf::from("/tmp/t/a.txt"),
+                    "/trash/info/a.trashinfo".to_string()
+                ),
+            ]
+        );
+        assert!(record_ids(&items, &[]).is_empty());
     }
 }
 
