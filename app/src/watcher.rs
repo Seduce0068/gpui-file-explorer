@@ -134,10 +134,14 @@ impl DirWatcher {
         let Some(debouncer) = &mut self.debouncer else {
             return;
         };
-        for old in std::mem::take(&mut self.watched) {
-            let _ = debouncer.unwatch(&old);
-        }
         let mut errors = Vec::new();
+        for old in std::mem::take(&mut self.watched) {
+            if let Err(err) = debouncer.unwatch(&old) {
+                // A stale watch may still fire; report it instead of silently
+                // dropping the failure (second cross-review Low finding).
+                errors.push(format!("{} の監視解除に失敗: {err}", old.display()));
+            }
+        }
         for dir in dirs {
             match debouncer.watch(dir, RecursiveMode::NonRecursive) {
                 Ok(()) => self.watched.push(dir.clone()),
