@@ -5680,7 +5680,12 @@ fn classify_cli(args: &[String]) -> CliAction {
 ///
 /// Returns `true` when the process should exit without opening a window.
 fn handle_cli() -> bool {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // args_os() avoids a panic on non-UTF-8 arguments (F6-06). Flag matching
+    // is ASCII only, so lossy conversion is safe here; paths stay as OsString.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     match classify_cli(&args) {
         CliAction::Version => {
             println!("gpui-file-explorer {}", env!("CARGO_PKG_VERSION"));
@@ -5704,10 +5709,11 @@ fn handle_cli() -> bool {
 
 /// First non-flag argument, treated as the initial directory.
 fn startup_dir() -> Option<PathBuf> {
-    std::env::args()
+    // Keep raw bytes: a path may contain non-UTF-8 bytes on Unix (F6-06).
+    std::env::args_os()
         .skip(1)
-        .find(|arg| !arg.starts_with('-'))
         .map(PathBuf::from)
+        .find(|path| !path.as_os_str().to_string_lossy().starts_with('-'))
 }
 
 /// Restore the persisted tab set and choose the directory to open first.
