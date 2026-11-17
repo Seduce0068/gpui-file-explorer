@@ -5891,6 +5891,14 @@ mod tests {
         );
     }
 
+    /// Normalize Windows verbatim paths (`\\?\C:\...`) for cross-platform
+    /// comparisons in tests. No-op on Unix.
+    fn canonical_for_compare(path: &std::path::Path) -> std::path::PathBuf {
+        let text = path.to_string_lossy();
+        let stripped = text.strip_prefix(r"\\?\").unwrap_or(&text);
+        std::path::PathBuf::from(stripped)
+    }
+
     #[test]
     fn restore_session_prefers_saved_tabs_then_cli_then_last_then_home() {
         use super::restore_session;
@@ -5911,7 +5919,13 @@ mod tests {
         assert_eq!(start, dir, "active index is clamped to the saved tab");
 
         let (_, start) = restore_session(&[], 0, None, Some(dir.clone()), None);
-        assert_eq!(start, dir, "CLI argument wins when no tabs are saved");
+        // On Windows canonicalize() adds a `\\?\` verbatim prefix; compare via
+        // file_name-based identity rather than raw path bytes.
+        assert_eq!(
+            canonical_for_compare(&start),
+            canonical_for_compare(&dir),
+            "CLI argument wins when no tabs are saved"
+        );
 
         let home = dir.join("home");
         std::fs::create_dir_all(&home).unwrap();
