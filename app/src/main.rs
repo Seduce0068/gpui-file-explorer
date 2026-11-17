@@ -73,6 +73,13 @@ const C_LAVENDER: u32 = 0xb4befe;
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(10);
 const SELF_OP_SUPPRESS: Duration = Duration::from_millis(1500);
 
+/// Layout metrics shared by the list page-step and the icon grid. Keeping
+/// them named avoids drift between the row height and the grid cell height.
+const ROW_HEIGHT_PX: f64 = 28.0;
+const LIST_CHROME_HEIGHT_PX: f64 = 140.0;
+const SIDEBAR_WIDTH_PX: f32 = 214.0;
+const GRID_CELL_WIDTH_PX: f32 = 108.0;
+
 /// Icon colour per file kind (folders are blue, everything else is tinted).
 fn kind_color(kind: FileKind) -> u32 {
     match kind {
@@ -1589,7 +1596,9 @@ impl Explorer {
         // Page step: how many 28px rows fit into the window viewport.
         let page_step = {
             let viewport_height = window.viewport_size().height.to_f64();
-            ((viewport_height - 140.0) / 28.0).floor().max(1.0) as isize
+            ((viewport_height - LIST_CHROME_HEIGHT_PX) / ROW_HEIGHT_PX)
+                .floor()
+                .max(1.0) as isize
         };
         match key {
             "up" => self.move_selection(-1, modifiers.shift, cx),
@@ -5405,7 +5414,10 @@ impl Render for Explorer {
         } else {
             Some(self.sort_header(cx))
         };
-        let columns = grid_columns(window.viewport_size().width.to_f64() as f32 - 214.0, 108.0);
+        let columns = grid_columns(
+            window.viewport_size().width.to_f64() as f32 - SIDEBAR_WIDTH_PX,
+            GRID_CELL_WIDTH_PX,
+        );
         let item_count = if grid_mode {
             grid_row_count(self.entries.len(), columns)
         } else {
