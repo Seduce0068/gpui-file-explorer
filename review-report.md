@@ -10,7 +10,7 @@ tags:
   - rust
   - gpui
 generated: 2026-11-16T22:51:56+09:00
-verified: 2026-11-17T13:16:32+09:00
+verified: 2026-11-17T13:27:38+09:00
 status: complete
 ---
 
@@ -741,3 +741,6 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 （app 168 tests / poc 4 tests / clippy 警告なし）。
 `cargo check --target x86_64-pc-windows-msvc --all-targets --locked` = 成功。
 各スクリプトは `bash -n` / `shellcheck` 通過。
+
+- 全変更を push（`4537022..261fffe`）、CI run 44016121848 が
+  **success**（8m12s、2026-11-17T13:27+09:00 完了）。
