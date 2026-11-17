@@ -50,8 +50,8 @@ status: current
   return — 対応:
   4ce6067
 - [x] **F6-13** 操作成否・Undo 確認文と実保証の乖離 — open/reveal 戻り値破棄、貼付全中止 — 対応: e2bf3d0
-- [ ] **F6-14** macOS/iOS/Android で trash ビューがビルド不能 — `trash 5.3.0` の
-  `os_limited` 除外
+- [x] **F6-14** macOS/iOS/Android で trash ビューがビルド不能 — 対応: c7849e2
+  （trash 依存を cfg 付き target 別依存へ、非対応 OS は no-op フォールバック）
 
 ### 優先度: 中
 
@@ -67,10 +67,10 @@ status: current
 - [x] **F6-24** データモデルの型不変条件退化（Entry/Selection/History/path） — 対応:
   現行コードで確認済み (不変条件保持)
 - [x] **F6-25** 色覚アクセシビリティと text alternative（ツールバー 8 ボタン） — 対応: d78ae16
-- [ ] **F6-26** i18n・日本語表記の散在とロケール並び順
+- [x] **F6-26** i18n・日本語表記の散在とロケール並び順 — 対応: c7849e2（文言定義の集約と照合契約の明記）
 - [x] **F6-27** 配布物のゲート・運用（`.desktop` MimeType 欠落、DEB 無検証） — 対応: 2ab59ce
 - [x] **F6-28** ビルド再現性と CI 透明性（配布のみ `--locked` なし） — 対応: e3b661d
-- [ ] **F6-29** サプライチェーン監査とライセンス
+- [x] **F6-29** サプライチェーン監査とライセンス — 対応: c7849e2（deny.toml / CI / check.sh）
 - [x] **F6-30** ドキュメント数値の真実源欠落（132/167/168、判定 4 回反転） — 対応: 6ff4abc
 - [x] **F6-31** テストの実質欠如（空振り assert、trivially pass） — 対応:
   trivially pass / ignored test 無しを確認
