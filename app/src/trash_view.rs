@@ -156,6 +156,20 @@ pub fn entries_from_items(items: &[TrashItem]) -> Vec<Entry> {
     entries
 }
 
+/// Select the trash items addressed by virtual row paths.
+///
+/// Trash rows use the trash id as their `path`, so a keyboard (Enter / R) or
+/// context-menu restore must resolve ids from the current listing rather than
+/// from row indices. Pure: no filesystem access, and the order follows
+/// `items` (newest first) so multi-selection restores stay deterministic.
+pub fn items_for_paths(items: &[TrashItem], paths: &[PathBuf]) -> Vec<TrashItem> {
+    items
+        .iter()
+        .filter(|item| paths.contains(&PathBuf::from(&item.id)))
+        .cloned()
+        .collect()
+}
+
 /// Map already-trashed paths to their trash ids using a listing read earlier.
 ///
 /// Pure (no filesystem access): callers can take a snapshot with the blocking
@@ -211,6 +225,32 @@ mod tests {
     fn negative_timestamps_map_to_none() {
         let entries = entries_from_items(&[item("/trash/info/x.trashinfo", "x", "/home/u", -1)]);
         assert_eq!(entries[0].modified, None);
+    }
+
+    #[test]
+    fn items_for_paths_resolves_multi_selection_and_ignores_unknown_ids() {
+        let items = vec![
+            item("/trash/info/old.trashinfo", "old.txt", "/home/u", 100),
+            item("/trash/info/new.trashinfo", "new.txt", "/home/u", 300),
+        ];
+        let selected = vec![
+            PathBuf::from("/trash/info/new.trashinfo"),
+            PathBuf::from("/trash/info/old.trashinfo"),
+        ];
+        let resolved = items_for_paths(&items, &selected);
+        assert_eq!(resolved.len(), 2, "every selected id must be restored");
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                OsString::from("/trash/info/old.trashinfo"),
+                OsString::from("/trash/info/new.trashinfo"),
+            ],
+            "order follows the listing, not the click order"
+        );
+        assert!(items_for_paths(&items, &[PathBuf::from("/trash/info/missing")]).is_empty());
     }
 
     #[test]

@@ -187,6 +187,40 @@ enum ViewSource {
     Search,
 }
 
+/// Keyboard intent while the trash view owns the key events. Permanent
+/// deletion is deliberately never returned: Delete only explains the limit
+/// and points at the restore shortcut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrashKeyAction {
+    Restore,
+    NoPurge,
+    Ignore,
+}
+
+/// Map a keystroke to a trash-view action. `Enter` (and `Ctrl+Enter`) restore;
+/// `R` is an explicit restore alias; `Delete` reports that permanent deletion
+/// is unsupported. Pure so the keyboard wiring can be regression-tested.
+fn trash_key_action(key: &str, control: bool) -> TrashKeyAction {
+    if control {
+        return if key == "enter" {
+            TrashKeyAction::Restore
+        } else {
+            TrashKeyAction::Ignore
+        };
+    }
+    match key {
+        "enter" | "r" => TrashKeyAction::Restore,
+        "delete" => TrashKeyAction::NoPurge,
+        _ => TrashKeyAction::Ignore,
+    }
+}
+
+/// Status shown for Delete in the trash view: the unsupported action plus the
+/// keyboard path that actually works (F6-33).
+fn trash_delete_status() -> String {
+    format!("{STATUS_TRASH_NO_PURGE}（Enter / R で元の場所へ復元）")
+}
+
 /// Message + optional hint shown in the middle of the list area when there is
 /// nothing to render (or an error/loading state is active).
 fn empty_state_message(
@@ -565,6 +599,21 @@ fn record_trashed_paths(trashed: &[PathBuf]) -> Vec<(PathBuf, String)> {
     trash_view::list()
         .map(|items| trash_view::record_ids(&items, trashed))
         .unwrap_or_default()
+}
+
+/// Paths carried by an internal row drag that may be copied into
+/// `destination`. The whole multi-selection is preserved (order-stable), the
+/// destination itself and duplicate paths are dropped. Pure so the multi-drop
+/// rule can be regression-tested without a running GPUI window.
+fn internal_drop_paths(paths: &[PathBuf], destination: &Path) -> Vec<PathBuf> {
+    let mut kept: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for path in paths {
+        if path == destination || kept.contains(path) {
+            continue;
+        }
+        kept.push(path.clone());
+    }
+    kept
 }
 
 struct Explorer {
@@ -1853,6 +1902,15 @@ impl Explorer {
                         self.paste(cx);
                     }
                 }
+                ("enter", false) => {
+                    // Explicit restore shortcut, mirroring Enter in the trash
+                    // view; harmless in the directory/search views.
+                    if self.view == ViewSource::Trash
+                        && trash_key_action("enter", true) == TrashKeyAction::Restore
+                    {
+                        self.restore_selected(cx);
+                    }
+                }
                 ("q", _) => cx.quit(),
                 _ => {}
             }
@@ -1894,15 +1952,25 @@ impl Explorer {
                 }
             }
             "delete" => {
-                if self.view == ViewSource::Trash {
-                    // Permanent deletion is intentionally not offered.
-                    self.status = STATUS_TRASH_NO_PURGE.to_string();
+                if trash_key_action(key, false) == TrashKeyAction::NoPurge
+                    && self.view == ViewSource::Trash
+                {
+                    // Permanent deletion is intentionally not offered; tell
+                    // the user which keyboard path restores instead (F6-33).
+                    self.status = trash_delete_status();
                     cx.notify();
                 } else {
                     self.trash_selected(window, cx);
                 }
             }
             "escape" => self.cancel_op(cx),
+            key if self.view == ViewSource::Trash
+                && trash_key_action(key, false) == TrashKeyAction::Restore =>
+            {
+                // `R` is a plain-key restore alias; Enter is handled above by
+                // `open_selected`, which restores in the trash view.
+                self.restore_selected(cx);
+            }
             _ => {}
         }
     }
@@ -2301,6 +2369,20 @@ impl Explorer {
     /// Copy files/directories dropped from the OS into the current directory.
     fn drop_external(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         self.drop_external_into(self.cwd.clone(), paths, cx);
+    }
+
+    /// Copy paths dragged from another row (possibly a whole multi-selection)
+    /// into `destination`. Internal drops reuse the OS-drop pipeline: always a
+    /// copy with `Rename` conflicts, and Esc cancels the running transfer via
+    /// the shared operation sentinel.
+    fn drop_internal_into(
+        &mut self,
+        paths: Vec<PathBuf>,
+        destination: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let paths = internal_drop_paths(&paths, &destination);
+        self.drop_external_into(destination, paths, cx);
     }
 
     /// Copy OS-dropped paths into `destination` (current directory, or the
@@ -4499,12 +4581,7 @@ impl Explorer {
         if self.view != ViewSource::Trash {
             return;
         }
-        let items: Vec<trash_view::TrashItem> = self
-            .trash_items
-            .iter()
-            .filter(|item| paths.contains(&PathBuf::from(&item.id)))
-            .cloned()
-            .collect();
+        let items = trash_view::items_for_paths(&self.trash_items, &paths);
         if items.is_empty() {
             self.status = "復元対象がありません".to_string();
             cx.notify();
@@ -4931,11 +5008,28 @@ impl Explorer {
                         })
                 })
                 .when_some(drop_target, |row, target| {
+                    let external_target = target.clone();
                     row.on_drop::<ExternalPaths>(cx.listener(
                         move |this, paths: &ExternalPaths, _window, cx| {
-                            this.drop_external_into(target.clone(), paths.paths().to_vec(), cx);
+                            this.drop_external_into(
+                                external_target.clone(),
+                                paths.paths().to_vec(),
+                                cx,
+                            );
                         },
                     ))
+                    // Accept rows dragged from this window too. `Vec<PathBuf>`
+                    // is the value `on_drag` puts on the internal drag, so a
+                    // multi-selection arrives here intact (F6-33).
+                    .on_drop::<Vec<PathBuf>>(cx.listener(
+                        move |this, paths: &Vec<PathBuf>, _window, cx| {
+                            this.drop_internal_into(paths.clone(), target.clone(), cx);
+                        },
+                    ))
+                    // Visualise a valid destination while either kind of drag
+                    // hovers it, so the drop target is obvious before release.
+                    .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(rgb(C_BLUE)))
+                    .drag_over::<Vec<PathBuf>>(|style, _, _, _| style.bg(rgb(C_BLUE)))
                 })
                 .context_menu(context_menu)
                 .child(
@@ -5125,11 +5219,23 @@ impl Explorer {
                         })
                 })
                 .when_some(drop_target, |cell, target| {
+                    let external_target = target.clone();
                     cell.on_drop::<ExternalPaths>(cx.listener(
                         move |this, paths: &ExternalPaths, _window, cx| {
-                            this.drop_external_into(target.clone(), paths.paths().to_vec(), cx);
+                            this.drop_external_into(
+                                external_target.clone(),
+                                paths.paths().to_vec(),
+                                cx,
+                            );
                         },
                     ))
+                    .on_drop::<Vec<PathBuf>>(cx.listener(
+                        move |this, paths: &Vec<PathBuf>, _window, cx| {
+                            this.drop_internal_into(paths.clone(), target.clone(), cx);
+                        },
+                    ))
+                    .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(rgb(C_BLUE)))
+                    .drag_over::<Vec<PathBuf>>(|style, _, _, _| style.bg(rgb(C_BLUE)))
                 })
                 .context_menu(context_menu)
                 .child(
@@ -5990,6 +6096,12 @@ impl Render for Explorer {
             .child(list)
             .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
                 this.drop_external(paths.paths().to_vec(), cx);
+            }))
+            // A row drag released over empty list space (or a file row) falls
+            // back to the current directory, matching the OS-drop behaviour.
+            .on_drop::<Vec<PathBuf>>(cx.listener(|this, paths: &Vec<PathBuf>, _window, cx| {
+                let cwd = this.cwd.clone();
+                this.drop_internal_into(paths.clone(), cwd, cx);
             }));
         if let Some(overlay) = self.overlay() {
             list_area = list_area.child(overlay);
@@ -6282,8 +6394,9 @@ mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
-        build_places, classify_cli, clear_op_token, format_selected, install_op_token, kind_color,
-        read_properties_snapshot, summarize_op, tab_label, trash_batch, CliAction, Explorer,
+        build_places, classify_cli, clear_op_token, format_selected, install_op_token,
+        internal_drop_paths, kind_color, read_properties_snapshot, summarize_op, tab_label,
+        trash_batch, trash_delete_status, trash_key_action, CliAction, Explorer, TrashKeyAction,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -6371,6 +6484,36 @@ mod tests {
         assert!(message.contains("1 フォルダ"), "{message}");
         assert!(message.contains("1 件スキップ"), "{message}");
         assert!(message.ends_with(": dest"), "{message}");
+    }
+
+    #[test]
+    fn trash_keyboard_routes_restore_and_no_purge() {
+        assert_eq!(trash_key_action("enter", false), TrashKeyAction::Restore);
+        assert_eq!(trash_key_action("r", false), TrashKeyAction::Restore);
+        assert_eq!(trash_key_action("enter", true), TrashKeyAction::Restore);
+        assert_eq!(trash_key_action("delete", false), TrashKeyAction::NoPurge);
+        assert_eq!(trash_key_action("delete", true), TrashKeyAction::Ignore);
+        assert_eq!(trash_key_action("x", false), TrashKeyAction::Ignore);
+        let status = trash_delete_status();
+        assert!(status.contains("Enter"), "{status}");
+        assert!(status.contains('R'), "{status}");
+        assert!(status.contains("復元"), "{status}");
+    }
+
+    #[test]
+    fn internal_drop_keeps_multi_selection_and_drops_self_and_duplicates() {
+        let destination = PathBuf::from("/work/target");
+        let dragged = vec![
+            PathBuf::from("/work/a.txt"),
+            destination.clone(),
+            PathBuf::from("/work/b.txt"),
+            PathBuf::from("/work/a.txt"),
+        ];
+        assert_eq!(
+            internal_drop_paths(&dragged, &destination),
+            vec![PathBuf::from("/work/a.txt"), PathBuf::from("/work/b.txt")]
+        );
+        assert!(internal_drop_paths(&[], &destination).is_empty());
     }
 
     #[test]
