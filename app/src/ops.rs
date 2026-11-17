@@ -609,39 +609,62 @@ pub fn move_entry(
         return Ok(stats);
     };
 
-    match fs::rename(src, &dest) {
-        Ok(()) => {
-            let mut stats = OpStats::default();
-            stats.created.push(dest);
-            on_progress(0);
-            Ok(stats)
+    // Reserve `dest` with O_EXCL before renaming so a concurrent creator
+    // cannot slip in between the existence check and the rename (F6-02),
+    // mirroring the copy path. On Windows the reservation must be removed
+    // first because rename refuses to replace an existing file.
+    let reservation = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&dest);
+    match reservation {
+        Ok(file) => {
+            drop(file);
+            #[cfg(windows)]
+            let _ = fs::remove_file(&dest);
+            match fs::rename(src, &dest) {
+                Ok(()) => {
+                    let mut stats = OpStats::default();
+                    stats.created.push(dest);
+                    on_progress(0);
+                    Ok(stats)
+                }
+                Err(error) if error.kind() == ErrorKind::CrossesDevices => {
+                    // Cross-device link: the reservation was removed above, so
+                    // copy to the resolved destination, then delete the source
+                    // only after a fully successful copy.
+                    let _ = fs::remove_file(&dest);
+                    let mut stats = OpStats::default();
+                    let progress: &mut dyn FnMut(u64) = &mut on_progress;
+                    if let Err(copy_err) = copy_recursive(src, &dest, cancel, &mut stats, progress)
+                    {
+                        let _ = remove_entry_safe(&dest);
+                        return Err(copy_err);
+                    }
+                    on_progress(stats.bytes);
+                    if cancel.is_cancelled() {
+                        let _ = remove_entry_safe(&dest);
+                        return Err(OpError::Cancelled);
+                    }
+                    if let Err(remove_err) = remove_entry_safe(src) {
+                        return Err(OpError::Io {
+                            path: src.to_path_buf(),
+                            message: format!(
+                                "コピーは完了しましたが元を削除できませんでした: {remove_err}"
+                            ),
+                        });
+                    }
+                    stats.created.insert(0, dest);
+                    Ok(stats)
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&dest);
+                    Err(io_error(&dest, error))
+                }
+            }
         }
-        Err(err) if err.kind() == ErrorKind::CrossesDevices => {
-            // Cross-device link. Copy to the resolved destination first,
-            // then delete the source only after a fully successful copy.
-            let mut stats = OpStats::default();
-            let progress: &mut dyn FnMut(u64) = &mut on_progress;
-            if let Err(copy_err) = copy_recursive(src, &dest, cancel, &mut stats, progress) {
-                let _ = remove_entry_safe(&dest);
-                return Err(copy_err);
-            }
-            on_progress(stats.bytes);
-            if cancel.is_cancelled() {
-                let _ = remove_entry_safe(&dest);
-                return Err(OpError::Cancelled);
-            }
-            if let Err(remove_err) = remove_entry_safe(src) {
-                return Err(OpError::Io {
-                    path: src.to_path_buf(),
-                    message: format!(
-                        "コピーは完了しましたが元を削除できませんでした: {remove_err}"
-                    ),
-                });
-            }
-            stats.created.insert(0, dest);
-            Ok(stats)
-        }
-        Err(err) => Err(io_error(src, err)),
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => Err(OpError::AlreadyExists(dest)),
+        Err(error) => Err(io_error(&dest, error)),
     }
 }
 
