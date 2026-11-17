@@ -1129,5 +1129,6 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | 版 | 日付 | 変更 |
 |---|---|---|
 | 0.1 | 2026-11-11 | 初版（P0 契約、§4/§5/§10.4 が実装対象） |
+| 0.1-as-built | 2026-11-17 | 実装完了に伴う差分を記録。P1 機能（安全な操作エンジン / 検索 / タブ / ゴミ箱 / プレビュー / undo 他）を実装。`strings.rs` 追加、`tracing` 構造化ログ導入、設定の読み取り専用モード（退避失敗・未知スキーマ）追加。設計との逸脱と保留項目の詳細は `app/README.md` の「設計（DESIGN.md）からの差分」と `review-report.md` を参照。 |
 
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
