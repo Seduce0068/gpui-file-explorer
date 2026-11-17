@@ -626,6 +626,9 @@ impl Explorer {
         // settings file round-trips on the very first launch).
         this.settings.last_dir = Some(this.cwd.clone());
         this.settings.save();
+        if let Some(reason) = this.settings.load_error.as_deref() {
+            this.status = format!("設定を読み取り専用で開きました: {reason}");
+        }
 
         this.spawn_watch_loop(watch_rx, cx);
         this.spawn_reconcile_loop(cx);

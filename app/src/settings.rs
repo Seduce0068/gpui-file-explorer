@@ -65,6 +65,14 @@ pub struct Settings {
     pub active_tab: usize,
     /// Recently used search queries, most recent first (bounded).
     pub recent_searches: Vec<String>,
+    /// Set when a corrupt settings file could not be backed up. Prevents a
+    /// subsequent `save()` from overwriting the retained original with
+    /// defaults. Not persisted.
+    #[serde(skip)]
+    pub read_only: bool,
+    /// Human-readable reason for `read_only`, shown in the status bar.
+    #[serde(skip)]
+    pub load_error: Option<String>,
 }
 
 impl Default for Settings {
@@ -80,6 +88,8 @@ impl Default for Settings {
             tabs: Vec::new(),
             active_tab: 0,
             recent_searches: Vec::new(),
+            read_only: false,
+            load_error: None,
         }
     }
 }
@@ -134,6 +144,18 @@ impl Settings {
         self.recent_searches.truncate(MAX_RECENT_SEARCHES);
     }
 
+    /// Unique backup path for a corrupt settings file (nanoseconds + PID).
+    fn backup_path_for(path: &Path) -> PathBuf {
+        path.with_extension(format!(
+            "json.broken-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0),
+            std::process::id()
+        ))
+    }
+
     /// Load settings, falling back to defaults for a missing/corrupt file.
     pub fn load() -> Self {
         match Self::config_path() {
@@ -143,21 +165,31 @@ impl Settings {
     }
 
     pub fn load_from(path: &Path) -> Self {
+        Self::load_from_with_backup(path, Self::backup_path_for(path))
+    }
+
+    /// `load_from` with an injectable backup path so the failure branch can be
+    /// tested deterministically.
+    fn load_from_with_backup(path: &Path, backup: PathBuf) -> Self {
         let Ok(text) = std::fs::read_to_string(path) else {
             return Self::default();
         };
         let Ok(mut settings) = serde_json::from_str::<Settings>(&text) else {
             // Keep the broken file for debugging (DESIGN.md §8.1) instead of
-            // failing to start.
-            let backup = path.with_extension(format!(
-                "json.broken-{}-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_nanos())
-                    .unwrap_or(0),
-                std::process::id()
-            ));
-            let _ = std::fs::rename(path, backup);
+            // failing to start. If the backup rename fails, stay read-only so
+            // a later save() cannot overwrite the retained original.
+            if let Err(error) = std::fs::rename(path, &backup) {
+                let reason = format!(
+                    "壊れた設定の退避に失敗しました（{}: {error}）。元ファイルは保持されます",
+                    backup.display()
+                );
+                eprintln!("gpui-file-explorer: {reason}");
+                return Self {
+                    read_only: true,
+                    load_error: Some(reason),
+                    ..Self::default()
+                };
+            }
             return Self::default();
         };
         let loaded_version = settings.version;
@@ -211,15 +243,31 @@ impl Settings {
     /// settings file behind. The tmp file is flushed with `sync_all()` before
     /// the rename; a directory fsync is not performed (best-effort).
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        if self.read_only {
+            if let Some(reason) = &self.load_error {
+                eprintln!("gpui-file-explorer: settings not saved: {reason}");
+            }
+            return Ok(());
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+        // O_EXCL reservation: a predictable tmp name with `create(true)`
+        // follows a pre-planted symlink (CWE-59). `create_new(true)` refuses
+        // to open an existing path, including symlinks. Use nanos + PID so
+        // stale temp files from earlier runs don't block normal saves.
+        let tmp = path.with_extension(format!(
+            "json.tmp-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0),
+            std::process::id()
+        ));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .open(&tmp)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
@@ -335,6 +383,31 @@ mod tests {
             backups[0].contains(&std::process::id().to_string()),
             "backup should include PID to avoid cross-process collisions: {backups:?}"
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_backup_failure_keeps_original_and_disables_save() {
+        let dir = scratch("corrupt-backup-failure");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(&path, b"{ not json").unwrap();
+
+        // Make the chosen backup path a directory so the rename must fail.
+        let backup = Settings::backup_path_for(&path);
+        fs::create_dir(&backup).unwrap();
+        let loaded = Settings::load_from_with_backup(&path, backup);
+        assert!(loaded.read_only, "must enter read-only mode");
+        assert!(loaded
+            .load_error
+            .as_deref()
+            .is_some_and(|s| s.contains("退避に失敗")));
+
+        // Original file survives untouched; a later save is a no-op.
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{ not json");
+        loaded.save_to(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{ not json");
         fs::remove_dir_all(&dir).unwrap();
     }
 
