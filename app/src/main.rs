@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use tracing_subscriber::EnvFilter;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::Button;
@@ -1943,12 +1944,14 @@ impl Explorer {
                     .as_ref()
                     .map(ToString::to_string)
                     .unwrap_or_default();
-                eprintln!(
-                    "gpui-file-explorer: op={verb} files={} dirs={} bytes={} skipped={} error={error_text}",
-                    stats.files,
-                    stats.dirs,
-                    stats.bytes,
-                    stats.skipped.len()
+                tracing::info!(
+                    op = verb,
+                    files = stats.files,
+                    dirs = stats.dirs,
+                    bytes = stats.bytes,
+                    skipped = stats.skipped.len(),
+                    error = %error_text,
+                    "file operation completed"
                 );
                 let succeeded = stats.files + stats.dirs > 0;
                 let status = match first_error {
@@ -2426,9 +2429,11 @@ impl Explorer {
                             Ok(redone) => {
                                 this.suppress_for(SELF_OP_SUPPRESS);
                                 this.undo.push_undo(action_for_undo);
-                                eprintln!(
-                                    "gpui-file-explorer: op=redo action=rename path={}",
-                                    display_path(&redone)
+                                tracing::info!(
+                                    op = "redo",
+                                    action = "rename",
+                                    path = %display_path(&redone),
+                                    "undo/redo operation"
                                 );
                                 this.status =
                                     format!("{label}をやり直しました: {}", display_path(&redone));
@@ -2477,10 +2482,12 @@ impl Explorer {
                     let result = background.await;
                     let _ = this.update(cx, |this, cx| {
                         let (trashed, failures) = result;
-                        eprintln!(
-                            "gpui-file-explorer: op=redo action=trash items={} failures={}",
-                            trashed.len(),
-                            failures.len()
+                        tracing::info!(
+                            op = "redo",
+                            action = "trash",
+                            items = trashed.len(),
+                            failures = failures.len(),
+                            "undo/redo operation"
                         );
                         if trashed.is_empty() {
                             this.undo.push_redo(action_for_undo);
@@ -3292,9 +3299,10 @@ impl Explorer {
                 match result {
                     Ok(new_path) => {
                         this.suppress_for(SELF_OP_SUPPRESS);
-                        eprintln!(
-                            "gpui-file-explorer: op=rename path={}",
-                            display_path(&new_path)
+                        tracing::info!(
+                            op = "rename",
+                            path = %display_path(&new_path),
+                            "file operation completed"
                         );
                         this.undo.push(UndoAction::Rename {
                             from: rename_original,
@@ -5583,10 +5591,23 @@ fn restore_session(
     (tabs, start)
 }
 
+/// Install a compact structured-log subscriber. `RUST_LOG` selects the level
+/// (defaults to `info`); failures are ignored so logging never blocks startup.
+fn init_logging() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .try_init();
+}
+
 fn main() {
     if handle_cli() {
         return;
     }
+    // Structured logs carry a level and timestamp; RUST_LOG controls verbosity
+    // (e.g. RUST_LOG=debug). Initialization is best-effort and never blocks UI.
+    init_logging();
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     app.run(|cx: &mut App| {
         gpui_kit::init(cx);
@@ -5621,7 +5642,7 @@ fn main() {
         }) {
             // A missing display / compositor is a normal failure on headless
             // hosts; report it instead of panicking with a backtrace.
-            eprintln!("gpui-file-explorer: ウィンドウを開けませんでした: {error}");
+            tracing::error!(%error, "failed to open window");
             cx.quit();
             return;
         }

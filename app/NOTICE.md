@@ -47,6 +47,8 @@ No OS-native file icons are extracted or redistributed.
 | `dirs` | 6.0.0 | MIT OR Apache-2.0 | XDG / platform config & standard directories |
 | `async-channel` | 2.5.0 | Apache-2.0 OR MIT | watcher thread → UI task signalling |
 | `chrono` | 0.4.x | MIT OR Apache-2.0 | local-time formatting of mtimes |
+| `tracing` | 0.1.x | MIT | structured event macros (already transitive via gpui) |
+| `tracing-subscriber` | 0.3.x | MIT OR Apache-2.0 | level/timestamp formatting, `RUST_LOG` filtering |
 
 ## Transitive dependencies
 

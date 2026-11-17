@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::SortSpec;
 
+use tracing::{error, warn};
+
 /// Directory name under the platform config dir.
 pub const APP_DIR: &str = "gpui-file-explorer";
 /// Current settings schema version.
@@ -183,7 +185,7 @@ impl Settings {
                     "壊れた設定の退避に失敗しました（{}: {error}）。元ファイルは保持されます",
                     backup.display()
                 );
-                eprintln!("gpui-file-explorer: {reason}");
+                error!(%reason, "corrupt settings backup failed");
                 return Self {
                     read_only: true,
                     load_error: Some(reason),
@@ -213,7 +215,7 @@ impl Settings {
                 // session read-only (second cross-review H-6).
                 let reason =
                     format!("設定スキーマ v{future} は未対応のため、書き込まずに読み込みました");
-                eprintln!("gpui-file-explorer: {reason}");
+                warn!(%reason, "unsupported settings schema");
                 self.read_only = true;
                 self.load_error = Some(reason);
             }
@@ -235,10 +237,7 @@ impl Settings {
     pub fn save(&self) {
         if let Some(path) = Self::config_path() {
             if let Err(error) = self.save_to(&path) {
-                eprintln!(
-                    "gpui-file-explorer: failed to save settings to {}: {error}",
-                    path.display()
-                );
+                error!(path = %path.display(), %error, "failed to save settings");
             }
         }
     }
@@ -249,7 +248,7 @@ impl Settings {
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if self.read_only {
             if let Some(reason) = &self.load_error {
-                eprintln!("gpui-file-explorer: settings not saved: {reason}");
+                warn!(%reason, "settings are read-only; not saved");
             }
             return Ok(());
         }
