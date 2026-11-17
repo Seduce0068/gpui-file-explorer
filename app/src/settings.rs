@@ -17,7 +17,14 @@
 //!   "recent_searches": ["TODO"]
 //! }
 //! ```
+//!
+//! Untrusted on-disk input is validated in three layers: serde enforces field
+//! types, [`Settings::migrate`] classifies the schema version (unknown newer
+//! versions are loaded but never written back), and [`Settings::validate`]
+//! enforces ranges/caps and drops unusable paths. [`Settings::save_to`] always
+//! stamps the current [`SCHEMA_VERSION`] on what it writes.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -29,14 +36,66 @@ use tracing::{error, warn};
 
 /// Directory name under the platform config dir.
 pub const APP_DIR: &str = "gpui-file-explorer";
-/// Current settings schema version.
+/// Current settings schema version. Written on every save.
 pub const SCHEMA_VERSION: u32 = 1;
+/// Oldest accepted schema version. A missing `version` field deserializes to
+/// 0 and is treated as a legacy v1 file.
+pub const LEGACY_SCHEMA_VERSION: u32 = 0;
 /// Maximum number of remembered recent directories.
 pub const MAX_RECENT_DIRS: usize = 10;
 /// Maximum number of bookmarked directories.
 pub const MAX_BOOKMARKS: usize = 50;
 /// Maximum number of remembered search queries.
 pub const MAX_RECENT_SEARCHES: usize = 10;
+/// Maximum number of tabs restored from settings.
+pub const MAX_TABS: usize = 32;
+/// Refuse to parse a settings file larger than this (hardening against a
+/// crafted file exhausting memory at startup). Oversized files are backed up
+/// like corrupt ones.
+pub const MAX_SETTINGS_BYTES: u64 = 256 * 1024;
+/// Maximum byte length of a single persisted path.
+pub const MAX_PATH_BYTES: usize = 4096;
+/// Maximum byte length of a persisted search query.
+pub const MAX_QUERY_BYTES: usize = 1024;
+
+/// Classification of a persisted schema version before normalization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SchemaStatus {
+    /// Legacy (missing/zero) or current version: safe to load and save.
+    Supported,
+    /// A newer build wrote this file; unknown fields must survive, so the
+    /// session is read-only even though the values are kept in memory.
+    Future(u32),
+}
+
+fn schema_status(loaded_version: u32) -> SchemaStatus {
+    if (LEGACY_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&loaded_version) {
+        SchemaStatus::Supported
+    } else {
+        SchemaStatus::Future(loaded_version)
+    }
+}
+
+/// A persisted path is usable only if it is non-empty, bounded and cannot
+/// contain an embedded NUL (which would make every filesystem call fail).
+fn sane_path(path: &Path) -> bool {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    !bytes.is_empty() && bytes.len() <= MAX_PATH_BYTES && !bytes.contains(&0)
+}
+
+fn sane_query(query: &str) -> bool {
+    !query.is_empty() && query.len() <= MAX_QUERY_BYTES && !query.contains('\0')
+}
+
+fn dedupe_paths(paths: &mut Vec<PathBuf>) {
+    let mut seen = HashSet::with_capacity(paths.len());
+    paths.retain(|path| seen.insert(path.clone()));
+}
+
+fn dedupe_strings(values: &mut Vec<String>) {
+    let mut seen = HashSet::with_capacity(values.len());
+    values.retain(|value| seen.insert(value.clone()));
+}
 
 /// List view mode: the detailed list or the icon grid. Persisted in
 /// `settings.json` as `"details"` / `"icons"`.
@@ -162,6 +221,25 @@ impl Settings {
         ))
     }
 
+    /// Move an unusable settings file aside and return defaults. If the rename
+    /// fails, stay read-only so a later `save()` cannot overwrite the original
+    /// that had to be retained.
+    fn back_up_unusable(path: &Path, backup: &Path) -> Self {
+        if let Err(error) = std::fs::rename(path, backup) {
+            let reason = format!(
+                "壊れた設定の退避に失敗しました（{}: {error}）。元ファイルは保持されます",
+                backup.display()
+            );
+            error!(%reason, "corrupt settings backup failed");
+            return Self {
+                read_only: true,
+                load_error: Some(reason),
+                ..Self::default()
+            };
+        }
+        Self::default()
+    }
+
     /// Load settings, falling back to defaults for a missing/corrupt file.
     pub fn load() -> Self {
         match Self::config_path() {
@@ -177,6 +255,18 @@ impl Settings {
     /// `load_from` with an injectable backup path so the failure branch can be
     /// tested deterministically.
     fn load_from_with_backup(path: &Path, backup: PathBuf) -> Self {
+        // Check the size before reading the whole file into memory: a crafted
+        // settings.json must not exhaust memory during startup.
+        if let Ok(metadata) = std::fs::metadata(path) {
+            if metadata.len() > MAX_SETTINGS_BYTES {
+                warn!(
+                    size = metadata.len(),
+                    limit = MAX_SETTINGS_BYTES,
+                    "oversized settings file"
+                );
+                return Self::back_up_unusable(path, &backup);
+            }
+        }
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -198,23 +288,23 @@ impl Settings {
                 };
             }
         };
+        // Metadata can be stale/racy, so bound the decoded length as well.
+        if text.len() as u64 > MAX_SETTINGS_BYTES {
+            warn!(
+                size = text.len(),
+                limit = MAX_SETTINGS_BYTES,
+                "oversized settings file"
+            );
+            return Self::back_up_unusable(path, &backup);
+        }
+        // Serde rejects wrong field types outright; `#[serde(default)]` only
+        // fills in fields that are absent, so a mistyped `version` or
+        // `show_hidden` lands in the backup-and-defaults branch below.
         let Ok(mut settings) = serde_json::from_str::<Settings>(&text) else {
             // Keep the broken file for debugging (DESIGN.md §8.1) instead of
             // failing to start. If the backup rename fails, stay read-only so
             // a later save() cannot overwrite the retained original.
-            if let Err(error) = std::fs::rename(path, &backup) {
-                let reason = format!(
-                    "壊れた設定の退避に失敗しました（{}: {error}）。元ファイルは保持されます",
-                    backup.display()
-                );
-                error!(%reason, "corrupt settings backup failed");
-                return Self {
-                    read_only: true,
-                    load_error: Some(reason),
-                    ..Self::default()
-                };
-            }
-            return Self::default();
+            return Self::back_up_unusable(path, &backup);
         };
         let loaded_version = settings.version;
         settings.migrate(loaded_version);
@@ -224,17 +314,17 @@ impl Settings {
 
     /// Convert a deserialized settings file to the current schema.
     ///
-    /// `SCHEMA_VERSION` is 1 today. When version 2 is introduced, add a
-    /// `2 => { ... }` arm that rewrites the old representation before the
-    /// common `version` normalization below. A missing `version` field
-    /// deserializes to 0 and is treated as v1 for backward compatibility.
+    /// `SCHEMA_VERSION` is 1 today. When version 2 is introduced, add a real
+    /// transformation step here for versions below it before the common
+    /// `version` normalization below. A missing `version` field deserializes
+    /// to 0 and is treated as a legacy v1 file for backward compatibility.
+    /// Anything above `SCHEMA_VERSION` is refused for writing: a newer build
+    /// may have added fields serde ignores, and writing it back as v1 would
+    /// silently drop those settings (second cross-review H-6).
     fn migrate(&mut self, loaded_version: u32) {
-        match loaded_version {
-            0 | 1 => {}
-            future => {
-                // A newer schema may contain fields serde ignores. Writing it
-                // back as v1 would silently drop those settings, so keep the
-                // session read-only (second cross-review H-6).
+        match schema_status(loaded_version) {
+            SchemaStatus::Supported => {}
+            SchemaStatus::Future(future) => {
                 let reason =
                     format!("設定スキーマ v{future} は未対応のため、書き込まずに読み込みました");
                 warn!(%reason, "unsupported settings schema");
@@ -245,13 +335,39 @@ impl Settings {
         self.version = SCHEMA_VERSION;
     }
 
-    /// Drop a remembered directory that no longer exists.
+    /// Enforce value ranges and caps on settings that came from disk: drop
+    /// unusable paths, de-duplicate and bound every list, clamp `active_tab`
+    /// and drop a `last_dir` that no longer exists.
     pub fn validate(&mut self) {
         if let Some(dir) = &self.last_dir {
-            if !dir.is_dir() {
+            if !sane_path(dir) || !dir.is_dir() {
                 self.last_dir = None;
             }
         }
+
+        self.recent_dirs.retain(|path| sane_path(path));
+        self.recent_dirs.truncate(MAX_RECENT_DIRS);
+        dedupe_paths(&mut self.recent_dirs);
+
+        self.bookmarks.retain(|path| sane_path(path));
+        self.bookmarks.truncate(MAX_BOOKMARKS);
+        dedupe_paths(&mut self.bookmarks);
+
+        self.tabs.retain(|path| sane_path(path));
+        self.tabs.truncate(MAX_TABS);
+        dedupe_paths(&mut self.tabs);
+        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+
+        self.recent_searches = std::mem::take(&mut self.recent_searches)
+            .into_iter()
+            .map(|query| query.trim().to_string())
+            .filter(|query| sane_query(query))
+            .collect();
+        self.recent_searches.truncate(MAX_RECENT_SEARCHES);
+        dedupe_strings(&mut self.recent_searches);
+
+        // A validated settings value always carries the current version.
+        self.version = SCHEMA_VERSION;
     }
 
     /// Persist to the platform config path. Failure is reported on stderr
@@ -284,7 +400,11 @@ impl Settings {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        // Stamp the current schema version on the persisted copy even if the
+        // in-memory struct was built with a stale/absent version by a caller.
+        let mut snapshot = self.clone();
+        snapshot.version = SCHEMA_VERSION;
+        let text = serde_json::to_string_pretty(&snapshot).map_err(std::io::Error::other)?;
         // O_EXCL reservation: a predictable tmp name with `create(true)`
         // follows a pre-planted symlink (CWE-59). `create_new(true)` refuses
         // to open an existing path, including symlinks. Use nanos + PID so
@@ -771,5 +891,213 @@ mod search_history_tests {
         let mut settings = Settings::default();
         settings.record_search("   ");
         assert!(settings.recent_searches.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod schema_validation_tests {
+    use super::{
+        schema_status, SchemaStatus, Settings, ViewLayout, MAX_BOOKMARKS, MAX_PATH_BYTES,
+        MAX_QUERY_BYTES, MAX_RECENT_DIRS, MAX_RECENT_SEARCHES, MAX_SETTINGS_BYTES, MAX_TABS,
+        SCHEMA_VERSION,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn scratch(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("gpui-fe-schema-{tag}-{}", std::process::id()))
+    }
+
+    fn setup(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = scratch(tag);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        (dir, path)
+    }
+
+    fn backup_names(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("broken"))
+            .collect()
+    }
+
+    #[test]
+    fn schema_status_recognizes_supported_and_future_versions() {
+        assert_eq!(schema_status(0), SchemaStatus::Supported);
+        assert_eq!(schema_status(SCHEMA_VERSION), SchemaStatus::Supported);
+        assert_eq!(
+            schema_status(SCHEMA_VERSION + 1),
+            SchemaStatus::Future(SCHEMA_VERSION + 1)
+        );
+    }
+
+    #[test]
+    fn oversized_settings_file_is_backed_up_and_defaults_are_used() {
+        let (dir, path) = setup("oversized");
+        let padding = "x".repeat(MAX_SETTINGS_BYTES as usize + 1);
+        fs::write(
+            &path,
+            format!(r#"{{"version":1,"show_hidden":true,"padding":"{padding}"}}"#),
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded, Settings::default());
+        assert!(!path.exists(), "oversized file must be moved aside");
+        assert_eq!(backup_names(&dir).len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn all_persisted_arrays_are_bounded_on_load() {
+        let (dir, path) = setup("array-caps");
+        let json = serde_json::json!({
+            "version": 1,
+            "recent_dirs": (0..MAX_RECENT_DIRS + 5)
+                .map(|index| format!("/recent-{index}"))
+                .collect::<Vec<_>>(),
+            "bookmarks": (0..MAX_BOOKMARKS + 5)
+                .map(|index| format!("/bookmark-{index}"))
+                .collect::<Vec<_>>(),
+            "recent_searches": (0..MAX_RECENT_SEARCHES + 5)
+                .map(|index| format!("query-{index}"))
+                .collect::<Vec<_>>(),
+            "tabs": (0..MAX_TABS + 5)
+                .map(|index| format!("/tab-{index}"))
+                .collect::<Vec<_>>(),
+        });
+        fs::write(&path, json.to_string()).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.recent_dirs.len(), MAX_RECENT_DIRS);
+        assert_eq!(loaded.bookmarks.len(), MAX_BOOKMARKS);
+        assert_eq!(loaded.recent_searches.len(), MAX_RECENT_SEARCHES);
+        assert_eq!(loaded.tabs.len(), MAX_TABS);
+        assert_eq!(loaded.active_tab, 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn active_tab_is_clamped_to_restored_tabs() {
+        let (dir, path) = setup("active-tab");
+        fs::write(
+            &path,
+            br#"{"version":1,"tabs":["/a","/b"],"active_tab":999}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.tabs.len(), 2);
+        assert_eq!(loaded.active_tab, 1);
+
+        fs::write(&path, br#"{"version":1,"tabs":[],"active_tab":7}"#).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(loaded.tabs.is_empty());
+        assert_eq!(loaded.active_tab, 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mistyped_fields_are_rejected_and_backed_up() {
+        for (tag, text) in [
+            ("version-string", r#"{"version":"1","show_hidden":true}"#),
+            ("version-float", r#"{"version":1.5}"#),
+            ("bool-string", r#"{"version":1,"show_hidden":"yes"}"#),
+            ("negative-tab", r#"{"version":1,"active_tab":-1}"#),
+        ] {
+            let (dir, path) = setup(tag);
+            fs::write(&path, text).unwrap();
+            let loaded = Settings::load_from(&path);
+            assert_eq!(loaded, Settings::default(), "accepted {text}");
+            assert!(!path.exists());
+            assert_eq!(backup_names(&dir).len(), 1);
+            fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn future_version_is_kept_read_only_and_never_rewritten() {
+        let (dir, path) = setup("future-version");
+        let original = br#"{"version":42,"view":"icons","show_hidden":true}"#;
+        fs::write(&path, original).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.version, SCHEMA_VERSION);
+        assert_eq!(loaded.view, ViewLayout::Icons);
+        assert!(loaded.read_only);
+        assert!(loaded
+            .load_error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("v42")));
+        loaded.save_to(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_file_without_version_is_accepted_and_upgraded_on_save() {
+        let (dir, path) = setup("legacy");
+        fs::write(
+            &path,
+            br#"{"sort":{"key":"modified","dir":"desc","dirs_first":true},"show_hidden":true,"view":"icons"}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.version, SCHEMA_VERSION);
+        assert!(loaded.show_hidden);
+        assert_eq!(loaded.view, ViewLayout::Icons);
+        assert!(!loaded.read_only);
+
+        let saved = dir.join("saved.json");
+        loaded.save_to(&saved).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&saved).unwrap()).unwrap();
+        assert_eq!(value["version"].as_u64(), Some(SCHEMA_VERSION as u64));
+        assert_eq!(value["show_hidden"].as_bool(), Some(true));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_always_stamps_current_schema_version() {
+        let (dir, path) = setup("stamp-version");
+        let settings = Settings {
+            version: SCHEMA_VERSION + 9,
+            ..Settings::default()
+        };
+        settings.save_to(&path).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["version"].as_u64(), Some(SCHEMA_VERSION as u64));
+        let reloaded = Settings::load_from(&path);
+        assert!(!reloaded.read_only);
+        assert_eq!(reloaded.version, SCHEMA_VERSION);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unusable_paths_and_queries_are_dropped_on_load() {
+        let (dir, path) = setup("unusable-values");
+        let long_path = "p".repeat(MAX_PATH_BYTES + 1);
+        let long_query = "q".repeat(MAX_QUERY_BYTES + 1);
+        let json = serde_json::json!({
+            "version": 1,
+            "last_dir": "",
+            "recent_dirs": ["/ok", "", "bad\u{0}path", long_path],
+            "bookmarks": ["/dup", "/dup", "/second"],
+            "recent_searches": ["  ping  ", "", long_query, "dup", "dup"],
+        });
+        fs::write(&path, json.to_string()).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(loaded.last_dir.is_none());
+        assert_eq!(loaded.recent_dirs, vec![PathBuf::from("/ok")]);
+        assert_eq!(
+            loaded.bookmarks,
+            vec![PathBuf::from("/dup"), PathBuf::from("/second")]
+        );
+        assert_eq!(
+            loaded.recent_searches,
+            vec!["ping".to_string(), "dup".to_string()]
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
