@@ -10,6 +10,7 @@
 //!   "sort": { "key": "name", "dir": "asc", "dirs_first": true },
 //!   "show_hidden": false,
 //!   "view": "details",
+//!   "terminal_command": "konsole",
 //!   "recent_dirs": ["/tmp"],
 //!   "bookmarks": ["/home/koppe"],
 //!   "bookmark_labels": [{ "path": "/home/koppe", "label": "home" }],
@@ -103,6 +104,9 @@ pub const MAX_SETTINGS_BYTES: u64 = 256 * 1024;
 pub const MAX_PATH_BYTES: usize = 4096;
 /// Maximum byte length of a persisted search query.
 pub const MAX_QUERY_BYTES: usize = 1024;
+/// Maximum byte length of the persisted terminal launch command. It is split
+/// into argv by the UI, so this is a generous bound for a program + flags.
+pub const MAX_TERMINAL_COMMAND_BYTES: usize = 1024;
 
 /// Classification of a persisted schema version before normalization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +135,30 @@ fn sane_path(path: &Path) -> bool {
 
 fn sane_query(query: &str) -> bool {
     !query.is_empty() && query.len() <= MAX_QUERY_BYTES && !query.contains('\0')
+}
+
+/// Platform default terminal emulator command.
+///
+/// Linux targets Kubuntu/KDE, where `konsole` is available. Other platforms
+/// have no universally installed emulator, so the action starts disabled
+/// there until the user supplies a command. This is also the serde default for
+/// older settings files that predate the field (legacy compatibility).
+fn default_terminal_command() -> String {
+    if cfg!(target_os = "linux") {
+        "konsole".to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// A persisted terminal command is usable only if it is non-empty, bounded and
+/// free of embedded control characters (NUL included). The UI splits it into
+/// argv instead of passing it through a shell, so control bytes have no
+/// legitimate use here.
+fn sane_terminal_command(command: &str) -> bool {
+    !command.trim().is_empty()
+        && command.len() <= MAX_TERMINAL_COMMAND_BYTES
+        && !command.chars().any(char::is_control)
 }
 
 fn dedupe_paths(paths: &mut Vec<PathBuf>) {
@@ -330,6 +358,12 @@ pub struct Settings {
     pub sort: SortSpec,
     pub show_hidden: bool,
     pub view: ViewLayout,
+    /// Terminal emulator command launched with the selected directory as its
+    /// working directory. Empty (or whitespace-only after validation) disables
+    /// the action. Added after v1: older files receive the platform default
+    /// through the field-level serde default below.
+    #[serde(default = "default_terminal_command")]
+    pub terminal_command: String,
     /// Recently visited directories, most recent first (bounded).
     pub recent_dirs: Vec<PathBuf>,
     /// Bookmarked directories, in insertion order (bounded).
@@ -373,6 +407,7 @@ impl Default for Settings {
             sort: SortSpec::default(),
             show_hidden: false,
             view: ViewLayout::Details,
+            terminal_command: default_terminal_command(),
             recent_dirs: Vec::new(),
             bookmarks: Vec::new(),
             bookmark_labels: Vec::new(),
@@ -554,6 +589,41 @@ impl Settings {
             return true;
         }
         false
+    }
+}
+
+/// Terminal-command helpers consumed by the launcher UI (F6-50). They live
+/// next to the persistence code so on-disk validation and runtime use share
+/// one definition of a "usable command". `#[allow(dead_code)]` keeps the
+/// `-D warnings` gate green until the UI task calls them.
+#[allow(dead_code)]
+impl Settings {
+    /// Validate and store a terminal command. Blank input is accepted as
+    /// "disabled"; oversized or control-byte-bearing input is refused without
+    /// changing the stored value. Returns `true` when the value was stored.
+    pub fn set_terminal_command(&mut self, command: &str) -> bool {
+        let command = command.trim();
+        if !command.is_empty() && !sane_terminal_command(command) {
+            return false;
+        }
+        self.terminal_command = command.to_string();
+        true
+    }
+
+    /// Split the configured command into argv tokens without invoking a shell.
+    /// `None` when the action is disabled or the persisted value is unusable.
+    /// The caller passes the target directory via `Command::current_dir`, so a
+    /// user-controlled path never becomes part of the command string.
+    pub fn terminal_command_argv(&self) -> Option<Vec<String>> {
+        if !sane_terminal_command(&self.terminal_command) {
+            return None;
+        }
+        let argv: Vec<String> = self
+            .terminal_command
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        (!argv.is_empty()).then_some(argv)
     }
 }
 
@@ -755,6 +825,15 @@ impl Settings {
         let mut seen_names = HashSet::with_capacity(self.saved_searches.len());
         self.saved_searches
             .retain(|search| seen_names.insert(search.name_key()));
+
+        // Terminal command: normalize outer whitespace, then disable the
+        // action when the value is blank or unsafe to pass through argv. An
+        // unusable value becomes empty rather than backing up the whole file,
+        // matching how the other field-level values are hardened on load.
+        self.terminal_command = self.terminal_command.trim().to_string();
+        if !sane_terminal_command(&self.terminal_command) {
+            self.terminal_command.clear();
+        }
 
         // A validated settings value always carries the current version.
         self.version = SCHEMA_VERSION;
@@ -1850,6 +1929,137 @@ mod personalization_settings_tests {
         assert_eq!(loaded.bookmark_labels.len(), 1);
         loaded.save_to(&path).unwrap();
         assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod terminal_command_tests {
+    use super::{
+        default_terminal_command, sane_terminal_command, Settings, MAX_TERMINAL_COMMAND_BYTES,
+        SCHEMA_VERSION,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("gpui-fe-terminal-{tag}-{}", std::process::id()))
+    }
+
+    fn setup(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = scratch(tag);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        (dir, path)
+    }
+
+    #[test]
+    fn default_is_linux_specific_and_shared_with_serde() {
+        let default = default_terminal_command();
+        if cfg!(target_os = "linux") {
+            assert_eq!(default, "konsole");
+            assert!(sane_terminal_command(&default));
+        } else {
+            assert!(default.is_empty(), "unsupported platforms start disabled");
+        }
+        assert_eq!(Settings::default().terminal_command, default);
+    }
+
+    #[test]
+    fn empty_command_disables_and_survives_a_roundtrip() {
+        let (dir, path) = setup("disabled");
+        let mut settings = Settings::default();
+        assert!(settings.set_terminal_command("   "));
+        assert!(settings.terminal_command.is_empty());
+        assert!(settings.terminal_command_argv().is_none());
+
+        settings.save_to(&path).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(loaded.terminal_command.is_empty());
+        assert!(loaded.terminal_command_argv().is_none());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn command_roundtrips_and_splits_into_argv_without_a_shell() {
+        let (dir, path) = setup("argv");
+        let mut settings = Settings::default();
+        assert!(settings.set_terminal_command("  konsole --title build  "));
+        assert_eq!(settings.terminal_command, "konsole --title build");
+        assert_eq!(
+            settings.terminal_command_argv(),
+            Some(vec![
+                "konsole".to_string(),
+                "--title".to_string(),
+                "build".to_string(),
+            ])
+        );
+
+        settings.save_to(&path).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.terminal_command, "konsole --title build");
+        assert_eq!(
+            loaded.terminal_command_argv(),
+            settings.terminal_command_argv()
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_commands_are_refused_by_setter_and_disabled_on_load() {
+        let mut settings = Settings::default();
+        let oversized = "x".repeat(MAX_TERMINAL_COMMAND_BYTES + 1);
+        assert!(!settings.set_terminal_command(&oversized));
+        assert!(!settings.set_terminal_command("konsole\0--title x"));
+        assert!(!settings.set_terminal_command("konsole\nsh"));
+        assert_eq!(settings.terminal_command, default_terminal_command());
+
+        let (dir, path) = setup("invalid-load");
+        for raw in [
+            "bad\0cmd".to_string(),
+            oversized,
+            "   ".to_string(),
+            "konsole\ttab".to_string(),
+        ] {
+            let json = serde_json::json!({ "version": 1, "terminal_command": raw });
+            fs::write(&path, json.to_string()).unwrap();
+            let loaded = Settings::load_from(&path);
+            assert!(loaded.terminal_command.is_empty(), "accepted {raw:?}");
+            assert!(loaded.terminal_command_argv().is_none());
+            assert!(!loaded.read_only, "a bad field must not back up the file");
+            assert!(path.exists());
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_file_without_the_field_gets_the_platform_default() {
+        let (dir, path) = setup("legacy");
+        fs::write(&path, br#"{"version":1,"show_hidden":true,"view":"icons"}"#).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.version, SCHEMA_VERSION);
+        assert_eq!(loaded.terminal_command, default_terminal_command());
+        assert!(!loaded.read_only);
+        assert!(loaded.show_hidden);
+
+        // Saving materializes the new field in the current schema shape.
+        let saved = dir.join("saved.json");
+        loaded.save_to(&saved).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&saved).unwrap()).unwrap();
+        assert_eq!(
+            value["terminal_command"].as_str(),
+            Some(default_terminal_command().as_str())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mistyped_command_is_rejected_like_other_wrong_types() {
+        let (dir, path) = setup("mistyped");
+        fs::write(&path, br#"{"version":1,"terminal_command":42}"#).unwrap();
+        assert_eq!(Settings::load_from(&path), Settings::default());
         fs::remove_dir_all(&dir).unwrap();
     }
 }
