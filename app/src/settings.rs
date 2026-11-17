@@ -173,8 +173,26 @@ impl Settings {
     /// `load_from` with an injectable backup path so the failure branch can be
     /// tested deterministically.
     fn load_from_with_backup(path: &Path, backup: PathBuf) -> Self {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return Self::default();
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A fresh install has no settings file yet; defaults are fine.
+                return Self::default();
+            }
+            Err(error) => {
+                // EACCES and other read failures must not be overwritten by a
+                // later save() with defaults (third cross-review F6-04).
+                let reason = format!(
+                    "設定ファイルを読み込めませんでした（{}: {error}）。書き込みは行いません",
+                    path.display()
+                );
+                error!(%reason, "settings read failed");
+                return Self {
+                    read_only: true,
+                    load_error: Some(reason),
+                    ..Self::default()
+                };
+            }
         };
         let Ok(mut settings) = serde_json::from_str::<Settings>(&text) else {
             // Keep the broken file for debugging (DESIGN.md §8.1) instead of
@@ -364,6 +382,24 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let loaded = Settings::load_from(&dir.join("nope.json"));
         assert_eq!(loaded, Settings::default());
+    }
+
+    #[test]
+    fn load_from_unreadable_file_stays_read_only() {
+        let dir = scratch("unreadable");
+        let _ = fs::remove_dir_all(&dir);
+        // A directory at the settings path makes read_to_string fail (EISDIR).
+        fs::create_dir_all(&dir).unwrap();
+        let loaded = Settings::load_from(&dir);
+        assert!(loaded.read_only);
+        assert!(loaded
+            .load_error
+            .as_deref()
+            .is_some_and(|s| s.contains("読み込めません")));
+        // A later save is a no-op and leaves the path untouched.
+        loaded.save_to(&dir).unwrap();
+        assert!(dir.is_dir());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
