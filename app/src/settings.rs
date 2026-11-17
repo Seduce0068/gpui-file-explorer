@@ -12,9 +12,11 @@
 //!   "view": "details",
 //!   "recent_dirs": ["/tmp"],
 //!   "bookmarks": ["/home/koppe"],
+//!   "bookmark_labels": [{ "path": "/home/koppe", "label": "home" }],
 //!   "tabs": ["/home/koppe", "/tmp"],
 //!   "active_tab": 0,
 //!   "recent_searches": ["TODO"],
+//!   "saved_searches": [{ "name": "todos", "query": "TODO" }],
 //!   "windows": [
 //!     {
 //!       "bounds": { "x": 80, "y": 60, "width": 1100, "height": 700, "mode": "windowed" },
@@ -56,6 +58,15 @@ use gpui_kit::{bounds, point, px, size, Window, WindowBounds};
 use crate::history::History;
 use crate::model::SortSpec;
 use crate::tabs::Tab;
+// Personalization types live in `model` (GPUI-free) but are re-exported here
+// so the UI layer has a single import site for persisted settings state. The
+// byte-limit constants are part of that UI-facing surface but unused inside
+// this binary until the panels land (same pattern as the `model::error` re-export).
+#[allow(unused_imports)]
+pub use crate::model::{
+    BookmarkLabel, SavedSearch, MAX_BOOKMARK_LABELS, MAX_BOOKMARK_LABEL_BYTES, MAX_SAVED_SEARCHES,
+    MAX_SAVED_SEARCH_NAME_BYTES, MAX_SAVED_SEARCH_QUERY_BYTES,
+};
 
 use tracing::{error, warn};
 
@@ -323,6 +334,10 @@ pub struct Settings {
     pub recent_dirs: Vec<PathBuf>,
     /// Bookmarked directories, in insertion order (bounded).
     pub bookmarks: Vec<PathBuf>,
+    /// Labels attached to bookmarked paths, in insertion order (bounded,
+    /// unique by path; added in F6-38, optional in older schema files).
+    #[serde(default)]
+    pub bookmark_labels: Vec<BookmarkLabel>,
     /// Directories of the tabs that were open at exit.
     pub tabs: Vec<PathBuf>,
     /// Index of the active tab in `tabs` (clamped when restoring).
@@ -333,6 +348,10 @@ pub struct Settings {
     pub windows: Vec<WindowSession>,
     /// Recently used search queries, most recent first (bounded).
     pub recent_searches: Vec<String>,
+    /// Named reusable searches, in insertion order (bounded, unique by name;
+    /// added in F6-38, optional in older schema files).
+    #[serde(default)]
+    pub saved_searches: Vec<SavedSearch>,
     /// Set when a corrupt settings file could not be backed up. Prevents a
     /// subsequent `save()` from overwriting the retained original with
     /// defaults. Not persisted.
@@ -356,10 +375,12 @@ impl Default for Settings {
             view: ViewLayout::Details,
             recent_dirs: Vec::new(),
             bookmarks: Vec::new(),
+            bookmark_labels: Vec::new(),
             tabs: Vec::new(),
             active_tab: 0,
             windows: Vec::new(),
             recent_searches: Vec::new(),
+            saved_searches: Vec::new(),
             read_only: false,
             load_error: None,
             ephemeral: false,
@@ -430,7 +451,113 @@ impl Settings {
         self.recent_searches.insert(0, query.to_string());
         self.recent_searches.truncate(MAX_RECENT_SEARCHES);
     }
+}
 
+/// F6-38 personalization API. These methods are intentionally not wired into
+/// the UI yet; `main.rs` will call them when the saved-search / label views
+/// land. `#[allow(dead_code)]` keeps the `-D warnings` gate green until then
+/// without weakening the rest of the module.
+#[allow(dead_code)]
+impl Settings {
+    /// Save a named search. A name that already exists (case-insensitively) is
+    /// replaced in place; a new name is refused at `MAX_SAVED_SEARCHES`.
+    /// Returns `true` when the entry was stored.
+    pub fn save_search(&mut self, name: &str, query: &str) -> bool {
+        let Some(search) = SavedSearch::new(name, query) else {
+            return false;
+        };
+        if let Some(index) = self
+            .saved_searches
+            .iter()
+            .position(|existing| existing.name_key() == search.name_key())
+        {
+            self.saved_searches[index] = search;
+            return true;
+        }
+        if self.saved_searches.len() >= MAX_SAVED_SEARCHES {
+            return false;
+        }
+        self.saved_searches.push(search);
+        true
+    }
+
+    /// Look up a saved search by name (case-insensitive).
+    pub fn saved_search(&self, name: &str) -> Option<&SavedSearch> {
+        let key = name.trim().to_lowercase();
+        self.saved_searches
+            .iter()
+            .find(|existing| existing.name_key() == key)
+    }
+
+    /// Remove a saved search by name (case-insensitive).
+    /// Returns `true` when an entry was removed.
+    pub fn remove_search(&mut self, name: &str) -> bool {
+        let key = name.trim().to_lowercase();
+        if key.is_empty() {
+            return false;
+        }
+        if let Some(index) = self
+            .saved_searches
+            .iter()
+            .position(|existing| existing.name_key() == key)
+        {
+            self.saved_searches.remove(index);
+            return true;
+        }
+        false
+    }
+
+    /// Set the label of a bookmarked path. A blank label clears it; an empty
+    /// path, oversized label or a new entry past `MAX_BOOKMARK_LABELS` is
+    /// refused. Returns `true` when the list changed.
+    pub fn set_bookmark_label(&mut self, path: &Path, label: &str) -> bool {
+        if !sane_path(path) {
+            return false;
+        }
+        if label.trim().is_empty() {
+            return self.remove_bookmark_label(path);
+        }
+        let Some(entry) = BookmarkLabel::new(path, label) else {
+            return false;
+        };
+        if let Some(index) = self
+            .bookmark_labels
+            .iter()
+            .position(|existing| existing.path == entry.path)
+        {
+            self.bookmark_labels[index] = entry;
+            return true;
+        }
+        if self.bookmark_labels.len() >= MAX_BOOKMARK_LABELS {
+            return false;
+        }
+        self.bookmark_labels.push(entry);
+        true
+    }
+
+    /// Label attached to `path`, if any.
+    pub fn bookmark_label(&self, path: &Path) -> Option<&str> {
+        self.bookmark_labels
+            .iter()
+            .find(|entry| entry.path == path)
+            .map(|entry| entry.label.as_str())
+    }
+
+    /// Remove the label of `path`. Returns `true` when one was removed.
+    pub fn remove_bookmark_label(&mut self, path: &Path) -> bool {
+        if let Some(index) = self
+            .bookmark_labels
+            .iter()
+            .position(|entry| entry.path == path)
+        {
+            self.bookmark_labels.remove(index);
+            return true;
+        }
+        false
+    }
+}
+
+impl Settings {
     /// Unique backup path for a corrupt settings file (nanoseconds + PID).
     fn backup_path_for(path: &Path) -> PathBuf {
         path.with_extension(format!(
@@ -536,10 +663,14 @@ impl Settings {
 
     /// Convert a deserialized settings file to the current schema.
     ///
-    /// `SCHEMA_VERSION` is 1 today. When version 2 is introduced, add a real
-    /// transformation step here for versions below it before the common
-    /// `version` normalization below. A missing `version` field deserializes
-    /// to 0 and is treated as a legacy v1 file for backward compatibility.
+    /// `SCHEMA_VERSION` is 1 today. The F6-38 fields (`saved_searches` and
+    /// `bookmark_labels`) are additive and carry `#[serde(default)]`, so a v1
+    /// file written before they existed loads with both lists empty; no
+    /// version bump or data conversion is required. When version 2 is
+    /// introduced, add a real transformation step here for versions below it
+    /// before the common `version` normalization below. A missing `version`
+    /// field deserializes to 0 and is treated as a legacy v1 file for backward
+    /// compatibility.
     /// Anything above `SCHEMA_VERSION` is refused for writing: a newer build
     /// may have added fields serde ignores, and writing it back as v1 would
     /// silently drop those settings (second cross-review H-6).
@@ -575,6 +706,16 @@ impl Settings {
         self.bookmarks.truncate(MAX_BOOKMARKS);
         dedupe_paths(&mut self.bookmarks);
 
+        // Personalization lists get the same harden-on-load treatment: drop
+        // unusable entries, enforce the cap, then collapse duplicates
+        // (case-insensitive name for searches, exact path for labels).
+        self.bookmark_labels
+            .retain(|entry| sane_path(&entry.path) && entry.is_valid());
+        self.bookmark_labels.truncate(MAX_BOOKMARK_LABELS);
+        let mut seen_labels = HashSet::with_capacity(self.bookmark_labels.len());
+        self.bookmark_labels
+            .retain(|entry| seen_labels.insert(entry.path.clone()));
+
         self.tabs.retain(|path| sane_path(path));
         self.tabs.truncate(MAX_TABS);
         dedupe_paths(&mut self.tabs);
@@ -608,6 +749,12 @@ impl Settings {
             .collect();
         self.recent_searches.truncate(MAX_RECENT_SEARCHES);
         dedupe_strings(&mut self.recent_searches);
+
+        self.saved_searches.retain(|search| search.is_valid());
+        self.saved_searches.truncate(MAX_SAVED_SEARCHES);
+        let mut seen_names = HashSet::with_capacity(self.saved_searches.len());
+        self.saved_searches
+            .retain(|search| seen_names.insert(search.name_key()));
 
         // A validated settings value always carries the current version.
         self.version = SCHEMA_VERSION;
@@ -1515,5 +1662,194 @@ mod window_session_tests {
         let tab = &settings.primary_window().unwrap().tabs[0];
         assert_eq!(tab.forward.len(), 10);
         assert_eq!(tab.back.len(), MAX_HISTORY_ENTRIES - 10);
+    }
+}
+
+#[cfg(test)]
+mod personalization_settings_tests {
+    use super::{
+        BookmarkLabel, SavedSearch, Settings, MAX_BOOKMARK_LABELS, MAX_BOOKMARK_LABEL_BYTES,
+        MAX_SAVED_SEARCHES, SCHEMA_VERSION,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn scratch(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("gpui-fe-personal-{tag}-{}", std::process::id()))
+    }
+
+    fn setup(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = scratch(tag);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        (dir.clone(), dir.join("settings.json"))
+    }
+
+    #[test]
+    fn saved_search_upsert_is_case_insensitive_bounded_and_validated() {
+        let mut settings = Settings::default();
+        assert!(settings.save_search("  TODO ", "  name:rs  "));
+        assert_eq!(settings.saved_searches[0].name, "TODO");
+        assert_eq!(settings.saved_searches[0].query, "name:rs");
+        // Same name in another case replaces in place, keeping the position
+        // and adopting the newly submitted spelling.
+        assert!(settings.save_search("todo", "ext:rs"));
+        settings.save_search("other", "x");
+        assert_eq!(settings.saved_searches.len(), 2);
+        assert_eq!(settings.saved_searches[0].name, "todo");
+        assert_eq!(settings.saved_searches[0].query, "ext:rs");
+
+        // Blank / NUL-bearing values are rejected without touching the list.
+        assert!(!settings.save_search("  ", "q"));
+        assert!(!settings.save_search("n", "   "));
+        assert!(!settings.save_search("bad\0name", "q"));
+
+        for index in 0..MAX_SAVED_SEARCHES {
+            settings.save_search(&format!("s-{index}"), "q");
+        }
+        assert_eq!(settings.saved_searches.len(), MAX_SAVED_SEARCHES);
+        assert!(!settings.save_search("one-too-many", "q"));
+        // Replacing an existing entry still works at the cap.
+        assert!(settings.save_search("s-0", "updated"));
+        assert_eq!(settings.saved_search("S-0").unwrap().query, "updated");
+    }
+
+    #[test]
+    fn saved_search_lookup_remove_and_file_roundtrip() {
+        let (dir, path) = setup("saved-search-roundtrip");
+        let mut settings = Settings::default();
+        settings.save_search("Todos", "TODO");
+        assert_eq!(settings.saved_search("todos").unwrap().query, "TODO");
+        assert!(settings.saved_search("missing").is_none());
+
+        settings.save_to(&path).unwrap();
+        let mut loaded = Settings::load_from(&path);
+        assert_eq!(loaded, settings);
+        assert!(loaded.saved_search("  TODOS ").is_some());
+        assert!(loaded.remove_search("todos"));
+        assert!(!loaded.remove_search("todos"));
+        assert!(loaded.saved_searches.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bookmark_label_set_clear_lookup_and_bounded() {
+        let mut settings = Settings::default();
+        assert!(!settings.set_bookmark_label(Path::new(""), "home"));
+        assert!(!settings.set_bookmark_label(Path::new("/a"), "   "));
+        assert!(settings.set_bookmark_label(Path::new("/a"), " home "));
+        assert_eq!(settings.bookmark_label(Path::new("/a")), Some("home"));
+        // Re-labelling replaces the existing entry instead of appending.
+        assert!(settings.set_bookmark_label(Path::new("/a"), "workspace"));
+        assert_eq!(settings.bookmark_labels.len(), 1);
+        assert_eq!(settings.bookmark_label(Path::new("/a")), Some("workspace"));
+        // A blank label clears it and a second removal is a no-op.
+        assert!(settings.set_bookmark_label(Path::new("/a"), "  "));
+        assert!(settings.bookmark_label(Path::new("/a")).is_none());
+        assert!(!settings.remove_bookmark_label(Path::new("/a")));
+
+        for index in 0..MAX_BOOKMARK_LABELS {
+            settings.set_bookmark_label(Path::new(&format!("/b-{index}")), "label");
+        }
+        assert_eq!(settings.bookmark_labels.len(), MAX_BOOKMARK_LABELS);
+        assert!(!settings.set_bookmark_label(Path::new("/one-too-many"), "label"));
+        assert!(settings.set_bookmark_label(Path::new("/b-0"), "updated"));
+        assert_eq!(settings.bookmark_label(Path::new("/b-0")), Some("updated"));
+    }
+
+    #[test]
+    fn legacy_file_without_personalization_fields_loads_empty_and_saves_new_shape() {
+        let (dir, path) = setup("legacy-personalization");
+        fs::write(
+            &path,
+            br#"{"version":1,"show_hidden":true,"recent_searches":["TODO"]}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(!loaded.read_only);
+        assert_eq!(loaded.version, SCHEMA_VERSION);
+        assert!(loaded.saved_searches.is_empty());
+        assert!(loaded.bookmark_labels.is_empty());
+        assert_eq!(loaded.recent_searches, vec!["TODO".to_string()]);
+
+        let saved = dir.join("saved.json");
+        loaded.save_to(&saved).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&saved).unwrap()).unwrap();
+        assert_eq!(value["saved_searches"].as_array().unwrap().len(), 0);
+        assert_eq!(value["bookmark_labels"].as_array().unwrap().len(), 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn personalization_lists_are_validated_on_load() {
+        let (dir, path) = setup("personalization-validation");
+        let oversized_label = "x".repeat(MAX_BOOKMARK_LABEL_BYTES + 1);
+        let json = serde_json::json!({
+            "version": 1,
+            "saved_searches": [
+                { "name": "dup", "query": "keep" },
+                { "name": "DUP", "query": "duplicate" },
+                { "name": "", "query": "blank" },
+                { "name": "bad\u{0}name", "query": "nul" }
+            ],
+            "bookmark_labels": [
+                { "path": "/a", "label": "first" },
+                { "path": "/a", "label": "duplicate" },
+                { "path": "", "label": "empty-path" },
+                { "path": "/b", "label": oversized_label }
+            ]
+        });
+        fs::write(&path, json.to_string()).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.saved_searches.len(), 1);
+        assert_eq!(loaded.saved_searches[0].query, "keep");
+        assert_eq!(loaded.bookmark_labels.len(), 1);
+        assert_eq!(loaded.bookmark_label(Path::new("/a")), Some("first"));
+        fs::remove_dir_all(&dir).unwrap();
+
+        // Caps are enforced by validate() for values built in memory too.
+        let mut settings = Settings::default();
+        for index in 0..(MAX_SAVED_SEARCHES + 5) {
+            settings
+                .saved_searches
+                .push(SavedSearch::new(&format!("s-{index}"), "q").unwrap());
+        }
+        for index in 0..(MAX_BOOKMARK_LABELS + 5) {
+            settings
+                .bookmark_labels
+                .push(BookmarkLabel::new(Path::new(&format!("/p-{index}")), "label").unwrap());
+        }
+        settings.validate();
+        assert_eq!(settings.saved_searches.len(), MAX_SAVED_SEARCHES);
+        assert_eq!(settings.bookmark_labels.len(), MAX_BOOKMARK_LABELS);
+    }
+
+    #[test]
+    fn partial_personalization_entries_are_dropped_on_load() {
+        let (dir, path) = setup("partial-personalization");
+        fs::write(
+            &path,
+            br#"{"version":1,"saved_searches":[{"name":"x"}],"bookmark_labels":[{"path":"/a"}]}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(loaded.saved_searches.is_empty());
+        assert!(loaded.bookmark_labels.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn future_schema_with_personalization_stays_read_only() {
+        let (dir, path) = setup("future-personalization");
+        let original = br#"{"version":42,"saved_searches":[{"name":"x","query":"q"}],"bookmark_labels":[{"path":"/a","label":"l"}]}"#;
+        fs::write(&path, original).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(loaded.read_only);
+        assert_eq!(loaded.saved_searches.len(), 1);
+        assert_eq!(loaded.bookmark_labels.len(), 1);
+        loaded.save_to(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
