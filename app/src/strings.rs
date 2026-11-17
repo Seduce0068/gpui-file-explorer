@@ -53,6 +53,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+H", "隠しファイルの表示切替"),
             ("Ctrl+R / F5", "再読込"),
             ("Ctrl+F", "検索（名前 / 内容）"),
+            ("Ctrl+Shift+F", "検索結果を名前で絞り込み"),
             ("Ctrl+I", "プロパティ"),
             ("Space / F3", "テキストプレビュー"),
         ],
