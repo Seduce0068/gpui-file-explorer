@@ -345,6 +345,12 @@ impl KeyMap {
     /// Whether a binding claims a keystroke. `None` for `shift` means "any
     /// shift state", so both wildcard-default bindings and concrete rebinds
     /// are compared consistently.
+    ///
+    /// For Ctrl bindings `alt` is a don't-care: before the F6-51 keymap
+    /// migration, `on_key_down` tested `modifiers.control` first and never
+    /// inspected `alt`, so `Ctrl+Alt+H` fired the same action as `Ctrl+H`.
+    /// Alt navigation (`ctrl == false`) still requires an exact `alt` match,
+    /// keeping `Alt+Left` working and `Alt+<other key>` a no-op (Finding 5).
     fn binding_matches(
         binding: &KeyBinding,
         key: &str,
@@ -354,7 +360,7 @@ impl KeyMap {
     ) -> bool {
         binding.key == key
             && binding.ctrl == ctrl
-            && binding.alt == alt
+            && (binding.ctrl || binding.alt == alt)
             && match (binding.shift, shift) {
                 (Some(bound), Some(wanted)) => bound == wanted,
                 _ => true,
@@ -7847,8 +7853,8 @@ mod tests {
         saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
-        trash_key_action, CliAction, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyMap,
-        TrashKeyAction,
+        trash_key_action, CliAction, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
+        KeyMap, TrashKeyAction,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -8670,6 +8676,51 @@ mod tests {
             KeyAction::OpenPreview
         );
         assert_eq!(keymap.resolve("f5", false, false, false), KeyAction::Reload);
+    }
+
+    #[test]
+    fn ctrl_alt_shortcuts_still_match_ctrl_bindings() {
+        // Finding 5: before the keymap migration `on_key_down` checked
+        // `modifiers.control` first and ignored `alt`, so Ctrl+Alt+H fired
+        // the same action as Ctrl+H. Test the pure matcher directly.
+        let ctrl_h = KeyBinding {
+            key: "h",
+            ctrl: true,
+            alt: false,
+            shift: None,
+            action: KeyAction::ToggleHidden,
+        };
+        assert!(KeyMap::binding_matches(&ctrl_h, "h", true, false, None));
+        assert!(KeyMap::binding_matches(&ctrl_h, "h", true, true, None));
+        assert!(!KeyMap::binding_matches(&ctrl_h, "h", false, false, None));
+
+        // Alt navigation has `ctrl == false`, so its `alt` stays significant.
+        let alt_left = KeyBinding {
+            key: "left",
+            ctrl: false,
+            alt: true,
+            shift: None,
+            action: KeyAction::GoBack,
+        };
+        assert!(KeyMap::binding_matches(
+            &alt_left, "left", false, true, None
+        ));
+        assert!(!KeyMap::binding_matches(
+            &alt_left, "left", false, false, None
+        ));
+        assert!(!KeyMap::binding_matches(
+            &alt_left, "left", true, true, None
+        ));
+
+        // The default table resolves Ctrl+Alt shortcuts to their Ctrl action,
+        // while Alt alone on a plain key remains a no-op as before.
+        let keymap = KeyMap::default_keymap();
+        assert_eq!(
+            keymap.resolve("h", true, false, true),
+            KeyAction::ToggleHidden
+        );
+        assert_eq!(keymap.resolve("q", true, true, true), KeyAction::Quit);
+        assert_eq!(keymap.resolve("h", false, false, true), KeyAction::None);
     }
 
     // F6-51: the keymap table and the fuzzy ranking are GPUI-free, so the
