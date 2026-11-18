@@ -6,7 +6,9 @@
 //!
 //! # 文言規約 (DESIGN.md §8.4)
 //!
-//! - 「フォルダ / ファイル」を使い、「ディレクトリ」はエラー詳細のみに限定する。
+//! - 用語は「フォルダ / ファイル」を基本とするが、ヘルプ・ステータス・監視表示では
+//!   「ディレクトリ」も許容する（エラー詳細でも従来どおり使用）。表記ゆれは
+//!   `strings.rs` の定数へ集約する目標とする。
 //! - 敬体は「です / ます」、ボタンは体言止め（「ゴミ箱へ移動」「キャンセル」）。
 //! - キー名は i18n 前提の SCREAMING_SNAKE_CASE を維持し、P2 の `rust-i18n`
 //!   移行では値だけを翻訳リソースへ差し替える（DESIGN.md §8.4）。
@@ -71,6 +73,11 @@
 // F1 ヘルプオーバーレイ
 // ---------------------------------------------------------------------------
 
+/// Ctrl+P 機能のユーザー向け名称。ヘルプ・ステータス・オーバーレイ・CLI ヘルプで共用する。
+pub const FUZZY_JUMP_LABEL: &str = "クイックジャンプ";
+/// 親フォルダを指す共通ラベル。ヘルプとナビゲーションボタンで共用する。
+pub const PARENT_FOLDER_LABEL: &str = "親フォルダ";
+
 /// Keyboard shortcuts shown by the F1 help overlay: (section, [(key, description)]).
 pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
@@ -80,10 +87,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("↑ / ↓", "選択項目を上下に移動"),
             ("Ctrl+L", "パスを直接入力して移動"),
             ("Alt+← / Alt+→", "戻る / 進む"),
-            ("Alt+↑ / Backspace", "親ディレクトリへ"),
+            ("Alt+↑ / Backspace", PARENT_FOLDER_LABEL),
             ("Home / End", "先頭 / 末尾へ"),
             ("PageUp / PageDown", "ページ単位で移動"),
-            ("Ctrl+P", "あいまいジャンプ（名前からパスへ素早く移動）"),
+            ("Ctrl+P", FUZZY_JUMP_LABEL),
         ],
     ),
     (
@@ -417,6 +424,19 @@ mod tests {
                 "{expected} must be listed in F1 help"
             );
         }
+    }
+
+    #[test]
+    fn shared_labels_are_used_in_help_sections() {
+        let find = |wanted: &str| {
+            HELP_SECTIONS
+                .iter()
+                .flat_map(|(_, entries)| *entries)
+                .find(|(key, _)| *key == wanted)
+                .map(|(_, description)| *description)
+        };
+        assert_eq!(find("Ctrl+P"), Some(FUZZY_JUMP_LABEL));
+        assert_eq!(find("Alt+↑ / Backspace"), Some(PARENT_FOLDER_LABEL));
     }
 
     #[test]
