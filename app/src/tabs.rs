@@ -179,9 +179,33 @@ mod tests {
         tabs.new_tab(p("/b"));
         let mut history = History::new();
         history.visit(p("/b"), p("/c"));
+        let expected = history.snapshot();
+        assert_eq!(
+            expected.back,
+            vec![p("/b")],
+            "fixture must record a back entry"
+        );
+        assert!(expected.forward.is_empty());
         tabs.sync(p("/c"), history);
         assert_eq!(tabs.tabs()[1].cwd, p("/c"));
         assert_eq!(tabs.tabs()[0].cwd, p("/a"));
+        // The history must actually be stored in the active tab, not merely
+        // used to update the cwd; the other tab keeps its empty history.
+        assert_eq!(
+            tabs.tabs()[1].history.snapshot(),
+            expected,
+            "synced history must be saved into the active tab"
+        );
+        assert_eq!(
+            tabs.tabs()[1].history.peek_back(&p("/c")),
+            Some(p("/b")),
+            "the back navigation must be usable after the sync"
+        );
+        assert_eq!(
+            tabs.tabs()[0].history.snapshot(),
+            History::new().snapshot(),
+            "inactive tab's history must be untouched"
+        );
     }
 
     #[test]
