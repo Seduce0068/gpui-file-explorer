@@ -276,6 +276,27 @@ status: current
 - [x] **R5-DC01** review-report の行数/構造化ログ記述がドリフト
   — 対応: 28a030e
 
+### 優先度: 中（第14回 UX 発掘・confirmed）
+
+- [ ] **R1-UX01** F1 ヘルプに Up/Down・R/Ctrl+Enter・ゴミ箱復元が未掲載
+  — `app/src/strings.rs:76-163` / 2 発見を統合
+- [ ] **R3-DATA01** ゴミ箱表示で sort_header/Ctrl+H がディレクトリ用フィルタを適用
+  — `app/src/main.rs:3718-3730,3681-3691`
+- [ ] **R2-UX02** フォーカス復帰漏れ（rename 未変更時 / label_editor / close_search / keymap）
+  — `app/src/main.rs:5876,2269,6650,8525` / 4 発見を統合
+- [ ] **R2-UX02** リネームキャンセルが進行中の別操作まで cancel_op する
+  — `app/src/main.rs:5955-5962`
+- [ ] **R2-UX02** プロパティの dir_size コールバックに path/serial 照合が無い
+  — `app/src/main.rs:5671-5683`
+- [ ] **R3-DATA01** ドライブ一覧がホットプラグ未更新・source/fs_type 非表示
+  — `app/src/main.rs:2311-2325,7875-7904`
+- [ ] **R3-DATA01** ゴミ箱行が復元先 original_parent を表示しない
+  — `app/src/trash_view.rs:140-163` / `app/src/main.rs:7507-7523`
+- [ ] **R4-ACC01** クリック可能 div の aria_label 欠落（タブ×/保存検索×/見出し/パンくず等）
+  — `app/src/main.rs:2771-2798,6939-6953,7271-7289,7956`
+- [ ] **R4-ACC01** F1 ヘルプ/操作履歴がキーボードでスクロールできない
+  — `app/src/main.rs:3479,4239` / 2 発見を統合
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
