@@ -116,6 +116,28 @@ fn io_error(path: &Path, err: std::io::Error) -> OpError {
     plain.with_cause(BoxedCause::new(err))
 }
 
+/// Fold a cleanup failure into the error that triggered the cleanup.
+///
+/// A destination that is already gone needs no cleanup: treating `NotFound`
+/// as success keeps cancellation (which often happens before `dest` is
+/// created) reporting the original `OpError::Cancelled`. For every other
+/// cleanup failure the returned error renders both the original failure and
+/// the cleanup failure, and keeps the original error reachable through
+/// `Error::source()` so its category is not lost.
+fn with_cleanup_failure(primary: OpError, dest: &Path, cleanup: Result<(), OpError>) -> OpError {
+    let cleanup_error = match cleanup {
+        Ok(()) => return primary,
+        Err(OpError::NotFound(_)) | Err(OpError::NotFoundCause(_, _)) => return primary,
+        Err(error) => error,
+    };
+    let message = format!("{primary} … クリーンアップ失敗: {cleanup_error}");
+    let path = match &primary {
+        OpError::Io { path, .. } | OpError::IoCause { path, .. } => path.clone(),
+        _ => dest.to_path_buf(),
+    };
+    OpError::Io { path, message }.with_cause(BoxedCause::new(primary))
+}
+
 /// Validate a single file name (not a path): no separators, no `.`/`..`,
 /// no NUL byte, and no characters that Windows reserves.
 pub fn validate_file_name(name: &str) -> Result<(), OpError> {
@@ -589,15 +611,17 @@ pub fn copy_entry(
         // fallback in `move_entry`, so no half-written destination remains.
         // Only remove it when this operation created it; a pre-existing
         // destination (notably a dangling symlink) must be left untouched.
-        if !dest_existed {
-            let _ = remove_entry_safe(&dest);
-        }
-        return Err(error);
+        let cleanup = if !dest_existed {
+            remove_entry_safe(&dest)
+        } else {
+            Ok(())
+        };
+        return Err(with_cleanup_failure(error, &dest, cleanup));
     }
     if let Err(error) = verify_transfer(src, &dest, cancel) {
         // Never leave a truncated or structurally different copy behind.
-        let _ = remove_entry_safe(&dest);
-        return Err(error);
+        let cleanup = remove_entry_safe(&dest);
+        return Err(with_cleanup_failure(error, &dest, cleanup));
     }
     stats.created.insert(0, dest);
     progress(stats.bytes);
@@ -861,17 +885,17 @@ pub fn move_entry(
             let mut stats = OpStats::default();
             let progress: &mut dyn FnMut(u64) = &mut on_progress;
             if let Err(copy_err) = copy_recursive(src, &dest, cancel, &mut stats, progress) {
-                let _ = remove_entry_safe(&dest);
-                return Err(copy_err);
+                let cleanup = remove_entry_safe(&dest);
+                return Err(with_cleanup_failure(copy_err, &dest, cleanup));
             }
             if let Err(verify_err) = verify_transfer(src, &dest, cancel) {
-                let _ = remove_entry_safe(&dest);
-                return Err(verify_err);
+                let cleanup = remove_entry_safe(&dest);
+                return Err(with_cleanup_failure(verify_err, &dest, cleanup));
             }
             on_progress(stats.bytes);
             if cancel.is_cancelled() {
-                let _ = remove_entry_safe(&dest);
-                return Err(OpError::Cancelled);
+                let cleanup = remove_entry_safe(&dest);
+                return Err(with_cleanup_failure(OpError::Cancelled, &dest, cleanup));
             }
             if let Err(remove_err) = remove_entry_safe(src) {
                 return Err(OpError::Io {
@@ -1143,6 +1167,60 @@ mod tests {
             "cleanup must not delete a pre-existing dangling symlink"
         );
         assert_eq!(fs::read_link(&link).unwrap(), missing);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_reports_cleanup_failure_alongside_copy_error() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = scratch("copy-cleanup-failure");
+        let src = dir.join("tree");
+        fs::create_dir(&src).unwrap();
+        write(&src.join("a.bin"), b"a");
+        write(&src.join("b.bin"), &[b'b'; COPY_CHUNK_SIZE + 1]);
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+        let dest_tree = dest_dir.join("tree");
+
+        // Make the freshly created destination read-only while the second
+        // file is being copied. Its final reservation then fails with
+        // PermissionDenied, and the cleanup that follows cannot remove the
+        // first file (nor the directory) because the parent is read-only.
+        let progress_calls = AtomicUsize::new(0);
+        let err = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {
+                if progress_calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    fs::set_permissions(&dest_tree, fs::Permissions::from_mode(0o555)).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        // Restore permissions before removing the temporary tree.
+        let _ = fs::set_permissions(&dest_tree, fs::Permissions::from_mode(0o755));
+        let _ = fs::set_permissions(&dest_dir, fs::Permissions::from_mode(0o755));
+
+        let text = err.to_string();
+        assert!(
+            text.contains("クリーンアップ失敗"),
+            "cleanup failure must be reported: {text}"
+        );
+        assert!(
+            text.contains("アクセスが拒否されました"),
+            "the original copy failure must be reported too: {text}"
+        );
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "the original failure must remain in the source chain"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1816,6 +1894,100 @@ mod tests {
         // ErrorKind::CrossesDevices instead of a hard-coded raw errno.
         let err = std::io::Error::from_raw_os_error(18);
         assert_eq!(err.kind(), std::io::ErrorKind::CrossesDevices);
+    }
+
+    /// Destination on a second filesystem for the EXDEV fallback tests.
+    /// `/dev/shm` is a tmpfs on Linux. Return `None` with a clear message when
+    /// it is missing/unwritable or shares a device with `/tmp`, so the tests
+    /// stay meaningful in restricted containers.
+    #[cfg(target_os = "linux")]
+    fn exdev_shm_dest_dir(tag: &str) -> Option<PathBuf> {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = Path::new("/dev/shm");
+        if !root.is_dir() {
+            eprintln!("skip: /dev/shm is not a directory; EXDEV fallback not exercised");
+            return None;
+        }
+        let dir = root.join(format!(
+            "gpui-fe-exdev-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        if fs::create_dir(&dir).is_err() {
+            eprintln!("skip: /dev/shm is not writable; EXDEV fallback not exercised");
+            return None;
+        }
+        let device_of = |path: &Path| fs::metadata(path).ok().map(|meta| meta.dev());
+        if device_of(&dir) == device_of(&std::env::temp_dir()) {
+            eprintln!("skip: /tmp and /dev/shm share a device; EXDEV fallback not exercised");
+            let _ = fs::remove_dir(&dir);
+            return None;
+        }
+        Some(dir)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn move_entry_crosses_devices_via_copy_fallback() {
+        let Some(dest_dir) = exdev_shm_dest_dir("move-ok") else {
+            return;
+        };
+        let src_dir = scratch("exdev-src-ok");
+        let src = src_dir.join("payload.txt");
+        write(&src, b"cross-device payload");
+
+        let stats = move_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .expect("cross-device move should succeed via copy-then-delete");
+
+        assert_eq!(stats.files, 1);
+        assert!(
+            !src.exists(),
+            "source must be deleted after a successful cross-device move"
+        );
+        assert_eq!(
+            fs::read(dest_dir.join("payload.txt")).unwrap(),
+            b"cross-device payload"
+        );
+
+        let _ = fs::remove_dir_all(&src_dir);
+        let _ = fs::remove_dir_all(&dest_dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn move_entry_crosses_devices_copy_failure_keeps_source() {
+        let Some(dest_dir) = exdev_shm_dest_dir("move-fail") else {
+            return;
+        };
+        let src_dir = scratch("exdev-src-fail");
+        let src = src_dir.join("payload.txt");
+        write(&src, b"do not lose me");
+
+        // Cancel before the fallback copy starts so `copy_recursive` fails.
+        // The source is only deleted after a complete copy and verification,
+        // so it must survive this failure.
+        let cancel = CancelFlag::new();
+        cancel.cancel();
+        let err = move_entry(&src, &dest_dir, ConflictPolicy::Fail, &cancel, |_| {}).unwrap_err();
+        assert!(matches!(err, OpError::Cancelled));
+        assert_eq!(fs::read(&src).unwrap(), b"do not lose me");
+        assert!(
+            fs::read_dir(&dest_dir).unwrap().next().is_none(),
+            "a failed fallback copy must not leave a destination behind"
+        );
+
+        let _ = fs::remove_dir_all(&src_dir);
+        let _ = fs::remove_dir_all(&dest_dir);
     }
 }
 
