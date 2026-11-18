@@ -440,7 +440,15 @@ fn verify_mismatch(path: &Path, what: &str) -> OpError {
     ))
 }
 
-fn verify_entry(src: &Path, dest: &Path, stats: &mut VerifyStats) -> Result<(), OpError> {
+fn verify_entry(
+    src: &Path,
+    dest: &Path,
+    stats: &mut VerifyStats,
+    cancel: &CancelFlag,
+) -> Result<(), OpError> {
+    if cancel.is_cancelled() {
+        return Err(OpError::Cancelled);
+    }
     let src_meta = fs::symlink_metadata(src).map_err(|e| io_error(src, e))?;
     let dest_meta = fs::symlink_metadata(dest).map_err(|e| match e.kind() {
         ErrorKind::NotFound => {
@@ -482,7 +490,7 @@ fn verify_entry(src: &Path, dest: &Path, stats: &mut VerifyStats) -> Result<(), 
             return Err(verify_mismatch(dest, "子要素"));
         }
         for name in src_names {
-            verify_entry(&src.join(&name), &dest.join(&name), stats)?;
+            verify_entry(&src.join(&name), &dest.join(&name), stats, cancel)?;
         }
         stats.dirs += 1;
         return Ok(());
@@ -512,9 +520,13 @@ fn verify_entry(src: &Path, dest: &Path, stats: &mut VerifyStats) -> Result<(), 
 /// and the cross-device fallback of [`move_entry`] after the write finishes;
 /// a failed verification removes the destination so no truncated copy is left
 /// behind.
-pub fn verify_transfer(src: &Path, dest: &Path) -> Result<VerifyStats, OpError> {
+pub fn verify_transfer(
+    src: &Path,
+    dest: &Path,
+    cancel: &CancelFlag,
+) -> Result<VerifyStats, OpError> {
     let mut stats = VerifyStats::default();
-    verify_entry(src, dest, &mut stats)?;
+    verify_entry(src, dest, &mut stats, cancel)?;
     Ok(stats)
 }
 
@@ -550,7 +562,7 @@ pub fn copy_entry(
 
     let mut stats = OpStats::default();
     copy_recursive(src, &dest, cancel, &mut stats, progress)?;
-    if let Err(error) = verify_transfer(src, &dest) {
+    if let Err(error) = verify_transfer(src, &dest, cancel) {
         // Never leave a truncated or structurally different copy behind.
         let _ = remove_entry_safe(&dest);
         return Err(error);
@@ -724,7 +736,7 @@ pub fn move_entry(
                         let _ = remove_entry_safe(&dest);
                         return Err(copy_err);
                     }
-                    if let Err(verify_err) = verify_transfer(src, &dest) {
+                    if let Err(verify_err) = verify_transfer(src, &dest, cancel) {
                         let _ = remove_entry_safe(&dest);
                         return Err(verify_err);
                     }
@@ -1147,14 +1159,14 @@ mod tests {
         #[cfg(not(unix))]
         assert_eq!(stats.files, 2);
 
-        let verified = verify_transfer(&src, &dest_dir.join("tree")).unwrap();
+        let verified = verify_transfer(&src, &dest_dir.join("tree"), &CancelFlag::new()).unwrap();
         #[cfg(unix)]
         assert_eq!(verified.files, 3);
         #[cfg(not(unix))]
         assert_eq!(verified.files, 2);
         assert_eq!(verified.dirs, 2);
         assert_eq!(verified.bytes, 9); // "nested" (6) + "top" (3); symlinks count 0
-        assert!(verify_transfer(&src, &dest_dir.join("other")).is_err());
+        assert!(verify_transfer(&src, &dest_dir.join("other"), &CancelFlag::new()).is_err());
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1165,7 +1177,7 @@ mod tests {
         let src = dir.join("a.txt");
         write(&src, b"data");
 
-        let err = verify_transfer(&src, &dir.join("gone.txt")).unwrap_err();
+        let err = verify_transfer(&src, &dir.join("gone.txt"), &CancelFlag::new()).unwrap_err();
         assert!(
             matches!(err, OpError::InvalidTarget(ref message) if message.contains("存在しません")),
             "unexpected error: {err:?}"
@@ -1182,7 +1194,7 @@ mod tests {
         write(&src, b"12345");
         write(&dest, b"123");
 
-        let err = verify_transfer(&src, &dest).unwrap_err();
+        let err = verify_transfer(&src, &dest, &CancelFlag::new()).unwrap_err();
         assert!(
             matches!(err, OpError::InvalidTarget(ref message) if message.contains("サイズ")),
             "unexpected error: {err:?}"
@@ -1199,7 +1211,7 @@ mod tests {
         write(&src.join("a.txt"), b"a");
         write(&dest.join("b.txt"), b"a");
 
-        let err = verify_transfer(&src, &dest).unwrap_err();
+        let err = verify_transfer(&src, &dest, &CancelFlag::new()).unwrap_err();
         assert!(
             matches!(err, OpError::InvalidTarget(ref message) if message.contains("子要素")),
             "unexpected error: {err:?}"

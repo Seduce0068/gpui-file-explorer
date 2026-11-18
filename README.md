@@ -41,6 +41,7 @@ cargo test           # 255 tests
 | [poc/](poc/) | スタック検証用の最小 PoC（`gpui-kit` のみ、実機でビルド・起動確認済み） |
 | [notes/](notes/) | 一次調査ノート（GPUI API 棚卸し・エコシステム・OS/FS 差分）と独立検証レポート |
 | [scripts/dev-setup.sh](scripts/dev-setup.sh) | `libxkbcommon-x11` 開発ファイル欠如時のローカル symlink 作成（システム変更なし） |
+| [scripts/setup-e2e-input.sh](scripts/setup-e2e-input.sh) | E2E 入力ツール（`wtype` / `xdotool`）を sudo なしでユーザー空間へ導入 |
 | [packaging/linux/](packaging/linux/) | Linux DEB ビルド（`build-deb.sh`、`.desktop`、hicolor アイコン）。root 不要・ホストへインストールしない |
 | [.github/workflows/ci.yml](.github/workflows/ci.yml) | 個人リポジトリ共通の Rust ゲート（`Seduce0068/workflows@v1`）へ委譲。`app/` に加え `extra_gates` で独立プロジェクト `poc/` も fmt/check/test/clippy を検証 |
 

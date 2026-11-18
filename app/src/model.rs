@@ -571,7 +571,9 @@ impl SavedSearch {
 
     /// Case-insensitive key used for duplicate detection and lookup.
     pub fn name_key(&self) -> String {
-        self.name.to_lowercase()
+        // Trim here, not just on insert: settings.json can be hand-edited and
+        // must still resolve the same saved search by name.
+        self.name.trim().to_lowercase()
     }
 }
 
