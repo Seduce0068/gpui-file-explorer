@@ -226,20 +226,27 @@ status: current
 
 ### 優先度: 中（第11回回帰監査）
 
-- [ ] **R1-AUDIT01** O_EXCL 予約を rename 直前に削除し競合保証が不成立
+- [x] **R1-AUDIT01** O_EXCL 予約を rename 直前に削除し競合保証が不成立 — 対応: 8dd37f3
   — `app/src/ops.rs:871-878` / Windows 全般と Unix ディレクトリ移動
-- [ ] **R2-AUDIT02** keymap 重複排除が棄却エントリでアクション名を予約
+- [x] **R2-AUDIT02** keymap 重複排除が棄却エントリでアクション名を予約 — 対応: b31f7c0
   — `app/src/settings.rs:968-983`
-- [ ] **R3-AUDIT03** 永続 keymap の evict が文字列比較で実効と不一致
+- [x] **R3-AUDIT03** 永続 keymap の evict が文字列比較で実効と不一致 — 対応: b31f7c0
   — `app/src/main.rs:513-515`
 - [ ] **R3-AUDIT03** reconcile 完了コールバックが view を再確認せず検索結果を上書き
   — `app/src/main.rs:2176-2194`
-- [ ] **R4-AUDIT04** 空白のみクエリのテストが空振り
+- [x] **R4-AUDIT04** 空白のみクエリのテストが空振り — 対応: 4c36de6
   — `app/src/search.rs:111-114,449-452`
-- [ ] **R4-AUDIT04** 壊れた symlink で entry_for_path と from_dir_entry が不一致
+- [x] **R4-AUDIT04** 壊れた symlink で entry_for_path と from_dir_entry が不一致 — 対応: 4c36de6
   — `app/src/model.rs:68-71,113-116`
-- [ ] **R4-AUDIT04** 検索の拡張子フィルタが extension_of と規則を共有しない
+- [x] **R4-AUDIT04** 検索の拡張子フィルタが extension_of と規則を共有しない — 対応: 4c36de6
   — `app/src/search.rs:52-67`
+
+### 優先度: 中（第11回監査・残存）
+
+- [ ] **R3-AUDIT03** reconcile 完了コールバックが view を再確認せず検索結果を上書き
+  — `app/src/main.rs:2176-2194` / 検索ビューへの遷移時に世代を進める案
+- [ ] **R1-AUDIT01** Windows の rename は予約解除後の残存 TOCTOU を文書化
+  — `app/src/ops.rs` / std::fs では atomic replace-if-absent 不可（現状維持）
 
 ### 優先度: 低（調査タスク）
 
