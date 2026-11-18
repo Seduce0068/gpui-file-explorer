@@ -66,7 +66,18 @@ bash scripts/dev-setup.sh   # app/native-libs/libxkbcommon-x11.so を作成
 cd app
 ./target/debug/gpui-file-explorer              # 前回のディレクトリ or $HOME
 ./target/debug/gpui-file-explorer /usr/share   # 引数で開始ディレクトリを指定
+./target/debug/gpui-file-explorer --help       # 使い方を表示して終了
+./target/debug/gpui-file-explorer --version    # バージョンを表示して終了
 ```
+
+### コマンドラインオプション
+
+| オプション | 動作 |
+|---|---|
+| `ディレクトリ` | 開始ディレクトリを指定。存在しないパスやファイルを渡した場合は警告を出し、前回のディレクトリ（無ければ `$HOME`）へフォールバックします |
+| `-V` / `--version` | バージョンを表示して終了（ウィンドウは開きません） |
+| `-h` / `--help` | 使い方を表示して終了（ウィンドウは開きません） |
+| `--` | 以降の引数をすべてパスとして扱います（`-` で始まる名前のフォルダや `--help` という名前も指定可能） |
 
 ウィンドウは 1100x700（コンテンツ）、Wayland `app_id` / KWin `resourceClass` は
 `gpui-file-explorer` です。閉じると終了します。
