@@ -772,7 +772,7 @@ pub fn move_entry(
 /// work on case-insensitive filesystems too.
 pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
     validate_file_name(new_name)?;
-    if !src.exists() {
+    if !src.exists() && !src.is_symlink() {
         return Err(OpError::NotFound(src.to_path_buf()));
     }
     let parent = src
@@ -1131,6 +1131,33 @@ mod tests {
         let renamed = rename_entry(&src, "c.txt").unwrap();
         assert_eq!(renamed, dir.join("c.txt"));
         assert_eq!(fs::read(renamed).unwrap(), b"a");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_entry_allows_broken_symlink_and_preserves_target() {
+        let dir = scratch("rename-broken-link");
+        let src = dir.join("link.txt");
+        let old_target = Path::new("nonexistent-target.txt");
+        std::os::unix::fs::symlink(old_target, &src).unwrap();
+
+        // A broken symlink does not satisfy `Path::exists()` but must still be
+        // treated as an existing entry, matching `copy_entry`/`move_entry`.
+        assert!(!src.exists());
+        assert!(src.is_symlink());
+
+        let renamed = rename_entry(&src, "renamed-link.txt").unwrap();
+        assert_eq!(renamed, dir.join("renamed-link.txt"));
+        assert!(
+            fs::symlink_metadata(&src).is_err(),
+            "old link path must be gone"
+        );
+
+        let metadata = fs::symlink_metadata(&renamed).unwrap();
+        assert!(metadata.file_type().is_symlink());
+        assert_eq!(fs::read_link(&renamed).unwrap(), old_target);
 
         let _ = fs::remove_dir_all(&dir);
     }
