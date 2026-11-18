@@ -1434,6 +1434,27 @@ fn should_apply_reconcile(view: ViewSource, generation_ok: bool, loading: bool) 
     view == ViewSource::Directory && generation_ok && !loading
 }
 
+/// Whether the 10s timer may dispatch a new directory reconcile.
+///
+/// A slow `read_entries` can outlive the timer interval. Starting another read
+/// would accumulate an extra `Vec<Entry>` snapshot and background task; the
+/// generation guard only prevents a stale result from being *applied*, not the
+/// wasted concurrent read. `in_flight` is set when a read is dispatched and
+/// cleared on every completion path (success or error). Kept pure so the decision
+/// is unit-testable without a live GPUI `Context`.
+fn should_start_reconcile(in_flight: bool, loading: bool, view: ViewSource) -> bool {
+    !in_flight && !loading && view == ViewSource::Directory
+}
+
+/// Whether a finished properties metadata read may still be applied.
+///
+/// `props_serial` is bumped on every open and close, so a callback from a
+/// superseded read must be discarded before it writes status, triggers a reload,
+/// or (re)installs the dialog with stale content. Kept pure for a focused test.
+fn should_apply_properties_read(current_serial: u64, read_serial: u64) -> bool {
+    current_serial == read_serial
+}
+
 /// Identity of one background operation.
 ///
 /// Every long-running or destructive action (transfer, trash, undo, redo,
@@ -1652,6 +1673,18 @@ struct Explorer {
     pending_rename: Option<PathBuf>,
     /// Monotonic serial for previews; stale background reads are discarded.
     preview_serial: u64,
+    /// Monotonic serial for the properties metadata read. Bumped on every
+    /// open **and** close: a snapshot (or an error) from a superseded read is
+    /// discarded before it can resurrect the dialog or trigger a late reload.
+    props_serial: u64,
+    /// Foreground waiter of the properties metadata read. Replaced on reopen
+    /// and dropped on close, cancelling the previous read.
+    props_read_task: Option<Task<()>>,
+    /// True while a 10s reconciliation `read_entries` is in flight. Prevents
+    /// the timer from starting an overlapping read (generation only guards
+    /// stale applies, not wasted/concurrent reads). Cleared on every completion
+    /// path, including errors.
+    reconcile_in_flight: bool,
     /// Foreground waiter of the latest load. Dropping it cancels the wait.
     load_task: Option<Task<()>>,
     /// A watcher event landed while a reload was in flight. Its incremental
@@ -1891,6 +1924,9 @@ impl Explorer {
             pending_select: None,
             pending_rename: None,
             preview_serial: 0,
+            props_serial: 0,
+            props_read_task: None,
+            reconcile_in_flight: false,
             load_task: None,
             needs_reload_after_load: false,
             watcher,
@@ -2392,10 +2428,14 @@ impl Explorer {
         // safe (a `reload` may still request one sooner).
         self.refresh_mounts(cx);
         // The trash view has its own listing; the directory reconcile must not
-        // overwrite it with the current directory contents.
-        if self.load.is_loading() || self.view != ViewSource::Directory {
+        // overwrite it with the current directory contents. `in_flight` also
+        // rejects a tick fired while the previous `read_entries` is still
+        // running (a slow read can outlive the 10s interval); otherwise the
+        // reads would pile up and accumulate stale snapshots/tasks.
+        if !should_start_reconcile(self.reconcile_in_flight, self.load.is_loading(), self.view) {
             return;
         }
+        self.reconcile_in_flight = true;
         let generation = self.generation;
         let dir = self.cwd.clone();
         let task = cx.background_spawn(async move { read_entries(&dir) });
@@ -2407,6 +2447,9 @@ impl Explorer {
                     // missed; surface its failure instead of silently losing
                     // it (second cross-review H-4).
                     let _ = this.update(cx, |this, cx| {
+                        // Release the in-flight guard on every completion path,
+                        // errors included, so a later tick is never blocked.
+                        this.reconcile_in_flight = false;
                         if this.generation == generation {
                             this.status = format!("{STATUS_RESCAN_FAILED}: {error}");
                             cx.notify();
@@ -2416,13 +2459,14 @@ impl Explorer {
                 }
             };
             let _ = this.update(cx, |this, cx| {
+                // Release the in-flight guard before any early return so a
+                // later tick can always dispatch a fresh reconcile.
+                this.reconcile_in_flight = false;
                 // The view check is essential: `open_search` does not bump
                 // `self.generation`, and search completion overwrites
                 // `fingerprint`. Without it a reconcile dispatched before
                 // Ctrl+F would land here with generation/loading still valid
                 // and replace the live search results with directory entries.
-                // No reconcile-owned task state exists to clear on this early
-                // return (the task is detached and the generation is local).
                 if !should_apply_reconcile(
                     this.view,
                     this.generation == generation,
@@ -5690,11 +5734,22 @@ impl Explorer {
     }
 
     fn open_properties_impl(&mut self, path: PathBuf, cx: &mut Context<Self>, start_size: bool) {
+        // Every open and close bumps the serial. A metadata read from a
+        // superseded open must not resurrect the dialog, overwrite a newer
+        // snapshot, or fire a late status/reload from its error path.
+        let serial = self.props_serial.wrapping_add(1);
+        self.props_serial = serial;
+        // Dropping the previous waiter cancels its pending read as well.
+        self.props_read_task = None;
+
         let read_path = path.clone();
         let background = cx.background_spawn(async move { read_properties_snapshot(&read_path) });
-        cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let result = background.await;
             let _ = this.update(cx, |this, cx| {
+                if !should_apply_properties_read(this.props_serial, serial) {
+                    return;
+                }
                 let Ok(snapshot) = result else {
                     this.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
                     this.reload(cx);
@@ -5739,8 +5794,10 @@ impl Explorer {
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        });
+        // Keep the waiter alive until the read lands; a later open replaces it
+        // and a close drops it, cancelling any superseded read.
+        self.props_read_task = Some(task);
     }
 
     fn open_selected_properties(&mut self, cx: &mut Context<Self>) {
@@ -5756,6 +5813,10 @@ impl Explorer {
     }
 
     fn close_properties(&mut self, cx: &mut Context<Self>) {
+        // Invalidate any in-flight metadata read first: its late completion
+        // must not resurrect the dialog or trigger a status/reload after close.
+        self.props_serial = self.props_serial.wrapping_add(1);
+        self.props_read_task = None;
         if let Some(cancel) = self
             .properties
             .as_mut()
@@ -9012,12 +9073,36 @@ fn restore_session(
     let cli_dir = cli_dir
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
         .filter(|path| path.is_dir());
-    let tabs: Vec<PathBuf> = saved.iter().filter(|path| path.is_dir()).cloned().collect();
+
+    // Capture the saved active tab's *path* before anything can reorder the
+    // list. A numeric index is not stable once earlier tabs vanish (finding
+    // 1); the path is. `None` means the saved index was out of range, so the
+    // clamped index below is used as the fallback.
+    let active_path = saved.get(active).cloned();
+
+    // Keep every saved tab, including directories that are temporarily
+    // unmounted (finding 4). Dropping them here lets `persist_tabs` write the
+    // shrunken list and lose them permanently. Activating such a tab goes
+    // through the existing `reload()` path, which surfaces the read error, and
+    // the tab becomes usable again once its directory is mounted back. This is
+    // the smaller of the two safe options: retaining the tabs only in settings
+    // while hiding them from the tab bar would need extra merge logic in
+    // `persist_tabs` to survive later tab switches.
+    let mut tabs = saved.to_vec();
+
+    // Resolve the active index by path so a vanished/reordered earlier tab
+    // cannot silently change which directory opens (finding 1).
+    let resolve_active = |list: &[PathBuf]| -> usize {
+        active_path
+            .as_ref()
+            .and_then(|path| list.iter().position(|candidate| candidate == path))
+            .unwrap_or_else(|| active.min(list.len().saturating_sub(1)))
+    };
+
     // An explicit CLI argument (`.desktop %f`, shell invocation) must win over
     // persisted tabs; otherwise passing a folder to the app silently opens a
     // different location (third cross-review F6-12).
     if let Some(cli) = cli_dir {
-        let mut tabs = tabs;
         let position = tabs.iter().position(|path| path == &cli);
         let index = match position {
             Some(index) => index,
@@ -9029,7 +9114,7 @@ fn restore_session(
         return (tabs, cli, index);
     }
     if !tabs.is_empty() {
-        let index = active.min(tabs.len() - 1);
+        let index = resolve_active(&tabs);
         let start = tabs[index].clone();
         return (tabs, start, index);
     }
@@ -9041,21 +9126,10 @@ fn restore_session(
     (tabs, start, 0)
 }
 
-/// Compare two persisted tab paths, tolerating Windows' `\\?\` prefix added by
-/// `canonicalize` (the same normalization the session tests use).
-fn same_tab_path(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    let canonical =
-        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    canonical(left) == canonical(right)
-}
-
 /// Restore tabs **with their back/forward history** from the primary window's
 /// session. `restore_session` still decides which directories open (CLI > saved
 /// tabs > last dir > home); this only reattaches the per-tab history that used
-/// to be lost on restart. Tabs whose directory vanished get a fresh history.
+/// to be lost on restart. Tabs with no matching session get a fresh history.
 fn restore_tab_sessions(
     settings: &Settings,
     saved_tabs: &[PathBuf],
@@ -9066,15 +9140,31 @@ fn restore_tab_sessions(
         .primary_window()
         .map(|window| window.tabs.as_slice())
         .unwrap_or(&[]);
+
+    // Match on the persisted cwd string, not a canonicalized path: distinct
+    // symlink tabs legitimately normalize to the same target but own separate
+    // histories (finding 2). A per-path queue lets duplicate-cwd tabs consume
+    // their sessions in order instead of every tab receiving the first match.
+    let mut by_path: std::collections::HashMap<
+        &std::path::Path,
+        std::collections::VecDeque<&TabSession>,
+    > = std::collections::HashMap::new();
+    for session in sessions {
+        by_path
+            .entry(session.cwd.as_path())
+            .or_default()
+            .push_back(session);
+    }
+
     let mut tabs = Tabs::from_paths(saved_tabs.to_vec(), active)
         .unwrap_or_else(|| Tabs::new(fallback.to_path_buf()));
     for index in 0..tabs.len() {
         let cwd = tabs.tabs()[index].cwd.clone();
-        let history = sessions
-            .iter()
-            .find(|session| same_tab_path(&session.cwd, &cwd))
+        let history = by_path
+            .get_mut(cwd.as_path())
+            .and_then(|queue| queue.pop_front())
             .map(TabSession::to_history)
-            .unwrap_or_else(History::new);
+            .unwrap_or_default();
         // `Tabs` can set a history only on the active tab: visit each index
         // in turn, then restore the index chosen by `restore_session`.
         tabs.activate(index);
@@ -9155,14 +9245,19 @@ fn main() {
             // The final frame must be captured here: `on_window_closed` runs
             // after the window is gone and can no longer read its bounds.
             window.on_window_should_close(cx, move |window, cx| {
+                // Frame capture is optional (finding 3): a headless or already
+                // hidden window can report no bounds, but its tabs/history must
+                // still be saved. Only the bounds update is conditional.
                 if let Some(bounds) = WindowBoundsState::from_window(window) {
                     let _ = explorer.update(cx, |this, cx| {
                         this.window_bounds = Some(bounds);
-                        this.persist_tabs();
-                        this.save_settings();
                         cx.notify();
                     });
                 }
+                let _ = explorer.update(cx, |this, _cx| {
+                    this.persist_tabs();
+                    this.save_settings();
+                });
                 true
             });
             focus_handle.focus(window, cx);
@@ -9729,6 +9824,37 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_is_not_dispatched_while_a_read_is_in_flight() {
+        use super::{should_start_reconcile, ViewSource};
+
+        // Normal directory tick: dispatch allowed.
+        assert!(should_start_reconcile(false, false, ViewSource::Directory));
+        // The reported bug: a slow `read_entries` outlives the 10s timer; the
+        // overlapping tick must be skipped so snapshots/tasks do not pile up.
+        assert!(!should_start_reconcile(true, false, ViewSource::Directory));
+        // Pre-existing guards remain in force.
+        assert!(!should_start_reconcile(false, true, ViewSource::Directory));
+        assert!(!should_start_reconcile(false, false, ViewSource::Search));
+        assert!(!should_start_reconcile(false, false, ViewSource::Trash));
+        assert!(!should_start_reconcile(true, true, ViewSource::Directory));
+    }
+
+    #[test]
+    fn stale_properties_read_is_ignored_after_close_or_reopen() {
+        use super::should_apply_properties_read;
+
+        // Matching serial: the read still belongs to the current dialog.
+        assert!(should_apply_properties_read(7, 7));
+        // A superseded read (older serial) must never apply.
+        assert!(!should_apply_properties_read(7, 6));
+        // Close or reopen bumps the serial: the old callback is now stale even
+        // though its path might be identical.
+        assert!(!should_apply_properties_read(8, 7));
+        // Wrapping must not accidentally let an old serial match again.
+        assert!(!should_apply_properties_read(0, u64::MAX));
+    }
+
+    #[test]
     fn cli_classification_prefers_version_then_help() {
         let args = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(classify_cli(&args(&[])), CliAction::Run);
@@ -9767,9 +9893,15 @@ mod tests {
 
         let saved = vec![dir.join("gone"), dir.clone()];
         let (tabs, start, index) = restore_session(&saved, 99, None, None, None);
-        assert_eq!(tabs, vec![dir.clone()], "vanished paths are dropped");
-        assert_eq!(start, dir, "active index is clamped to the saved tab");
-        assert_eq!(index, 0);
+        assert_eq!(
+            tabs, saved,
+            "temporarily missing tabs are kept so persist_tabs cannot drop them (finding 4)"
+        );
+        assert_eq!(
+            start, dir,
+            "out-of-range active index is clamped to the last tab"
+        );
+        assert_eq!(index, 1);
 
         let (_, start, _) = restore_session(&[], 0, None, Some(dir.clone()), None);
         // On Windows canonicalize() adds a `\\?\` verbatim prefix; compare via
@@ -9798,6 +9930,35 @@ mod tests {
 
         let (_, start, _) = restore_session(&[], 0, None, None, Some(dir.clone()));
         assert_eq!(start, dir, "home is the final fallback");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_session_resolves_active_by_path_when_earlier_tab_vanishes() {
+        use super::restore_session;
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-active-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let missing = dir.join("A-missing");
+        let b = dir.join("B");
+        let c = dir.join("C");
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::create_dir_all(&c).unwrap();
+
+        // saved = [A(missing), B, C], active = 1 (B). A numeric clamp applied
+        // after A vanished would open C (index 1 of the shrunken list); the
+        // path-based resolution must keep B active instead (finding 1).
+        let saved = vec![missing, b.clone(), c];
+        let (tabs, start, index) = restore_session(&saved, 1, None, None, None);
+        assert_eq!(tabs, saved, "all saved tabs are retained (finding 4)");
+        assert_eq!(index, 1, "active index must still point at B");
+        assert_eq!(start, b, "B must be the tab opened after restore");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -9855,6 +10016,69 @@ mod tests {
             &dir,
         );
         assert!(!tabs.tabs()[1].history.can_go_back());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_tab_sessions_keeps_distinct_histories_for_duplicate_cwd() {
+        use super::restore_tab_sessions;
+        use crate::settings::{Settings, TabSession};
+
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-dup-cwd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Two tabs share the exact same cwd but own different histories. A
+        // single `find()` would hand both tabs session[0]'s history; matching
+        // by the saved cwd string through a per-path queue fixes that
+        // (finding 2). The queue also preserves order for duplicate paths.
+        let mut settings = Settings::default();
+        settings.primary_window_mut().tabs = vec![
+            TabSession {
+                cwd: dir.clone(),
+                back: vec![PathBuf::from("/first-parent")],
+                forward: vec![PathBuf::from("/first-forward")],
+            },
+            TabSession {
+                cwd: dir.clone(),
+                back: vec![PathBuf::from("/second-parent")],
+                forward: vec![PathBuf::from("/second-forward")],
+            },
+        ];
+        let saved_tabs = vec![dir.clone(), dir.clone()];
+        let tabs = restore_tab_sessions(&settings, &saved_tabs, 1, &dir);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.active_index(), 1);
+
+        // `go_back` pushes `current` onto the forward stack, so assert the
+        // forward entry on a fresh clone of the restored history.
+        let mut first = tabs.tabs()[0].history.clone();
+        assert_eq!(
+            first.go_back(PathBuf::from("/probe")),
+            Some(PathBuf::from("/first-parent"))
+        );
+        let mut first_forward = tabs.tabs()[0].history.clone();
+        assert_eq!(
+            first_forward.go_forward(PathBuf::from("/probe")),
+            Some(PathBuf::from("/first-forward"))
+        );
+        let mut second = tabs.tabs()[1].history.clone();
+        assert_eq!(
+            second.go_back(PathBuf::from("/probe")),
+            Some(PathBuf::from("/second-parent"))
+        );
+        let mut second_forward = tabs.tabs()[1].history.clone();
+        assert_eq!(
+            second_forward.go_forward(PathBuf::from("/probe")),
+            Some(PathBuf::from("/second-forward"))
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
