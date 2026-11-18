@@ -165,9 +165,10 @@ status: complete
 
 - `DESIGN.md:1021-1032`: 100,000 件で VmRSS 200 MB 以下、
   スクロール 60 fps、キー応答 16 ms 以内等の目標が定義済み。
-- 実測成果物は見当たらない（`notes/task-discovery/round-3/proof.md`
-  の `r3-proof-08`、`notes/task-discovery-2/round-5/scale.md`
-  の `r5-scale-14` と同一の指摘）。
+- 実測成果物は `notes/perf-baseline.md:249-475` に存在（2026-11-18 追記）。
+  実 GUI で 100,000 件の VmRSS は 329,712 KiB、空ディレクトリは
+  204,792 KiB、差分 124,920 KiB。200 MB 目標は未達（P2 先送り）。
+  初回調査時点では存在しなかったため、当時の記述は陳腐化している。
 - `scripts/check.sh` にベンチマーク / プロファイリングの手順は
   含まれていない。
 - 検索の上限は `main.rs:4073-4082`, `4131-4165` で
