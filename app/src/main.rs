@@ -1348,6 +1348,19 @@ fn should_apply_loaded_on_reconcile(changed: bool, clear_error: bool) -> bool {
     changed || clear_error
 }
 
+/// Whether an in-flight directory reconcile may apply its freshly read listing.
+///
+/// `reconcile` is dispatched only from the directory view, but the user can
+/// open search (Ctrl+F) while its background read is still in flight. Search
+/// completion rewrites `fingerprint`, so the generation/loading guards alone
+/// would let a stale reconcile callback pass and replace the search results
+/// with directory entries while the search bar stays open. The view must still
+/// be `Directory` when the result lands. `Trash` is rejected for the same
+/// reason (its listing is owned by the trash view).
+fn should_apply_reconcile(view: ViewSource, generation_ok: bool, loading: bool) -> bool {
+    view == ViewSource::Directory && generation_ok && !loading
+}
+
 /// Identity of one background operation.
 ///
 /// Every long-running or destructive action (transfer, trash, undo, redo,
@@ -2213,7 +2226,18 @@ impl Explorer {
                 }
             };
             let _ = this.update(cx, |this, cx| {
-                if this.generation != generation || this.load.is_loading() {
+                // The view check is essential: `open_search` does not bump
+                // `self.generation`, and search completion overwrites
+                // `fingerprint`. Without it a reconcile dispatched before
+                // Ctrl+F would land here with generation/loading still valid
+                // and replace the live search results with directory entries.
+                // No reconcile-owned task state exists to clear on this early
+                // return (the task is detached and the generation is local).
+                if !should_apply_reconcile(
+                    this.view,
+                    this.generation == generation,
+                    this.load.is_loading(),
+                ) {
                     return;
                 }
                 // A successful read clears a stale error overlay on both the
@@ -9181,6 +9205,23 @@ mod tests {
         // plus the 10s timer to drive `cx.spawn`; `reconcile` cannot be invoked
         // from a unit test. The decision that caused the regression is captured
         // in the pure predicate above instead.
+    }
+
+    #[test]
+    fn reconcile_result_is_applied_only_in_directory_view() {
+        use super::{should_apply_reconcile, ViewSource};
+
+        // The reported bug: search was opened while a reconcile was in flight,
+        // generation still matched and no load was in progress, yet applying
+        // the directory entries would overwrite the search results.
+        assert!(should_apply_reconcile(ViewSource::Directory, true, false));
+        assert!(!should_apply_reconcile(ViewSource::Search, true, false));
+        // Trash owns its own listing too, so it must be rejected as well.
+        assert!(!should_apply_reconcile(ViewSource::Trash, true, false));
+        // The pre-existing generation/loading guards remain in force.
+        assert!(!should_apply_reconcile(ViewSource::Directory, false, false));
+        assert!(!should_apply_reconcile(ViewSource::Directory, true, true));
+        assert!(!should_apply_reconcile(ViewSource::Directory, false, true));
     }
 
     #[test]
