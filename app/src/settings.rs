@@ -10,6 +10,7 @@
 //!   "sort": { "key": "name", "dir": "asc", "dirs_first": true },
 //!   "show_hidden": false,
 //!   "view": "details",
+//!   "theme": "dark",
 //!   "terminal_command": "konsole",
 //!   "recent_dirs": ["/tmp"],
 //!   "bookmarks": ["/home/koppe"],
@@ -54,6 +55,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use gpui_kit::component::ThemeMode;
 use gpui_kit::{bounds, point, px, size, Window, WindowBounds};
 
 use crate::history::History;
@@ -155,6 +157,25 @@ fn default_terminal_command() -> String {
         "konsole".to_string()
     } else {
         String::new()
+    }
+}
+
+/// Persisted theme default. Older settings files predate the `theme` field, so
+/// they get the app's historical dark appearance via this field-level default
+/// (the container `#[serde(default)]` alone would pick `ThemeMode::Light`).
+fn default_theme() -> ThemeMode {
+    ThemeMode::Dark
+}
+
+/// Pure dark/light cycle used by the `toggle_theme` action.
+///
+/// DESIGN.md §8.2 asks for `dark | light | system`, but gpui-component 0.9.1
+/// `ThemeMode` has only `Light` and `Dark` (no `System` variant), so "system"
+/// cannot be represented and is intentionally not offered; see `app/README.md`.
+pub fn next_theme(current: ThemeMode) -> ThemeMode {
+    match current {
+        ThemeMode::Dark => ThemeMode::Light,
+        ThemeMode::Light => ThemeMode::Dark,
     }
 }
 
@@ -389,6 +410,11 @@ pub struct Settings {
     pub sort: SortSpec,
     pub show_hidden: bool,
     pub view: ViewLayout,
+    /// Component theme applied at startup and toggled at runtime. Added after
+    /// v1: older files get `Dark` through the field-level serde default above.
+    /// Only `dark` / `light` are representable in gpui-component 0.9.1.
+    #[serde(default = "default_theme")]
+    pub theme: ThemeMode,
     /// Terminal emulator command launched with the selected directory as its
     /// working directory. Empty (or whitespace-only after validation) disables
     /// the action. Added after v1: older files receive the platform default
@@ -444,6 +470,7 @@ impl Default for Settings {
             sort: SortSpec::default(),
             show_hidden: false,
             view: ViewLayout::Details,
+            theme: default_theme(),
             terminal_command: default_terminal_command(),
             keymap: Vec::new(),
             recent_dirs: Vec::new(),
@@ -1040,8 +1067,9 @@ impl Settings {
 mod tests {
     // Explicit imports only: the crate root glob re-exports GPUI's `test`
     // proc-macro which would shadow the built-in `#[test]`.
-    use super::{Settings, ViewLayout, APP_DIR, SCHEMA_VERSION};
+    use super::{next_theme, Settings, ViewLayout, APP_DIR, SCHEMA_VERSION};
     use crate::model::{SortDir, SortKey, SortSpec};
+    use gpui_kit::component::ThemeMode;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -1059,7 +1087,32 @@ mod tests {
         assert!(settings.sort.dirs_first);
         assert!(!settings.show_hidden);
         assert_eq!(settings.view, ViewLayout::Details);
+        assert_eq!(settings.theme, ThemeMode::Dark);
         assert!(settings.last_dir.is_none());
+    }
+
+    #[test]
+    fn theme_defaults_to_dark_even_in_older_settings_files() {
+        let loaded = Settings::load_from(&scratch("theme-default-missing.json"));
+        // No file exists yet at this path, so the field-level serde default
+        // (not `ThemeMode`'s own Light default) must supply dark.
+        assert_eq!(loaded.theme, ThemeMode::Dark);
+
+        let parsed: Settings = serde_json::from_str(r#"{"version":1,"view":"icons"}"#).unwrap();
+        assert_eq!(parsed.theme, ThemeMode::Dark);
+        let explicit: Settings = serde_json::from_str(r#"{"version":1,"theme":"light"}"#).unwrap();
+        assert_eq!(explicit.theme, ThemeMode::Light);
+    }
+
+    #[test]
+    fn next_theme_cycles_between_the_two_supported_modes() {
+        assert_eq!(next_theme(ThemeMode::Dark), ThemeMode::Light);
+        assert_eq!(next_theme(ThemeMode::Light), ThemeMode::Dark);
+        assert_eq!(
+            next_theme(next_theme(ThemeMode::Dark)),
+            ThemeMode::Dark,
+            "cycle must return to the starting mode"
+        );
     }
 
     #[test]
