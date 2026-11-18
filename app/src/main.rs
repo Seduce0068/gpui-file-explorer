@@ -505,11 +505,12 @@ fn parse_chord(chord: &str) -> Option<(String, bool, Option<bool>, bool)> {
     Some((key?, ctrl, shift, alt))
 }
 
-/// Whether a chord mentions a dialog-ownership key. Mirrors
-/// `settings::sane_keymap_entry`: the loader drops such entries, so the dialog
-/// must reject the same input instead of silently writing a useless override.
+/// Whether a chord mentions a dialog-ownership key. Delegates to
+/// `settings::is_reserved_chord`: the loader drops such entries via
+/// `settings::sane_keymap_entry`, so the dialog must reject the same input
+/// instead of silently writing a useless override.
 fn keymap_chord_reserved(chord: &str) -> bool {
-    // Single source of truth shared with settings::sane_keymap_entry.
+    // Single source of truth shared with settings::is_reserved_chord.
     crate::settings::is_reserved_chord(chord)
 }
 

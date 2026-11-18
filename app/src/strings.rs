@@ -63,10 +63,9 @@
 //! 落とす。再スキャン失敗（`STATUS_RESCAN_FAILED`）は後続の
 //! `STATUS_CHANGED` で上書きせず、次回成功まで保持する。
 //!
-//! 現行 `main.rs` にはこの規約に反する箇所がある（完了通知直後の reload が
-//! 失敗時に `status` を消去する、再スキャン失敗が watcher イベントで
-//! 上書きされる、全件失敗が対象名を破棄する など）。呼び出し側は本
-//! タスクの書き込み範囲外のため変更せず、報告で移行箇所を列挙する。
+//! ステータス文言の定数化は aeb687c で呼び出し側（`main.rs`）まで移行済みで、
+//! 下の定数が正規の値を提供する。文言を変更するときは呼び出し側の表示も
+//! 併せて確認する。
 
 // ---------------------------------------------------------------------------
 // F1 ヘルプオーバーレイ
@@ -247,21 +246,19 @@ pub const OP_SKIPPED_SUFFIX: &str = "件スキップ";
 pub const OP_DONE_SUFFIX: &str = "しました";
 
 // ---------------------------------------------------------------------------
-// F6-36 エラー・ステータスメッセージ（呼び出し側は未移行）
+// F6-36 エラー・ステータスメッセージ（main.rs の status 通知で使用）
 // ---------------------------------------------------------------------------
 
-// 呼び出し側（main.rs）への適用は本タスクの書き込み範囲外のため別タスク。
-// 適用完了まで非テストビルドでは未使用となるので dead_code を明示的に許可し、
-// 値は既存リテラルをそのまま写す（ここでは文言を変更しない）。
+// aeb687c で main.rs のステータスリテラルは本定数へ移行済み。呼び出し側が
+// 参照するため、値を変更すると表示文言に直接反映される。
+// 一部の定数は規約データ・予備としてのみ保持され本番コードから参照されないため、
+// 個別に dead_code を許可する（下の整合性テストで値の乖離を検出）。
 
 /// エラー表示の共通プレフィクス。空状態ではローディングより優先される。
-#[allow(dead_code)]
 pub const STATUS_ERROR_PREFIX: &str = "エラー: ";
 /// `{verb}しました` に続く一部失敗の括弧。成功を消さず失敗を併記する。
-#[allow(dead_code)]
 pub const STATUS_PARTIAL_FAILURE_SUFFIX: &str = "しました（一部失敗: ";
 /// 成功項目が皆無のときの失敗接尾（`{verb}` に続く）。
-#[allow(dead_code)]
 pub const STATUS_OP_FAILED_SUFFIX: &str = "できません";
 /// スキップ件数の括弧（`{status}` に続く）。
 #[allow(dead_code)]
@@ -269,76 +266,48 @@ pub const STATUS_SKIPPED_PREFIX: &str = "（存在しない項目 ";
 #[allow(dead_code)]
 pub const STATUS_SKIPPED_SUFFIX: &str = " 件をスキップ）";
 /// 操作中止の完了通知（進行中の `STATUS_CANCELLING` とは別フェーズ）。
-#[allow(dead_code)]
 pub const STATUS_CANCELLED: &str = "キャンセルしました";
 /// 進行中通知の接尾（`{verb}` に続く）。
-#[allow(dead_code)]
 pub const STATUS_OP_IN_PROGRESS_SUFFIX: &str = "中…（Esc でキャンセル）";
 
 /// 再スキャン失敗。後続の `STATUS_CHANGED` で上書きしない（R6-A-04）。
-#[allow(dead_code)]
 pub const STATUS_RESCAN_FAILED: &str = "再スキャンに失敗しました";
 /// 監視の状態表示。`last_error()` がある場合は理由を連結する。
-#[allow(dead_code)]
 pub const STATUS_WATCH_PREFIX: &str = "監視: ";
-#[allow(dead_code)]
 pub const STATUS_WATCH_PARTIAL: &str = "一部無効 — ";
-#[allow(dead_code)]
 pub const STATUS_WATCH_DISABLED: &str = "無効 — ";
-#[allow(dead_code)]
 pub const STATUS_WATCH_INIT_FAILED: &str = "監視の初期化に失敗しました";
 /// 監視ディレクトリ数の接尾（`{count}` に続く）。
-#[allow(dead_code)]
 pub const STATUS_WATCH_COUNT_SUFFIX: &str = " ディレクトリ";
 
 /// OS 連携の成功 notification。戻り値を確認せずに出す現状の文言（r4-error-01）。
-#[allow(dead_code)]
 pub const STATUS_OPENED_DEFAULT_SUFFIX: &str = "を既定のアプリで開きました";
-#[allow(dead_code)]
 pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: ";
 /// 設定の失敗／退避（読み込み失敗と情報量を揃える）。
-#[allow(dead_code)]
 pub const STATUS_SETTINGS_SAVE_FAILED: &str =
     "設定を保存できませんでした（権限や空き容量を確認して再試行してください）";
-#[allow(dead_code)]
 pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
 /// タブ復元の成否。
-#[allow(dead_code)]
 pub const STATUS_TAB_RESTORED: &str = "タブを復元しました";
-#[allow(dead_code)]
 pub const STATUS_TAB_RESTORE_EMPTY: &str = "復元できるタブがありません";
 /// フォルダ作成の成否。
-#[allow(dead_code)]
 pub const STATUS_FOLDER_CREATED: &str = "フォルダを作成しました";
-#[allow(dead_code)]
 pub const ERR_FOLDER_CREATE: &str = "フォルダを作成できません";
 /// パスコピー／件数付き通知の接尾。
-#[allow(dead_code)]
 pub const STATUS_PATH_COPIED: &str = "パスをコピーしました";
-#[allow(dead_code)]
 pub const STATUS_MISSING_COUNT_SUFFIX: &str = " 件は既に存在しません";
 /// Undo / Redo の「対象なし」と失敗。
-#[allow(dead_code)]
 pub const STATUS_UNDO_EMPTY: &str = "元に戻せる操作がありません";
-#[allow(dead_code)]
 pub const STATUS_UNDO_EXISTS_SUFFIX: &str = " が既に存在します";
-#[allow(dead_code)]
 pub const STATUS_REDO_EMPTY: &str = "やり直せる操作がありません";
-#[allow(dead_code)]
 pub const STATUS_REDO_FAILED: &str = "やり直せません";
-#[allow(dead_code)]
 pub const STATUS_RENAME_FAILED: &str = "変更できません";
-#[allow(dead_code)]
 pub const STATUS_TARGET_MISSING: &str = "対象は既に存在しません";
 /// テーマ切替後の通知（値は ThemeMode::name(): `dark` / `light`）。
-#[allow(dead_code)]
 pub const STATUS_THEME_CHANGED_PREFIX: &str = "テーマ: ";
 /// ゴミ箱操作の全件失敗と部分失敗（後者は `（{n} 件失敗: 「{name}」: {reason}）` の一部）。
-#[allow(dead_code)]
 pub const STATUS_TRASH_ALL_FAILED: &str = "ゴミ箱へ移動できません";
-#[allow(dead_code)]
 pub const STATUS_TRASH_PARTIAL_FAILED: &str = " 件失敗: ";
-#[allow(dead_code)]
 pub const STATUS_RESTORE_FAILED: &str = "復元できません";
 
 /// 表示層の優先順位（高い順）。狭いステータスバーでは後ろから省略する。
