@@ -22,6 +22,7 @@ mod undo;
 mod watcher;
 
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1052,7 +1053,7 @@ fn empty_state_message(
     entries: usize,
 ) -> Option<(String, Option<String>)> {
     if let Some(error) = error {
-        return Some((format!("エラー: {error}"), None));
+        return Some((format!("{STATUS_ERROR_PREFIX}{error}"), None));
     }
     if loading {
         return Some((LOADING.to_string(), None));
@@ -1084,16 +1085,24 @@ fn empty_state_message(
 }
 
 use crate::strings::{
-    EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, HELP_SECTIONS, KEYMAP_INPUT_HINT,
-    LOADING, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
-    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLING, STATUS_CHANGED, STATUS_DROP_EMPTY,
-    STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
-    STATUS_DROP_SAME_DIRECTORY, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_NOT_DIRECTORY,
-    STATUS_NO_CLIPBOARD, STATUS_OP_RUNNING, STATUS_PATH_GONE, STATUS_REDO_NO_TARGET,
-    STATUS_SEARCH_STALE, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
-    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TARGET_GONE, STATUS_THEME_CHANGED_PREFIX,
+    EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE, HELP_SECTIONS,
+    KEYMAP_INPUT_HINT, LOADING, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
+    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CHANGED,
+    STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
+    STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
+    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_MISSING_COUNT_SUFFIX,
+    STATUS_NOT_DIRECTORY, STATUS_NO_CLIPBOARD, STATUS_OPENED_DEFAULT_SUFFIX,
+    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
+    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_REDO_EMPTY,
+    STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED, STATUS_RESCAN_FAILED,
+    STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SEARCH_STALE, STATUS_SETTINGS_READ_ONLY,
+    STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
+    STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
+    STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED,
     STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_PASTE,
-    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_UNDO_FAILED,
+    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
+    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_WATCH_COUNT_SUFFIX,
+    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
 };
 
 /// One sidebar "place".
@@ -1531,7 +1540,7 @@ fn read_properties_snapshot(path: &Path) -> Result<PropertiesSnapshot, ()> {
 /// Resolve the trash ids of freshly trashed paths from a previously read
 /// listing. Blocking: call from the background executor only. An empty result
 /// (including a failed listing) leaves the undo entry empty, as before (F6-15).
-fn record_trashed_paths(trashed: &[PathBuf]) -> Vec<(PathBuf, String)> {
+fn record_trashed_paths(trashed: &[PathBuf]) -> Vec<(PathBuf, OsString)> {
     trash_view::list()
         .map(|items| trash_view::record_ids(&items, trashed))
         .unwrap_or_default()
@@ -1884,10 +1893,10 @@ impl Explorer {
         // settings file round-trips on the very first launch).
         this.settings.last_dir = Some(this.cwd.clone());
         if !this.save_settings() {
-            this.status = "設定を保存できませんでした（詳細は stderr を参照）".to_string();
+            this.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
         }
         if let Some(reason) = this.settings.load_error.as_deref() {
-            this.status = format!("設定を読み取り専用で開きました: {reason}");
+            this.status = format!("{STATUS_SETTINGS_READ_ONLY}: {reason}");
         }
 
         this.spawn_watch_loop(watch_rx, cx);
@@ -2336,7 +2345,7 @@ impl Explorer {
                     // it (second cross-review H-4).
                     let _ = this.update(cx, |this, cx| {
                         if this.generation == generation {
-                            this.status = format!("再スキャンに失敗しました: {error}");
+                            this.status = format!("{STATUS_RESCAN_FAILED}: {error}");
                             cx.notify();
                         }
                     });
@@ -2668,9 +2677,9 @@ impl Explorer {
         if let Some(cwd) = self.tabs.restore_last_closed() {
             let tab = self.tabs.active().clone();
             self.load_tab(tab, cx);
-            self.status = format!("タブを復元しました: {}", display_path(&cwd));
+            self.status = format!("{STATUS_TAB_RESTORED}: {}", display_path(&cwd));
         } else {
-            self.status = "復元できるタブがありません".to_string();
+            self.status = STATUS_TAB_RESTORE_EMPTY.to_string();
         }
         cx.notify();
     }
@@ -2919,7 +2928,7 @@ impl Explorer {
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| display_path(&path));
             cx.open_with_system(&path);
-            self.status = format!("{name} を既定のアプリで開きました");
+            self.status = format!("{name} {STATUS_OPENED_DEFAULT_SUFFIX}");
             cx.notify();
         }
     }
@@ -3742,7 +3751,7 @@ impl Explorer {
                             .map(|name| name.to_string_lossy().to_string())
                             .unwrap_or_default();
                         if this.cwd == expected_dir {
-                            this.status = format!("フォルダを作成しました: {name}");
+                            this.status = format!("{STATUS_FOLDER_CREATED}: {name}");
                             this.pending_select = Some(path.clone());
                             // F6-34: creation and naming become one gesture.
                             // The next render starts the inline rename once
@@ -3751,13 +3760,13 @@ impl Explorer {
                             this.reload(cx);
                         } else {
                             this.status = format!(
-                                "フォルダを作成しました: {}（別のフォルダを表示中）",
+                                "{STATUS_FOLDER_CREATED}: {}（別のフォルダを表示中）",
                                 display_path(&path)
                             );
                         }
                     }
                     Err(error) => {
-                        this.set_load_error(format!("フォルダを作成できません: {error}"));
+                        this.set_load_error(format!("{ERR_FOLDER_CREATE}: {error}"));
                     }
                 }
                 cx.notify();
@@ -3768,7 +3777,7 @@ impl Explorer {
 
     fn copy_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(display_path(&path)));
-        self.status = format!("パスをコピーしました: {}", display_path(&path));
+        self.status = format!("{STATUS_PATH_COPIED}: {}", display_path(&path));
         cx.notify();
     }
 
@@ -3894,7 +3903,7 @@ impl Explorer {
         }
         if !missing.is_empty() && paths.is_empty() {
             self.clipboard = None;
-            self.status = format!("{} 件は既に存在しません", missing.len());
+            self.status = format!("{}{STATUS_MISSING_COUNT_SUFFIX}", missing.len());
             self.reload(cx);
             return;
         }
@@ -3943,7 +3952,7 @@ impl Explorer {
         } else {
             format!("「{}」へ ", display_path(&destination))
         };
-        self.status = format!("{verb}中…（Esc でキャンセル）");
+        self.status = format!("{verb}{STATUS_OP_IN_PROGRESS_SUFFIX}");
         cx.notify();
 
         // Byte progress from the background copy/move is forwarded through a
@@ -4071,11 +4080,11 @@ impl Explorer {
                 // snapshot that fact first (see the clipboard handling below).
                 let fully_succeeded = first_error.is_none() && stats.skipped.is_empty();
                 let status = match first_error {
-                    Some(OpError::Cancelled) => "キャンセルしました".to_string(),
+                    Some(OpError::Cancelled) => STATUS_CANCELLED.to_string(),
                     Some(error) if succeeded => {
-                        format!("{verb}しました（一部失敗: {error}）")
+                        format!("{verb}{STATUS_PARTIAL_FAILURE_SUFFIX}{error}）")
                     }
-                    Some(error) => format!("{verb}できません: {error}"),
+                    Some(error) => format!("{verb}{STATUS_OP_FAILED_SUFFIX}: {error}"),
                     None => summarize_op(verb, &stats),
                 };
                 let status = format!("{status}{skip_notice}");
@@ -4433,7 +4442,7 @@ impl Explorer {
             return;
         }
         let Some(action) = self.undo.pop_undo() else {
-            self.status = "元に戻せる操作がありません".to_string();
+            self.status = STATUS_UNDO_EMPTY.to_string();
             cx.notify();
             return;
         };
@@ -4449,16 +4458,20 @@ impl Explorer {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 if !path_present(&current) {
-                    self.status =
-                        format!("元に戻せません: {} が存在しません", display_path(&current));
+                    self.status = format!(
+                        "{STATUS_UNDO_FAILED}: {} が存在しません",
+                        display_path(&current)
+                    );
                     // Keep the action so a later retry or other undo is possible.
                     self.undo.push_undo(retry.clone());
                     cx.notify();
                     return;
                 }
                 if path_present(&target) {
-                    self.status =
-                        format!("元に戻せません: {} が既に存在します", display_path(&target));
+                    self.status = format!(
+                        "{STATUS_UNDO_FAILED}: {}{STATUS_UNDO_EXISTS_SUFFIX}",
+                        display_path(&target)
+                    );
                     self.undo.push_undo(retry.clone());
                     cx.notify();
                     return;
@@ -4502,7 +4515,7 @@ impl Explorer {
                             }
                             None => {
                                 this.undo.push_undo(action_for_redo);
-                                this.status = "キャンセルしました".to_string();
+                                this.status = STATUS_CANCELLED.to_string();
                             }
                             Some(Err(error)) => {
                                 this.undo.push_undo(action_for_redo);
@@ -4560,7 +4573,7 @@ impl Explorer {
                             }
                             None => {
                                 this.undo.push_undo(action_for_redo);
-                                this.status = "キャンセルしました".to_string();
+                                this.status = STATUS_CANCELLED.to_string();
                             }
                             Some(Err(error)) => {
                                 this.undo.push_undo(action_for_redo);
@@ -4584,7 +4597,7 @@ impl Explorer {
             return;
         }
         let Some(action) = self.undo.pop_redo() else {
-            self.status = "やり直せる操作がありません".to_string();
+            self.status = STATUS_REDO_EMPTY.to_string();
             cx.notify();
             return;
         };
@@ -4639,11 +4652,11 @@ impl Explorer {
                             }
                             None => {
                                 this.undo.push_redo(action_for_undo);
-                                this.status = "キャンセルしました".to_string();
+                                this.status = STATUS_CANCELLED.to_string();
                             }
                             Some(Err(error)) => {
                                 this.undo.push_redo(action_for_undo);
-                                this.status = format!("やり直せません: {error}");
+                                this.status = format!("{STATUS_REDO_FAILED}: {error}");
                             }
                         }
                         cx.notify();
@@ -4701,7 +4714,7 @@ impl Explorer {
                         }
                         let Some((trashed, failures)) = result else {
                             this.undo.push_redo(action_for_undo);
-                            this.status = "キャンセルしました".to_string();
+                            this.status = STATUS_CANCELLED.to_string();
                             return;
                         };
                         tracing::info!(
@@ -4713,7 +4726,7 @@ impl Explorer {
                         );
                         if trashed.is_empty() {
                             this.undo.push_redo(action_for_undo);
-                            this.status = "やり直せません".to_string();
+                            this.status = STATUS_REDO_FAILED.to_string();
                         } else {
                             this.suppress_for(SELF_OP_SUPPRESS);
                             // Always record the redo, even when the trash
@@ -4729,7 +4742,7 @@ impl Explorer {
                                     .map(|name| name.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| display_path(path));
                                 format!(
-                                    "{label}をやり直しました（{} 件、{} 件失敗: 「{}」: {}）",
+                                    "{label}をやり直しました（{} 件、{}{STATUS_TRASH_PARTIAL_FAILED}「{}」: {}）",
                                     trashed.len(),
                                     failures.len(),
                                     name,
@@ -5925,12 +5938,12 @@ impl Explorer {
                         this.restore_focus_next_frame();
                     }
                     None => {
-                        this.status = "キャンセルしました".to_string();
+                        this.status = STATUS_CANCELLED.to_string();
                         this.close_rename(cx);
                     }
                     Some(Err(error)) => {
-                        this.set_rename_error(&format!("変更できません: {error}"), cx);
-                        this.status = format!("変更できません: {error}");
+                        this.set_rename_error(&format!("{STATUS_RENAME_FAILED}: {error}"), cx);
+                        this.status = format!("{STATUS_RENAME_FAILED}: {error}");
                     }
                 }
                 cx.notify();
@@ -6151,7 +6164,7 @@ impl Explorer {
             return;
         }
         cx.reveal_path(&path);
-        self.status = format!("ファイルマネージャで表示: {}", display_path(&path));
+        self.status = format!("{STATUS_REVEALED_PREFIX}{}", display_path(&path));
         cx.notify();
     }
 
@@ -6185,7 +6198,7 @@ impl Explorer {
             }
         }
         if existing.is_empty() {
-            self.status = "対象は既に存在しません".to_string();
+            self.status = STATUS_TARGET_MISSING.to_string();
             self.reload(cx);
             return;
         }
@@ -6254,7 +6267,7 @@ impl Explorer {
                     let view_unchanged = this.view == view_at_start;
                     if trashed.is_empty() && !cancelled {
                         let message = format!(
-                            "ゴミ箱へ移動できません: {}",
+                            "{STATUS_TRASH_ALL_FAILED}: {}",
                             failures
                                 .first()
                                 .map(|(_, message)| message.clone())
@@ -6271,10 +6284,10 @@ impl Explorer {
                         }
                         let mut message = if cancelled {
                             if trashed.is_empty() {
-                                "キャンセルしました".to_string()
+                                STATUS_CANCELLED.to_string()
                             } else {
                                 format!(
-                                    "キャンセルしました（{} 件をゴミ箱へ移動済み）",
+                                    "{STATUS_CANCELLED}（{} 件をゴミ箱へ移動済み）",
                                     trashed.len()
                                 )
                             }
@@ -6295,7 +6308,7 @@ impl Explorer {
                                 .map(|name| name.to_string_lossy().into_owned())
                                 .unwrap_or_else(|| display_path(path));
                             message.push_str(&format!(
-                                "（{} 件失敗: 「{}」: {}）",
+                                "（{}{STATUS_TRASH_PARTIAL_FAILED}「{}」: {}）",
                                 failures.len(),
                                 name,
                                 reason
@@ -6967,7 +6980,7 @@ impl Explorer {
         let Some(token) = self.begin_op(cx) else {
             return;
         };
-        self.status = format!("{count} 件を復元中…（Esc でキャンセル）");
+        self.status = format!("{count} 件を復元{STATUS_OP_IN_PROGRESS_SUFFIX}");
         cx.notify();
         let cancel = token.cancel.clone();
         let background = cx.background_spawn(async move {
@@ -6984,12 +6997,12 @@ impl Explorer {
                     return;
                 }
                 this.status = match result {
-                    None => "キャンセルしました".to_string(),
+                    None => STATUS_CANCELLED.to_string(),
                     Some(Ok(())) => {
                         this.suppress_for(SELF_OP_SUPPRESS);
                         format!("{count} 件を元の場所へ復元しました")
                     }
-                    Some(Err(error)) => format!("復元できません: {error}"),
+                    Some(Err(error)) => format!("{STATUS_RESTORE_FAILED}: {error}"),
                 };
                 this.reload(cx);
                 cx.notify();
@@ -8124,7 +8137,7 @@ impl Explorer {
             .child(if let Some(error) = self.load.error_message() {
                 div()
                     .text_color(rgb(C_RED))
-                    .child(format!("エラー: {error}"))
+                    .child(format!("{STATUS_ERROR_PREFIX}{error}"))
                     .into_any_element()
             } else if self.load.is_loading() {
                 div()
@@ -8216,13 +8229,15 @@ impl Explorer {
                 if let Some(reason) = self.watcher.last_error() {
                     div()
                         .text_color(rgb(C_YELLOW))
-                        .child(format!("監視: 一部無効 — {reason}"))
+                        .child(format!(
+                            "{STATUS_WATCH_PREFIX}{STATUS_WATCH_PARTIAL}{reason}"
+                        ))
                         .into_any_element()
                 } else {
                     div()
                         .text_color(rgb(C_MUTED))
                         .child(format!(
-                            "監視: {} ディレクトリ",
+                            "{STATUS_WATCH_PREFIX}{}{STATUS_WATCH_COUNT_SUFFIX}",
                             self.watcher.watched_paths().len()
                         ))
                         .into_any_element()
@@ -8231,10 +8246,12 @@ impl Explorer {
                 let reason = self
                     .watcher
                     .last_error()
-                    .unwrap_or("監視の初期化に失敗しました");
+                    .unwrap_or(STATUS_WATCH_INIT_FAILED);
                 div()
                     .text_color(rgb(C_YELLOW))
-                    .child(format!("監視: 無効 — {reason}"))
+                    .child(format!(
+                        "{STATUS_WATCH_PREFIX}{STATUS_WATCH_DISABLED}{reason}"
+                    ))
                     .into_any_element()
             })
             // Right edge: monitor status followed by the build version
