@@ -224,6 +224,23 @@ status: current
 - [x] **R3-PERF01** search_lines の全件 Vec 化 — 誤検知として却下
   — 現行は `filter_map` で必要な行番号のみ収集（main.rs:6283-6290）
 
+### 優先度: 中（第11回回帰監査）
+
+- [ ] **R1-AUDIT01** O_EXCL 予約を rename 直前に削除し競合保証が不成立
+  — `app/src/ops.rs:871-878` / Windows 全般と Unix ディレクトリ移動
+- [ ] **R2-AUDIT02** keymap 重複排除が棄却エントリでアクション名を予約
+  — `app/src/settings.rs:968-983`
+- [ ] **R3-AUDIT03** 永続 keymap の evict が文字列比較で実効と不一致
+  — `app/src/main.rs:513-515`
+- [ ] **R3-AUDIT03** reconcile 完了コールバックが view を再確認せず検索結果を上書き
+  — `app/src/main.rs:2176-2194`
+- [ ] **R4-AUDIT04** 空白のみクエリのテストが空振り
+  — `app/src/search.rs:111-114,449-452`
+- [ ] **R4-AUDIT04** 壊れた symlink で entry_for_path と from_dir_entry が不一致
+  — `app/src/model.rs:68-71,113-116`
+- [ ] **R4-AUDIT04** 検索の拡張子フィルタが extension_of と規則を共有しない
+  — `app/src/search.rs:52-67`
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
