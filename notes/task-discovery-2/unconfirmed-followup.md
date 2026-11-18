@@ -312,10 +312,12 @@ status: complete
 
 ### F6-46 で未確認の事項
 
-- 現在の HEAD で `cargo check --target wasm32-unknown-unknown` を
-  実行していない（wasm32 ターゲットは導入済み）。
-  `trash` のエラーは target ゲートで解消した可能性があるが、
-  未検証（推測）。
+- `cargo check --target wasm32-unknown-unknown --all-targets --locked`
+  を 2026-11-18T11:38+09:00 に実行（終了コード 101）。
+  `trash` の target ゲートは効いたが、今度は推移依存の
+  `wasm_thread 0.3.3` が `#![feature(stdarch_wasm_atomic_wait)]` を
+  要求し、stable コンパイラで E0554 で失敗。
+  同ノート §1-1 の「nightly 必須」という結論は実測で再確認された。
 - Web デモで改変版をネットワーク越しに使わせる場合の
   AGPL §13 の適用・十分な案内形式は法的に未確認。
 - 本調査は法的判断を行わない。
