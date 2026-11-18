@@ -464,12 +464,20 @@ bash packaging/linux/build-deb.sh
   （GPS の再入制約に依存。失敗時はキャンセル扱いで安全側）。
 - `SortSpec.dirs_first` は将来互換のため保存していますが、P0 は常に
   ディレクトリ先頭固定です（`false` は無視）。
-- **マウス/キーボード操作の E2E 検証は未実施**です。ネイティブ Wayland ウィンドウに
-  合成入力を送るツール（kdotool / ydotool / wtype 等）が本機に無く、
-  `xdotool` は XWayland 専用のため使えません。キーボード・右クリック・
-  確認ダイアログのコードはコンパイル検証 + データ層のユニットテストのみで、
-  実押下は未確認です（PoC と同じ環境制約）。手動確認する場合は
+- **マウス/キーボード操作の E2E 検証は未実施**です。合成入力ツール
+  （`wtype` / `xdotool` / `ydotool` の 3 つ）は `scripts/setup-e2e-input.sh` で
+  sudo なしのユーザー空間へ**導入済み**です（展開先
+  `~/.local/e2e-tools/bin`。利用には
+  `export PATH="$HOME/.local/e2e-tools/bin:$PATH"` が必要）。
+  しかし本機の KWin 制約（Wayland ネイティブは `zwp_virtual_keyboard_v1`
+  非対応、XTEST は「Control input devices」ポータル許可待ち、
+  `/dev/uinput` は root:root 0600）のため、Wayland ネイティブの本アプリへ
+  入力が届きません。キーボード・右クリック・確認ダイアログのコードは
+  コンパイル検証 + データ層のユニットテストのみで、実押下は未確認です
+  （PoC と同じ環境制約）。手動確認する場合は
   `Ctrl+H` / `Alt+←` / 行の右クリック / ゴミ箱移動などをお試しください。
+  セットアップ手順と `ldd` / スモークテストの実測結果は
+  [../notes/e2e-input-probe.md](../notes/e2e-input-probe.md) を参照。
 - 右クリックメニューは**行の上**でのみ開きます。仮想リストが空白領域まで
   占有するため、空き領域の右クリックメニューは未対応です
   （新規フォルダはツールバーのボタンでも作成できます）。
