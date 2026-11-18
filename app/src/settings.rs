@@ -674,7 +674,10 @@ impl Settings {
     /// Remember a search query (trimmed, de-duplicated, bounded).
     pub fn record_search(&mut self, query: &str) {
         let query = query.trim();
-        if query.is_empty() {
+        // Share the load-time rule: a query that `validate()` would drop must
+        // never enter the persisted history in the first place. `sane_query`
+        // also covers the empty case after trimming.
+        if !sane_query(query) {
             return;
         }
         self.recent_searches.retain(|existing| existing != query);
@@ -1027,6 +1030,20 @@ impl Settings {
         self.bookmarks.retain(|path| sane_path(path));
         dedupe_paths(&mut self.bookmarks);
         self.bookmarks.truncate(MAX_BOOKMARKS);
+
+        // Normalize persisted personalization text *before* validating it.
+        // `is_valid()` (via `sane_personal_text`) checks the raw byte length, so
+        // a hand-edited value padded with whitespace could exceed the cap raw
+        // while being perfectly valid once trimmed. Trimming here keeps such an
+        // entry instead of silently dropping it on load. `recent_searches` gets
+        // the same treatment just below.
+        for search in &mut self.saved_searches {
+            search.name = search.name.trim().to_owned();
+            search.query = search.query.trim().to_owned();
+        }
+        for entry in &mut self.bookmark_labels {
+            entry.label = entry.label.trim().to_owned();
+        }
 
         // Personalization lists get the same harden-on-load treatment: drop
         // unusable entries, collapse duplicates (case-insensitive name for
@@ -2045,7 +2062,7 @@ mod tab_settings_tests {
 
 #[cfg(test)]
 mod search_history_tests {
-    use super::{Settings, MAX_RECENT_SEARCHES};
+    use super::{Settings, MAX_QUERY_BYTES, MAX_RECENT_SEARCHES};
 
     #[test]
     fn records_searches_newest_first_and_deduped() {
@@ -2077,6 +2094,16 @@ mod search_history_tests {
         let mut settings = Settings::default();
         settings.record_search("   ");
         assert!(settings.recent_searches.is_empty());
+    }
+
+    #[test]
+    fn invalid_search_is_not_recorded() {
+        let mut settings = Settings::default();
+        settings.record_search("keep");
+        // Same rule as `validate()`/`sane_query`: over the byte cap or NUL.
+        settings.record_search(&"x".repeat(MAX_QUERY_BYTES + 1));
+        settings.record_search("bad\u{0}query");
+        assert_eq!(settings.recent_searches, vec!["keep".to_string()]);
     }
 }
 
@@ -2964,7 +2991,8 @@ mod window_session_tests {
 mod personalization_settings_tests {
     use super::{
         BookmarkLabel, SavedSearch, Settings, MAX_BOOKMARK_LABELS, MAX_BOOKMARK_LABEL_BYTES,
-        MAX_SAVED_SEARCHES, SCHEMA_VERSION,
+        MAX_SAVED_SEARCHES, MAX_SAVED_SEARCH_NAME_BYTES, MAX_SAVED_SEARCH_QUERY_BYTES,
+        SCHEMA_VERSION,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -3144,6 +3172,36 @@ mod personalization_settings_tests {
         settings.validate();
         assert_eq!(settings.saved_searches.len(), MAX_SAVED_SEARCHES);
         assert_eq!(settings.bookmark_labels.len(), MAX_BOOKMARK_LABELS);
+    }
+
+    #[test]
+    fn whitespace_padded_personalization_survives_load() {
+        // These values exceed their cap as raw bytes but fit once trimmed.
+        // `is_valid()` checks the raw length, so `validate()` must normalize
+        // before calling it or a hand-edited settings.json loses the entry.
+        let (dir, path) = setup("padded-personalization");
+        let name = "n".repeat(MAX_SAVED_SEARCH_NAME_BYTES - 1);
+        let query = "q".repeat(MAX_SAVED_SEARCH_QUERY_BYTES - 1);
+        let label = "l".repeat(MAX_BOOKMARK_LABEL_BYTES - 1);
+        let padded_name = format!("  {name}  ");
+        let padded_query = format!("  {query}  ");
+        let padded_label = format!("  {label}  ");
+        assert!(padded_name.len() > MAX_SAVED_SEARCH_NAME_BYTES);
+        assert!(padded_query.len() > MAX_SAVED_SEARCH_QUERY_BYTES);
+        assert!(padded_label.len() > MAX_BOOKMARK_LABEL_BYTES);
+        let json = serde_json::json!({
+            "version": SCHEMA_VERSION,
+            "saved_searches": [{ "name": padded_name, "query": padded_query }],
+            "bookmarks": ["/a"],
+            "bookmark_labels": [{ "path": "/a", "label": padded_label }]
+        });
+        fs::write(&path, json.to_string()).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.saved_searches.len(), 1);
+        assert_eq!(loaded.saved_searches[0].name, name);
+        assert_eq!(loaded.saved_searches[0].query, query);
+        assert_eq!(loaded.bookmark_label(Path::new("/a")), Some(label.as_str()));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
