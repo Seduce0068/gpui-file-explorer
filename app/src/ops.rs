@@ -16,6 +16,12 @@
 //!   delete the source only after the copy finished successfully.
 //! - **Cancellation leaves no half-written destination.** The caller passes a
 //!   [`CancelFlag`]; it is checked between entries and between 64 KiB chunks.
+//! - **Destinations are reserved exclusively before use.** `move_entry` and
+//!   `rename_entry` create an `O_EXCL`-style reservation so a concurrent
+//!   creator cannot slip in between the existence check and the rename. On
+//!   Unix the reservation is replaced atomically by `rename`; on Windows
+//!   `rename` refuses to replace it, so it is removed first and a residual
+//!   TOCTOU window remains (see `Reservation` below).
 //!
 //! This module is intentionally GPUI-free so it can be unit tested headlessly.
 //! It is exercised by the tests below and backs the cut/copy/paste UI.
@@ -706,6 +712,89 @@ fn total_bytes_of(path: &Path) -> u64 {
     0
 }
 
+/// An exclusive reservation of a destination path, created before `fs::rename`
+/// so a concurrent creator cannot slip in between the existence check and the
+/// rename.
+///
+/// On Unix the reservation stays in place and `rename` replaces it atomically:
+/// an empty directory for directory sources (POSIX permits renaming a directory
+/// onto an empty directory), a regular file for everything else — including
+/// symlinks, which are not directory inodes even when they point at one.
+///
+/// On Windows `fs::rename` refuses to replace an existing entry, so the
+/// reservation is released just before the rename and `owned` is cleared.
+/// Failure cleanup then leaves `path` alone because it may belong to a
+/// concurrent creator. This remove-then-rename sequence keeps only the
+/// check→reserve race closed; a residual TOCTOU window remains because `std`
+/// exposes no atomic replace-if-absent operation on Windows. It is deliberately
+/// preferred over a two-step (source → temp → destination) rename, which would
+/// move the source before the collision is known and change failure semantics.
+#[derive(Debug)]
+struct Reservation {
+    path: PathBuf,
+    /// True only while the entry at `path` is still the one we created and may
+    /// therefore be safely removed by failure cleanup.
+    owned: bool,
+    /// True when the reservation is a directory (Unix directory sources).
+    is_dir: bool,
+}
+
+impl Reservation {
+    /// Reserve `path` exclusively. `src_is_dir` must describe the source's own
+    /// file type (from `symlink_metadata`), not a symlink's target.
+    fn create(path: &Path, src_is_dir: bool) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            if src_is_dir {
+                fs::create_dir(path)?;
+                return Ok(Self {
+                    path: path.to_path_buf(),
+                    owned: true,
+                    is_dir: true,
+                });
+            }
+        }
+        let _ = src_is_dir; // not read on non-Unix platforms
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        drop(file);
+        Ok(Self {
+            path: path.to_path_buf(),
+            owned: true,
+            is_dir: false,
+        })
+    }
+
+    /// Remove our reservation before a rename on platforms that cannot replace
+    /// an existing entry (Windows). Afterwards `owned` is false, so cleanup
+    /// will never delete an entry a concurrent creator may have placed there.
+    #[cfg(any(windows, test))]
+    fn release_for_rename(&mut self) {
+        if self.owned {
+            let _ = fs::remove_file(&self.path);
+            self.owned = false;
+        }
+    }
+
+    /// Best-effort removal of the reservation we still own. A no-op once
+    /// `owned` is false, so a concurrent creator's entry is never deleted.
+    fn cleanup(&mut self) {
+        if !self.owned {
+            return;
+        }
+        let removed = if self.is_dir {
+            fs::remove_dir(&self.path)
+        } else {
+            fs::remove_file(&self.path)
+        };
+        if removed.is_ok() {
+            self.owned = false;
+        }
+    }
+}
+
 /// Move `src` into `dest_dir`. Uses `rename` when possible; on `EXDEV` falls
 /// back to copy-then-delete, keeping the source intact if the copy fails.
 pub fn move_entry(
@@ -739,73 +828,68 @@ pub fn move_entry(
         return Ok(stats);
     };
 
-    // Reserve `dest` with O_EXCL before renaming so a concurrent creator
-    // cannot slip in between the existence check and the rename (F6-02),
-    // mirroring the copy path. On Windows the reservation must be removed
-    // first because rename refuses to replace an existing file.
-    let reservation = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&dest);
-    match reservation {
-        Ok(file) => {
-            drop(file);
-            // A directory cannot be renamed onto a regular-file reservation
-            // (ENOTDIR on Unix); Windows also requires the reservation gone.
-            // Remove it first in both cases, keeping the O_EXCL check above.
-            #[cfg(windows)]
-            let _ = fs::remove_file(&dest);
-            #[cfg(unix)]
-            if src.is_dir() {
-                let _ = fs::remove_file(&dest);
-            }
-            match fs::rename(src, &dest) {
-                Ok(()) => {
-                    let mut stats = OpStats::default();
-                    stats.created.push(dest);
-                    on_progress(0);
-                    Ok(stats)
-                }
-                Err(error) if error.kind() == ErrorKind::CrossesDevices => {
-                    // Cross-device link: the reservation was removed above, so
-                    // copy to the resolved destination, then delete the source
-                    // only after a fully successful copy.
-                    let _ = fs::remove_file(&dest);
-                    let mut stats = OpStats::default();
-                    let progress: &mut dyn FnMut(u64) = &mut on_progress;
-                    if let Err(copy_err) = copy_recursive(src, &dest, cancel, &mut stats, progress)
-                    {
-                        let _ = remove_entry_safe(&dest);
-                        return Err(copy_err);
-                    }
-                    if let Err(verify_err) = verify_transfer(src, &dest, cancel) {
-                        let _ = remove_entry_safe(&dest);
-                        return Err(verify_err);
-                    }
-                    on_progress(stats.bytes);
-                    if cancel.is_cancelled() {
-                        let _ = remove_entry_safe(&dest);
-                        return Err(OpError::Cancelled);
-                    }
-                    if let Err(remove_err) = remove_entry_safe(src) {
-                        return Err(OpError::Io {
-                            path: src.to_path_buf(),
-                            message: format!(
-                                "コピーは完了しましたが元を削除できませんでした: {remove_err}"
-                            ),
-                        });
-                    }
-                    stats.created.insert(0, dest);
-                    Ok(stats)
-                }
-                Err(error) => {
-                    let _ = fs::remove_file(&dest);
-                    Err(io_error(&dest, error))
-                }
-            }
+    // Use the source's own file type for the reservation: a symlink to a
+    // directory is still a symlink inode, and `rename` cannot replace a
+    // directory with a symlink.
+    let src_is_dir = fs::symlink_metadata(src)
+        .map(|meta| meta.file_type().is_dir())
+        .unwrap_or(false);
+    let mut reservation = match Reservation::create(&dest, src_is_dir) {
+        Ok(reservation) => reservation,
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            return Err(OpError::AlreadyExists(dest));
         }
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => Err(OpError::AlreadyExists(dest)),
-        Err(error) => Err(io_error(&dest, error)),
+        Err(error) => return Err(io_error(&dest, error)),
+    };
+    // Only Windows needs the pre-rename removal. `release_for_rename` clears
+    // `owned`, so a later failure cannot delete a concurrent creator's entry.
+    #[cfg(windows)]
+    reservation.release_for_rename();
+    match fs::rename(src, &dest) {
+        Ok(()) => {
+            let mut stats = OpStats::default();
+            stats.created.push(dest);
+            on_progress(0);
+            Ok(stats)
+        }
+        Err(error) if error.kind() == ErrorKind::CrossesDevices => {
+            // `copy_recursive` needs `dest` to be absent. Remove our own
+            // reservation first (a directory for Unix directory sources), then
+            // fall back to copy-then-delete, keeping the source intact until the
+            // copy finished successfully. The copy path reserves `dest` itself.
+            reservation.cleanup();
+            let mut stats = OpStats::default();
+            let progress: &mut dyn FnMut(u64) = &mut on_progress;
+            if let Err(copy_err) = copy_recursive(src, &dest, cancel, &mut stats, progress) {
+                let _ = remove_entry_safe(&dest);
+                return Err(copy_err);
+            }
+            if let Err(verify_err) = verify_transfer(src, &dest, cancel) {
+                let _ = remove_entry_safe(&dest);
+                return Err(verify_err);
+            }
+            on_progress(stats.bytes);
+            if cancel.is_cancelled() {
+                let _ = remove_entry_safe(&dest);
+                return Err(OpError::Cancelled);
+            }
+            if let Err(remove_err) = remove_entry_safe(src) {
+                return Err(OpError::Io {
+                    path: src.to_path_buf(),
+                    message: format!(
+                        "コピーは完了しましたが元を削除できませんでした: {remove_err}"
+                    ),
+                });
+            }
+            stats.created.insert(0, dest);
+            Ok(stats)
+        }
+        Err(error) => {
+            // Remove only the reservation we still own; after a Windows
+            // release this is a no-op and a concurrent creator's file survives.
+            reservation.cleanup();
+            Err(io_error(&dest, error))
+        }
     }
 }
 
@@ -867,41 +951,36 @@ pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
         }
         return Ok(target);
     }
-    // Reserve `target` with O_EXCL before the final rename so a concurrent
-    // creator cannot slip in between the existence check above and the rename
-    // (the same guard `copy_entry` / `move_entry` use). The case-only branch
+    // Reserve `target` with exclusive semantics before the final rename so a
+    // concurrent creator cannot slip in between the existence check above and
+    // the rename (the same guard `copy_entry` / `move_entry` use). Unix uses an
+    // empty-directory reservation for directory sources so the rename replaces
+    // it atomically instead of hitting ENOTDIR. The case-only branch above
     // deliberately has no reservation: its target already exists.
-    let reservation = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target);
-    match reservation {
-        Ok(file) => {
-            drop(file);
-            // Windows refuses to rename onto an existing file, and on Unix a
-            // directory source cannot be renamed onto a regular-file
-            // reservation (ENOTDIR). A regular file on Unix keeps the
-            // reservation until the rename atomically replaces it.
-            #[cfg(windows)]
-            let _ = fs::remove_file(&target);
-            #[cfg(unix)]
-            if src.is_dir() {
-                let _ = fs::remove_file(&target);
-            }
-            match fs::rename(src, &target) {
-                Ok(()) => Ok(target),
-                Err(error) => {
-                    // Best-effort cleanup of the reservation on failure,
-                    // mirroring `move_entry`.
-                    let _ = fs::remove_file(&target);
-                    Err(io_error(src, error))
-                }
-            }
-        }
+    let src_is_dir = fs::symlink_metadata(src)
+        .map(|meta| meta.file_type().is_dir())
+        .unwrap_or(false);
+    let mut reservation = match Reservation::create(&target, src_is_dir) {
+        Ok(reservation) => reservation,
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            Err(OpError::AlreadyExists(target))
+            return Err(OpError::AlreadyExists(target));
         }
-        Err(error) => Err(io_error(&target, error)),
+        Err(error) => return Err(io_error(&target, error)),
+    };
+    // Windows cannot rename onto the reservation; releasing it clears `owned`,
+    // so the failure path below cannot delete a concurrent creator's entry.
+    #[cfg(windows)]
+    reservation.release_for_rename();
+    match fs::rename(src, &target) {
+        Ok(()) => Ok(target),
+        Err(error) => {
+            // Remove only the reservation we still own. On Windows the
+            // reservation is already released and this is a no-op; an
+            // unconditional `remove_file(&target)` could delete a file placed
+            // here by a concurrent creator after the release.
+            reservation.cleanup();
+            Err(io_error(src, error))
+        }
     }
 }
 
@@ -1384,6 +1463,82 @@ mod tests {
         assert_eq!(renamed, dir.join("c.txt"));
         assert_eq!(fs::read(renamed).unwrap(), b"a");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reservation_cleanup_only_removes_what_it_owns() {
+        let dir = scratch("reservation-owned");
+        let path = dir.join("dest");
+        let mut reservation = Reservation::create(&path, false).unwrap();
+        assert!(path.is_file(), "regular-file reservation expected");
+
+        // Simulate Windows: the reservation is released before the rename, so
+        // it is no longer ours to clean up.
+        reservation.release_for_rename();
+        assert!(!path.exists());
+
+        // A concurrent creator claims the now-free path. Failure cleanup must
+        // not delete that entry.
+        write(&path, b"concurrent");
+        reservation.cleanup();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"concurrent",
+            "cleanup must not remove a concurrent creator's file"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reservation_for_directory_is_an_empty_directory() {
+        let dir = scratch("reservation-dir");
+        let path = dir.join("dest");
+        let mut reservation = Reservation::create(&path, true).unwrap();
+        assert!(reservation.is_dir);
+        assert!(
+            path.is_dir(),
+            "directory sources need a directory reservation"
+        );
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
+
+        reservation.cleanup();
+        assert!(!path.exists(), "cleanup removes the reservation directory");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_entry_renames_directory_to_fresh_name() {
+        let dir = scratch("rename-dir");
+        let src = dir.join("old");
+        fs::create_dir(&src).unwrap();
+        write(&src.join("child.txt"), b"child");
+
+        let renamed = rename_entry(&src, "new").unwrap();
+        assert_eq!(renamed, dir.join("new"));
+        assert!(renamed.is_dir());
+        assert_eq!(fs::read(renamed.join("child.txt")).unwrap(), b"child");
+        assert!(!src.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_entry_renames_symlink_to_directory() {
+        let dir = scratch("rename-link-dir");
+        let folder = dir.join("folder");
+        fs::create_dir(&folder).unwrap();
+        let src = dir.join("link");
+        std::os::unix::fs::symlink("folder", &src).unwrap();
+
+        // `src.is_dir()` would follow the symlink and wrongly pick a directory
+        // reservation; `symlink_metadata` keeps it a regular-file reservation.
+        let renamed = rename_entry(&src, "link2").unwrap();
+        assert_eq!(fs::read_link(&renamed).unwrap(), Path::new("folder"));
+        assert!(folder.is_dir());
+        assert!(!src.exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
