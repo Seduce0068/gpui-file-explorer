@@ -121,6 +121,30 @@ status: current
 - [x] **R2-FG01** Ctrl+P / F4 / Alt+K が F1 ヘルプ・CLI help に未掲載 — 対応: d3eba3f
   — `app/src/strings.rs:76-159`
 
+### 優先度: 高（第4回発掘・即対応）
+
+- [x] **R2-TQ01** move_entry のディレクトリ移動が Unix で ENOTDIR になる
+  — `app/src/ops.rs:711-720` / 対応: (本ラウンド)
+- [x] **R2-TQ01** keymap 検証の `&&` 短絡で chord 重複除外がバイパスされる
+  — `app/src/settings.rs:906` / 対応: (本ラウンド)
+
+### 優先度: 中（第4回発掘・confirmed）
+
+- [ ] **R1-FG01** 通知トースト(push_notification)が未実装でステータス文言に代替
+  — `DESIGN.md:807` / `app/src/main.rs:2586`
+- [ ] **R2-TQ02** 破損 symlink の Undo / reveal が `exists()` で誤判定
+  — `app/src/main.rs:4047`
+- [ ] **R5-UX01** Alt+K ダイアログが F10〜F19 を予約キーと誤判定（settings 側のみ修正済み）
+  — `app/src/main.rs:389-392`
+- [ ] **R5-UX01** 検索結果がキーボードで操作できない（検索ビューでキーが破棄される）
+  — `app/src/main.rs:3158-3163`
+- [ ] **R4-DP01** CI / check.sh が release プロファイルを検証しない
+  — `scripts/check.sh:151-197` / `#[cfg(not(debug_assertions))]` 分岐が未検証
+- [ ] **R4-DP01** check.sh が監査ツール未導入時に黙って成功する
+  — `scripts/check.sh:101-142`
+- [ ] **R4-DP01** gen-perf-fixture.sh が既存ディレクトリをマーカーで武装化
+  — `scripts/gen-perf-fixture.sh:120-127`
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
