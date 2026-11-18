@@ -58,7 +58,7 @@ use serde::{Deserialize, Serialize};
 use gpui_kit::component::ThemeMode;
 use gpui_kit::{bounds, point, px, size, Window, WindowBounds};
 
-use crate::history::History;
+use crate::history::{History, HistorySnapshot};
 use crate::model::SortSpec;
 use crate::tabs::Tab;
 // Personalization types live in `model` (GPUI-free) but are re-exported here
@@ -227,25 +227,30 @@ fn clear_platform_terminal_default(command: &mut String) {
     }
 }
 
+/// Whether a chord's key is one of the keys reserved for dialog ownership.
+///
+/// Only the final `+`-separated segment is the key: `f10` / `f12` contain the
+/// substring "f1" but are not the reserved F1 dialog key. Comparison is
+/// case-insensitive. This is the single definition shared by settings loading
+/// and the UI's keymap dialog.
+pub fn is_reserved_chord(chord: &str) -> bool {
+    let lowered = chord.to_ascii_lowercase();
+    let key = lowered.rsplit('+').next().unwrap_or(lowered.as_str());
+    key == "f1" || key == "escape"
+}
+
 /// Normalize one persisted `(action_name, chord)` pair. Both sides are trimmed
 /// and bounded, and a chord that mentions a dialog-ownership key (`escape` or
-/// `f1`) is rejected so a bad file cannot take away a way out of a dialog.
-/// Unknown action names are deliberately kept: `KeyMap::from_settings` ignores
-/// names that are not in the shipped table.
+/// `f1`, see [`is_reserved_chord`]) is rejected so a bad file cannot take away
+/// a way out of a dialog. Unknown action names are deliberately kept:
+/// `KeyMap::from_settings` ignores names that are not in the shipped table.
 fn sane_keymap_entry(action: &str, chord: &str) -> Option<(String, String)> {
     let action = action.trim();
     let chord = chord.trim();
     let sane = |value: &str| {
         !value.is_empty() && value.len() <= MAX_CHORD_BYTES && !value.chars().any(char::is_control)
     };
-    if !sane(action) || !sane(chord) {
-        return None;
-    }
-    // Only the final `+`-separated segment is the key. Comparing the whole
-    // chord would also reject `ctrl+f10` / `f12` because they contain "f1".
-    let lowered = chord.to_ascii_lowercase();
-    let key = lowered.rsplit('+').next().unwrap_or(lowered.as_str());
-    if key == "f1" || key == "escape" {
+    if !sane(action) || !sane(chord) || is_reserved_chord(chord) {
         return None;
     }
     Some((action.to_string(), chord.to_string()))
@@ -359,43 +364,26 @@ pub struct TabSession {
 }
 
 impl TabSession {
-    /// Snapshot a tab's navigation history using only `History`'s public API
-    /// (its stacks are private and deliberately stay encapsulated).
+    /// Snapshot a tab's navigation history through `History`'s snapshot API.
+    /// The returned stacks use the persisted order: `back` oldest-first,
+    /// `forward` next-first.
     pub fn from_tab(tab: &Tab) -> Self {
-        let probe = PathBuf::from("__gpui_fe_history_probe__");
-        let mut back = Vec::new();
-        let mut walker = tab.history.clone();
-        while let Some(path) = walker.go_back(probe.clone()) {
-            back.push(path);
-        }
-        back.reverse();
-        let mut forward = Vec::new();
-        let mut walker = tab.history.clone();
-        while let Some(path) = walker.go_forward(probe.clone()) {
-            forward.push(path);
-        }
+        let snapshot = tab.history.snapshot();
         Self {
             cwd: tab.cwd.clone(),
-            back,
-            forward,
+            back: snapshot.back,
+            forward: snapshot.forward,
         }
     }
 
     /// Rebuild a `History` with the same back/forward stacks.
     ///
-    /// `History` exposes no direct setter, so the stacks are rebuilt from
-    /// navigations: `visit` appends to `back`, and `go_back(current)` pops one
-    /// `back` entry while pushing the supplied `current` onto `forward`.
-    /// Padding entries are appended to `back` and then consumed by `go_back`
-    /// with the desired forward path as `current`.
+    /// Paths that serde cannot persist are dropped and the combined budget is
+    /// enforced here, at the settings boundary, so the stored representation
+    /// stays identical to the one `validate()` accepts on load. The stacks are
+    /// then installed directly through `History::restore` — no synthetic
+    /// navigation is needed.
     pub fn to_history(&self) -> History {
-        let mut history = History::new();
-        let mut back: Vec<PathBuf> = self
-            .back
-            .iter()
-            .filter(|path| sane_path(path))
-            .cloned()
-            .collect();
         let mut forward: Vec<PathBuf> = self
             .forward
             .iter()
@@ -403,27 +391,16 @@ impl TabSession {
             .cloned()
             .collect();
         forward.truncate(MAX_HISTORY_ENTRIES);
+        let mut back: Vec<PathBuf> = self
+            .back
+            .iter()
+            .filter(|path| sane_path(path))
+            .cloned()
+            .collect();
         back.truncate(MAX_HISTORY_ENTRIES.saturating_sub(forward.len()));
 
-        for window in back.windows(2) {
-            history.visit(window[0].clone(), window[1].clone());
-        }
-        if let Some(last) = back.last() {
-            history.visit(last.clone(), self.cwd.clone());
-        }
-
-        let mut cursor = self.cwd.clone();
-        for index in 0..forward.len() {
-            let pad = self.cwd.join(format!("__gpui_fe_pad_{index}__"));
-            history.visit(cursor, pad.clone());
-            cursor = pad;
-        }
-        // `go_back` pops the padding and pushes each forward target; because
-        // `forward` is next-first, reverse iteration leaves the next target on
-        // top of the forward stack.
-        for target in forward.iter().rev() {
-            history.go_back(target.clone());
-        }
+        let mut history = History::new();
+        history.restore(HistorySnapshot { back, forward });
         history
     }
 }
@@ -2413,6 +2390,85 @@ mod window_session_tests {
     }
 
     #[test]
+    fn tab_roundtrips_through_session_preserving_cwd_back_and_forward() {
+        let mut history = History::new();
+        history.visit(p("/a"), p("/b"));
+        history.visit(p("/b"), p("/c"));
+        history.visit(p("/c"), p("/d"));
+        history.go_back(p("/d")); // at /c: back [/a, /b], forward [/d]
+        let tab = Tab {
+            cwd: p("/c"),
+            history: history.clone(),
+        };
+
+        let session = TabSession::from_tab(&tab);
+        assert_eq!(session.cwd, p("/c"));
+        assert_eq!(session.back, vec![p("/a"), p("/b")]);
+        assert_eq!(session.forward, vec![p("/d")]);
+
+        let restored = Tab {
+            cwd: session.cwd.clone(),
+            history: session.to_history(),
+        };
+        assert_eq!(restored.cwd, tab.cwd);
+        assert_eq!(
+            restored.history, tab.history,
+            "back/forward stacks must survive the roundtrip byte-for-byte"
+        );
+        assert_eq!(TabSession::from_tab(&restored), session);
+    }
+
+    #[test]
+    fn tab_roundtrip_preserves_multiple_forward_entries_and_empty_stacks() {
+        let mut history = History::new();
+        history.visit(p("/a"), p("/b"));
+        history.visit(p("/b"), p("/c"));
+        history.go_back(p("/c"));
+        history.go_back(p("/b")); // at /a: back [], forward [/b, /c]
+        let tab = Tab {
+            cwd: p("/a"),
+            history: history.clone(),
+        };
+        let session = TabSession::from_tab(&tab);
+        assert!(session.back.is_empty());
+        assert_eq!(session.forward, vec![p("/b"), p("/c")]);
+        let restored = Tab {
+            cwd: session.cwd.clone(),
+            history: session.to_history(),
+        };
+        assert_eq!(restored.cwd, tab.cwd);
+        assert_eq!(restored.history, tab.history);
+
+        // A fresh tab has no stacks to lose.
+        let empty = Tab {
+            cwd: p("/tmp"),
+            history: History::new(),
+        };
+        let session = TabSession::from_tab(&empty);
+        assert!(session.back.is_empty());
+        assert!(session.forward.is_empty());
+        let restored = Tab {
+            cwd: session.cwd.clone(),
+            history: session.to_history(),
+        };
+        assert_eq!(restored.cwd, empty.cwd);
+        assert_eq!(restored.history, History::new());
+    }
+
+    #[test]
+    fn tab_session_json_shape_is_unchanged() {
+        let session = TabSession {
+            cwd: p("/c"),
+            back: vec![p("/a"), p("/b")],
+            forward: vec![p("/d")],
+        };
+        assert_eq!(
+            serde_json::to_value(&session).unwrap(),
+            serde_json::json!({"cwd": "/c", "back": ["/a", "/b"], "forward": ["/d"]})
+        );
+    }
+
+    #[test]
     fn window_sessions_are_bounded_and_history_is_capped() {
         let mut settings = Settings::default();
         for index in 0..(MAX_WINDOW_SESSIONS + 3) {
@@ -2838,7 +2894,9 @@ mod terminal_command_tests {
 
 #[cfg(test)]
 mod keymap_settings_tests {
-    use super::{sane_keymap_entry, Settings, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES};
+    use super::{
+        is_reserved_chord, sane_keymap_entry, Settings, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES,
+    };
     use std::fs;
     use std::path::PathBuf;
 
@@ -2963,6 +3021,20 @@ mod keymap_settings_tests {
             ],
             "a duplicate chord must not reserve its action for later entries"
         );
+    }
+
+    #[test]
+    fn is_reserved_chord_matches_only_the_final_key_segment() {
+        for chord in ["f1", "escape", "ctrl+f1", "alt+escape"] {
+            assert!(is_reserved_chord(chord), "reserved: {chord}");
+        }
+        // Case-insensitive, like the chord parser in main.rs.
+        assert!(is_reserved_chord("CTRL+F1"));
+        assert!(is_reserved_chord("Escape"));
+        // `f10` / `f12` contain the substring "f1" but are ordinary keys.
+        for chord in ["f10", "ctrl+f12", "shift+f19", "ctrl+p", ""] {
+            assert!(!is_reserved_chord(chord), "not reserved: {chord}");
+        }
     }
 
     #[test]

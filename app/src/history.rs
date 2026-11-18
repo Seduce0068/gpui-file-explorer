@@ -30,6 +30,21 @@ pub struct History {
     max_back: usize,
 }
 
+/// A lossless, order-preserving view of both navigation stacks.
+///
+/// `back` is oldest-first (the last entry is the next [`History::go_back`]
+/// target) and `forward` is next-first (the first entry is the next
+/// [`History::go_forward`] target). This is the same convention used by the
+/// persisted `TabSession` fields, so a snapshot can be written to — and
+/// restored from — settings without probing navigation side effects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistorySnapshot {
+    /// Oldest-first; the last entry is the next back target.
+    pub back: Vec<PathBuf>,
+    /// Next-first; the first entry is the next forward target.
+    pub forward: Vec<PathBuf>,
+}
+
 impl Default for History {
     fn default() -> Self {
         Self::new()
@@ -43,6 +58,34 @@ impl History {
             forward: Vec::new(),
             max_back: DEFAULT_MAX_BACK,
         }
+    }
+
+    /// Copy both navigation stacks without changing this history.
+    pub fn snapshot(&self) -> HistorySnapshot {
+        HistorySnapshot {
+            back: self.back.clone(),
+            // The internal stack is last-in-first-out; expose it next-first.
+            forward: self.forward.iter().rev().cloned().collect(),
+        }
+    }
+
+    /// Replace both navigation stacks from `snapshot`.
+    ///
+    /// `back` is read oldest-first and `forward` next-first, matching
+    /// [`HistorySnapshot`]. The combined size is bounded by `max_back`: the
+    /// forward stack keeps its next entries and the back stack keeps its most
+    /// recent entries, preserving the invariant [`History::visit`] maintains
+    /// for histories built through navigation.
+    pub fn restore(&mut self, snapshot: HistorySnapshot) {
+        let mut forward: Vec<PathBuf> = snapshot.forward.into_iter().rev().collect();
+        forward.truncate(self.max_back);
+        let back_budget = self.max_back.saturating_sub(forward.len());
+        let mut back = snapshot.back;
+        if back.len() > back_budget {
+            back.drain(..back.len() - back_budget);
+        }
+        self.back = back;
+        self.forward = forward;
     }
 
     /// Record a navigation from `current` to `next`.
@@ -229,6 +272,63 @@ mod tests {
             history.visit(p(&format!("/d{index}")), p(&format!("/d{}", index + 1)));
         }
         assert_eq!(history.back_len(), super::DEFAULT_MAX_BACK);
+    }
+
+    #[test]
+    fn snapshot_and_restore_preserve_both_stacks() {
+        let mut history = History::new();
+        history.visit(p("/a"), p("/b"));
+        history.visit(p("/b"), p("/c"));
+        history.visit(p("/c"), p("/d"));
+        history.go_back(p("/d"));
+        history.go_back(p("/c"));
+        let original = history.clone();
+
+        let snapshot = history.snapshot();
+        assert_eq!(snapshot.back, vec![p("/a")]);
+        assert_eq!(snapshot.forward, vec![p("/c"), p("/d")]);
+        assert_eq!(history, original, "snapshot must not mutate the history");
+
+        let mut restored = History::new();
+        restored.restore(snapshot);
+        assert_eq!(restored, original, "restore must reproduce both stacks");
+    }
+
+    #[test]
+    fn snapshot_and_restore_handle_empty_stacks() {
+        let snapshot = History::new().snapshot();
+        assert!(snapshot.back.is_empty());
+        assert!(snapshot.forward.is_empty());
+        let mut restored = History::new();
+        restored.restore(snapshot);
+        assert_eq!(restored, History::new());
+    }
+
+    #[test]
+    fn restore_keeps_the_bound_and_prefers_the_next_entries() {
+        let mut history = History::new();
+        history.max_back = 3;
+        history.restore(super::HistorySnapshot {
+            back: vec![p("/oldest"), p("/a"), p("/b")],
+            forward: vec![p("/next"), p("/later"), p("/last")],
+        });
+        // Forward has priority (3 entries fill the budget), so all back
+        // entries are dropped.
+        assert_eq!(history.snapshot().back, Vec::<PathBuf>::new());
+        assert_eq!(
+            history.snapshot().forward,
+            vec![p("/next"), p("/later"), p("/last")]
+        );
+
+        // With room left, the most recent back entries survive (oldest-first).
+        let mut history = History::new();
+        history.max_back = 3;
+        history.restore(super::HistorySnapshot {
+            back: vec![p("/oldest"), p("/a"), p("/b")],
+            forward: vec![p("/next")],
+        });
+        assert_eq!(history.snapshot().back, vec![p("/a"), p("/b")]);
+        assert_eq!(history.snapshot().forward, vec![p("/next")]);
     }
 
     #[test]
