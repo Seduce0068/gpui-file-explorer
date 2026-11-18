@@ -5,8 +5,8 @@
 //! - symlinks are refused (no reading through links),
 //! - only regular files are previewed,
 //! - at most `max_bytes` are read (larger files are truncated with a flag),
-//! - files with a NUL byte in the first 8 KiB are treated as binary and
-//!   refused,
+//! - files with a NUL byte in the bytes actually read are treated as binary
+//!   and refused,
 //! - invalid UTF-8 is replaced (lossy) instead of failing.
 //!
 //! GPUI-free so the logic can be unit tested headlessly.
