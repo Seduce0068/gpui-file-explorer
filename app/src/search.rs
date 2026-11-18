@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::model::{entry_for_path, is_hidden_name, Entry};
+use crate::model::{entry_for_path, extension_of, is_hidden_name, Entry};
 
 /// Kind filter applied to search results without re-running the search.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -59,10 +59,9 @@ pub fn filter_results(
         .iter()
         .filter(|entry| kind.matches(entry))
         .filter(|entry| match &extension {
-            Some(extension) => entry
-                .name_text
-                .to_lowercase()
-                .ends_with(&format!(".{extension}")),
+            // Use the same rule as `kind_label`: a leading dot with no stem
+            // (e.g. `.rs`) is not an extension. `extension_of` is lowercase.
+            Some(extension) => extension_of(&entry.name_text) == *extension,
             None => true,
         })
         .filter(|entry| match &name {
@@ -108,7 +107,7 @@ pub fn search_by_name(
     options: SearchOptions,
     cancel: &AtomicBool,
 ) -> Vec<SearchResult> {
-    let needle = query.to_lowercase();
+    let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return Vec::new();
     }
@@ -347,7 +346,7 @@ pub fn search_contents(
     options: ContentSearchOptions,
     cancel: &AtomicBool,
 ) -> Vec<SearchResult> {
-    let needle = query.to_lowercase();
+    let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return Vec::new();
     }
@@ -449,7 +448,48 @@ mod tests {
         let dir = scratch("empty-query");
         let cancel = AtomicBool::new(false);
         assert!(search_by_name(&dir, "", SearchOptions::default(), &cancel).is_empty());
-        assert!(search_contents(&dir, "  ", ContentSearchOptions::default(), &cancel).is_empty());
+        assert!(search_contents(&dir, "", ContentSearchOptions::default(), &cancel).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whitespace_only_query_is_not_a_literal_needle() {
+        let dir = scratch("whitespace-query");
+        // Both haystacks really contain two consecutive spaces: without
+        // trimming, `"  "` would be a literal needle and match both files.
+        write(&dir.join("name  with  gaps.txt"));
+        fs::write(dir.join("content.txt"), b"value  with  double spaces\n").unwrap();
+        let cancel = AtomicBool::new(false);
+
+        // The fixtures are discoverable with a normal query (non-vacuous).
+        assert_eq!(
+            names(&search_by_name(
+                &dir,
+                "gaps",
+                SearchOptions::default(),
+                &cancel
+            )),
+            vec!["name  with  gaps.txt"]
+        );
+        assert_eq!(
+            names(&search_contents(
+                &dir,
+                "double spaces",
+                ContentSearchOptions::default(),
+                &cancel
+            )),
+            vec!["content.txt"]
+        );
+
+        assert!(
+            search_by_name(&dir, "  ", SearchOptions::default(), &cancel).is_empty(),
+            "a whitespace-only name query must not match literal double spaces"
+        );
+        assert!(
+            search_contents(&dir, "  ", ContentSearchOptions::default(), &cancel).is_empty(),
+            "a whitespace-only content query must not match literal double spaces"
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -617,6 +657,29 @@ mod filter_tests {
         assert_eq!(
             names(&filter_results(&entries, SearchKind::Dirs, None, None)),
             vec!["docs"]
+        );
+    }
+
+    #[test]
+    fn dotfile_without_stem_does_not_match_extension_filter() {
+        use crate::model::kind_label;
+
+        let entries = vec![entry(".rs", false), entry("real.rs", false)];
+        // A leading dot with no stem is not an extension in the model either.
+        assert_eq!(kind_label(&entries[0]), "—");
+        assert_eq!(
+            names(&filter_results(&entries, SearchKind::All, Some("rs"), None)),
+            vec!["real.rs"]
+        );
+        // Case-insensitivity is preserved.
+        assert_eq!(
+            names(&filter_results(
+                &entries,
+                SearchKind::All,
+                Some(".RS"),
+                None
+            )),
+            vec!["real.rs"]
         );
     }
 
