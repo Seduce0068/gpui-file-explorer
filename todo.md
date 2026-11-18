@@ -150,19 +150,19 @@ status: current
 
 - [x] **R1-INT01** Alt+K 再バインドが同一 chord の他アクションを永続化から除去しない
   — 対応: 9772725
-- [ ] **R1-INT01** keymap UI にバインド解除の導線が無い
+- [x] **R1-INT01** keymap UI にバインド解除の導線が無い — 対応: 9b5aae2
   — `app/src/main.rs:3031-3041` / `parse_keymap_input` が None を拒否
-- [ ] **R1-INT01** 検索ビューで F4 / Ctrl+Q が塞がりヘルプと挙動が食い違う
+- [x] **R1-INT01** 検索ビューで F4 / Ctrl+Q が塞がりヘルプと挙動が食い違う — 対応: 9b5aae2
   — `app/src/main.rs:3236-3249`
-- [ ] **R4-PLAT01** Unix で合法なバックスラッシュ入りファイル名が拒否される
+- [x] **R4-PLAT01** Unix で合法なバックスラッシュ入りファイル名が拒否される — 対応: 8abeb7c
   — `app/src/ops.rs:124-128`
-- [ ] **R5-QUAL01** icons テストが戻り値を捨てて割当を検証していない
+- [x] **R5-QUAL01** icons テストが戻り値を捨てて割当を検証していない — 対応: 1bbfce2
   — `app/src/icons.rs:189-193`
-- [ ] **R5-QUAL01** pre-epoch fingerprint テストが結果を破棄している
+- [x] **R5-QUAL01** pre-epoch fingerprint テストが結果を破棄している — 対応: 1bbfce2
   — `app/src/model.rs:1126-1129`
-- [ ] **R3-DOC01** DESIGN.md の §8.5 参照が存在しない節を指す
+- [x] **R3-DOC01** DESIGN.md の §8.5 参照が存在しない節を指す — 対応: b1f9263
   — `DESIGN.md:102,260,305`
-- [ ] **R3-DOC01** Ctrl+P が README のキーバインド表に欠落
+- [x] **R3-DOC01** Ctrl+P が README のキーバインド表に欠落 — 対応: b1f9263
   — `app/src/strings.rs:86` / `README.md:48`
 
 ### 優先度: 低（調査タスク）
