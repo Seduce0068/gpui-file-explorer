@@ -345,8 +345,9 @@ status: current
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
-  [unconfirmed-followup.md](notes/task-discovery-2/unconfirmed-followup.md)。実機再現・
-  性能実測・法的判断は未実施で、必要手順を同ファイルに記録。
+  [unconfirmed-followup.md](notes/task-discovery-2/unconfirmed-followup.md)。性能実測は
+  [perf-baseline.md](notes/perf-baseline.md) にあり（200 MB 目標は未達）。
+  実機再現・法的判断・フレーム時間計測は未実施で、必要手順を同ファイルに記録。
 
 ## 完了
 
