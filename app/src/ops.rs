@@ -715,8 +715,15 @@ pub fn move_entry(
     match reservation {
         Ok(file) => {
             drop(file);
+            // A directory cannot be renamed onto a regular-file reservation
+            // (ENOTDIR on Unix); Windows also requires the reservation gone.
+            // Remove it first in both cases, keeping the O_EXCL check above.
             #[cfg(windows)]
             let _ = fs::remove_file(&dest);
+            #[cfg(unix)]
+            if src.is_dir() {
+                let _ = fs::remove_file(&dest);
+            }
             match fs::rename(src, &dest) {
                 Ok(()) => {
                     let mut stats = OpStats::default();
@@ -1101,6 +1108,32 @@ mod tests {
         assert!(!src.exists());
         assert_eq!(fs::read(dest_dir.join("a.txt")).unwrap(), b"move me");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_directory_into_another_directory() {
+        let dir = scratch("move-dir");
+        let src = dir.join("folder");
+        fs::create_dir(&src).unwrap();
+        write(&src.join("child.txt"), b"content");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let stats = move_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(stats.created.len(), 1);
+        assert!(!src.exists());
+        assert_eq!(
+            fs::read(dest_dir.join("folder/child.txt")).unwrap(),
+            b"content"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -903,7 +903,12 @@ impl Settings {
             let Some((action, chord)) = sane_keymap_entry(&action, &chord) else {
                 continue;
             };
-            if seen_actions.insert(action.clone()) && seen_chords.insert(chord.clone()) {
+            // Evaluate both inserts: short-circuiting would skip recording a
+            // chord when the action was already seen (and vice versa), allowing
+            // duplicate chords / blocking later reassignments.
+            let new_action = seen_actions.insert(action.clone());
+            let new_chord = seen_chords.insert(chord.clone());
+            if new_action && new_chord {
                 keymap.push((action, chord));
             }
         }
@@ -2367,6 +2372,24 @@ mod keymap_settings_tests {
                 ("c".to_string(), "ctrl+shift+p".to_string()),
             ],
             "the first action bound to a chord must win"
+        );
+
+        // Both sets must be updated independently: a repeated action must not
+        // skip recording its chord, and a repeated chord must not block a later
+        // reassignment of the action to a different chord.
+        let mut settings = Settings {
+            keymap: vec![
+                ("a".to_string(), "ctrl+p".to_string()),
+                ("a".to_string(), "ctrl+shift+p".to_string()),
+                ("b".to_string(), "ctrl+shift+p".to_string()),
+            ],
+            ..Settings::default()
+        };
+        settings.validate();
+        assert_eq!(
+            settings.keymap,
+            vec![("a".to_string(), "ctrl+p".to_string())],
+            "duplicate action then duplicate chord must not slip through"
         );
     }
 
