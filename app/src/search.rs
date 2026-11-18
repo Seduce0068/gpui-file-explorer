@@ -257,7 +257,7 @@ pub fn merge_search_results(
     for batch in batches {
         for result in batch {
             if merged.len() >= max_total {
-                return merged;
+                break;
             }
             if seen.insert(result.entry.path.clone()) {
                 merged.push(result);
@@ -292,9 +292,9 @@ impl Default for ContentSearchOptions {
 /// Return the 1-based line number of the first line containing `needle`
 /// (case-insensitive), or `None` when the file has no match or is binary.
 ///
-/// Reads one line at a time so a match near the start avoids reading the
-/// whole file. A NUL byte anywhere in the read range marks the file as
-/// binary, and cancellation is checked between lines.
+/// Reads one line at a time, remembering the first match but continuing to
+/// EOF so a NUL byte anywhere in the read range still marks the file as
+/// binary. Cancellation is checked between lines.
 fn first_matching_line_in_file(
     path: &Path,
     needle: &str,
@@ -307,6 +307,7 @@ fn first_matching_line_in_file(
     let mut reader = BufReader::new(file.take(max_bytes));
     let mut line = Vec::new();
     let mut line_number = 0u32;
+    let mut first_match = None;
     loop {
         if cancel.load(Ordering::SeqCst) {
             return Ok(None);
@@ -319,14 +320,15 @@ fn first_matching_line_in_file(
         if line.contains(&0) {
             return Ok(None); // binary file
         }
-        if String::from_utf8_lossy(&line)
-            .to_lowercase()
-            .contains(needle)
+        if first_match.is_none()
+            && String::from_utf8_lossy(&line)
+                .to_lowercase()
+                .contains(needle)
         {
-            return Ok(Some(line_number));
+            first_match = Some(line_number);
         }
     }
-    Ok(None)
+    Ok(first_match)
 }
 
 /// Recursively search file **contents** for `query` (case-insensitive).
@@ -336,7 +338,8 @@ fn first_matching_line_in_file(
 /// - files larger than `max_file_size` are skipped,
 /// - files containing a NUL byte anywhere in the read range are binary,
 /// - hidden entries follow `include_hidden`, unreadable entries are skipped,
-/// - reads are streamed line-by-line with an early exit on the first match,
+/// - reads are streamed line-by-line, and the whole read range is checked for
+///   NUL before the first match is reported,
 /// - results and depth are capped; cancellation is checked per entry and line.
 pub fn search_contents(
     root: &Path,
@@ -788,6 +791,31 @@ mod content_tests {
     }
 
     #[test]
+    fn nul_after_first_match_discards_result() {
+        let dir = scratch("binary-after-match");
+        write(
+            &dir.join("late-nul.txt"),
+            b"TARGET on the first line\nplain second line\nthird\0line\n",
+        );
+        write(&dir.join("clean.txt"), b"TARGET clean\n");
+
+        let found = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions::default(),
+            &AtomicBool::new(false),
+        );
+        let names: Vec<_> = found
+            .iter()
+            .map(|entry| entry.entry.name_text.clone())
+            .collect();
+        assert_eq!(names, vec!["clean.txt"]);
+        assert_eq!(found[0].match_line, Some(1));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn skips_symlinks_and_hidden_entries() {
         let dir = scratch("symlink");
         write(&dir.join("real.txt"), b"TARGET real");
@@ -934,5 +962,34 @@ mod scope_tests {
         assert_eq!(paths, vec![p1.clone(), p2.clone()]);
         let capped = merge_search_results(vec![vec![e(&p1), e(&p2)]], 1);
         assert_eq!(capped.len(), 1);
+    }
+
+    #[test]
+    fn merge_search_results_sorts_by_path_when_cap_is_hit() {
+        let p1 = PathBuf::from("/tmp/a");
+        let p2 = PathBuf::from("/tmp/z");
+        let e = |path: &PathBuf| {
+            let name = path.file_name().unwrap_or_default().to_os_string();
+            SearchResult {
+                match_line: None,
+                entry: Entry {
+                    name_text: name.to_string_lossy().into_owned(),
+                    sort_key: name.to_string_lossy().to_lowercase(),
+                    name,
+                    path: path.clone(),
+                    is_dir: false,
+                    is_symlink: false,
+                    size: 0,
+                    modified: None,
+                },
+            }
+        };
+        // Unordered batch reaching the cap: the final sort must still run.
+        let capped = merge_search_results(vec![vec![e(&p2), e(&p1)]], 2);
+        let paths: Vec<_> = capped
+            .iter()
+            .map(|result| result.entry.path.clone())
+            .collect();
+        assert_eq!(paths, vec![p1, p2]);
     }
 }
