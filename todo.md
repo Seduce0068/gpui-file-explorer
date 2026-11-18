@@ -299,6 +299,36 @@ status: current
   — 対応: 制限を文書化して見送り（gpui-pre 0.3.12 の ScrollHandle に
   `scroll_by` が無く、プレーン div + overflow_y_scroll では実装不可）
 
+### 優先度: 高（第15回シナリオ発掘・confirmed）
+
+- [ ] **R4-FLOW04** 同一 cwd の複数タブが再起動で1つに圧縮され履歴が失われる
+  — `app/src/settings.rs:927,940` / `app/src/main.rs:8986`
+- [ ] **R4-FLOW04** 32 個超のオープンタブが再起動で黙って切り詰められる
+  — `app/src/main.rs:2582` / `app/src/settings.rs:929`
+- [ ] **R4-FLOW04** 一時的に存在しないブックマーク/最近が永続設定から削除される
+  — `app/src/main.rs:2176,2183`
+- [ ] **R4-FLOW04** 未知 enum 値1つで settings.json 全体が退避され全失
+  — `app/src/settings.rs:851,271` / `app/src/model.rs:313`
+
+### 優先度: 中（第15回シナリオ発掘・confirmed）
+
+- [ ] **R2-FLOW02** Ctrl+Shift+F が検索ビューで発火しない
+  — `app/src/main.rs:109-117,3542`
+- [ ] **R2-FLOW02** 検索ビューで Esc が操作キャンセルを奪う
+  — `app/src/main.rs:3542-3560`
+- [ ] **R2-FLOW02** 検索結果の並び替えヘッダが設定だけ変え表示順は不変
+  — `app/src/main.rs:3750` / `app/src/search.rs:166`
+- [ ] **R2-FLOW02** 隠し切替が検索結果に反映されずステータスだけ偽装
+  — `app/src/main.rs:3706` / `app/src/search.rs:142`
+- [ ] **R2-FLOW02** フィルタ変更後にビューポートが先頭へスクロールされる
+  — `app/src/main.rs:6657-6674`
+- [ ] **R2-FLOW02** 鮮度警告がフィルタ変更で上書きされる
+  — `app/src/main.rs:2435,6483`
+- [ ] **R3-FLOW04** terminal_command の明示設定が再起動で無効化される
+  — `app/src/settings.rs:223,971`
+- [ ] **R1-FLOW01** 初回起動で record_recent が呼ばれず「最近」が空
+  — `app/src/main.rs:1899`
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
