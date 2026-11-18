@@ -101,7 +101,15 @@ pub const MAX_WINDOW_SIZE_PX: f32 = 8192.0;
 /// Refuse to parse a settings file larger than this (hardening against a
 /// crafted file exhausting memory at startup). Oversized files are backed up
 /// like corrupt ones.
-pub const MAX_SETTINGS_BYTES: u64 = 256 * 1024;
+///
+/// Derived from the legal data volume, not an arbitrary guess: `validate()`
+/// allows `MAX_WINDOW_SESSIONS` (8) windows × `MAX_TABS` (32) tabs × 200
+/// history paths per tab (back + forward share one `MAX_HISTORY_ENTRIES`
+/// budget) ≈ 51,200 paths, plus the legacy top-level lists and metadata. At a
+/// realistic ~100 bytes per JSON-escaped path that is ~5 MiB, so 8 MiB leaves
+/// headroom. A full but legitimate session must never be backed up as if it
+/// were corrupt.
+pub const MAX_SETTINGS_BYTES: u64 = 8 * 1024 * 1024;
 /// Maximum byte length of a single persisted path.
 pub const MAX_PATH_BYTES: usize = 4096;
 /// Maximum byte length of a persisted search query.
@@ -202,6 +210,21 @@ fn sane_terminal_command(command: &str) -> bool {
     !command.trim().is_empty()
         && command.len() <= MAX_TERMINAL_COMMAND_BYTES
         && !command.chars().any(char::is_control)
+}
+
+/// Treat the *current platform's* default command as "unset" before it reaches
+/// disk (or after loading an old file). `konsole` is a Kubuntu convenience, not
+/// a user choice: persisting it would carry a Linux-only command into a config
+/// opened on another OS, where launching the terminal fails. An empty value
+/// means "no choice yet", so each platform supplies its own default at load
+/// time (also what the settings dialog prefills). A custom command is left
+/// untouched. `terminal_command_argv()` deliberately keeps splitting whatever
+/// is in memory; only the persisted/validated representation is normalized.
+fn clear_platform_terminal_default(command: &mut String) {
+    let default = default_terminal_command();
+    if !default.is_empty() && *command == default {
+        command.clear();
+    }
 }
 
 /// Normalize one persisted `(action_name, chord)` pair. Both sides are trimmed
@@ -473,7 +496,8 @@ pub struct Settings {
     /// defaults. Not persisted.
     #[serde(skip)]
     pub read_only: bool,
-    /// Human-readable reason for `read_only`, shown in the status bar.
+    /// Human-readable reason for `read_only` or an unavailable config location,
+    /// shown in the status bar.
     #[serde(skip)]
     pub load_error: Option<String>,
     /// When set (debug hooks active), never write to disk. Not persisted.
@@ -754,9 +778,25 @@ impl Settings {
 
     /// Load settings, falling back to defaults for a missing/corrupt file.
     pub fn load() -> Self {
-        match Self::config_path() {
-            Some(path) => Self::load_from(&path),
-            None => Self::default(),
+        let path = Self::config_path();
+        Self::load_from_optional_path(path.as_deref())
+    }
+
+    /// `load()` with an injectable config path so the "no config directory"
+    /// branch is testable without unsetting HOME. A missing config dir is not
+    /// the same as a fresh install: nothing could be read and nothing can be
+    /// written, so report why instead of silently handing out defaults.
+    fn load_from_optional_path(path: Option<&Path>) -> Self {
+        match path {
+            Some(path) => Self::load_from(path),
+            None => {
+                let reason = "設定ディレクトリを特定できないため、設定を読み込めませんでした。書き込みは行いません";
+                error!(%reason, "settings config directory unavailable");
+                Self {
+                    load_error: Some(reason.to_string()),
+                    ..Self::default()
+                }
+            }
         }
     }
 
@@ -955,6 +995,10 @@ impl Settings {
         if !sane_terminal_command(&self.terminal_command) {
             self.terminal_command.clear();
         }
+        // A platform default is "unset", not a stored user choice. Dropping it
+        // here as well as on save keeps the representation stable across a
+        // load -> save cycle (and stops old files from re-introducing it).
+        clear_platform_terminal_default(&mut self.terminal_command);
 
         // Keymap overrides get the same harden-on-load treatment: trim both
         // sides, drop unusable/reserved entries, cap the count and keep only
@@ -992,16 +1036,29 @@ impl Settings {
         self.version = SCHEMA_VERSION;
     }
 
-    /// Persist to the platform config path. Failure is reported on stderr
-    /// (journald on Linux) but never breaks the UI: settings are best-effort.
-    /// Persist settings. Returns `false` when a real write failed (read-only
-    /// / ephemeral sessions count as success: nothing was expected to be saved).
+    /// Persist settings to the platform config path. Returns `false` when no
+    /// config directory can be determined or a real write failed. Read-only /
+    /// ephemeral sessions still count as success: nothing was expected to be
+    /// saved, and `save_to()` keeps handling those cases itself. Failure is
+    /// reported on stderr (journald on Linux) but never breaks the UI.
     pub fn save(&self) -> bool {
-        if let Some(path) = Self::config_path() {
-            if let Err(error) = self.save_to(&path) {
-                error!(path = %path.display(), %error, "failed to save settings");
-                return false;
+        let path = Self::config_path();
+        self.save_to_optional_path(path.as_deref())
+    }
+
+    /// `save()` with an injectable path so the "no config directory" branch is
+    /// testable without unsetting HOME.
+    fn save_to_optional_path(&self, path: Option<&Path>) -> bool {
+        let Some(path) = path else {
+            if self.ephemeral || self.read_only {
+                return true;
             }
+            error!("設定ディレクトリを特定できないため、設定を保存できません");
+            return false;
+        };
+        if let Err(error) = self.save_to(path) {
+            error!(path = %path.display(), %error, "failed to save settings");
+            return false;
         }
         true
     }
@@ -1101,6 +1158,11 @@ impl Settings {
             // the in-memory struct was built with a stale/absent version.
             let mut snapshot = self.clone();
             snapshot.version = SCHEMA_VERSION;
+            // Never persist a platform-specific default: an empty value lets
+            // another OS supply its own default instead of trying to launch
+            // `konsole` where it does not exist. The in-memory value is kept
+            // intact, so `terminal_command_argv()` still works as before.
+            clear_platform_terminal_default(&mut snapshot.terminal_command);
             Self::sanitize_paths_for_save(&mut snapshot);
             let text = serde_json::to_string_pretty(&snapshot).map_err(std::io::Error::other)?;
             // O_EXCL reservation: a predictable tmp name with `create(true)`
@@ -1229,6 +1291,48 @@ mod tests {
     }
 
     #[test]
+    fn missing_config_dir_reports_a_load_error() {
+        // Inject `None` instead of unsetting HOME: the helper is the exact
+        // branch `load()` takes when `config_dir()` is unavailable.
+        let settings = Settings::load_from_optional_path(None);
+        assert_eq!(settings.version, SCHEMA_VERSION);
+        assert!(settings.last_dir.is_none());
+        let reason = settings
+            .load_error
+            .as_deref()
+            .expect("an unavailable config dir must be reported");
+        assert!(!reason.is_empty());
+        assert!(reason.contains("設定"));
+    }
+
+    #[test]
+    fn missing_config_dir_fails_to_save_except_when_nothing_was_expected() {
+        // A normal session cannot save anywhere -> real failure.
+        assert!(!Settings::default().save_to_optional_path(None));
+        // Read-only / ephemeral sessions keep their "nothing to save" success
+        // semantics even when no path is available.
+        let read_only = Settings {
+            read_only: true,
+            ..Settings::default()
+        };
+        assert!(read_only.save_to_optional_path(None));
+        let ephemeral = Settings {
+            ephemeral: true,
+            ..Settings::default()
+        };
+        assert!(ephemeral.save_to_optional_path(None));
+
+        // The injectable `Some` path still performs a real write.
+        let dir = scratch("optional-save");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        assert!(Settings::default().save_to_optional_path(Some(&path)));
+        assert!(path.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn save_removes_tmp_file_when_rename_fails() {
         let dir = scratch("tmp-cleanup");
         let _ = fs::remove_dir_all(&dir);
@@ -1296,6 +1400,9 @@ mod tests {
                 dirs_first: true,
             },
             show_hidden: true,
+            // A custom command is not the platform default, so it survives
+            // the round-trip untouched (the default is normalized to "unset").
+            terminal_command: "custom-terminal --title build".to_string(),
             ..Settings::default()
         };
         settings.save_to(&path).expect("save should succeed");
@@ -1736,9 +1843,9 @@ mod search_history_tests {
 mod schema_validation_tests {
     use super::{
         schema_status, BookmarkLabel, SavedSearch, SchemaStatus, Settings, TabSession, ViewLayout,
-        WindowSession, MAX_BOOKMARKS, MAX_BOOKMARK_LABELS, MAX_PATH_BYTES, MAX_QUERY_BYTES,
-        MAX_RECENT_DIRS, MAX_RECENT_SEARCHES, MAX_SAVED_SEARCHES, MAX_SETTINGS_BYTES, MAX_TABS,
-        SCHEMA_VERSION,
+        WindowSession, MAX_BOOKMARKS, MAX_BOOKMARK_LABELS, MAX_HISTORY_ENTRIES, MAX_PATH_BYTES,
+        MAX_QUERY_BYTES, MAX_RECENT_DIRS, MAX_RECENT_SEARCHES, MAX_SAVED_SEARCHES,
+        MAX_SETTINGS_BYTES, MAX_TABS, MAX_WINDOW_SESSIONS, SCHEMA_VERSION,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1787,6 +1894,58 @@ mod schema_validation_tests {
         assert_eq!(loaded, Settings::default());
         assert!(!path.exists(), "oversized file must be moved aside");
         assert_eq!(backup_names(&dir).len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn large_but_legal_settings_roundtrip_without_backup() {
+        let (dir, path) = setup("large-legal");
+        // Maximum legal volume: 8 windows x 32 tabs x 200 history paths per
+        // tab. With ~90-byte paths this is ~5 MB once JSON-escaped: bigger
+        // than the old 256 KiB limit, but still below MAX_SETTINGS_BYTES.
+        let suffix = "x".repeat(60);
+        let windows: Vec<_> = (0..MAX_WINDOW_SESSIONS)
+            .map(|w| {
+                let tabs: Vec<_> = (0..MAX_TABS)
+                    .map(|t| {
+                        let back: Vec<_> = (0..MAX_HISTORY_ENTRIES)
+                            .map(|h| format!("/tmp/gpui-fe-large/w{w}/t{t}/h{h}/{suffix}"))
+                            .collect();
+                        serde_json::json!({
+                            "cwd": format!("/tmp/gpui-fe-large/w{w}/t{t}/{suffix}"),
+                            "back": back,
+                            "forward": [],
+                        })
+                    })
+                    .collect();
+                serde_json::json!({"tabs": tabs, "active_tab": 0})
+            })
+            .collect();
+        let raw = serde_json::json!({"version": SCHEMA_VERSION, "windows": windows}).to_string();
+        assert!(raw.len() > 256 * 1024, "file is only {} bytes", raw.len());
+        assert!((raw.len() as u64) < MAX_SETTINGS_BYTES);
+        fs::write(&path, &raw).unwrap();
+
+        let loaded = Settings::load_from(&path);
+        assert!(!loaded.read_only, "legal data must not be read-only");
+        assert!(loaded.load_error.is_none());
+        assert!(
+            backup_names(&dir).is_empty(),
+            "a legal full-size file must never be backed up"
+        );
+        assert_eq!(loaded.windows.len(), MAX_WINDOW_SESSIONS);
+        for window in &loaded.windows {
+            assert_eq!(window.tabs.len(), MAX_TABS);
+            for tab in &window.tabs {
+                assert_eq!(tab.back.len(), MAX_HISTORY_ENTRIES);
+            }
+        }
+
+        let saved = dir.join("saved.json");
+        loaded.save_to(&saved).unwrap();
+        let reloaded = Settings::load_from(&saved);
+        assert!(!reloaded.read_only);
+        assert_eq!(reloaded, loaded, "a legal full-size file must round-trip");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2343,6 +2502,9 @@ mod personalization_settings_tests {
     fn saved_search_lookup_remove_and_file_roundtrip() {
         let (dir, path) = setup("saved-search-roundtrip");
         let mut settings = Settings::default();
+        // Use a custom command so this test still checks plain round-trip
+        // fidelity; the platform default is intentionally normalized on save.
+        assert!(settings.set_terminal_command("custom-terminal"));
         settings.save_search("Todos", "TODO");
         assert_eq!(settings.saved_search("todos").unwrap().query, "TODO");
         assert!(settings.saved_search("missing").is_none());
@@ -2602,24 +2764,66 @@ mod terminal_command_tests {
     }
 
     #[test]
-    fn legacy_file_without_the_field_gets_the_platform_default() {
+    fn legacy_file_without_the_field_uses_the_portable_unset_value() {
         let (dir, path) = setup("legacy");
         fs::write(&path, br#"{"version":1,"show_hidden":true,"view":"icons"}"#).unwrap();
         let loaded = Settings::load_from(&path);
         assert_eq!(loaded.version, SCHEMA_VERSION);
-        assert_eq!(loaded.terminal_command, default_terminal_command());
+        // serde supplies the platform default for the missing field, then
+        // validate() normalizes it to "unset" so no OS-specific command is
+        // kept in memory or carried into the next saved file.
+        assert!(loaded.terminal_command.is_empty());
+        assert!(loaded.terminal_command_argv().is_none());
+        assert_eq!(
+            Settings::default().terminal_command,
+            default_terminal_command()
+        );
         assert!(!loaded.read_only);
         assert!(loaded.show_hidden);
 
-        // Saving materializes the new field in the current schema shape.
+        // Saving materializes the field with the portable empty value. The
+        // settings dialog still previews the platform default when it is empty.
         let saved = dir.join("saved.json");
         loaded.save_to(&saved).unwrap();
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&saved).unwrap()).unwrap();
-        assert_eq!(
-            value["terminal_command"].as_str(),
-            Some(default_terminal_command().as_str())
-        );
+        assert_eq!(value["terminal_command"].as_str(), Some(""));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn platform_default_is_normalized_but_custom_command_is_preserved() {
+        let (dir, path) = setup("normalize-default");
+        let default = default_terminal_command();
+
+        // validate() (load path): an old file explicitly carrying the current
+        // platform's default is normalized to the unset representation.
+        fs::write(
+            &path,
+            serde_json::json!({"version": 1, "terminal_command": default}).to_string(),
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(loaded.terminal_command.is_empty());
+        assert!(loaded.terminal_command_argv().is_none());
+        assert!(!loaded.read_only);
+
+        // save_to() (save path): the in-memory default is written as "" while
+        // a custom command is persisted verbatim.
+        let saved = dir.join("saved.json");
+        Settings::default().save_to(&saved).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&saved).unwrap()).unwrap();
+        assert_eq!(value["terminal_command"].as_str(), Some(""));
+
+        let custom = "custom-terminal --title build";
+        let mut custom_settings = Settings::default();
+        assert!(custom_settings.set_terminal_command(custom));
+        let custom_saved = dir.join("custom.json");
+        custom_settings.save_to(&custom_saved).unwrap();
+        let custom_value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&custom_saved).unwrap()).unwrap();
+        assert_eq!(custom_value["terminal_command"].as_str(), Some(custom));
         fs::remove_dir_all(&dir).unwrap();
     }
 
