@@ -592,11 +592,9 @@ impl Settings {
     }
 }
 
-/// Terminal-command helpers consumed by the launcher UI (F6-50). They live
-/// next to the persistence code so on-disk validation and runtime use share
-/// one definition of a "usable command". `#[allow(dead_code)]` keeps the
-/// `-D warnings` gate green until the UI task calls them.
-#[allow(dead_code)]
+/// Terminal-command helpers consumed by the launcher UI (F6-50) and the
+/// Alt+T settings dialog. They live next to the persistence code so on-disk
+/// validation and runtime use share one definition of a "usable command".
 impl Settings {
     /// Validate and store a terminal command. Blank input is accepted as
     /// "disabled"; oversized or control-byte-bearing input is refused without
