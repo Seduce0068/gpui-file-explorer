@@ -101,16 +101,17 @@ fn path_present(path: &Path) -> bool {
 
 /// Keys forwarded to the normal keymap while the search view is open and no
 /// search text input owns focus. Text editing keys stay with the query field;
-/// once focus moves to the result list, navigation and copy reach the existing
-/// list handlers. Alt variants keep their prior (blocked) behaviour.
+/// once focus moves to the result list, navigation, copy, F4 (terminal) and
+/// Ctrl+Q (quit) reach the existing handlers. Alt variants keep their prior
+/// (blocked) behaviour.
 fn search_view_key_allowed(key: &str, ctrl: bool, alt: bool) -> bool {
     if alt {
         return false;
     }
     matches!(
         key,
-        "up" | "down" | "pageup" | "pagedown" | "home" | "end" | "enter"
-    ) || (ctrl && key == "c")
+        "up" | "down" | "pageup" | "pagedown" | "home" | "end" | "enter" | "f4"
+    ) || (ctrl && matches!(key, "c" | "q"))
 }
 
 /// Icon colour per file kind (folders are blue, everything else is tinted).
@@ -431,30 +432,49 @@ fn keymap_chord_reserved(chord: &str) -> bool {
     key == "f1" || key == "escape"
 }
 
-/// Parse one line typed into the keymap dialog: `action_name chord`.
+/// One command accepted by the keymap dialog's single text input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum KeymapInput {
+    /// `action_name chord`: add or replace a persisted override.
+    Bind { action: String, chord: String },
+    /// `unbind action_name`: drop the persisted override for that action.
+    Unbind { action: String },
+}
+
+/// Parse one line typed into the keymap dialog: `action_name chord` or
+/// `unbind action_name`.
 ///
 /// A single text input is used instead of raw key capture: GPUI dispatches
 /// `key_down` globally and a modal input cannot safely swallow arbitrary
 /// keystrokes without stealing Escape / F1 from the dialog guards. The action
 /// is validated through serde against `KeyAction`'s snake_case names and the
-/// chord through `parse_chord`, so the returned pair is always applicable by
+/// chord through `parse_chord`, so a bound pair is always applicable by
 /// `KeyMap::from_settings`. The chord is lowercased for canonical storage.
-fn parse_keymap_input(input: &str) -> Option<(String, String)> {
+/// The `unbind` form needs no chord because it removes an existing override,
+/// restoring the default binding for that action.
+fn parse_keymap_input(input: &str) -> Option<KeymapInput> {
     let mut fields = input.split_whitespace();
-    let action = fields.next()?;
-    let chord = fields.next()?;
+    let first = fields.next()?;
+    let second = fields.next()?;
     if fields.next().is_some() {
         return None;
     }
-    if action.len() > MAX_CHORD_BYTES || chord.len() > MAX_CHORD_BYTES {
+    if first.len() > MAX_CHORD_BYTES || second.len() > MAX_CHORD_BYTES {
         return None;
     }
     // `none` is a serde name but not a bindable action (no table row has it).
-    let name = serde_json::Value::String(action.to_string());
-    let parsed = serde_json::from_value::<KeyAction>(name).ok()?;
-    if parsed == KeyAction::None {
-        return None;
+    let parse_action = |name: &str| -> Option<String> {
+        let value = serde_json::Value::String(name.to_string());
+        let action = serde_json::from_value::<KeyAction>(value).ok()?;
+        (action != KeyAction::None).then(|| name.to_string())
+    };
+    if first == "unbind" {
+        return Some(KeymapInput::Unbind {
+            action: parse_action(second)?,
+        });
     }
+    let action = parse_action(first)?;
+    let chord = second;
     parse_chord(chord)?;
     if keymap_chord_reserved(chord) {
         return None;
@@ -471,7 +491,10 @@ fn parse_keymap_input(input: &str) -> Option<(String, String)> {
             return None;
         }
     }
-    Some((action.to_string(), chord.to_ascii_lowercase()))
+    Some(KeymapInput::Bind {
+        action,
+        chord: chord.to_ascii_lowercase(),
+    })
 }
 
 /// Insert or replace one persisted override, deduplicated by action name.
@@ -494,6 +517,15 @@ fn upsert_keymap_override(
     }
     overrides.push((action.to_string(), chord.to_string()));
     true
+}
+
+/// Remove every persisted override for `action`, leaving other entries intact.
+/// Returns `true` when at least one entry was removed. Rebuilding the live
+/// `KeyMap` afterwards restores the action's default binding.
+fn remove_keymap_override(overrides: &mut Vec<(String, String)>, action: &str) -> bool {
+    let before = overrides.len();
+    overrides.retain(|(name, _)| name != action);
+    before != overrides.len()
 }
 
 /// Personalized key map. The table is data, so a settings panel (or a test)
@@ -3014,9 +3046,10 @@ impl Explorer {
         }
     }
 
-    /// Enter in the dialog: parse `action chord`, replace any existing override
-    /// for that action, save settings and apply the new table immediately.
-    /// Invalid input keeps the dialog open with an error; Esc closes it.
+    /// Enter in the dialog: parse `action chord` (bind) or `unbind action`
+    /// (remove), apply it to the persisted overrides, save settings and rebuild
+    /// the live table immediately. Invalid input keeps the dialog open with an
+    /// error; Esc closes it.
     fn confirm_keymap(&mut self, cx: &mut Context<Self>) {
         let raw = {
             let Some(editor) = self.keymap_editor.as_ref() else {
@@ -3024,22 +3057,35 @@ impl Explorer {
             };
             editor.input.read(cx).value().to_string()
         };
-        let Some((action, chord)) = parse_keymap_input(&raw) else {
+        let Some(command) = parse_keymap_input(&raw) else {
             self.set_keymap_error(
-                "形式は「アクション名 コード」です（例: open_preview ctrl+shift+p）",
+                "形式は「アクション名 コード」または「unbind アクション名」です（例: open_preview ctrl+shift+p）",
                 cx,
             );
             return;
         };
-        if !upsert_keymap_override(&mut self.settings.keymap, &action, &chord) {
-            self.set_keymap_error(
-                &format!("上書きは最大 {MAX_KEYMAP_OVERRIDES} 件までです"),
-                cx,
-            );
-            return;
-        }
-        // Rebuild the live table so the new binding works without a restart,
-        // exactly as a binding read from settings.json at startup would.
+        let status = match command {
+            KeymapInput::Bind { action, chord } => {
+                if !upsert_keymap_override(&mut self.settings.keymap, &action, &chord) {
+                    self.set_keymap_error(
+                        &format!("上書きは最大 {MAX_KEYMAP_OVERRIDES} 件までです"),
+                        cx,
+                    );
+                    return;
+                }
+                format!("キーマップを設定しました: {action} → {chord}")
+            }
+            KeymapInput::Unbind { action } => {
+                if remove_keymap_override(&mut self.settings.keymap, &action) {
+                    format!("キーマップを解除しました: {action}")
+                } else {
+                    format!("解除する設定はありません: {action}")
+                }
+            }
+        };
+        // Rebuild the live table so the change works without a restart, exactly
+        // as a binding read from settings.json at startup would. Unbinding a
+        // persisted override restores that action's default binding.
         self.keymap = KeyMap::from_settings(&self.settings);
         let saved = self.save_settings();
         self.keymap_editor = None;
@@ -3047,7 +3093,7 @@ impl Explorer {
         self.status = if !saved {
             STATUS_SETTINGS_SAVE_FAILED.to_string()
         } else {
-            format!("キーマップを設定しました: {action} → {chord}")
+            status
         };
         cx.notify();
     }
@@ -3241,9 +3287,9 @@ impl Explorer {
                 self.close_search(cx);
                 return;
             }
-            // The query field keeps its text-editing keys. With focus on a
-            // result row / the root, let navigation and Ctrl+C fall through to
-            // the normal keymap so search results are keyboard-accessible.
+            // The query field keeps every key (including F4 / Ctrl+Q) while
+            // typing. With focus on a result row / the root, let navigation,
+            // Ctrl+C, F4 and Ctrl+Q fall through to the normal keymap.
             if self.search_input_focused(window, cx)
                 || !search_view_key_allowed(key, modifiers.control, modifiers.alt)
             {
@@ -8618,12 +8664,13 @@ mod tests {
         help_overrides_line, install_op_token, internal_drop_paths, keymap_action_name,
         keymap_chord_reserved, kind_color, labeled_display_name, middle_click_tab_dir,
         normalize_terminal_command, parse_chord, parse_keymap_input, pending_rename_index,
-        rank_fuzzy, read_properties_snapshot, saved_search_caption, saved_search_save_status,
-        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
-        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
-        trash_batch, trash_delete_status, trash_key_action, upsert_keymap_override, CliAction,
-        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, TrashKeyAction,
-        C_MUTED, GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX,
+        rank_fuzzy, read_properties_snapshot, remove_keymap_override, saved_search_caption,
+        saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
+        trash_key_action, upsert_keymap_override, CliAction, Explorer, FuzzyCandidate, FuzzySource,
+        KeyAction, KeyBinding, KeyMap, KeymapInput, TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX,
+        SIDEBAR_WIDTH_PX,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -9279,6 +9326,14 @@ mod tests {
             );
         }
         assert!(search_view_key_allowed("c", true, false));
+        // F4 (terminal) and Ctrl+Q (quit) are global actions: they must reach
+        // normal dispatch while browsing results, but stay blocked in the input.
+        // The input-focus guard lives in `on_key_down`, not in this pure helper.
+        assert!(search_view_key_allowed("f4", false, false));
+        assert!(!search_view_key_allowed("f4", false, true));
+        assert!(search_view_key_allowed("q", true, false));
+        assert!(!search_view_key_allowed("q", false, false));
+        assert!(!search_view_key_allowed("q", true, true));
         for (key, ctrl) in [
             ("c", false),
             ("a", true),
@@ -9832,20 +9887,71 @@ mod tests {
 
     #[test]
     fn parse_keymap_input_accepts_action_and_chord() {
-        let pair = |action: &str, chord: &str| (action.to_string(), chord.to_string());
+        let bound = |action: &str, chord: &str| {
+            Some(KeymapInput::Bind {
+                action: action.to_string(),
+                chord: chord.to_string(),
+            })
+        };
         assert_eq!(
             parse_keymap_input("open_preview ctrl+shift+p"),
-            Some(pair("open_preview", "ctrl+shift+p"))
+            bound("open_preview", "ctrl+shift+p")
         );
         // Modifier order is irrelevant and the stored chord is canonical.
         assert_eq!(
             parse_keymap_input("  fuzzy_jump   SHIFT+ALT+ctrl+PageUp  "),
-            Some(pair("fuzzy_jump", "shift+alt+ctrl+pageup"))
+            bound("fuzzy_jump", "shift+alt+ctrl+pageup")
         );
         assert_eq!(
             parse_keymap_input("open_terminal f4"),
-            Some(pair("open_terminal", "f4"))
+            bound("open_terminal", "f4")
         );
+    }
+
+    #[test]
+    fn parse_keymap_input_accepts_unbind_action() {
+        let unbound = |action: &str| {
+            Some(KeymapInput::Unbind {
+                action: action.to_string(),
+            })
+        };
+        assert_eq!(
+            parse_keymap_input("unbind open_preview"),
+            unbound("open_preview")
+        );
+        assert_eq!(
+            parse_keymap_input("  unbind   fuzzy_jump \n"),
+            unbound("fuzzy_jump")
+        );
+        // `none` is a serde name, not a bindable action: it must not become an
+        // unbind target, and a chord is never accepted for the unbind form.
+        assert_eq!(parse_keymap_input("unbind none"), None);
+        assert_eq!(parse_keymap_input("unbind unknown_action"), None);
+        assert_eq!(parse_keymap_input("unbind open_preview ctrl+p"), None);
+        assert_eq!(parse_keymap_input("unbind"), None);
+    }
+
+    #[test]
+    fn remove_keymap_override_drops_only_the_named_action() {
+        let mut overrides = vec![
+            ("open_preview".to_string(), "space".to_string()),
+            ("reload".to_string(), "f5".to_string()),
+            ("open_preview".to_string(), "ctrl+p".to_string()),
+        ];
+        assert!(remove_keymap_override(&mut overrides, "open_preview"));
+        assert_eq!(overrides, vec![("reload".to_string(), "f5".to_string())]);
+        // A second attempt is a no-op and reports that nothing was removed.
+        assert!(!remove_keymap_override(&mut overrides, "open_preview"));
+        assert!(!remove_keymap_override(&mut overrides, "quit"));
+        assert_eq!(overrides.len(), 1);
+
+        // Removing an override restores the default through `from_settings`.
+        let settings = Settings {
+            keymap: overrides,
+            ..Settings::default()
+        };
+        let keymap = KeyMap::from_settings(&settings);
+        assert_eq!(keymap.resolve("f5", false, false, false), KeyAction::Reload);
     }
 
     #[test]
@@ -9901,7 +10007,10 @@ mod tests {
     fn parse_keymap_input_whitespace_rules() {
         assert_eq!(
             parse_keymap_input("\t open_preview \t ctrl+shift+p \n"),
-            Some(("open_preview".to_string(), "ctrl+shift+p".to_string()))
+            Some(KeymapInput::Bind {
+                action: "open_preview".to_string(),
+                chord: "ctrl+shift+p".to_string(),
+            })
         );
         // Exactly two whitespace-separated fields are required: no missing
         // chord, no extra action words, no empty input.
