@@ -238,6 +238,19 @@ fn summarize_op(verb: &str, stats: &OpStats) -> String {
     message
 }
 
+/// Final-status suffix for sources filtered out *before* a transfer starts.
+///
+/// `run_transfer` replaces `status` immediately with its "…中…" message, so a
+/// caller that pre-filters missing/special entries must hand its notice through
+/// the transfer instead of assigning it to `status` beforehand.
+fn transfer_skip_notice(parts: &[String]) -> String {
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("（{}）", parts.join(" / "))
+    }
+}
+
 // ------------------------------------------------------------- F6-50 terminal
 
 /// Directory in which "open terminal here" starts the child process.
@@ -1411,6 +1424,18 @@ fn clear_op_token(current: u64, cancel: &mut Option<Arc<CancelFlag>>, token: &Op
     true
 }
 
+/// Whether `token` still identifies an *active* sentinel owner.
+///
+/// `clear_op_token` deliberately keeps the monotonic id, so the id alone also
+/// matches an operation that has already settled. Requiring the live cancel
+/// flag stops a queued progress event from repainting "…中…" (and restoring
+/// `op_progress`) after the final status was applied. A newly started op
+/// installs a fresh id *and* flag, so a legitimate current transfer still
+/// passes while an old token never does.
+fn op_is_active(current_id: u64, cancel: &Option<Arc<CancelFlag>>, token: &OpToken) -> bool {
+    cancel.is_some() && current_id == token.id
+}
+
 /// Move `paths` to the system trash one by one, honouring Esc between items.
 ///
 /// Blocking: call from the background executor only. Returns the successfully
@@ -2114,9 +2139,11 @@ impl Explorer {
         let was_bookmarked = self.settings.is_bookmarked(&path);
         let added = self.settings.toggle_bookmark(&path);
         debug_assert_eq!(added, !was_bookmarked);
-        let _ = self.save_settings();
+        let saved = self.save_settings();
         self.refresh_bookmarks();
-        self.status = if added {
+        self.status = if !saved {
+            STATUS_SETTINGS_SAVE_FAILED.to_string()
+        } else if added {
             format!("ブックマークに追加しました: {}", display_path(&path))
         } else {
             format!("ブックマークを解除しました: {}", display_path(&path))
@@ -2131,9 +2158,11 @@ impl Explorer {
             return;
         }
         let added = self.settings.toggle_bookmark(path);
-        let _ = self.save_settings();
+        let saved = self.save_settings();
         self.refresh_bookmarks();
-        self.status = if added {
+        self.status = if !saved {
+            STATUS_SETTINGS_SAVE_FAILED.to_string()
+        } else if added {
             format!("ブックマークに追加しました: {}", display_path(path))
         } else {
             format!("ブックマークを解除しました: {}", display_path(path))
@@ -2185,11 +2214,11 @@ impl Explorer {
         } else {
             self.settings.set_bookmark_label(&path, &label)
         };
-        if changed {
-            let _ = self.save_settings();
-        }
+        let saved = if changed { self.save_settings() } else { true };
         self.label_editor = None;
-        self.status = if label.is_empty() {
+        self.status = if !saved {
+            STATUS_SETTINGS_SAVE_FAILED.to_string()
+        } else if label.is_empty() {
             if changed {
                 format!("ラベルを削除しました: {}", display_path(&path))
             } else {
@@ -2206,10 +2235,10 @@ impl Explorer {
     /// Remove a label directly from the row context menu (F6-49).
     fn clear_bookmark_label(&mut self, path: &Path, cx: &mut Context<Self>) {
         let removed = self.settings.remove_bookmark_label(path);
-        if removed {
-            let _ = self.save_settings();
-        }
-        self.status = if removed {
+        let saved = if removed { self.save_settings() } else { true };
+        self.status = if !saved {
+            STATUS_SETTINGS_SAVE_FAILED.to_string()
+        } else if removed {
             format!("ラベルを削除しました: {}", display_path(path))
         } else {
             format!("ラベルは設定されていません: {}", display_path(path))
@@ -3737,9 +3766,9 @@ impl Explorer {
         Some(install_op_token(&mut self.op_token, &mut self.op_cancel))
     }
 
-    /// Whether `token` still identifies the operation owning the sentinel.
+    /// Whether `token` still identifies an active operation owning the sentinel.
     fn is_current_op(&self, token: &OpToken) -> bool {
-        self.op_token == token.id
+        op_is_active(self.op_token, &self.op_cancel, token)
     }
 
     /// Clear the sentinel only if `token` still owns it; a stale completion
@@ -3819,11 +3848,21 @@ impl Explorer {
             return;
         }
 
-        self.run_transfer(cwd.clone(), paths, cut, missing.len(), cx);
+        let skip_notice = if missing.is_empty() {
+            String::new()
+        } else {
+            transfer_skip_notice(&[format!("存在しない項目 {} 件をスキップ", missing.len())])
+        };
+        self.run_transfer(cwd.clone(), paths, cut, skip_notice, cx);
     }
 
     /// Copy (`cut == false`) or move (`cut == true`) `paths` into `destination`
     /// on the background executor.
+    ///
+    /// `skip_notice` is a pre-formatted final-status suffix (see
+    /// [`transfer_skip_notice`]) for entries the caller filtered out before the
+    /// transfer. It must be passed here: `status` is replaced by the progress
+    /// message immediately below, so setting it at the call site would lose it.
     ///
     /// Safety: destinations always use [`ConflictPolicy::Rename`], so an
     /// existing file is never overwritten; `Esc` cancels cooperatively.
@@ -3832,7 +3871,7 @@ impl Explorer {
         destination: PathBuf,
         paths: Vec<PathBuf>,
         cut: bool,
-        skipped: usize,
+        skip_notice: String,
         cx: &mut Context<Self>,
     ) {
         let Some(token) = self.begin_op(cx) else {
@@ -3967,6 +4006,10 @@ impl Explorer {
                     "file operation completed"
                 );
                 let succeeded = stats.files + stats.dirs > 0;
+                // A cut/move clipboard may only be dropped when every source
+                // was moved. `first_error` is consumed by the match below, so
+                // snapshot that fact first (see the clipboard handling below).
+                let fully_succeeded = first_error.is_none() && stats.skipped.is_empty();
                 let status = match first_error {
                     Some(OpError::Cancelled) => "キャンセルしました".to_string(),
                     Some(error) if succeeded => {
@@ -3975,14 +4018,16 @@ impl Explorer {
                     Some(error) => format!("{verb}できません: {error}"),
                     None => summarize_op(verb, &stats),
                 };
-                let status = if skipped > 0 {
-                    format!("{status}（存在しない項目 {skipped} 件をスキップ）")
-                } else {
-                    status
-                };
+                let status = format!("{status}{skip_notice}");
                 this.suppress_for(SELF_OP_SUPPRESS);
-                if cut {
-                    // Moved sources are gone; never keep a stale cut clipboard.
+                if cut && fully_succeeded {
+                    // Only a fully completed move makes every source stale. On
+                    // cancel or partial failure some sources still exist; keep
+                    // the slot so the user can retry (paste re-checks which
+                    // paths are gone). Reporting the exact remaining paths
+                    // would need per-item results from the background task;
+                    // the conservative full-success rule is the minimal safe
+                    // choice and never loses an unmoved source.
                     this.clipboard = None;
                 }
                 if let Some(dest) = first_created {
@@ -4091,10 +4136,11 @@ impl Explorer {
         if special > 0 {
             notices.push(format!("特殊ファイル {special} 件をスキップ"));
         }
-        if !notices.is_empty() {
-            self.status = notices.join(" / ");
-        }
-        self.run_transfer(destination, existing, false, 0, cx);
+        // Pass the notices to `run_transfer`: assigning `status` here would be
+        // overwritten by its immediate "コピー中…" update, and the skip reasons
+        // would never reach the final status.
+        let skip_notice = transfer_skip_notice(&notices);
+        self.run_transfer(destination, existing, false, skip_notice, cx);
     }
 
     // ------------------------------------------------------------------ undo
@@ -8819,14 +8865,15 @@ mod tests {
         format_selected, fuzzy_candidates, fuzzy_score, grid_columns, help_overrides_line,
         install_op_token, internal_drop_paths, keymap_action_name, keymap_chord_reserved,
         kind_color, labeled_display_name, middle_click_tab_dir, normalize_terminal_command,
-        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
+        op_is_active, parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
         read_properties_snapshot, remove_keymap_override, saved_search_caption,
         saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
-        trash_key_action, upsert_keymap_override, version_label, CliAction, DebugSettingsOverrides,
-        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, SortKey,
-        TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX,
+        terminal_started_status, terminal_target_dir, transfer_skip_notice, trash_batch,
+        trash_delete_status, trash_key_action, upsert_keymap_override, version_label, CliAction,
+        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
+        KeyMap, KeymapInput, SortKey, TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX,
+        SIDEBAR_WIDTH_PX,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -8971,6 +9018,19 @@ mod tests {
         assert!(message.contains("1 フォルダ"), "{message}");
         assert!(message.contains("1 件スキップ"), "{message}");
         assert!(message.ends_with(": dest"), "{message}");
+    }
+
+    #[test]
+    fn transfer_skip_notice_preserves_drop_reasons() {
+        assert_eq!(transfer_skip_notice(&[]), "");
+        let notice = transfer_skip_notice(&[
+            "2 件は存在しないためスキップ".to_string(),
+            "特殊ファイル 1 件をスキップ".to_string(),
+        ]);
+        assert_eq!(
+            notice,
+            "（2 件は存在しないためスキップ / 特殊ファイル 1 件をスキップ）"
+        );
     }
 
     #[test]
@@ -9479,6 +9539,30 @@ mod tests {
         assert_eq!(second.id, 2, "monotonic ids prevent an ABA mix-up");
         assert!(!clear_op_token(id, &mut cancel, &first));
         assert!(clear_op_token(id, &mut cancel, &second));
+    }
+
+    #[test]
+    fn stale_progress_cannot_claim_a_settled_operation() {
+        let mut id = 0;
+        let mut cancel = None;
+        let token = install_op_token(&mut id, &mut cancel);
+        assert!(
+            op_is_active(id, &cancel, &token),
+            "live op accepts progress"
+        );
+
+        // `finish_op` clears the flag but deliberately keeps the monotonic id.
+        assert!(clear_op_token(id, &mut cancel, &token));
+        assert!(
+            !op_is_active(id, &cancel, &token),
+            "queued progress must not repaint the final status"
+        );
+
+        // A newer overlapping op gets a fresh id and flag; it must keep working
+        // while the old token stays rejected.
+        let newer = install_op_token(&mut id, &mut cancel);
+        assert!(!op_is_active(id, &cancel, &token));
+        assert!(op_is_active(id, &cancel, &newer));
     }
 
     #[test]
