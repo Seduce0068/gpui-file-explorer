@@ -390,6 +390,21 @@ status: current
 - [x] **R4-INT04** terminal_command のコメントが現行実装と矛盾 — 対応: 4ecab1b
   — `app/src/settings.rs:1444,2809`
 
+### 優先度: 中（第20回保守性発掘）
+
+- [ ] **R1-MAINT01/R2-MAINT02** stale dead_code と古いコメント
+  — settings 個人化 API / model コンストラクタ / strings F6-36
+- [ ] **R3-E2E01** app/README 内で E2E ツールの導入状態が矛盾（未導入 vs 導入済み）
+  — `app/README.md:467` vs `:489`
+- [ ] **R3-E2E01** setup-e2e-input.sh が libxdo 依存を検証せず xdotool を「installed」と報告しうる
+  — `scripts/setup-e2e-input.sh:55`
+- [ ] **R3-E2E01** E2E probe の実行証跡が未記録（ローカル完結で可能な準備）
+  — `README.md:69,107`
+- [ ] **R4-WASM01** gpui-kit feature 調整による stable wasm 経路の可否が未検証
+  — `notes/wasm-browser-notes.md:28-38`
+- [ ] **R4-WASM01** wasm 失敗ログが現行 Cargo.toml の trash ゲートと矛盾
+  — `notes/wasm-browser-notes.md:43`
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
