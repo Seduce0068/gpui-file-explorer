@@ -214,6 +214,13 @@ impl Selection {
     }
 
     pub fn select_all(&mut self, entries: &[PathBuf]) {
+        // An empty listing must leave no stale anchor behind: the invariant is
+        // "empty selection => anchor None", otherwise the next select_range
+        // would silently restore a range from an item the user cannot see.
+        if entries.is_empty() {
+            self.clear();
+            return;
+        }
         self.set_paths(entries.to_vec());
         if self.anchor.is_none() {
             self.anchor = entries.first().cloned();
@@ -1362,6 +1369,24 @@ mod selection_tests {
 
         selection.retain(&[]);
         assert!(selection.is_empty());
+    }
+
+    #[test]
+    fn select_all_empty_clears_stale_anchor() {
+        let entries = paths(&["/a", "/b", "/c"]);
+        let mut selection = Selection::default();
+        selection.select_single(PathBuf::from("/b"));
+        assert!(selection.contains(Path::new("/b")));
+
+        // Selecting all of an empty listing empties the selection and must
+        // drop the anchor left by the earlier single selection.
+        selection.select_all(&[]);
+        assert!(selection.is_empty());
+
+        // A stale "/b" anchor would turn this into the range "/b"..="/c".
+        // Without an anchor, select_range behaves like a single selection.
+        selection.select_range(&entries, Path::new("/c"));
+        assert_eq!(selection.paths(), &paths(&["/c"])[..]);
     }
 
     #[test]
