@@ -201,13 +201,13 @@ status: current
   — 対応: 0bd0679
 - [x] **R2-STAT01** reconcile 成功時に Error 状態が残存する
   — 対応: 0bd0679
-- [ ] **R1-INV01** History::default() が max_back=0 で new() と不整合
+- [x] **R1-INV01** History::default() が max_back=0 で new() と不整合 — 対応: 996796b
   — `app/src/history.rs:22-34`
-- [ ] **R1-INV01** go_back/go_forward が妥当性確認前にスタックを更新
+- [x] **R1-INV01** go_back/go_forward が妥当性確認前にスタックを更新 — 対応: 996796b
   — `app/src/history.rs:51-62`
-- [ ] **R1-INV01** UndoStack::push_redo に上限が無い
+- [x] **R1-INV01** UndoStack::push_redo に上限が無い — 対応: 0156b17
   — `app/src/undo.rs:78-80`
-- [ ] **R1-INV01** select_all(&[]) が空選択＋stale anchor を残す
+- [x] **R1-INV01** select_all(&[]) が空選択＋stale anchor を残す — 対応: 0156b17
   — `app/src/model.rs:216-221`
 
 ### 優先度: 低（調査タスク）
