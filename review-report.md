@@ -19,7 +19,8 @@ status: complete
 ## 総評
 
 データ層（`model` / `ops` / `search` / `settings` / `history` / `tabs` /
-`trash_view`）は GPUI 非依存の純関数として切り出され、132 件のヘッドレス
+`trash_view`）は GPUI 非依存の純関数として切り出され、初回レビュー時点の
+132 件のヘッドレス
 テストで担保されている。安全性ポリシー（上書き禁止、symlink 非追跡、
 `.partial` 経由の原子的コピー、`#![forbid(unsafe_code)]`）も
 `ops.rs` のモジュール doc と実装が一致していた。
