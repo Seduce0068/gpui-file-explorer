@@ -666,7 +666,11 @@ impl Settings {
         }
         self.bookmarks.push(path.to_path_buf());
         if self.bookmarks.len() > MAX_BOOKMARKS {
-            self.bookmarks.remove(0);
+            // Eviction is a removal just like the explicit branch above: drop
+            // the evicted path's label too, otherwise re-adding that path would
+            // silently revive the stale label.
+            let evicted = self.bookmarks.remove(0);
+            self.remove_bookmark_label(&evicted);
         }
         true
     }
@@ -738,6 +742,19 @@ impl Settings {
         false
     }
 
+    /// Ensure `path` has a bookmark so a label attached to it survives the
+    /// `validate()` pass on load (which drops orphan labels). Returns `true`
+    /// when a bookmark was added. This is the side-effect-free counterpart to
+    /// the low-level `set_bookmark_label`: the UI calls it before assigning a
+    /// label to a directory that is not bookmarked yet.
+    pub fn ensure_bookmark_for_label(&mut self, path: &Path) -> bool {
+        if self.is_bookmarked(path) {
+            false
+        } else {
+            self.toggle_bookmark(path)
+        }
+    }
+
     /// Set the label of a path. A blank label clears it; an empty path,
     /// oversized label or a new entry past `MAX_BOOKMARK_LABELS` is refused.
     /// Returns `true` when the list changed.
@@ -746,7 +763,8 @@ impl Settings {
     /// bookmarked (the UI layer owns that invariant). An orphan label works in
     /// memory, but `validate()` — which runs on every load — drops labels whose
     /// path is not bookmarked. Bookmark a path first when its label must
-    /// survive a save/reload cycle.
+    /// survive a save/reload cycle; [`Self::ensure_bookmark_for_label`] is the
+    /// UI-facing helper for that.
     pub fn set_bookmark_label(&mut self, path: &Path, label: &str) -> bool {
         if !sane_path(path) {
             return false;
@@ -1947,10 +1965,66 @@ mod bookmark_tests {
     }
 
     #[test]
+    fn evicting_a_bookmark_drops_its_label() {
+        let mut settings = Settings::default();
+        assert!(settings.toggle_bookmark(&p("/a")));
+        assert!(settings.set_bookmark_label(&p("/a"), "home"));
+        assert_eq!(settings.bookmark_label(&p("/a")), Some("home"));
+
+        // Filling past the cap evicts the oldest entry (/a). Its label must go
+        // with it, exactly as in the explicit-removal branch.
+        for index in 0..MAX_BOOKMARKS {
+            assert!(settings.toggle_bookmark(&p(&format!("/dir-{index}"))));
+        }
+        assert_eq!(settings.bookmarks.len(), MAX_BOOKMARKS);
+        assert!(!settings.is_bookmarked(&p("/a")));
+        assert!(settings.bookmark_label(&p("/a")).is_none());
+
+        // Re-adding the evicted path must not revive the stale label.
+        assert!(settings.toggle_bookmark(&p("/a")));
+        assert!(settings.is_bookmarked(&p("/a")));
+        assert!(settings.bookmark_label(&p("/a")).is_none());
+    }
+
+    #[test]
     fn empty_path_is_ignored() {
         let mut settings = Settings::default();
         assert!(!settings.toggle_bookmark(&p("")));
         assert!(settings.bookmarks.is_empty());
+    }
+
+    #[test]
+    fn ensure_bookmark_for_label_creates_owner_only_when_missing() {
+        let mut settings = Settings::default();
+        let path = p("/work/project");
+
+        // No bookmark yet: the helper adds one so the label has an owner.
+        assert!(settings.ensure_bookmark_for_label(&path));
+        assert!(settings.is_bookmarked(&path));
+
+        // Already bookmarked: no duplicate bookmark is created.
+        assert!(!settings.ensure_bookmark_for_label(&path));
+        assert_eq!(settings.bookmarks.len(), 1);
+
+        // An unusable path cannot be bookmarked; the helper is a no-op.
+        assert!(!settings.ensure_bookmark_for_label(&p("")));
+        assert_eq!(settings.bookmarks.len(), 1);
+    }
+
+    #[test]
+    fn label_on_auto_bookmarked_path_survives_validate() {
+        let mut settings = Settings::default();
+        let path = p("/work/project");
+
+        // The UI path: ensure a bookmark owner first, then set the label.
+        assert!(settings.ensure_bookmark_for_label(&path));
+        assert!(settings.set_bookmark_label(&path, "work"));
+        assert_eq!(settings.bookmark_label(&path), Some("work"));
+
+        // validate() (run on every load) keeps labels whose path is bookmarked.
+        settings.validate();
+        assert!(settings.is_bookmarked(&path));
+        assert_eq!(settings.bookmark_label(&path), Some("work"));
     }
 
     #[test]
