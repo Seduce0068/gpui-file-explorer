@@ -362,6 +362,16 @@ bash packaging/linux/build-deb.sh
   未実施のため、電源断時の完全な耐性は保証外です。
   `version` は現状 1 固定で、未知の version は警告を出して v1 として
   読み込みます（ダウングレード検出は未実装）。
+- **キーマップ変更とターミナル起動コマンド変更の設定 UI は未実装**です。
+  `KeyMap::rebind` / `KeyMap::reset`（`app/src/main.rs`）と
+  `Settings::set_terminal_command`（`app/src/settings.rs`）はデータ層に
+  存在しますが、これらを呼び出す設定画面・メニュー・ダイアログが無く、
+  現状はテストからしか呼ばれていません（本体では `#[allow(dead_code)]` 付き）。
+  設定ファイルにもキーマップのスキーマは無いため、キーバインドは出荷時の
+  既定値固定です。F4 で起動するターミナルコマンドを変更するには、
+  `settings.json` の `terminal_command` を手で編集する必要があります。
+  設定 UI のレイアウト、キーマップの永続化スキーマ、保存フローの設計が
+  別途必要で、今回の最小修正の対象外です（Finding 6）。
 - 起動時 `canonicalize` / 各所の単発 `is_dir()`（起動・ナビゲーション時のみ）は
   同期実行です（影響はマイクロ秒級。DESIGN §4.4 の厳密適用は今後の改善候補）。
 - `Window::prompt` のダイアログ表示中に別の prompt を開かない保証はありません
