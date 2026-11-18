@@ -78,6 +78,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "ナビゲーション",
         &[
             ("Enter", "選択項目を開く"),
+            ("↑ / ↓", "選択項目を上下に移動"),
             ("Ctrl+L", "パスを直接入力して移動"),
             ("Alt+← / Alt+→", "戻る / 進む"),
             ("Alt+↑ / Backspace", "親ディレクトリへ"),
@@ -103,6 +104,11 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ),
             ("F2", "名前変更"),
             ("Delete", "ゴミ箱へ移動（完全削除なし）"),
+            ("R / Ctrl+Enter", "選択項目を元の場所へ復元（ゴミ箱ビュー）"),
+            (
+                "ゴミ箱ビュー",
+                "Enter / R で復元、Delete は完全削除しません",
+            ),
             ("Ctrl+Shift+N", "新規フォルダ"),
             (
                 "ドラッグ&ドロップ",
@@ -210,6 +216,8 @@ pub const STATUS_TRASH_NO_CUT: &str = "ゴミ箱ビューでは切り取りで�
 pub const STATUS_TRASH_NO_PASTE: &str = "ゴミ箱ビューでは貼り付けできません";
 pub const STATUS_TRASH_NO_RENAME: &str = "ゴミ箱ビューでは名前を変更できません";
 pub const STATUS_TRASH_NO_PURGE: &str = "ゴミ箱内の完全削除は未対応です";
+pub const STATUS_TRASH_NO_HIDDEN: &str = "ゴミ箱ビューでは隠しファイルの切替はできません";
+pub const STATUS_TRASH_NO_SORT: &str = "ゴミ箱ビューでは並び替えはできません";
 pub const STATUS_CANCELLING: &str = "キャンセルしています…";
 pub const STATUS_NO_CLIPBOARD: &str = "コピー/切り取りした項目がありません";
 pub const STATUS_OP_RUNNING: &str = "ファイル操作を実行中です（Esc でキャンセル）";
@@ -442,6 +450,30 @@ mod tests {
     }
 
     #[test]
+    fn help_lists_navigation_restore_and_trash_notes() {
+        let entries: Vec<(&str, &str)> = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, entries)| *entries)
+            .copied()
+            .collect();
+        let find = |wanted: &str| {
+            entries
+                .iter()
+                .find(|(key, _)| *key == wanted)
+                .map(|(_, description)| *description)
+        };
+        assert_eq!(find("↑ / ↓"), Some("選択項目を上下に移動"));
+        assert_eq!(
+            find("R / Ctrl+Enter"),
+            Some("選択項目を元の場所へ復元（ゴミ箱ビュー）")
+        );
+        let trash_note = find("ゴミ箱ビュー").expect("trash note must be listed");
+        assert!(trash_note.contains("Enter / R"));
+        assert!(trash_note.contains("Delete"));
+        assert!(trash_note.contains("完全削除しません"));
+    }
+
+    #[test]
     fn canonical_words_are_not_english() {
         for word in [
             LABEL_CANCEL,
@@ -564,6 +596,8 @@ mod tests {
             STATUS_RENAME_FAILED,
             STATUS_TARGET_MISSING,
             STATUS_TRASH_ALL_FAILED,
+            STATUS_TRASH_NO_HIDDEN,
+            STATUS_TRASH_NO_SORT,
             STATUS_TRASH_PARTIAL_FAILED,
             STATUS_RESTORE_FAILED,
             STATUS_THEME_CHANGED_PREFIX,
