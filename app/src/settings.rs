@@ -167,6 +167,16 @@ fn default_theme() -> ThemeMode {
     ThemeMode::Dark
 }
 
+/// Serde default for a missing `version` key. An unversioned file predates
+/// schema stamping, so it must classify as [`LEGACY_SCHEMA_VERSION`] (0) rather
+/// than the current [`SCHEMA_VERSION`]; otherwise a future v1→v2 migration
+/// would be skipped for exactly the oldest settings files. The container-level
+/// `#[serde(default)]` still supplies the other fields' defaults, and
+/// `Settings::default()` explicitly carries `SCHEMA_VERSION`.
+fn legacy_schema_version() -> u32 {
+    LEGACY_SCHEMA_VERSION
+}
+
 /// Pure dark/light cycle used by the `toggle_theme` action.
 ///
 /// DESIGN.md §8.2 asks for `dark | light | system`, but gpui-component 0.9.1
@@ -404,6 +414,10 @@ pub struct WindowSession {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Persisted schema version. A missing key means a legacy pre-versioning
+    /// file and deserializes to [`LEGACY_SCHEMA_VERSION`] (0), so `migrate()`
+    /// can still apply older migrations once `SCHEMA_VERSION` is bumped.
+    #[serde(default = "legacy_schema_version")]
     pub version: u32,
     /// Last successfully listed directory. Ignored if it no longer exists.
     pub last_dir: Option<PathBuf>,
@@ -841,17 +855,19 @@ impl Settings {
             }
         }
 
+        // De-duplicate before truncating: with MAX copies of one path followed
+        // by a unique path, truncating first would discard the unique entry.
         self.recent_dirs.retain(|path| sane_path(path));
-        self.recent_dirs.truncate(MAX_RECENT_DIRS);
         dedupe_paths(&mut self.recent_dirs);
+        self.recent_dirs.truncate(MAX_RECENT_DIRS);
 
         self.bookmarks.retain(|path| sane_path(path));
-        self.bookmarks.truncate(MAX_BOOKMARKS);
         dedupe_paths(&mut self.bookmarks);
+        self.bookmarks.truncate(MAX_BOOKMARKS);
 
         // Personalization lists get the same harden-on-load treatment: drop
-        // unusable entries, enforce the cap, then collapse duplicates
-        // (case-insensitive name for searches, exact path for labels).
+        // unusable entries, collapse duplicates (case-insensitive name for
+        // searches, exact path for labels), then enforce the cap.
         // A label belongs to a bookmark: dropping labels whose path is no
         // longer bookmarked prevents a stale label from being revived if the
         // path is bookmarked again later (mirrors `toggle_bookmark`). This runs
@@ -860,14 +876,14 @@ impl Settings {
             .retain(|entry| self.bookmarks.contains(&entry.path));
         self.bookmark_labels
             .retain(|entry| sane_path(&entry.path) && entry.is_valid());
-        self.bookmark_labels.truncate(MAX_BOOKMARK_LABELS);
         let mut seen_labels = HashSet::with_capacity(self.bookmark_labels.len());
         self.bookmark_labels
             .retain(|entry| seen_labels.insert(entry.path.clone()));
+        self.bookmark_labels.truncate(MAX_BOOKMARK_LABELS);
 
         self.tabs.retain(|path| sane_path(path));
-        self.tabs.truncate(MAX_TABS);
         dedupe_paths(&mut self.tabs);
+        self.tabs.truncate(MAX_TABS);
         self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
 
         // Window-scoped sessions get the same hardening as the legacy fields.
@@ -879,9 +895,9 @@ impl Settings {
                 session.bounds = None;
             }
             session.tabs.retain(|tab| sane_path(&tab.cwd));
-            session.tabs.truncate(MAX_TABS);
             let mut seen = HashSet::with_capacity(session.tabs.len());
             session.tabs.retain(|tab| seen.insert(tab.cwd.clone()));
+            session.tabs.truncate(MAX_TABS);
             for tab in &mut session.tabs {
                 tab.back.retain(|path| sane_path(path));
                 tab.forward.retain(|path| sane_path(path));
@@ -896,14 +912,14 @@ impl Settings {
             .map(|query| query.trim().to_string())
             .filter(|query| sane_query(query))
             .collect();
-        self.recent_searches.truncate(MAX_RECENT_SEARCHES);
         dedupe_strings(&mut self.recent_searches);
+        self.recent_searches.truncate(MAX_RECENT_SEARCHES);
 
         self.saved_searches.retain(|search| search.is_valid());
-        self.saved_searches.truncate(MAX_SAVED_SEARCHES);
         let mut seen_names = HashSet::with_capacity(self.saved_searches.len());
         self.saved_searches
             .retain(|search| seen_names.insert(search.name_key()));
+        self.saved_searches.truncate(MAX_SAVED_SEARCHES);
 
         // Terminal command: normalize outer whitespace, then disable the
         // action when the value is blank or unsafe to pass through argv. An
@@ -1067,7 +1083,7 @@ impl Settings {
 mod tests {
     // Explicit imports only: the crate root glob re-exports GPUI's `test`
     // proc-macro which would shadow the built-in `#[test]`.
-    use super::{next_theme, Settings, ViewLayout, APP_DIR, SCHEMA_VERSION};
+    use super::{next_theme, Settings, ViewLayout, APP_DIR, LEGACY_SCHEMA_VERSION, SCHEMA_VERSION};
     use crate::model::{SortDir, SortKey, SortSpec};
     use gpui_kit::component::ThemeMode;
     use std::fs;
@@ -1089,6 +1105,23 @@ mod tests {
         assert_eq!(settings.view, ViewLayout::Details);
         assert_eq!(settings.theme, ThemeMode::Dark);
         assert!(settings.last_dir.is_none());
+    }
+
+    #[test]
+    fn missing_version_deserializes_to_legacy_zero_before_migration() {
+        assert_eq!(LEGACY_SCHEMA_VERSION, 0);
+        // The container-level `#[serde(default)]` must not stamp the current
+        // schema onto an unversioned file: `migrate()` needs to see v0 so it
+        // can run older migrations once SCHEMA_VERSION is bumped.
+        let parsed: Settings = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(parsed.version, LEGACY_SCHEMA_VERSION);
+        let partial: Settings = serde_json::from_str(r#"{"show_hidden":true}"#).unwrap();
+        assert_eq!(partial.version, LEGACY_SCHEMA_VERSION);
+        // An explicit version is still honored before migration.
+        let explicit: Settings = serde_json::from_str(r#"{"version":1}"#).unwrap();
+        assert_eq!(explicit.version, 1);
+        // The programmatic default remains the current schema.
+        assert_eq!(Settings::default().version, SCHEMA_VERSION);
     }
 
     #[test]
@@ -1550,6 +1583,19 @@ mod bookmark_tests {
         assert!(!settings.toggle_bookmark(&p("")));
         assert!(settings.bookmarks.is_empty());
     }
+
+    #[test]
+    fn validate_dedupes_before_truncating_so_later_paths_survive() {
+        let mut settings = Settings {
+            bookmarks: vec![p("/a"); MAX_BOOKMARKS],
+            ..Settings::default()
+        };
+        settings.bookmarks.push(p("/b"));
+
+        settings.validate();
+
+        assert_eq!(settings.bookmarks, vec![p("/a"), p("/b")]);
+    }
 }
 
 #[cfg(test)]
@@ -1620,9 +1666,9 @@ mod search_history_tests {
 #[cfg(test)]
 mod schema_validation_tests {
     use super::{
-        schema_status, SchemaStatus, Settings, ViewLayout, MAX_BOOKMARKS, MAX_PATH_BYTES,
-        MAX_QUERY_BYTES, MAX_RECENT_DIRS, MAX_RECENT_SEARCHES, MAX_SETTINGS_BYTES, MAX_TABS,
-        SCHEMA_VERSION,
+        schema_status, BookmarkLabel, SavedSearch, SchemaStatus, Settings, TabSession, ViewLayout,
+        MAX_BOOKMARKS, MAX_BOOKMARK_LABELS, MAX_PATH_BYTES, MAX_QUERY_BYTES, MAX_RECENT_DIRS,
+        MAX_RECENT_SEARCHES, MAX_SAVED_SEARCHES, MAX_SETTINGS_BYTES, MAX_TABS, SCHEMA_VERSION,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1700,6 +1746,67 @@ mod schema_validation_tests {
         assert_eq!(loaded.tabs.len(), MAX_TABS);
         assert_eq!(loaded.active_tab, 0);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn dedupe_precedes_truncation_for_every_bounded_list() {
+        let mut settings = Settings {
+            recent_dirs: vec![PathBuf::from("/a"); MAX_RECENT_DIRS],
+            tabs: vec![PathBuf::from("/t"); MAX_TABS],
+            recent_searches: vec!["dup".to_string(); MAX_RECENT_SEARCHES],
+            saved_searches: vec![SavedSearch::new("dup", "q").unwrap(); MAX_SAVED_SEARCHES],
+            bookmarks: vec![PathBuf::from("/l"), PathBuf::from("/m")],
+            bookmark_labels: vec![
+                BookmarkLabel::new(Path::new("/l"), "dup").unwrap();
+                MAX_BOOKMARK_LABELS
+            ],
+            ..Settings::default()
+        };
+        settings.recent_dirs.push(PathBuf::from("/b"));
+        settings.tabs.push(PathBuf::from("/u"));
+        settings.recent_searches.push("unique".to_string());
+        settings
+            .saved_searches
+            .push(SavedSearch::new("unique", "q").unwrap());
+        settings
+            .bookmark_labels
+            .push(BookmarkLabel::new(Path::new("/m"), "unique").unwrap());
+
+        settings.primary_window_mut().tabs = vec![
+            TabSession {
+                cwd: PathBuf::from("/w"),
+                back: Vec::new(),
+                forward: Vec::new(),
+            };
+            MAX_TABS
+        ];
+        settings.primary_window_mut().tabs.push(TabSession {
+            cwd: PathBuf::from("/x"),
+            back: Vec::new(),
+            forward: Vec::new(),
+        });
+
+        settings.validate();
+
+        assert_eq!(
+            settings.recent_dirs,
+            vec![PathBuf::from("/a"), PathBuf::from("/b")]
+        );
+        assert_eq!(
+            settings.tabs,
+            vec![PathBuf::from("/t"), PathBuf::from("/u")]
+        );
+        assert_eq!(
+            settings.recent_searches,
+            vec!["dup".to_string(), "unique".to_string()]
+        );
+        assert_eq!(settings.saved_searches.len(), 2);
+        assert_eq!(settings.saved_searches[1].name, "unique");
+        assert_eq!(settings.bookmark_labels.len(), 2);
+        assert_eq!(settings.bookmark_label(Path::new("/m")), Some("unique"));
+        let window_tabs = &settings.primary_window().unwrap().tabs;
+        assert_eq!(window_tabs.len(), 2);
+        assert_eq!(window_tabs[1].cwd, PathBuf::from("/x"));
     }
 
     #[test]
