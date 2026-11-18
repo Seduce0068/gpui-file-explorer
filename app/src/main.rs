@@ -2451,7 +2451,14 @@ impl Explorer {
             return;
         };
         match command.spawn() {
-            Ok(_child) => self.status = terminal_started_status(&argv, &dir),
+            Ok(mut child) => {
+                // Reap in a detached thread: dropping `Child` on Unix leaves a
+                // zombie until the app exits (finding 3 of the feature review).
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                self.status = terminal_started_status(&argv, &dir);
+            }
             Err(error) => self.status = terminal_failed_status(&error, &dir),
         }
         cx.notify();
@@ -2678,7 +2685,16 @@ impl Explorer {
                     self.paste(cx);
                 }
             }
-            Quit => cx.quit(),
+            Quit => {
+                // Ctrl+Q bypasses the per-window should_close handler, so save
+                // explicitly before quitting (F6-43).
+                if let Some(bounds) = WindowBoundsState::from_window(window) {
+                    self.window_bounds = Some(bounds);
+                }
+                self.persist_tabs();
+                let _ = self.save_settings();
+                cx.quit();
+            }
             GoBack => self.go_back(cx),
             GoForward => self.go_forward(cx),
             FuzzyJump => self.open_fuzzy_jump(window, cx),

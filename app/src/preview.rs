@@ -20,6 +20,20 @@ use gpui_kit::ImageFormat;
 pub const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
 /// Maximum image size loaded for an image preview (8 MiB).
 pub const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// Reject images whose declared pixel count exceeds this (DoS guard: note
+/// limits are advisory in `image 0.25`, so check the header ourselves).
+pub const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
+
+/// Read PNG IHDR width/height (big-endian u32 at bytes 16..24). Other formats
+/// are left to the decoder; PNG covers the common compressed-bomb case.
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    Some((width, height))
+}
 
 /// Image format guessed from a file name extension.
 pub fn image_format_for_name(name: &str) -> Option<ImageFormat> {
@@ -125,8 +139,18 @@ pub fn read_image_preview(
         ));
     }
     match sniff_image_format(&bytes) {
-        // Trust the content over the extension when they disagree.
-        Some(format) => Ok(ImageBytes { format, bytes }),
+        Some(format) => {
+            if let Some((width, height)) = png_dimensions(&bytes) {
+                let pixels = u64::from(width) * u64::from(height);
+                if pixels > MAX_IMAGE_PIXELS {
+                    return Err(format!(
+                        "画像のピクセル数が大きすぎます（{width}x{height}、上限 {MAX_IMAGE_PIXELS}）"
+                    ));
+                }
+            }
+            // Trust the content over the extension when they disagree.
+            Ok(ImageBytes { format, bytes })
+        }
         None => Err(format!(
             "画像として読み取れません（拡張子は .{} ですが中身が一致しません）",
             expected.extension()
@@ -379,6 +403,22 @@ mod image_tests {
         // `metadata.len()` reported 8 (which passed the pre-read check).
         let error = read_image_preview(&path, ImageFormat::Png, 7).unwrap_err();
         assert!(error.contains("画像が大きすぎます"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_huge_declared_png_dimensions() {
+        let dir = scratch("huge-dims");
+        let path = dir.join("bomb.png");
+        // Valid signature + IHDR chunk declaring 100000x100000 pixels.
+        let mut bytes = PNG_HEADER.to_vec();
+        bytes.extend_from_slice(&13u32.to_be_bytes()); // IHDR length
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&100_000u32.to_be_bytes());
+        bytes.extend_from_slice(&100_000u32.to_be_bytes());
+        fs::write(&path, &bytes).unwrap();
+        let error = read_image_preview(&path, ImageFormat::Png, 1024).unwrap_err();
+        assert!(error.contains("ピクセル数が大きすぎます"), "{error}");
         let _ = fs::remove_dir_all(&dir);
     }
 
