@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 258 tests
+cargo test           # 260 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -139,5 +139,5 @@ bash scripts/check.sh --app      # app/ のみ
 bash scripts/check.sh --poc      # poc/ のみ
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 258 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 260 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。

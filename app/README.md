@@ -24,7 +24,7 @@ cd gpui-file-explorer   # リポジトリ直下
 bash scripts/dev-setup.sh   # 初回のみ（下記「前提」を参照）
 cd app
 cargo build                 # 初回（依存込み）約 1m30s / 2回目以降 約2s / debug バイナリ 約 165MiB
-cargo test                  # 258 tests（データ層 + 監視）
+cargo test                  # 260 tests（データ層 + 監視）
 ```
 
 リポジトリ直下から全体をビルドする場合:
@@ -288,7 +288,7 @@ cd app
 
 ```bash
 cargo test
-# running 258 tests ... test result: ok. 258 passed; 0 failed
+# running 260 tests ... test result: ok. 260 passed; 0 failed
 ```
 
 カバレッジ: ディレクトリ読み込み（ディレクトリ先頭・メタデータ・エラー）、
@@ -301,7 +301,7 @@ fingerprint の変化検出、パンくず生成、一意な新規フォルダ�
 
 ## 実行検証記録（2026-11-11, このマシン。テスト数は 2026-11-17 更新）
 
-- `cargo build`: 警告 0 / `cargo test`: 258 passed（初回実機検証時は 36 件）
+- `cargo build`: 警告 0 / `cargo test`: 260 passed（初回実機検証時は 36 件）
 - 起動: stderr 0 行（EGL/Vulkan/Wayland エラーなし）
 - KWin D-Bus（Wayland ネイティブであることの確認）:
 
