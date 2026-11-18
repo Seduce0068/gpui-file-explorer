@@ -505,6 +505,9 @@ impl Settings {
         }
         if let Some(index) = self.bookmarks.iter().position(|bookmark| bookmark == path) {
             self.bookmarks.remove(index);
+            // Drop the label together with its bookmark. Otherwise re-adding
+            // the same path would silently revive the stale label.
+            self.remove_bookmark_label(path);
             return false;
         }
         self.bookmarks.push(path.to_path_buf());
@@ -580,9 +583,15 @@ impl Settings {
         false
     }
 
-    /// Set the label of a bookmarked path. A blank label clears it; an empty
-    /// path, oversized label or a new entry past `MAX_BOOKMARK_LABELS` is
-    /// refused. Returns `true` when the list changed.
+    /// Set the label of a path. A blank label clears it; an empty path,
+    /// oversized label or a new entry past `MAX_BOOKMARK_LABELS` is refused.
+    /// Returns `true` when the list changed.
+    ///
+    /// This low-level setter deliberately does not require `path` to be
+    /// bookmarked (the UI layer owns that invariant). An orphan label works in
+    /// memory, but `validate()` — which runs on every load — drops labels whose
+    /// path is not bookmarked. Bookmark a path first when its label must
+    /// survive a save/reload cycle.
     pub fn set_bookmark_label(&mut self, path: &Path, label: &str) -> bool {
         if !sane_path(path) {
             return false;
@@ -816,6 +825,12 @@ impl Settings {
         // Personalization lists get the same harden-on-load treatment: drop
         // unusable entries, enforce the cap, then collapse duplicates
         // (case-insensitive name for searches, exact path for labels).
+        // A label belongs to a bookmark: dropping labels whose path is no
+        // longer bookmarked prevents a stale label from being revived if the
+        // path is bookmarked again later (mirrors `toggle_bookmark`). This runs
+        // before the cap so orphan entries cannot crowd out live labels.
+        self.bookmark_labels
+            .retain(|entry| self.bookmarks.contains(&entry.path));
         self.bookmark_labels
             .retain(|entry| sane_path(&entry.path) && entry.is_valid());
         self.bookmark_labels.truncate(MAX_BOOKMARK_LABELS);
@@ -1417,6 +1432,40 @@ mod bookmark_tests {
     }
 
     #[test]
+    fn removing_bookmark_drops_its_label() {
+        let mut settings = Settings::default();
+        assert!(settings.toggle_bookmark(&p("/a")));
+        assert!(settings.set_bookmark_label(&p("/a"), "home"));
+        assert_eq!(settings.bookmark_label(&p("/a")), Some("home"));
+
+        // Removing the bookmark also removes its label.
+        assert!(!settings.toggle_bookmark(&p("/a")));
+        assert!(settings.bookmark_labels.is_empty());
+        assert!(settings.bookmark_label(&p("/a")).is_none());
+
+        // Re-adding the same path starts clean: the old label is not revived.
+        assert!(settings.toggle_bookmark(&p("/a")));
+        assert!(settings.is_bookmarked(&p("/a")));
+        assert!(settings.bookmark_label(&p("/a")).is_none());
+    }
+
+    #[test]
+    fn removing_bookmark_keeps_unrelated_labels() {
+        let mut settings = Settings::default();
+        settings.toggle_bookmark(&p("/a"));
+        settings.toggle_bookmark(&p("/b"));
+        assert!(settings.set_bookmark_label(&p("/a"), "home"));
+        assert!(settings.set_bookmark_label(&p("/b"), "workspace"));
+
+        settings.toggle_bookmark(&p("/a"));
+
+        assert_eq!(settings.bookmarks, vec![p("/b")]);
+        assert_eq!(settings.bookmark_labels.len(), 1);
+        assert!(settings.bookmark_label(&p("/a")).is_none());
+        assert_eq!(settings.bookmark_label(&p("/b")), Some("workspace"));
+    }
+
+    #[test]
     fn toggle_keeps_insertion_order_and_dedupes() {
         let mut settings = Settings::default();
         settings.toggle_bookmark(&p("/b"));
@@ -1984,6 +2033,23 @@ mod personalization_settings_tests {
     }
 
     #[test]
+    fn validate_drops_labels_without_a_bookmark() {
+        let mut settings = Settings::default();
+        settings.toggle_bookmark(Path::new("/keep"));
+        assert!(settings.set_bookmark_label(Path::new("/keep"), "kept"));
+        // The low-level setter allows a path that is not bookmarked; validate
+        // must prune that orphan label.
+        assert!(settings.set_bookmark_label(Path::new("/orphan"), "stale"));
+        assert_eq!(settings.bookmark_labels.len(), 2);
+
+        settings.validate();
+
+        assert_eq!(settings.bookmark_labels.len(), 1);
+        assert_eq!(settings.bookmark_label(Path::new("/keep")), Some("kept"));
+        assert!(settings.bookmark_label(Path::new("/orphan")).is_none());
+    }
+
+    #[test]
     fn legacy_file_without_personalization_fields_loads_empty_and_saves_new_shape() {
         let (dir, path) = setup("legacy-personalization");
         fs::write(
@@ -2019,11 +2085,13 @@ mod personalization_settings_tests {
                 { "name": "", "query": "blank" },
                 { "name": "bad\u{0}name", "query": "nul" }
             ],
+            "bookmarks": ["/a", "/b"],
             "bookmark_labels": [
                 { "path": "/a", "label": "first" },
                 { "path": "/a", "label": "duplicate" },
                 { "path": "", "label": "empty-path" },
-                { "path": "/b", "label": oversized_label }
+                { "path": "/b", "label": oversized_label },
+                { "path": "/orphan", "label": "stale" }
             ]
         });
         fs::write(&path, json.to_string()).unwrap();
@@ -2032,6 +2100,7 @@ mod personalization_settings_tests {
         assert_eq!(loaded.saved_searches[0].query, "keep");
         assert_eq!(loaded.bookmark_labels.len(), 1);
         assert_eq!(loaded.bookmark_label(Path::new("/a")), Some("first"));
+        assert!(loaded.bookmark_label(Path::new("/orphan")).is_none());
         fs::remove_dir_all(&dir).unwrap();
 
         // Caps are enforced by validate() for values built in memory too.
@@ -2042,9 +2111,11 @@ mod personalization_settings_tests {
                 .push(SavedSearch::new(&format!("s-{index}"), "q").unwrap());
         }
         for index in 0..(MAX_BOOKMARK_LABELS + 5) {
+            let path = PathBuf::from(format!("/p-{index}"));
+            settings.bookmarks.push(path.clone());
             settings
                 .bookmark_labels
-                .push(BookmarkLabel::new(Path::new(&format!("/p-{index}")), "label").unwrap());
+                .push(BookmarkLabel::new(&path, "label").unwrap());
         }
         settings.validate();
         assert_eq!(settings.saved_searches.len(), MAX_SAVED_SEARCHES);
@@ -2068,7 +2139,7 @@ mod personalization_settings_tests {
     #[test]
     fn future_schema_with_personalization_stays_read_only() {
         let (dir, path) = setup("future-personalization");
-        let original = br#"{"version":42,"saved_searches":[{"name":"x","query":"q"}],"bookmark_labels":[{"path":"/a","label":"l"}]}"#;
+        let original = br#"{"version":42,"saved_searches":[{"name":"x","query":"q"}],"bookmarks":["/a"],"bookmark_labels":[{"path":"/a","label":"l"}]}"#;
         fs::write(&path, original).unwrap();
         let loaded = Settings::load_from(&path);
         assert!(loaded.read_only);
