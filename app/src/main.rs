@@ -21,6 +21,7 @@ mod trash_view;
 mod undo;
 mod watcher;
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -282,7 +283,8 @@ fn terminal_failed_status(error: &std::io::Error, dir: &Path) -> String {
 /// Dialog-ownership keys (`F1`, `Escape`) are deliberately handled *before* the
 /// table in `on_key_down`: a bad rebind must never lock the user out of a
 /// dialog, so those two keys stay literal and are not listed here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum KeyAction {
     OpenPreview,
     StartRename,
@@ -336,13 +338,40 @@ enum KeyAction {
 /// One row of the keymap table. `shift: None` matches both shift states, which
 /// preserves the pre-existing `Ctrl+H` / `Ctrl+R` / `Ctrl+Q` "either shift"
 /// behaviour and the plain Shift+Arrow selection extension.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct KeyBinding {
-    key: &'static str,
+    // Owned so a chord read from settings can be stored directly. `KeyMap`
+    // itself is still `Clone`; only the `Copy` derive had to go.
+    key: String,
     ctrl: bool,
     alt: bool,
     shift: Option<bool>,
     action: KeyAction,
+}
+
+/// Parse a persisted chord like `ctrl+shift+p` into `(key, ctrl, shift, alt)`.
+///
+/// Modifiers may appear in any order and are case-insensitive; the key is the
+/// last token and is lowercased to match GPUI's keystroke names. An omitted
+/// `shift` stays `None` (it becomes a concrete `false` when applied through
+/// `rebind`), while an explicit `shift+` yields `Some(true)`.
+fn parse_chord(chord: &str) -> Option<(String, bool, Option<bool>, bool)> {
+    let (mut ctrl, mut shift, mut alt) = (false, None, false);
+    let mut key = None;
+    for token in chord.split('+') {
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        match token.to_ascii_lowercase().as_str() {
+            "ctrl" if key.is_none() => ctrl = true,
+            "shift" if key.is_none() => shift = Some(true),
+            "alt" if key.is_none() => alt = true,
+            _ if key.is_none() => key = Some(token.to_ascii_lowercase()),
+            _ => return None,
+        }
+    }
+    Some((key?, ctrl, shift, alt))
 }
 
 /// Personalized key map. The table is data, so a settings panel (or a test)
@@ -369,7 +398,7 @@ impl KeyMap {
         alt: bool,
         shift: Option<bool>,
     ) -> bool {
-        binding.key == key
+        binding.key.as_str() == key
             && binding.ctrl == ctrl
             && (binding.ctrl || binding.alt == alt)
             && match (binding.shift, shift) {
@@ -392,8 +421,8 @@ impl KeyMap {
             RestoreClosedTab, RestoreSelected, SelectAll, SelectFirst, SelectLast, StartRename,
             ToggleBookmark, ToggleHidden, ToggleUndoHistory, TrashSelected, Undo,
         };
-        let binding = |key, ctrl, alt, shift, action| KeyBinding {
-            key,
+        let binding = |key: &str, ctrl, alt, shift, action| KeyBinding {
+            key: key.to_string(),
             ctrl,
             alt,
             shift,
@@ -460,6 +489,30 @@ impl KeyMap {
         }
     }
 
+    /// Rebuild the table from the persisted keymap overrides. Every valid
+    /// entry is applied through `rebind`, so eviction and precedence are the
+    /// same as for a live rebind. Malformed chords and action names that are
+    /// not in the table are ignored; already-validated settings keep a list
+    /// small enough that this is cheap at startup.
+    fn from_settings(settings: &Settings) -> Self {
+        let mut keymap = Self::default_keymap();
+        for (action_name, chord) in &settings.keymap {
+            let Some((key, ctrl, shift, alt)) = parse_chord(chord) else {
+                continue;
+            };
+            // Deserialize through serde so the persisted spelling cannot drift
+            // from the enum's `snake_case` names (e.g. `fuzzy_jump`).
+            let name = serde_json::Value::String(action_name.trim().to_string());
+            let Ok(action) = serde_json::from_value::<KeyAction>(name) else {
+                continue;
+            };
+            // A chord without `shift+` means "no shift", matching how the
+            // settings format spells out every modifier it wants.
+            keymap.rebind(action, &key, ctrl, shift.unwrap_or(false), alt);
+        }
+        keymap
+    }
+
     /// Pure lookup used by `on_key_down`. Unknown keys intentionally resolve to
     /// `None` so the old "unbound key is a no-op" behaviour is preserved.
     fn resolve(&self, key: &str, ctrl: bool, shift: bool, alt: bool) -> KeyAction {
@@ -472,19 +525,9 @@ impl KeyMap {
 
     /// Give `action` a new keystroke, evicting any other binding that would
     /// claim the same keystroke. Returns `false` for an action that is not in
-    /// the table or for a reserved dialog key. This is the personalization
-    /// hook a settings panel can call without touching the dispatcher.
-    /// `#[allow(dead_code)]` keeps the `-D warnings` gate green until a settings
-    /// panel calls it; the unit tests exercise the full rebind/reset path.
-    #[allow(dead_code)]
-    fn rebind(
-        &mut self,
-        action: KeyAction,
-        key: &'static str,
-        ctrl: bool,
-        shift: bool,
-        alt: bool,
-    ) -> bool {
+    /// the table or for a reserved dialog key. `from_settings` applies saved
+    /// overrides through this method; a future settings panel can do the same.
+    fn rebind(&mut self, action: KeyAction, key: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
         const RESERVED: [&str; 2] = ["escape", "f1"];
         if RESERVED.contains(&key) || !self.bindings.iter().any(|b| b.action == action) {
             return false;
@@ -495,7 +538,7 @@ impl KeyMap {
         self.bindings
             .retain(|binding| !Self::binding_matches(binding, key, ctrl, alt, Some(shift)));
         self.bindings.push(KeyBinding {
-            key,
+            key: key.to_string(),
             ctrl,
             alt,
             shift: Some(shift),
@@ -510,10 +553,10 @@ impl KeyMap {
     fn reset(&mut self, action: KeyAction) {
         let defaults = Self::default_keymap();
         if let Some(default) = defaults.bindings.iter().find(|b| b.action == action) {
-            let default = *default;
+            let default = default.clone();
             self.bindings.retain(|b| b.action != action);
             self.bindings.retain(|b| {
-                !Self::binding_matches(b, default.key, default.ctrl, default.alt, default.shift)
+                !Self::binding_matches(b, &default.key, default.ctrl, default.alt, default.shift)
             });
             self.bindings.push(default);
         }
@@ -1377,6 +1420,8 @@ impl Explorer {
         // Seed from the saved frame so an early save (before the first render
         // observes the real window) cannot overwrite it with nothing.
         let restored_bounds = settings.primary_window().and_then(|window| window.bounds);
+        // Apply persisted overrides before `settings` moves into `Self`.
+        let keymap = KeyMap::from_settings(&settings);
         let mut this = Self {
             settings,
             cwd: start_dir,
@@ -1421,7 +1466,7 @@ impl Explorer {
             help_open: false,
             location: None,
             terminal_command_editor: None,
-            keymap: KeyMap::default_keymap(),
+            keymap,
             fuzzy: None,
             preview: None,
             undo: UndoStack::new(),
@@ -8047,16 +8092,17 @@ mod tests {
     use super::{
         build_places, classify_cli, clear_op_token, format_selected, fuzzy_candidates, fuzzy_score,
         install_op_token, internal_drop_paths, kind_color, labeled_display_name,
-        normalize_terminal_command, pending_rename_index, rank_fuzzy, read_properties_snapshot,
-        saved_search_caption, saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
-        trash_key_action, CliAction, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
-        KeyMap, TrashKeyAction,
+        normalize_terminal_command, parse_chord, pending_rename_index, rank_fuzzy,
+        read_properties_snapshot, saved_search_caption, saved_search_save_status, summarize_op,
+        tab_label, terminal_dir_for, terminal_disabled_status, terminal_failed_status,
+        terminal_process, terminal_started_status, terminal_target_dir, trash_batch,
+        trash_delete_status, trash_key_action, CliAction, Explorer, FuzzyCandidate, FuzzySource,
+        KeyAction, KeyBinding, KeyMap, TrashKeyAction,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
     use crate::ops::OpStats;
+    use crate::settings::Settings;
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -8882,7 +8928,7 @@ mod tests {
         // `modifiers.control` first and ignored `alt`, so Ctrl+Alt+H fired
         // the same action as Ctrl+H. Test the pure matcher directly.
         let ctrl_h = KeyBinding {
-            key: "h",
+            key: "h".to_string(),
             ctrl: true,
             alt: false,
             shift: None,
@@ -8894,7 +8940,7 @@ mod tests {
 
         // Alt navigation has `ctrl == false`, so its `alt` stays significant.
         let alt_left = KeyBinding {
-            key: "left",
+            key: "left".to_string(),
             ctrl: false,
             alt: true,
             shift: None,
@@ -8998,7 +9044,12 @@ mod tests {
         let keymap = KeyMap::default_keymap();
         let mut seen = std::collections::HashSet::new();
         for binding in &keymap.bindings {
-            let spec = (binding.key, binding.ctrl, binding.alt, binding.shift);
+            let spec = (
+                binding.key.as_str(),
+                binding.ctrl,
+                binding.alt,
+                binding.shift,
+            );
             assert!(
                 seen.insert(spec),
                 "duplicate keystroke in default keymap: {spec:?}"
@@ -9038,6 +9089,81 @@ mod tests {
             keymap.resolve("l", true, false, false),
             KeyAction::OpenLocation
         );
+    }
+
+    #[test]
+    fn parse_chord_accepts_modifiers_in_any_order_and_rejects_garbage() {
+        assert_eq!(
+            parse_chord("ctrl+shift+p"),
+            Some(("p".to_string(), true, Some(true), false))
+        );
+        assert_eq!(
+            parse_chord("SHIFT+ALT+ctrl+PageUp"),
+            Some(("pageup".to_string(), true, Some(true), true))
+        );
+        assert_eq!(
+            parse_chord("f4"),
+            Some(("f4".to_string(), false, None, false))
+        );
+        assert_eq!(
+            parse_chord(" alt + t "),
+            Some(("t".to_string(), false, None, true))
+        );
+        // A missing key, an empty token, or a modifier after the key is invalid.
+        for bad in ["", "ctrl+", "+ctrl+p", "ctrl++p", "p+ctrl", "ctrl+shift+"] {
+            assert_eq!(parse_chord(bad), None, "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn keymap_from_settings_applies_overrides_through_rebind() {
+        let mut settings = Settings::default();
+        settings.keymap.extend([
+            ("open_preview".to_string(), "ctrl+shift+p".to_string()),
+            ("fuzzy_jump".to_string(), "ctrl+shift+z".to_string()),
+        ]);
+        let keymap = KeyMap::from_settings(&settings);
+
+        // A `snake_case` action name selects the matching enum variant, and a
+        // modifier prefix in any order produces the expected keystroke.
+        assert_eq!(
+            keymap.resolve("p", true, true, false),
+            KeyAction::OpenPreview
+        );
+        assert_eq!(keymap.resolve("z", true, true, false), KeyAction::FuzzyJump);
+        // `rebind` moves the action: all of its old chords are released and an
+        // existing owner of the new chord (Ctrl+Shift+Z / Redo) is evicted.
+        assert_eq!(
+            keymap.resolve("space", false, false, false),
+            KeyAction::None
+        );
+        assert_eq!(keymap.resolve("f3", false, false, false), KeyAction::None);
+        assert_eq!(keymap.resolve("p", true, false, false), KeyAction::None);
+        assert_eq!(keymap.resolve("z", true, false, false), KeyAction::Undo);
+        // Unrelated shortcuts stay untouched.
+        assert_eq!(
+            keymap.resolve("h", true, false, false),
+            KeyAction::ToggleHidden
+        );
+    }
+
+    #[test]
+    fn keymap_from_settings_ignores_unknown_actions_and_bad_chords() {
+        let mut settings = Settings::default();
+        settings.keymap.extend([
+            ("not_an_action".to_string(), "ctrl+z".to_string()),
+            ("open_preview".to_string(), "ctrl+".to_string()),
+            ("reload".to_string(), "escape".to_string()),
+            ("quit".to_string(), "f1".to_string()),
+        ]);
+        let keymap = KeyMap::from_settings(&settings);
+        assert_eq!(keymap.resolve("z", true, false, false), KeyAction::Undo);
+        assert_eq!(
+            keymap.resolve("space", false, false, false),
+            KeyAction::OpenPreview
+        );
+        assert_eq!(keymap.resolve("f5", false, false, false), KeyAction::Reload);
+        assert_eq!(keymap.resolve("q", true, false, false), KeyAction::Quit);
     }
 
     #[test]

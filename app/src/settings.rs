@@ -107,6 +107,13 @@ pub const MAX_QUERY_BYTES: usize = 1024;
 /// Maximum byte length of the persisted terminal launch command. It is split
 /// into argv by the UI, so this is a generous bound for a program + flags.
 pub const MAX_TERMINAL_COMMAND_BYTES: usize = 1024;
+/// Maximum number of persisted keymap overrides. The shipped table has fewer
+/// than 50 actions, so this leaves headroom without letting a crafted file
+/// grow the list without bound.
+pub const MAX_KEYMAP_OVERRIDES: usize = 64;
+/// Maximum byte length of one keymap action name or chord string (both sides
+/// of a `(action, chord)` pair get the same bound).
+pub const MAX_CHORD_BYTES: usize = 64;
 
 /// Classification of a persisted schema version before normalization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,6 +166,27 @@ fn sane_terminal_command(command: &str) -> bool {
     !command.trim().is_empty()
         && command.len() <= MAX_TERMINAL_COMMAND_BYTES
         && !command.chars().any(char::is_control)
+}
+
+/// Normalize one persisted `(action_name, chord)` pair. Both sides are trimmed
+/// and bounded, and a chord that mentions a dialog-ownership key (`escape` or
+/// `f1`) is rejected so a bad file cannot take away a way out of a dialog.
+/// Unknown action names are deliberately kept: `KeyMap::from_settings` ignores
+/// names that are not in the shipped table.
+fn sane_keymap_entry(action: &str, chord: &str) -> Option<(String, String)> {
+    let action = action.trim();
+    let chord = chord.trim();
+    let sane = |value: &str| {
+        !value.is_empty() && value.len() <= MAX_CHORD_BYTES && !value.chars().any(char::is_control)
+    };
+    if !sane(action) || !sane(chord) {
+        return None;
+    }
+    let lowered = chord.to_ascii_lowercase();
+    if lowered.contains("escape") || lowered.contains("f1") {
+        return None;
+    }
+    Some((action.to_string(), chord.to_string()))
 }
 
 fn dedupe_paths(paths: &mut Vec<PathBuf>) {
@@ -364,6 +392,12 @@ pub struct Settings {
     /// through the field-level serde default below.
     #[serde(default = "default_terminal_command")]
     pub terminal_command: String,
+    /// User keymap overrides as `(action_name, chord)` pairs, e.g.
+    /// `("open_preview", "ctrl+shift+p")`. A chord is a `+`-joined list of
+    /// `ctrl` / `shift` / `alt` modifiers (any order) with the key last.
+    /// Added after v1: older files get an empty list via the serde default.
+    #[serde(default)]
+    pub keymap: Vec<(String, String)>,
     /// Recently visited directories, most recent first (bounded).
     pub recent_dirs: Vec<PathBuf>,
     /// Bookmarked directories, in insertion order (bounded).
@@ -408,6 +442,7 @@ impl Default for Settings {
             show_hidden: false,
             view: ViewLayout::Details,
             terminal_command: default_terminal_command(),
+            keymap: Vec::new(),
             recent_dirs: Vec::new(),
             bookmarks: Vec::new(),
             bookmark_labels: Vec::new(),
@@ -732,11 +767,12 @@ impl Settings {
     /// Convert a deserialized settings file to the current schema.
     ///
     /// `SCHEMA_VERSION` is 1 today. The F6-38 fields (`saved_searches` and
-    /// `bookmark_labels`) are additive and carry `#[serde(default)]`, so a v1
-    /// file written before they existed loads with both lists empty; no
-    /// version bump or data conversion is required. When version 2 is
-    /// introduced, add a real transformation step here for versions below it
-    /// before the common `version` normalization below. A missing `version`
+    /// `bookmark_labels`) and the later `keymap` field are additive and carry
+    /// `#[serde(default)]`, so a v1 file written before they existed loads with
+    /// those lists empty; no version bump or data conversion is required.
+    /// When version 2 is introduced, add a real transformation step here for
+    /// versions below it before the common `version` normalization below. A
+    /// missing `version`
     /// field deserializes to 0 and is treated as a legacy v1 file for backward
     /// compatibility.
     /// Anything above `SCHEMA_VERSION` is refused for writing: a newer build
@@ -832,6 +868,25 @@ impl Settings {
         if !sane_terminal_command(&self.terminal_command) {
             self.terminal_command.clear();
         }
+
+        // Keymap overrides get the same harden-on-load treatment: trim both
+        // sides, drop unusable/reserved entries, cap the count and keep only
+        // the first override per action. Unknown action names are kept; the
+        // application ignores them when it builds the key map.
+        let mut keymap = Vec::new();
+        let mut seen_actions = HashSet::new();
+        for (action, chord) in std::mem::take(&mut self.keymap) {
+            if keymap.len() >= MAX_KEYMAP_OVERRIDES {
+                break;
+            }
+            let Some((action, chord)) = sane_keymap_entry(&action, &chord) else {
+                continue;
+            };
+            if seen_actions.insert(action.clone()) {
+                keymap.push((action, chord));
+            }
+        }
+        self.keymap = keymap;
 
         // A validated settings value always carries the current version.
         self.version = SCHEMA_VERSION;
@@ -2120,5 +2175,90 @@ mod terminal_command_tests {
         fs::write(&path, br#"{"version":1,"terminal_command":42}"#).unwrap();
         assert_eq!(Settings::load_from(&path), Settings::default());
         fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod keymap_settings_tests {
+    use super::{Settings, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn setup(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("gpui-fe-keymap-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        (dir.clone(), dir.join("settings.json"))
+    }
+
+    #[test]
+    fn keymap_defaults_empty_and_roundtrips_through_settings_json() {
+        let (dir, path) = setup("roundtrip");
+        fs::write(&path, br#"{"version":1}"#).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(
+            loaded.keymap.is_empty(),
+            "an old file has no keymap overrides"
+        );
+
+        let mut settings = Settings::default();
+        settings
+            .keymap
+            .push(("open_preview".to_string(), "ctrl+shift+p".to_string()));
+        settings.save_to(&path).unwrap();
+        let reloaded = Settings::load_from(&path);
+        assert_eq!(reloaded.keymap, settings.keymap);
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["keymap"][0][0].as_str(), Some("open_preview"));
+        assert_eq!(value["keymap"][0][1].as_str(), Some("ctrl+shift+p"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn keymap_validation_drops_invalid_and_duplicate_entries() {
+        let mut settings = Settings::default();
+        let overlong = "x".repeat(MAX_CHORD_BYTES + 1);
+        settings.keymap = vec![
+            (
+                "  open_preview  ".to_string(),
+                "  ctrl+shift+p  ".to_string(),
+            ),
+            (String::new(), "ctrl+p".to_string()),
+            ("blank_chord".to_string(), "   ".to_string()),
+            ("nul_action\0".to_string(), "ctrl+p".to_string()),
+            ("nul_chord".to_string(), "ctrl+\0p".to_string()),
+            (overlong.clone(), "ctrl+p".to_string()),
+            ("overlong".to_string(), format!("ctrl+{overlong}")),
+            ("escape_key".to_string(), "escape".to_string()),
+            ("f1_key".to_string(), "CTRL+F1".to_string()),
+            ("open_preview".to_string(), "ctrl+o".to_string()),
+            ("unknown_action".to_string(), "ctrl+y".to_string()),
+        ];
+        settings.validate();
+        assert_eq!(
+            settings.keymap,
+            vec![
+                ("open_preview".to_string(), "ctrl+shift+p".to_string()),
+                ("unknown_action".to_string(), "ctrl+y".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn keymap_validation_caps_the_number_of_overrides() {
+        let mut settings = Settings {
+            keymap: (0..MAX_KEYMAP_OVERRIDES + 12)
+                .map(|index| (format!("action-{index}"), format!("ctrl+{index}")))
+                .collect(),
+            ..Settings::default()
+        };
+        settings.validate();
+        assert_eq!(settings.keymap.len(), MAX_KEYMAP_OVERRIDES);
+        assert_eq!(settings.keymap[0].0, "action-0");
+        assert_eq!(
+            settings.keymap[MAX_KEYMAP_OVERRIDES - 1].0,
+            format!("action-{}", MAX_KEYMAP_OVERRIDES - 1)
+        );
     }
 }
