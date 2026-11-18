@@ -221,8 +221,8 @@ status: current
   — 対応: e957de5
 - [ ] **R1-LEAK01** watcher 初期化失敗時に debouncer スレッドがリーク
   — `app/src/watcher.rs:101-122` / 依存側の設計変更が必要（外部判断）
-- [ ] **R3-PERF01** search_lines を全件 Vec 化してから filter している
-  — `app/src/main.rs:5430-5438` / 2 パス化は DESIGN §10.5 と整合
+- [x] **R3-PERF01** search_lines の全件 Vec 化 — 誤検知として却下
+  — 現行は `filter_map` で必要な行番号のみ収集（main.rs:6283-6290）
 
 ### 優先度: 低（調査タスク）
 
