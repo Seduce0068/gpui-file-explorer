@@ -41,6 +41,9 @@ jobs:
       # 共有ワークフローの gates（working_directory: app）では検証されない。
       # extra_gates は working_directory で実行されるので poc/ へ移動して回す。
       extra_gates: |
+        # release 固有の #[cfg(not(debug_assertions))] 分岐を検証する
+        cargo check --release --all-targets --locked
+        cargo test --release --all-targets --locked
         (cd ../poc && cargo fmt --all -- --check)
         (cd ../poc && cargo check --all-targets --locked)
         (cd ../poc && cargo test --all-targets --locked)
