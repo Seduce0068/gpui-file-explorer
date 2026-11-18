@@ -312,7 +312,7 @@ fn copy_file_atomic(
             .write(true)
             .create_new(true)
             .open(&partial)
-            .map_err(|e| io_error(&partial, e))?;
+            .map_err(|e| io_error(dest, e))?;
         let mut buffer = vec![0u8; COPY_CHUNK_SIZE];
         let mut total = 0u64;
         loop {
@@ -325,11 +325,11 @@ fn copy_file_atomic(
             }
             output
                 .write_all(&buffer[..read])
-                .map_err(|e| io_error(&partial, e))?;
+                .map_err(|e| io_error(dest, e))?;
             total += read as u64;
             progress(base_bytes + total);
         }
-        output.flush().map_err(|e| io_error(&partial, e))?;
+        output.flush().map_err(|e| io_error(dest, e))?;
         // Best-effort durability; a failure here is not fatal for a UI copy.
         let _ = output.sync_all();
         Ok(total)
@@ -1541,19 +1541,45 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn case_only_rename_recognises_dangling_symlink_by_inode() {
-        use std::os::unix::fs::symlink;
+        use std::os::unix::fs::{symlink, MetadataExt};
 
         let dir = scratch("case-only-dangling");
         let target_path = dir.join("missing-target");
-        let link = dir.join("Link");
-        symlink(&target_path, &link).unwrap();
+        let src = dir.join("Link");
+        symlink(&target_path, &src).unwrap();
 
-        // Renaming a dangling symlink onto the same dirent (identical name on
-        // this case-sensitive FS) must take the case-only branch rather than
-        // failing with AlreadyExists.
-        let renamed = rename_entry(&link, "Link").unwrap();
-        assert_eq!(renamed, link);
-        assert!(link.is_symlink());
+        // A second dirent with a DIFFERENT name sharing the SAME inode. On a
+        // case-insensitive FS `Link`/`link` would already be one dirent; on
+        // Linux the hard link is what lets the case-only branch be reached.
+        // `src != target` also bypasses the early `target == src` return, so
+        // only the inode comparison (canonicalize fails for dangling links)
+        // can make this rename succeed.
+        let target = dir.join("link");
+        fs::hard_link(&src, &target).unwrap();
+        let src_meta = fs::symlink_metadata(&src).unwrap();
+        let target_meta = fs::symlink_metadata(&target).unwrap();
+        assert_eq!(
+            (src_meta.dev(), src_meta.ino()),
+            (target_meta.dev(), target_meta.ino()),
+            "fixture must share one inode across two distinct names"
+        );
+        assert!(target.is_symlink() && !target.exists());
+
+        let renamed = rename_entry(&src, "link").unwrap();
+        assert_eq!(renamed, target);
+        assert!(
+            target.is_symlink(),
+            "the dangling symlink must survive the rename"
+        );
+        assert_eq!(
+            fs::read_link(&target).unwrap(),
+            target_path,
+            "the symlink target must be preserved"
+        );
+        assert!(
+            !src.is_symlink() && !src.exists(),
+            "the source dirent must have moved to the new name"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
