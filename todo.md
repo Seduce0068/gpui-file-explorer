@@ -406,6 +406,23 @@ status: current
 - [x] **R4-WASM01** wasm 失敗ログが現行 Cargo.toml の trash ゲートと矛盾 — 対応: 539292a
   — `notes/wasm-browser-notes.md:43`
 
+### 優先度: 中（第21回発掘）
+
+- [ ] **R1-CLI01** `--` 終端区切り未対応（区切り後のフラグも解釈される）
+  — `app/src/main.rs:9066,9111`
+- [ ] **R1-CLI01** 存在しない/ファイルの CLI 引数が診断なしでフォールバック
+  — `app/src/main.rs:9131,9184`
+- [ ] **R2-I1801** Ctrl+P の名称が「あいまいジャンプ」と「クイックジャンプ」で不一致
+  — `app/src/strings.rs:86` / `app/src/main.rs:5400`
+- [ ] **R2-I1801** 用語規約「ディレクトリはエラー詳細のみ」が strings.rs 自身で違反
+  — `app/src/strings.rs:9,83,280`
+- [ ] **R3-MIG01** 保存検索/ラベルの検証がトリム前で余白超過時に失われる
+  — `app/src/model.rs:592` / `app/src/settings.rs:1099`
+- [ ] **R3-MIG01** record_search が sane_query を通さない
+  — `app/src/settings.rs:674`
+- [ ] **R4-LOG01** 失敗/キャンセル転送が INFO「completed」として記録される
+  — `app/src/main.rs:4266`
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
