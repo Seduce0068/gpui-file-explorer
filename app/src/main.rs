@@ -642,6 +642,75 @@ impl KeyMap {
     }
 }
 
+/// Render a binding in the chord spelling accepted by the keymap dialog
+/// (e.g. `ctrl+shift+p`, `f4`, `alt+k`). Pure so the help overlay and tests
+/// share one representation of a live binding.
+fn format_chord(binding: &KeyBinding) -> String {
+    let mut parts: Vec<&str> = Vec::with_capacity(4);
+    if binding.ctrl {
+        parts.push("ctrl");
+    }
+    if binding.alt {
+        parts.push("alt");
+    }
+    if binding.shift == Some(true) {
+        parts.push("shift");
+    }
+    parts.push(binding.key.as_str());
+    parts.join("+")
+}
+
+/// Snake-case name of an action. Reuses the serde names the Alt+K dialog
+/// accepts, so the help notice cannot drift from the input syntax.
+fn keymap_action_name(action: KeyAction) -> String {
+    serde_json::to_value(action)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Reverse lookup: the chord currently bound to `action`, if the action is
+/// still present in the table. This is the pure helper used by the F1 help
+/// override notice and by its regression test.
+fn chord_for_action(keymap: &KeyMap, action: KeyAction) -> Option<String> {
+    keymap
+        .bindings
+        .iter()
+        .find(|binding| binding.action == action)
+        .map(format_chord)
+}
+
+/// `(action, chord)` pairs for bindings that are not exactly a shipped
+/// default. `HELP_SECTIONS` is static, so this supplemental list is what keeps
+/// F1 help truthful after an Alt+K rebind.
+fn active_keymap_overrides(keymap: &KeyMap) -> Vec<(String, String)> {
+    let defaults = KeyMap::default_keymap();
+    keymap
+        .bindings
+        .iter()
+        .filter(|binding| !defaults.bindings.contains(*binding))
+        .filter_map(|binding| {
+            chord_for_action(keymap, binding.action)
+                .map(|chord| (keymap_action_name(binding.action), chord))
+        })
+        .collect()
+}
+
+/// One-line F1 notice listing live overrides. `None` for the shipped default
+/// keymap, so the ordinary help overlay is unchanged in that case.
+fn help_overrides_line(keymap: &KeyMap) -> Option<String> {
+    let overrides = active_keymap_overrides(keymap);
+    if overrides.is_empty() {
+        return None;
+    }
+    let entries = overrides
+        .iter()
+        .map(|(action, chord)| format!("{action} → {chord}"))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    Some(format!("現在のキー設定（上書き）: {entries}"))
+}
+
 // ------------------------------------------------------------- F6-51 fuzzy jump
 
 /// Where a fuzzy-jump candidate came from. The order also acts as the ranking
@@ -952,13 +1021,19 @@ fn build_places() -> Vec<Place> {
     places
 }
 
+/// Pure: discard a dialog's stale validation error when its input changes.
+/// Returns `true` only when an error was present, so callers notify once.
+fn clear_dialog_error(error: &mut Option<String>) -> bool {
+    error.take().is_some()
+}
+
 /// Inline rename dialog state. Dropping it closes the dialog and drops the
 /// input subscription.
 struct RenameState {
     target: PathBuf,
     original: String,
     input: Entity<InputState>,
-    /// Keeps the `InputEvent::PressEnter` subscription alive while open.
+    /// Keeps the `InputEvent::Change` / `PressEnter` subscription alive while open.
     _subscription: Subscription,
     error: Option<String>,
 }
@@ -974,7 +1049,7 @@ struct LabelState {
 /// Location bar (Ctrl+L): a path input with validation error.
 struct LocationState {
     input: Entity<InputState>,
-    /// Keeps the `InputEvent::PressEnter` subscription alive while open.
+    /// Keeps the `InputEvent::Change` / `PressEnter` subscription alive while open.
     _subscription: Subscription,
     error: Option<String>,
 }
@@ -983,7 +1058,7 @@ struct LocationState {
 /// and drops the input subscription.
 struct TerminalCommandState {
     input: Entity<InputState>,
-    /// Keeps the `InputEvent::PressEnter` subscription alive while open.
+    /// Keeps the `InputEvent::Change` / `PressEnter` subscription alive while open.
     _subscription: Subscription,
     error: Option<String>,
 }
@@ -992,7 +1067,7 @@ struct TerminalCommandState {
 /// the input subscription.
 struct KeymapEditorState {
     input: Entity<InputState>,
-    /// Keeps the `InputEvent::PressEnter` subscription alive while open.
+    /// Keeps the `InputEvent::Change` / `PressEnter` subscription alive while open.
     _subscription: Subscription,
     error: Option<String>,
 }
@@ -2661,11 +2736,18 @@ impl Explorer {
             current.to_string()
         };
         let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
-        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.confirm_terminal_command(cx);
-            }
-        });
+        let subscription =
+            cx.subscribe(&input, |this, _input, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
+                    if let Some(editor) = this.terminal_command_editor.as_mut() {
+                        if clear_dialog_error(&mut editor.error) {
+                            cx.notify();
+                        }
+                    }
+                }
+                InputEvent::PressEnter { .. } => this.confirm_terminal_command(cx),
+                _ => {}
+            });
         let focus = input.read(cx).focus_handle(cx).clone();
         focus.focus(window, cx);
         self.terminal_command_editor = Some(TerminalCommandState {
@@ -2816,11 +2898,18 @@ impl Explorer {
             return;
         }
         let input = cx.new(|cx| InputState::new(window, cx).default_value("open_preview "));
-        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.confirm_keymap(cx);
-            }
-        });
+        let subscription =
+            cx.subscribe(&input, |this, _input, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
+                    if let Some(editor) = this.keymap_editor.as_mut() {
+                        if clear_dialog_error(&mut editor.error) {
+                            cx.notify();
+                        }
+                    }
+                }
+                InputEvent::PressEnter { .. } => this.confirm_keymap(cx),
+                _ => {}
+            });
         let focus = input.read(cx).focus_handle(cx).clone();
         focus.focus(window, cx);
         self.keymap_editor = Some(KeymapEditorState {
@@ -4596,11 +4685,18 @@ impl Explorer {
         }
         let value = display_path(&self.cwd);
         let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
-        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.confirm_location(cx);
-            }
-        });
+        let subscription =
+            cx.subscribe(&input, |this, _input, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
+                    if let Some(location) = this.location.as_mut() {
+                        if clear_dialog_error(&mut location.error) {
+                            cx.notify();
+                        }
+                    }
+                }
+                InputEvent::PressEnter { .. } => this.confirm_location(cx),
+                _ => {}
+            });
         let focus = input.read(cx).focus_handle(cx).clone();
         focus.focus(window, cx);
         self.location = Some(LocationState {
@@ -4996,7 +5092,8 @@ impl Explorer {
                 );
             }
         }
-        let body = div()
+        let overrides_line = help_overrides_line(&self.keymap);
+        let mut body = div()
             .w(px(720.0))
             .bg(rgb(C_SURFACE))
             .rounded_lg()
@@ -5012,21 +5109,25 @@ impl Explorer {
                     .text_lg()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("キーボードショートカット"),
-            )
-            .child(list)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(C_MUTED))
-                            .child("F1 / Esc で閉じる（一覧はスクロールできます）"),
-                    )
-                    .child(Button::new("help-close").label("閉じる").on_click(close)),
             );
+        // Static HELP_SECTIONS cannot follow a user rebind. Surface the live
+        // overrides above the table instead of rewriting every static row.
+        if let Some(line) = overrides_line {
+            body = body.child(div().text_sm().text_color(rgb(C_YELLOW)).child(line));
+        }
+        let body = body.child(list).child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(C_MUTED))
+                        .child("F1 / Esc で閉じる（一覧はスクロールできます）"),
+                )
+                .child(Button::new("help-close").label("閉じる").on_click(close)),
+        );
         Some(
             div()
                 .absolute()
@@ -5309,11 +5410,18 @@ impl Explorer {
         let target = entry.path.clone();
         let original = entry.name_text.clone();
         let input = cx.new(|cx| InputState::new(window, cx).default_value(original.clone()));
-        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.confirm_rename(cx);
-            }
-        });
+        let subscription =
+            cx.subscribe(&input, |this, _input, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
+                    if let Some(rename) = this.renaming.as_mut() {
+                        if clear_dialog_error(&mut rename.error) {
+                            cx.notify();
+                        }
+                    }
+                }
+                InputEvent::PressEnter { .. } => this.confirm_rename(cx),
+                _ => {}
+            });
         let focus = input.read(cx).focus_handle(cx).clone();
         focus.focus(window, cx);
         self.renaming = Some(RenameState {
@@ -8149,6 +8257,7 @@ fn handle_cli() -> bool {
                  使い方: gpui-file-explorer [ディレクトリ]\n\n\
                  引数なしの場合は前回のディレクトリ（無ければ $HOME）を開きます。\n\
                  主なキー: F2 名前変更 / Ctrl+C・Ctrl+X・Ctrl+V コピー・切り取り・貼り付け /\n\
+                 Ctrl+P あいまいジャンプ / F4 ターミナル / Alt+K キー設定 /\n\
                  Ctrl+H 隠しファイル / Ctrl+Shift+N 新規フォルダ / Alt+←→ 戻る・進む / Esc キャンセル\n\n\
                  ライセンス: AGPL-3.0-or-later
                  ソース: https://github.com/Seduce0068/gpui-file-explorer",
@@ -8357,15 +8466,16 @@ mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
-        build_places, classify_cli, clear_op_token, format_selected, fuzzy_candidates, fuzzy_score,
-        install_op_token, internal_drop_paths, keymap_chord_reserved, kind_color,
-        labeled_display_name, normalize_terminal_command, parse_chord, parse_keymap_input,
-        pending_rename_index, rank_fuzzy, read_properties_snapshot, saved_search_caption,
-        saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
-        trash_key_action, upsert_keymap_override, CliAction, Explorer, FuzzyCandidate, FuzzySource,
-        KeyAction, KeyBinding, KeyMap, TrashKeyAction,
+        active_keymap_overrides, build_places, chord_for_action, classify_cli, clear_dialog_error,
+        clear_op_token, format_chord, format_selected, fuzzy_candidates, fuzzy_score,
+        help_overrides_line, install_op_token, internal_drop_paths, keymap_action_name,
+        keymap_chord_reserved, kind_color, labeled_display_name, normalize_terminal_command,
+        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
+        read_properties_snapshot, saved_search_caption, saved_search_save_status, summarize_op,
+        tab_label, terminal_dir_for, terminal_disabled_status, terminal_failed_status,
+        terminal_process, terminal_started_status, terminal_target_dir, trash_batch,
+        trash_delete_status, trash_key_action, upsert_keymap_override, CliAction, Explorer,
+        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, TrashKeyAction,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -8552,6 +8662,54 @@ mod tests {
         assert!(
             total >= 20,
             "expected a useful number of shortcuts, got {total}"
+        );
+    }
+
+    #[test]
+    fn help_lists_active_overrides() {
+        let default = KeyMap::default_keymap();
+        assert!(active_keymap_overrides(&default).is_empty());
+        assert!(help_overrides_line(&default).is_none());
+        assert_eq!(keymap_action_name(KeyAction::OpenPreview), "open_preview");
+        assert_eq!(
+            chord_for_action(&default, KeyAction::OpenTerminal).as_deref(),
+            Some("f4")
+        );
+
+        let mut keymap = KeyMap::default_keymap();
+        assert!(keymap.rebind(KeyAction::OpenPreview, "p", true, true, false));
+        assert_eq!(
+            active_keymap_overrides(&keymap),
+            vec![("open_preview".to_string(), "ctrl+shift+p".to_string())]
+        );
+        assert_eq!(
+            chord_for_action(&keymap, KeyAction::OpenPreview).as_deref(),
+            Some("ctrl+shift+p")
+        );
+        // Static HELP_SECTIONS still says "space / F3"; the supplemental
+        // notice must carry the live binding after the Alt+K rebind.
+        let line = help_overrides_line(&keymap).expect("override notice");
+        assert!(line.contains("open_preview → ctrl+shift+p"), "{line}");
+
+        assert!(keymap.rebind(KeyAction::OpenTerminal, "k", true, false, false));
+        let line = help_overrides_line(&keymap).expect("override notice");
+        assert!(line.contains("open_terminal → ctrl+k"), "{line}");
+        let terminal_binding = keymap
+            .bindings
+            .iter()
+            .find(|binding| binding.action == KeyAction::OpenTerminal)
+            .expect("terminal binding");
+        assert_eq!(format_chord(terminal_binding), "ctrl+k");
+    }
+
+    #[test]
+    fn dialog_error_clears_on_input_change() {
+        let mut error = Some("既に存在します".to_string());
+        assert!(clear_dialog_error(&mut error));
+        assert!(error.is_none());
+        assert!(
+            !clear_dialog_error(&mut error),
+            "clearing an empty error needs no repaint"
         );
     }
 

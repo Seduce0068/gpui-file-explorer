@@ -83,6 +83,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+↑ / Backspace", "親ディレクトリへ"),
             ("Home / End", "先頭 / 末尾へ"),
             ("PageUp / PageDown", "ページ単位で移動"),
+            ("Ctrl+P", "あいまいジャンプ（名前からパスへ素早く移動）"),
         ],
     ),
     (
@@ -140,6 +141,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "その他",
         &[
             ("F1", "このヘルプ"),
+            ("F4", "選択中のフォルダでターミナルを開く"),
             ("Alt+T", "F4 で開くターミナルの起動コマンドを設定"),
             (
                 "Alt+K",
@@ -416,6 +418,21 @@ mod tests {
         assert!(keymap_entry.is_some(), "Alt+K must be listed in F1 help");
         assert!(KEYMAP_INPUT_HINT.contains("open_preview ctrl+shift+p"));
         assert!(KEYMAP_INPUT_HINT.contains("escape / f1"));
+    }
+
+    #[test]
+    fn help_lists_fuzzy_terminal_and_keymap_shortcuts() {
+        let keys: Vec<&str> = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, entries)| *entries)
+            .map(|(key, _)| *key)
+            .collect();
+        for expected in ["Ctrl+P", "F4", "Alt+K"] {
+            assert!(
+                keys.contains(&expected),
+                "{expected} must be listed in F1 help"
+            );
+        }
     }
 
     #[test]
