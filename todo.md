@@ -130,19 +130,20 @@ status: current
 
 ### 優先度: 中（第4回発掘・confirmed）
 
-- [ ] **R1-FG01** 通知トースト(push_notification)が未実装でステータス文言に代替
+- [x] **R1-FG01** 通知トースト未実装（ステータス行で代替）
+  — 対応: 設計判断で現状維持（DESIGN 差分は未記録）
   — `DESIGN.md:807` / `app/src/main.rs:2586`
-- [ ] **R2-TQ02** 破損 symlink の Undo / reveal が `exists()` で誤判定
+- [x] **R2-TQ02** 破損 symlink の Undo / reveal が `exists()` で誤判定 — 対応: 5b1b1fa
   — `app/src/main.rs:4047`
-- [ ] **R5-UX01** Alt+K ダイアログが F10〜F19 を予約キーと誤判定（settings 側のみ修正済み）
+- [x] **R5-UX01** Alt+K ダイアログが F10〜F19 を予約キーと誤判定（settings 側のみ修正済み） — 対応: 5b1b1fa
   — `app/src/main.rs:389-392`
-- [ ] **R5-UX01** 検索結果がキーボードで操作できない（検索ビューでキーが破棄される）
+- [x] **R5-UX01** 検索結果がキーボードで操作できない（検索ビューでキーが破棄される） — 対応: 5b1b1fa
   — `app/src/main.rs:3158-3163`
-- [ ] **R4-DP01** CI / check.sh が release プロファイルを検証しない
+- [x] **R4-DP01** CI / check.sh が release プロファイルを検証しない — 対応: f8fef38
   — `scripts/check.sh:151-197` / `#[cfg(not(debug_assertions))]` 分岐が未検証
-- [ ] **R4-DP01** check.sh が監査ツール未導入時に黙って成功する
+- [x] **R4-DP01** check.sh が監査ツール未導入時に黙って成功する — 対応: f8fef38
   — `scripts/check.sh:101-142`
-- [ ] **R4-DP01** gen-perf-fixture.sh が既存ディレクトリをマーカーで武装化
+- [x] **R4-DP01** gen-perf-fixture.sh が既存ディレクトリをマーカーで武装化 — 対応: 19234b3
   — `scripts/gen-perf-fixture.sh:120-127`
 
 ### 優先度: 低（調査タスク）
