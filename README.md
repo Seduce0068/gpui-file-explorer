@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 266 tests
+cargo test           # 274 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -34,8 +34,11 @@ cargo test           # 266 tests
 ## キーマップの上書き
 
 キーバインドは `~/.config/gpui-file-explorer/settings.json` の `keymap` に
-`(アクション名, コード)` の組で永続化されます。キーを記録する設定 UI は
-まだ無いため、アプリを終了した状態で設定ファイルを手編集してください。
+`(アクション名, コード)` の組で永続化されます。**`Alt+K` でキーマップ設定
+ダイアログを開き、`アクション名 コード` の形式で入力して Enter を押すと
+登録できます**（例: `open_preview ctrl+shift+p`。Esc はキャンセル）。
+生のキー入力を記録する方式ではありません。手編集する場合はアプリを終了した
+状態で設定ファイルを編集してください。
 
 ```json
 { "version": 1, "keymap": [["open_preview", "ctrl+shift+p"]] }
@@ -44,9 +47,11 @@ cargo test           # 266 tests
 - アクション名は `KeyAction` の snake_case 名（例: `open_preview` /
   `fuzzy_jump`）、コードは `ctrl` / `shift` / `alt` を `+` で連結した修飾キーと
   最後のキー名（例: `ctrl+shift+p`、`alt+left`、`f4`）。修飾キーの順番は任意です。
-- `escape` / `f1` は予約キーで上書き不可。不正なコードや未知のアクション名は
+- 同じアクション名は UI での登録時に置き換えられ最後の入力が優先されます
+  （手編集で重複させた場合は最初の 1 件が有効。最大 64 件）。
+  `escape` / `f1` は予約キーで上書き不可。不正なコードや未知のアクション名は
   無視されます。詳細は [app/README.md](app/README.md) の
-  「キーマップの上書き（settings.json）」を参照してください。
+  「キーマップの上書き」を参照してください。
 
 ## リポジトリ構成
 
@@ -67,7 +72,7 @@ cargo test           # 266 tests
 
 ## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-18 更新）
 
-- `cargo build` 警告 0 / `cargo test` **266 passed / 0 failed**（2026-11-18 時点。初回実機検証時は 36 件）
+- `cargo build` 警告 0 / `cargo test` **274 passed / 0 failed**（2026-11-18 時点。初回実機検証時は 36 件）
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
 - 起動中に外部からファイル作成 → 一覧が自動更新（14→15 件）
@@ -156,5 +161,5 @@ bash scripts/check.sh --app      # app/ のみ
 bash scripts/check.sh --poc      # poc/ のみ
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 266 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 274 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
