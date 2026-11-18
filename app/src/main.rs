@@ -1275,6 +1275,7 @@ struct SearchState {
 /// them in one struct lets `Explorer` expose a single field instead of twenty
 /// unrelated flags.
 #[derive(Default)]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 struct DebugHooks {
     open_rename_once: bool,
     select_all_once: bool,
@@ -1625,6 +1626,57 @@ struct Explorer {
     debug: DebugHooks,
 }
 
+/// The subset of development env hooks that mutate freshly loaded settings.
+/// Keeping them in their own value lets the mutations be exercised without a
+/// GPUI context and without touching the process environment.
+#[derive(Clone, Copy, Default)]
+#[cfg(any(debug_assertions, test))]
+struct DebugSettingsOverrides {
+    sort_kind: bool,
+    recent: bool,
+    bookmarks: bool,
+    search_history: bool,
+}
+
+/// Apply the startup debug overrides to `settings`.
+///
+/// All environment access lives in `Explorer::new` behind
+/// `#[cfg(debug_assertions)]`; this function is pure with respect to the
+/// environment. Passing the default (every flag false) models the release
+/// path exactly: not a single settings field is touched.
+#[cfg(any(debug_assertions, test))]
+fn apply_debug_settings_overrides(
+    settings: &mut Settings,
+    start_dir: &Path,
+    overrides: DebugSettingsOverrides,
+) {
+    if overrides.sort_kind {
+        settings.sort = SortSpec {
+            key: SortKey::Kind,
+            dir: crate::model::SortDir::Asc,
+            dirs_first: true,
+        };
+    }
+    if overrides.recent {
+        settings.record_recent(start_dir);
+        if let Some(home) = dirs::home_dir() {
+            settings.record_recent(&home);
+        }
+        settings.record_recent(&PathBuf::from("/"));
+    }
+    if overrides.bookmarks {
+        settings.bookmarks.clear();
+        settings.toggle_bookmark(start_dir);
+        if let Some(home) = dirs::home_dir() {
+            settings.toggle_bookmark(&home);
+        }
+        settings.toggle_bookmark(&PathBuf::from("/"));
+    }
+    if overrides.search_history {
+        settings.recent_searches = vec!["TODO".to_string(), "rs".to_string(), "config".to_string()];
+    }
+}
+
 impl Explorer {
     /// Read GPUI_FE_DEBUG_* hooks in debug builds only. Release builds
     /// never honour them so a leaked variable cannot touch real files.
@@ -1685,14 +1737,10 @@ impl Explorer {
         let debug = Self::debug_hooks_from_env();
         let mut settings = Settings::load();
         // Any active debug hook must never write to the real settings file.
+        // In release `debug` is `DebugHooks::default()`, so this remains false
+        // and normal persistence behaviour is preserved.
         settings.ephemeral = debug.ephemeral;
-        if std::env::var("GPUI_FE_DEBUG_SORT").is_ok_and(|value| value == "kind") {
-            settings.sort = SortSpec {
-                key: SortKey::Kind,
-                dir: crate::model::SortDir::Asc,
-                dirs_first: true,
-            };
-        }
+        // Session restoration is not a debug hook and must run in every build.
         let (saved_tabs, start_dir, restored_active) = restore_session(
             &settings.tabs,
             settings.active_tab,
@@ -1700,24 +1748,23 @@ impl Explorer {
             startup_dir(),
             dirs::home_dir(),
         );
-        if std::env::var_os("GPUI_FE_DEBUG_RECENT").is_some() {
-            settings.record_recent(&start_dir);
-            if let Some(home) = dirs::home_dir() {
-                settings.record_recent(&home);
-            }
-            settings.record_recent(&PathBuf::from("/"));
-        }
-        if std::env::var_os("GPUI_FE_DEBUG_BOOKMARKS").is_some() {
-            settings.bookmarks.clear();
-            settings.toggle_bookmark(&start_dir);
-            if let Some(home) = dirs::home_dir() {
-                settings.toggle_bookmark(&home);
-            }
-            settings.toggle_bookmark(&PathBuf::from("/"));
-        }
-        if std::env::var_os("GPUI_FE_DEBUG_SEARCH_HISTORY").is_some() {
-            settings.recent_searches =
-                vec!["TODO".to_string(), "rs".to_string(), "config".to_string()];
+        // The env-driven startup overrides are development-only. In release
+        // the entire block is compiled out, so a leaked GPUI_FE_DEBUG_* value
+        // can never clear bookmarks, seed recents or overwrite search history
+        // in the user's real settings.json (F6-03).
+        #[cfg(debug_assertions)]
+        {
+            apply_debug_settings_overrides(
+                &mut settings,
+                &start_dir,
+                DebugSettingsOverrides {
+                    sort_kind: std::env::var("GPUI_FE_DEBUG_SORT")
+                        .is_ok_and(|value| value == "kind"),
+                    recent: std::env::var_os("GPUI_FE_DEBUG_RECENT").is_some(),
+                    bookmarks: std::env::var_os("GPUI_FE_DEBUG_BOOKMARKS").is_some(),
+                    search_history: std::env::var_os("GPUI_FE_DEBUG_SEARCH_HISTORY").is_some(),
+                },
+            );
         }
 
         let (watch_tx, watch_rx) = async_channel::unbounded::<Vec<FsEvent>>();
@@ -8253,6 +8300,7 @@ impl Explorer {
                 }
             }
         }
+        #[cfg(debug_assertions)]
         if self.debug.tabs_once && self.view == ViewSource::Directory && !self.load.is_loading() {
             self.debug.tabs_once = false;
             self.sync_active_tab();
@@ -8266,6 +8314,7 @@ impl Explorer {
                 self.move_tab_left(cx);
             }
         }
+        #[cfg(debug_assertions)]
         if self.debug.search_once && self.view == ViewSource::Directory && !self.load.is_loading() {
             self.debug.search_once = false;
             let query =
@@ -8765,18 +8814,19 @@ mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
-        active_keymap_overrides, build_places, canonical_chord, chord_for_action, classify_cli,
-        clear_dialog_error, clear_op_token, format_chord, format_selected, fuzzy_candidates,
-        fuzzy_score, grid_columns, help_overrides_line, install_op_token, internal_drop_paths,
-        keymap_action_name, keymap_chord_reserved, kind_color, labeled_display_name,
-        middle_click_tab_dir, normalize_terminal_command, parse_chord, parse_keymap_input,
-        pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
-        saved_search_caption, saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
+        active_keymap_overrides, apply_debug_settings_overrides, build_places, canonical_chord,
+        chord_for_action, classify_cli, clear_dialog_error, clear_op_token, format_chord,
+        format_selected, fuzzy_candidates, fuzzy_score, grid_columns, help_overrides_line,
+        install_op_token, internal_drop_paths, keymap_action_name, keymap_chord_reserved,
+        kind_color, labeled_display_name, middle_click_tab_dir, normalize_terminal_command,
+        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
+        read_properties_snapshot, remove_keymap_override, saved_search_caption,
+        saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
-        trash_key_action, upsert_keymap_override, version_label, CliAction, Explorer,
-        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, TrashKeyAction,
-        C_MUTED, GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX,
+        trash_key_action, upsert_keymap_override, version_label, CliAction, DebugSettingsOverrides,
+        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, SortKey,
+        TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -8785,6 +8835,47 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
+
+    #[test]
+    fn debug_settings_overrides_defaults_leave_settings_untouched() {
+        // Release builds never reach the override path: `debug_hooks_from_env`
+        // returns `DebugHooks::default()` and `Explorer::new` compiles the whole
+        // block out. An all-false override set models that state exactly, so
+        // the user's real settings must not change at all.
+        let mut settings = Settings::default();
+        let expected = settings.clone();
+        apply_debug_settings_overrides(
+            &mut settings,
+            &PathBuf::from("/tmp/gpui-fe-no-debug"),
+            DebugSettingsOverrides::default(),
+        );
+        assert_eq!(settings, expected);
+    }
+
+    #[test]
+    fn debug_settings_overrides_apply_when_enabled() {
+        // Guard against a vacuous regression test: with the hooks enabled the
+        // very same function really does mutate the four settings fields.
+        let start_dir = PathBuf::from("/tmp/gpui-fe-debug-start");
+        let mut settings = Settings::default();
+        apply_debug_settings_overrides(
+            &mut settings,
+            &start_dir,
+            DebugSettingsOverrides {
+                sort_kind: true,
+                recent: true,
+                bookmarks: true,
+                search_history: true,
+            },
+        );
+        assert_eq!(settings.sort.key, SortKey::Kind);
+        assert!(settings.recent_dirs.contains(&start_dir));
+        assert!(settings.bookmarks.contains(&start_dir));
+        assert_eq!(
+            settings.recent_searches,
+            vec!["TODO".to_string(), "rs".to_string(), "config".to_string()]
+        );
+    }
 
     #[test]
     fn build_places_always_includes_trash_last() {
