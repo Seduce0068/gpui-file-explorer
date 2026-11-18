@@ -262,6 +262,18 @@ fn trash_undo_status(label: &str, restored: usize, missing: usize) -> String {
     }
 }
 
+/// Status after a cancelled trash redo. Items already moved to the trash before
+/// the cancellation are reported instead of being hidden behind a bare cancel
+/// message, mirroring the normal (non-redo) trash path. A zero count means
+/// nothing was moved, so only the cancellation is reported.
+fn trash_redo_cancelled_status(trashed: usize) -> String {
+    if trashed == 0 {
+        STATUS_CANCELLED.to_string()
+    } else {
+        format!("{STATUS_CANCELLED}（{trashed} 件をゴミ箱へ移動済み）")
+    }
+}
+
 /// Row name with a bookmark label prefixed. The original name stays visible so
 /// the underlying entry can still be recognised (F6-49).
 fn labeled_display_name(base: &str, label: Option<&str>) -> String {
@@ -2440,12 +2452,29 @@ impl Explorer {
             )
         };
         let label = value.trim().to_string();
+        // A label needs a bookmark owner, otherwise validate() drops it on the
+        // next load and the label silently disappears after a restart. The
+        // "ラベルを設定…" menu entry is available for any directory, so
+        // auto-bookmark a path that is not bookmarked yet. Clearing a label
+        // never creates a bookmark.
+        let auto_bookmarked = if label.is_empty() {
+            false
+        } else {
+            self.settings.ensure_bookmark_for_label(&path)
+        };
         let changed = if label.is_empty() {
             self.settings.remove_bookmark_label(&path)
         } else {
             self.settings.set_bookmark_label(&path, &label)
         };
-        let saved = if changed { self.save_settings() } else { true };
+        let saved = if changed || auto_bookmarked {
+            self.save_settings()
+        } else {
+            true
+        };
+        if auto_bookmarked {
+            self.refresh_bookmarks();
+        }
         self.close_label_editor(cx);
         self.status = if !saved {
             STATUS_SETTINGS_SAVE_FAILED.to_string()
@@ -4963,31 +4992,28 @@ impl Explorer {
                 self.status = format!("{label}をやり直しています…（Esc でキャンセル）");
                 cx.notify();
                 let cancel = token.cancel.clone();
-                let background = cx.background_spawn(async move {
-                    let (trashed, failures, cancelled) = trash_batch(paths, &cancel);
-                    if cancelled {
-                        None
-                    } else {
-                        Some((trashed, failures))
-                    }
-                });
+                // Keep the partial result even when cancelled: items already
+                // moved to the trash must still be recorded so they can be
+                // undone, exactly like the normal (non-redo) trash path.
+                let background = cx.background_spawn(async move { trash_batch(paths, &cancel) });
                 let task = cx.spawn(async move |this, cx| {
-                    let result = background.await;
+                    let (trashed, failures, cancelled) = background.await;
                     // Resolve the newly created trash ids on the background
                     // executor; the UI thread only consumes the final mapping.
-                    let recorded = match &result {
-                        Some((trashed, _)) if !trashed.is_empty() => {
-                            let paths = trashed.clone();
-                            cx.background_spawn(async move { record_trashed_paths(&paths) })
-                                .await
-                        }
-                        _ => Vec::new(),
+                    let recorded = if trashed.is_empty() {
+                        Vec::new()
+                    } else {
+                        let paths = trashed.clone();
+                        cx.background_spawn(async move { record_trashed_paths(&paths) }).await
                     };
                     let _ = this.update(cx, |this, cx| {
                         if !this.finish_op(&token, false) {
                             return;
                         }
-                        let Some((trashed, failures)) = result else {
+                        let failed = trashed.is_empty();
+                        if cancelled && failed {
+                            // Pure cancellation: nothing was moved, so keep the
+                            // redo entry and report only the cancellation.
                             this.undo.push_redo(action_for_undo);
                             this.status = STATUS_CANCELLED.to_string();
                             tracing::debug!(
@@ -4997,11 +5023,13 @@ impl Explorer {
                                 success = false,
                                 "undo/redo operation finished"
                             );
+                            cx.notify();
                             return;
-                        };
-                        let failed = trashed.is_empty();
+                        }
                         let partial = !failed && !failures.is_empty();
-                        let level = if failed {
+                        let level = if cancelled {
+                            Level::DEBUG
+                        } else if failed {
                             Level::ERROR
                         } else if partial {
                             Level::WARN
@@ -5014,17 +5042,19 @@ impl Explorer {
                             action = "trash",
                             outcome = if failed {
                                 "failure"
+                            } else if cancelled {
+                                "cancelled"
                             } else if partial {
                                 "partial_failure"
                             } else {
                                 "success"
                             },
-                            success = !failed && failures.is_empty(),
+                            success = !failed && failures.is_empty() && !cancelled,
                             items = trashed.len(),
                             failures = failures.len(),
                             "undo/redo operation finished"
                         );
-                        if trashed.is_empty() {
+                        if failed {
                             this.undo.push_redo(action_for_undo);
                             this.status = STATUS_REDO_FAILED.to_string();
                         } else {
@@ -5033,7 +5063,9 @@ impl Explorer {
                             // listing fails: otherwise the operation silently
                             // vanishes from the undo stack (F6-15).
                             this.undo.push_undo(UndoAction::Trash { items: recorded });
-                            this.status = if failures.is_empty() {
+                            this.status = if cancelled {
+                                trash_redo_cancelled_status(trashed.len())
+                            } else if failures.is_empty() {
                                 format!("{label}をやり直しました（{} 件）", trashed.len())
                             } else {
                                 let (path, reason) = &failures[0];
@@ -9509,10 +9541,11 @@ mod tests {
         saved_search_save_status, search_filter_status, startup_dir_from, summarize_op, tab_label,
         terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, transfer_log_level, transfer_skip_notice,
-        trash_batch, trash_delete_status, trash_key_action, trash_undo_status,
-        upsert_keymap_override, validate_cli_dir, version_label, CliAction, DebugSettingsOverrides,
-        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, SortKey,
-        TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX, STATUS_RESTORE_FAILED,
+        trash_batch, trash_delete_status, trash_key_action, trash_redo_cancelled_status,
+        trash_undo_status, upsert_keymap_override, validate_cli_dir, version_label, CliAction,
+        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
+        KeyMap, KeymapInput, SortKey, TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX,
+        SIDEBAR_WIDTH_PX, STATUS_CANCELLED, STATUS_RESTORE_FAILED,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -10785,6 +10818,21 @@ mod tests {
             partial.contains("1 件") && partial.contains("1 件はゴミ箱にありません"),
             "{partial}"
         );
+    }
+
+    #[test]
+    fn trash_redo_cancelled_status_reports_partial_move() {
+        // 何も移動していない純粋なキャンセルはキャンセル文言のみ。
+        let none = trash_redo_cancelled_status(0);
+        assert_eq!(none, STATUS_CANCELLED);
+        assert!(!none.contains("件"), "0 件を報告しない: {none}");
+        // キャンセル前に移動済みの項目数を報告し、部分的な結果を隠さない。
+        let partial = trash_redo_cancelled_status(3);
+        assert_eq!(
+            partial,
+            format!("{STATUS_CANCELLED}（3 件をゴミ箱へ移動済み）")
+        );
+        assert!(partial.contains("3 件"), "{partial}");
     }
 
     #[test]
