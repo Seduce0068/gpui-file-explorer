@@ -191,6 +191,25 @@ status: current
 - [x] ステータスバー右端のバージョン表示を純粋関数化して回帰テスト追加
   — 対応: (本ラウンド)
 
+### 優先度: 中（第8回発掘）
+
+- [x] **R4-DATA01** 非UTF-8パスが serde 保存を全て失敗させる
+  — 対応: 0bd0679
+- [x] **R4-DATA01** settings.json を全量読み出してからサイズ検査する
+  — 対応: 0bd0679
+- [x] **R2-STAT01** 検索終了時に generation が増えず遅延結果が上書きする
+  — 対応: 0bd0679
+- [x] **R2-STAT01** reconcile 成功時に Error 状態が残存する
+  — 対応: 0bd0679
+- [ ] **R1-INV01** History::default() が max_back=0 で new() と不整合
+  — `app/src/history.rs:22-34`
+- [ ] **R1-INV01** go_back/go_forward が妥当性確認前にスタックを更新
+  — `app/src/history.rs:51-62`
+- [ ] **R1-INV01** UndoStack::push_redo に上限が無い
+  — `app/src/undo.rs:78-80`
+- [ ] **R1-INV01** select_all(&[]) が空選択＋stale anchor を残す
+  — `app/src/model.rs:216-221`
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
