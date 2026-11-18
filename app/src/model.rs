@@ -766,14 +766,20 @@ pub fn display_path(path: &Path) -> String {
 pub fn unique_child_name(dir: &Path, base: &str) -> String {
     let mut candidate = base.to_string();
     let mut counter = 2u32;
-    while dir.join(&candidate).exists() {
+    loop {
+        let path = dir.join(&candidate);
+        // Mirror `ops::unique_path`: `exists()` follows the link and reports
+        // false for a dangling symlink, but the name is still occupied and
+        // `create_dir` would fail with EEXIST on it forever. Skip it too.
+        if !path.exists() && !path.is_symlink() {
+            return candidate;
+        }
         candidate = format!("{base} ({counter})");
         counter += 1;
         if counter > 10_000 {
-            break;
+            return candidate;
         }
     }
-    candidate
 }
 
 /// Create a uniquely named folder inside `dir`.
@@ -1438,6 +1444,33 @@ mod tests {
             second.file_name().unwrap().to_string_lossy(),
             "新しいフォルダ (2)"
         );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_unique_folder_skips_dangling_symlink_name() {
+        let dir = scratch_dir("dangling-folder");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let link = dir.join("新しいフォルダ");
+        std::os::unix::fs::symlink(dir.join("no-such-target"), &link).unwrap();
+
+        assert!(!link.exists(), "the symlink is dangling");
+        assert!(link.is_symlink());
+        assert_eq!(
+            unique_child_name(&dir, "新しいフォルダ"),
+            "新しいフォルダ (2)"
+        );
+
+        let created = create_unique_folder(&dir).expect("must pick a free name");
+        assert_eq!(
+            created.file_name().unwrap().to_string_lossy(),
+            "新しいフォルダ (2)"
+        );
+        assert!(created.is_dir());
+        assert!(link.is_symlink(), "the dangling symlink must be untouched");
 
         fs::remove_dir_all(&dir).unwrap();
     }

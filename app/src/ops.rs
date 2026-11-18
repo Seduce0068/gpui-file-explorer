@@ -116,6 +116,40 @@ fn io_error(path: &Path, err: std::io::Error) -> OpError {
     plain.with_cause(BoxedCause::new(err))
 }
 
+/// Metadata of an entry that must exist, preserving dangling symlinks.
+///
+/// `Path::exists()` collapses every metadata failure — including `EACCES`
+/// from a non-searchable parent directory — into `false`, which made callers
+/// report a plain `OpError::NotFound` for an inaccessible source. Going
+/// through `symlink_metadata` keeps a dangling symlink present (its own inode
+/// is stat-able) and routes real failures through [`io_error`], so
+/// `PermissionDenied` keeps its own variant while `NotFound` stays `NotFound`.
+fn require_entry(path: &Path) -> Result<fs::Metadata, OpError> {
+    fs::symlink_metadata(path).map_err(|e| io_error(path, e))
+}
+
+/// Ensure `dir` is a usable destination directory without collapsing metadata
+/// failures into a boolean like `Path::is_dir()` does.
+///
+/// Symlinks to directories stay valid (matching `Path::is_dir()`), while a
+/// permission failure is reported through `io_error` as `PermissionDenied`
+/// instead of a misleading `InvalidTarget`.
+fn require_directory(dir: &Path, label: &str) -> Result<(), OpError> {
+    let meta = require_entry(dir)?;
+    let is_dir = if meta.file_type().is_symlink() {
+        fs::metadata(dir).map_err(|e| io_error(dir, e))?.is_dir()
+    } else {
+        meta.is_dir()
+    };
+    if !is_dir {
+        return Err(OpError::InvalidTarget(format!(
+            "{label}がディレクトリではありません: {}",
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Fold a cleanup failure into the error that triggered the cleanup.
 ///
 /// A destination that is already gone needs no cleanup: treating `NotFound`
@@ -284,16 +318,16 @@ fn copy_file_atomic(
     let parent = dest
         .parent()
         .ok_or_else(|| OpError::InvalidTarget("コピー先の親がありません".to_string()))?;
-    let file_name = dest
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "copy".to_string());
     // O_EXCL reservation with an unpredictable name: `File::create` on a
     // predictable `.partial-*` path follows a pre-planted symlink and can
     // truncate an unrelated file (CWE-59). nanos + PID + file counter keep
     // concurrent copies distinct without colliding with stale temp files.
+    // The destination name is deliberately *not* embedded: a legal name close
+    // to NAME_MAX would otherwise push the temp name past the limit and make
+    // the copy fail with ENAMETOOLONG. `create_new` below still reserves the
+    // name exclusively, so the collision/symlink protection is unchanged.
     let partial = parent.join(format!(
-        ".{file_name}.partial-{}-{}-{}",
+        ".partial-{}-{}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
@@ -578,15 +612,10 @@ pub fn copy_entry(
     mut on_progress: impl FnMut(u64),
 ) -> Result<OpStats, OpError> {
     let progress: &mut dyn FnMut(u64) = &mut on_progress;
-    if !src.exists() && !src.is_symlink() {
-        return Err(OpError::NotFound(src.to_path_buf()));
-    }
-    if !dest_dir.is_dir() {
-        return Err(OpError::InvalidTarget(format!(
-            "コピー先がディレクトリではありません: {}",
-            dest_dir.display()
-        )));
-    }
+    // `src.exists()` would hide EACCES behind a `false`; `require_entry`
+    // preserves the OS error category while still accepting dangling symlinks.
+    require_entry(src)?;
+    require_directory(dest_dir, "コピー先")?;
     ensure_not_into_itself(src, dest_dir)?;
 
     let Some(dest) = resolve_destination(src, dest_dir, policy)? else {
@@ -828,15 +857,10 @@ pub fn move_entry(
     cancel: &CancelFlag,
     mut on_progress: impl FnMut(u64),
 ) -> Result<OpStats, OpError> {
-    if !src.exists() && !src.is_symlink() {
-        return Err(OpError::NotFound(src.to_path_buf()));
-    }
-    if !dest_dir.is_dir() {
-        return Err(OpError::InvalidTarget(format!(
-            "移動先がディレクトリではありません: {}",
-            dest_dir.display()
-        )));
-    }
+    // `src.exists()` would hide EACCES behind a `false`; `require_entry`
+    // preserves the OS error category while still accepting dangling symlinks.
+    require_entry(src)?;
+    require_directory(dest_dir, "移動先")?;
     ensure_not_into_itself(src, dest_dir)?;
 
     // Same-directory move is a no-op.
@@ -922,9 +946,9 @@ pub fn move_entry(
 /// work on case-insensitive filesystems too.
 pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
     validate_file_name(new_name)?;
-    if !src.exists() && !src.is_symlink() {
-        return Err(OpError::NotFound(src.to_path_buf()));
-    }
+    // `src.exists()` would hide EACCES behind a `false`; `require_entry`
+    // preserves the OS error category while still accepting dangling symlinks.
+    require_entry(src)?;
     let parent = src
         .parent()
         .ok_or_else(|| OpError::InvalidTarget("親ディレクトリがありません".to_string()))?;
@@ -2014,6 +2038,110 @@ mod tests {
 
         let _ = fs::remove_dir_all(&src_dir);
         let _ = fs::remove_dir_all(&dest_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_in_no_search_permission_dir_reports_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Restore mode on drop so a failed assertion never leaves an
+        // un-removable scratch directory behind.
+        struct RestoreMode(PathBuf, u32);
+        impl Drop for RestoreMode {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(self.1));
+            }
+        }
+
+        let dir = scratch("eacces-source");
+        let locked = dir.join("locked");
+        fs::create_dir(&locked).unwrap();
+        let src = locked.join("secret.txt");
+        write(&src, b"secret");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let original_mode = fs::metadata(&locked).unwrap().permissions().mode();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let _restore = RestoreMode(locked.clone(), original_mode);
+
+        // `Path::exists()` used to turn the EACCES into `false`, so all three
+        // entry points reported `NotFound`. Each must now keep PermissionDenied.
+        let copied = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        );
+        assert!(
+            matches!(
+                copied,
+                Err(OpError::PermissionDenied(_) | OpError::PermissionDeniedCause(_, _))
+            ),
+            "copy_entry must report PermissionDenied, got {copied:?}"
+        );
+
+        let moved = move_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        );
+        assert!(
+            matches!(
+                moved,
+                Err(OpError::PermissionDenied(_) | OpError::PermissionDeniedCause(_, _))
+            ),
+            "move_entry must report PermissionDenied, got {moved:?}"
+        );
+
+        let renamed = rename_entry(&src, "renamed.txt");
+        assert!(
+            matches!(
+                renamed,
+                Err(OpError::PermissionDenied(_) | OpError::PermissionDeniedCause(_, _))
+            ),
+            "rename_entry must report PermissionDenied, got {renamed:?}"
+        );
+
+        drop(_restore);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_file_with_name_near_name_max_succeeds() {
+        let dir = scratch("long-name");
+        // NAME_MAX is 255 on the target filesystems; 240 bytes is legal for
+        // the destination but used to overflow `.{dest}.partial-*` (280 bytes).
+        let name = format!("{}.txt", "a".repeat(236));
+        assert_eq!(name.len(), 240);
+        let src = dir.join(&name);
+        write(&src, b"payload");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let stats = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(stats.files, 1);
+        assert_eq!(stats.bytes, 7);
+        assert_eq!(fs::read(dest_dir.join(&name)).unwrap(), b"payload");
+        let partials: Vec<_> = fs::read_dir(&dest_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".partial-"))
+            .collect();
+        assert!(partials.is_empty(), "temp file left behind: {partials:?}");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 
