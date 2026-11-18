@@ -489,6 +489,19 @@ pub enum SortDir {
     Desc,
 }
 
+/// Unknown persisted direction falls back to Asc at the deserialize boundary
+/// so one bad enum value cannot back up the whole settings file.
+fn deserialize_sort_dir<'de, D>(deserializer: D) -> Result<SortDir, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        "desc" => SortDir::Desc,
+        _ => SortDir::default(),
+    })
+}
+
 impl SortDir {
     pub fn is_ascending(self) -> bool {
         matches!(self, SortDir::Asc)
@@ -511,6 +524,7 @@ impl From<bool> for SortDir {
 pub struct SortSpec {
     #[serde(deserialize_with = "deserialize_sort_key")]
     pub key: SortKey,
+    #[serde(deserialize_with = "deserialize_sort_dir")]
     pub dir: SortDir,
     /// Directories always sort before files in P0 (kept in the schema for
     /// future "mix files and folders" options).
@@ -1321,6 +1335,19 @@ mod tests {
         assert_eq!(spec.key, SortKey::Modified);
         assert_eq!(spec.dir, SortDir::Asc);
         assert!(spec.dirs_first);
+    }
+
+    #[test]
+    fn unknown_sort_dir_falls_back_without_losing_siblings() {
+        let spec: SortSpec =
+            serde_json::from_str(r#"{"key":"size","dir":"ascending","dirs_first":false}"#).unwrap();
+        assert_eq!(spec.key, SortKey::Size);
+        assert_eq!(spec.dir, SortDir::Asc);
+        assert!(!spec.dirs_first);
+
+        let valid: SortSpec =
+            serde_json::from_str(r#"{"key":"kind","dir":"desc","dirs_first":true}"#).unwrap();
+        assert_eq!(valid.dir, SortDir::Desc);
     }
 
     #[test]
