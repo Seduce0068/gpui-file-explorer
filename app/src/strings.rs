@@ -298,7 +298,8 @@ pub const STATUS_OPENED_DEFAULT_SUFFIX: &str = "を既定のアプリで開き�
 pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: ";
 /// 設定の失敗／退避（読み込み失敗と情報量を揃える）。
 #[allow(dead_code)]
-pub const STATUS_SETTINGS_SAVE_FAILED: &str = "設定を保存できませんでした（詳細は stderr を参照）";
+pub const STATUS_SETTINGS_SAVE_FAILED: &str =
+    "設定を保存できませんでした（権限や空き容量を確認して再試行してください）";
 #[allow(dead_code)]
 pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
 /// タブ復元の成否。

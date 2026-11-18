@@ -206,7 +206,24 @@ fn saved_search_save_status(name: &str, stored: bool) -> String {
     if stored {
         format!("検索を保存しました: {name}")
     } else {
-        format!("検索を保存できませんでした: {name}（名前または検索語が無効です）")
+        // 空の名前／検索語は呼び出し側で別メッセージとして扱われるため、ここ
+        // は保存件数の上限に達した場合の案内とする（F6-49）。
+        format!(
+            "検索を保存できませんでした: {name}（保存できる検索の上限に達しました。既存の保存済み検索を削除してから再試行してください）"
+        )
+    }
+}
+
+/// Status shown after undoing a trash operation. A zero restore count means
+/// nothing came back, so it is reported as a failure (and the caller keeps the
+/// undo entry) instead of claiming a successful "0 件" restore.
+fn trash_undo_status(label: &str, restored: usize, missing: usize) -> String {
+    if restored == 0 {
+        format!("{STATUS_RESTORE_FAILED}（ゴミ箱に項目がありません）")
+    } else if missing == 0 {
+        format!("{label}を元に戻しました（{restored} 件）")
+    } else {
+        format!("{label}を元に戻しました（{restored} 件、{missing} 件はゴミ箱にありません）")
     }
 }
 
@@ -4652,18 +4669,14 @@ impl Explorer {
                                 if restored > 0 {
                                     this.undo.push_redo(action_for_redo);
                                 } else {
+                                    // 何も復元されなかった場合は pop を取り消し、undo
+                                    // エントリをスタックへ戻して再試行可能にする。
                                     this.undo.push_undo(action_for_redo);
                                 }
                                 eprintln!(
                                     "undo-report: trash undone, restored={restored} missing={missing}"
                                 );
-                                this.status = if missing == 0 {
-                                    format!("{label}を元に戻しました（{restored} 件）")
-                                } else {
-                                    format!(
-                                        "{label}を元に戻しました（{restored} 件、{missing} 件はゴミ箱にありません）"
-                                    )
-                                };
+                                this.status = trash_undo_status(label, restored, missing);
                                 this.reload(cx);
                             }
                             None => {
@@ -9181,10 +9194,10 @@ mod tests {
         saved_search_save_status, search_filter_status, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, transfer_skip_notice, trash_batch,
-        trash_delete_status, trash_key_action, upsert_keymap_override, version_label, CliAction,
-        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
-        KeyMap, KeymapInput, SortKey, TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX,
-        SIDEBAR_WIDTH_PX,
+        trash_delete_status, trash_key_action, trash_undo_status, upsert_keymap_override,
+        version_label, CliAction, DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource,
+        KeyAction, KeyBinding, KeyMap, KeymapInput, SortKey, TrashKeyAction, C_MUTED,
+        GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX, STATUS_RESTORE_FAILED,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -10121,9 +10134,38 @@ mod tests {
         let ok = saved_search_save_status("Todos", true);
         let rejected = saved_search_save_status("Todos", false);
         assert!(ok.contains("Todos") && ok.contains("保存しました"), "{ok}");
+        // 失敗時は「名前または検索語が無効」ではなく上限到達を案内する。
         assert!(
-            rejected.contains("Todos") && rejected.contains("できませんでした"),
+            rejected.contains("Todos")
+                && rejected.contains("できませんでした")
+                && rejected.contains("上限に達しました")
+                && rejected.contains("削除"),
             "{rejected}"
+        );
+        assert!(
+            !rejected.contains("無効"),
+            "stored=false は上限到達として報告する: {rejected}"
+        );
+    }
+
+    #[test]
+    fn trash_undo_status_reports_zero_restore_as_failure() {
+        let empty = trash_undo_status("ゴミ箱", 0, 0);
+        assert_eq!(
+            empty,
+            format!("{STATUS_RESTORE_FAILED}（ゴミ箱に項目がありません）")
+        );
+        assert!(
+            !empty.contains("元に戻しました"),
+            "0 件復元を成功と報告しない: {empty}"
+        );
+        let ok = trash_undo_status("ゴミ箱", 2, 0);
+        assert!(ok.contains("ゴミ箱") && ok.contains("2 件"), "{ok}");
+        assert!(ok.contains("元に戻しました"), "{ok}");
+        let partial = trash_undo_status("ゴミ箱", 1, 1);
+        assert!(
+            partial.contains("1 件") && partial.contains("1 件はゴミ箱にありません"),
+            "{partial}"
         );
     }
 
