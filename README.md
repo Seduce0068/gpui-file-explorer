@@ -163,3 +163,14 @@ bash scripts/check.sh --poc      # poc/ のみ
 
 - 検証（Runtime Proof）: 完全ループが **exit 0**（app 274 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
+
+## ソース・ライセンス
+
+本プロジェクトは **AGPL-3.0-or-later** です。改変版をネットワーク経由で
+提供する場合（将来の WASM / Web 版を含む）は、利用者がソースを入手できる
+ようこの導線を維持してください。
+
+- ソース: [github.com/Seduce0068/gpui-file-explorer](https://github.com/Seduce0068/gpui-file-explorer)
+- ライセンス: [LICENSE](LICENSE)（AGPL-3.0-or-later）
+- 第三者クレジット: [NOTICE.md](NOTICE.md) / [app/NOTICE.md](app/NOTICE.md)
+- アプリ内にも F1 ヘルプの「ライセンス / ソース」から同じ URL を表示します。
