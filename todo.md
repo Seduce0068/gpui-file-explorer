@@ -278,24 +278,26 @@ status: current
 
 ### 優先度: 中（第14回 UX 発掘・confirmed）
 
-- [ ] **R1-UX01** F1 ヘルプに Up/Down・R/Ctrl+Enter・ゴミ箱復元が未掲載
+- [x] **R1-UX01** F1 ヘルプに Up/Down・R/Ctrl+Enter・ゴミ箱復元が未掲載 — 対応: b273132
   — `app/src/strings.rs:76-163` / 2 発見を統合
-- [ ] **R3-DATA01** ゴミ箱表示で sort_header/Ctrl+H がディレクトリ用フィルタを適用
+- [x] **R3-DATA01** ゴミ箱表示で sort_header/Ctrl+H がディレクトリ用フィルタを適用 — 対応: b273132
   — `app/src/main.rs:3718-3730,3681-3691`
-- [ ] **R2-UX02** フォーカス復帰漏れ（rename 未変更時 / label_editor / close_search / keymap）
+- [x] **R2-UX02** フォーカス復帰漏れ（rename / label / search / keymap）
+  — 対応: b273132
   — `app/src/main.rs:5876,2269,6650,8525` / 4 発見を統合
-- [ ] **R2-UX02** リネームキャンセルが進行中の別操作まで cancel_op する
+- [x] **R2-UX02** リネームキャンセルが進行中の別操作まで cancel_op する — 対応: b273132
   — `app/src/main.rs:5955-5962`
-- [ ] **R2-UX02** プロパティの dir_size コールバックに path/serial 照合が無い
+- [x] **R2-UX02** プロパティの dir_size コールバックに path/serial 照合が無い — 対応: b273132
   — `app/src/main.rs:5671-5683`
-- [ ] **R3-DATA01** ドライブ一覧がホットプラグ未更新・source/fs_type 非表示
+- [x] **R3-DATA01** ドライブ一覧がホットプラグ未更新・source/fs_type 非表示 — 対応: b273132
   — `app/src/main.rs:2311-2325,7875-7904`
-- [ ] **R3-DATA01** ゴミ箱行が復元先 original_parent を表示しない
+- [x] **R3-DATA01** ゴミ箱行が復元先 original_parent を表示しない — 対応: b273132
   — `app/src/trash_view.rs:140-163` / `app/src/main.rs:7507-7523`
-- [ ] **R4-ACC01** クリック可能 div の aria_label 欠落（タブ×/保存検索×/見出し/パンくず等）
+- [x] **R4-ACC01** クリック可能 div の aria_label 欠落（タブ×/保存検索×/見出し/パンくず等） — 対応: b273132
   — `app/src/main.rs:2771-2798,6939-6953,7271-7289,7956`
-- [ ] **R4-ACC01** F1 ヘルプ/操作履歴がキーボードでスクロールできない
-  — `app/src/main.rs:3479,4239` / 2 発見を統合
+- [x] **R4-ACC01** F1 ヘルプ/操作履歴がキーボードでスクロールできない
+  — 対応: 制限を文書化して見送り（gpui-pre 0.3.12 の ScrollHandle に
+  `scroll_by` が無く、プレーン div + overflow_y_scroll では実装不可）
 
 ### 優先度: 低（調査タスク）
 
