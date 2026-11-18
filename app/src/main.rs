@@ -2646,16 +2646,17 @@ impl Explorer {
             self.exit_trash(cx);
             return;
         }
-        if let Some(target) = self
-            .history
-            .apply(self.cwd.clone(), PathBuf::new(), NavMode::Back)
-        {
-            if target.is_dir() {
-                self.set_cwd(target, cx);
-            } else {
-                self.status = format!("{STATUS_TARGET_GONE}: {}", display_path(&target));
-                cx.notify();
-            }
+        // Peek first: a missing target must leave cwd and history untouched.
+        let Some(target) = self.history.peek_back(&self.cwd) else {
+            return;
+        };
+        if !target.is_dir() {
+            self.status = format!("{STATUS_TARGET_GONE}: {}", display_path(&target));
+            cx.notify();
+            return;
+        }
+        if let Some(committed) = self.history.apply(self.cwd.clone(), target, NavMode::Back) {
+            self.set_cwd(committed, cx);
         }
     }
 
@@ -2664,16 +2665,20 @@ impl Explorer {
             self.exit_trash(cx);
             return;
         }
-        if let Some(target) = self
+        // Peek first: a missing target must leave cwd and history untouched.
+        let Some(target) = self.history.peek_forward(&self.cwd) else {
+            return;
+        };
+        if !target.is_dir() {
+            self.status = format!("{STATUS_TARGET_GONE}: {}", display_path(&target));
+            cx.notify();
+            return;
+        }
+        if let Some(committed) = self
             .history
-            .apply(self.cwd.clone(), PathBuf::new(), NavMode::Forward)
+            .apply(self.cwd.clone(), target, NavMode::Forward)
         {
-            if target.is_dir() {
-                self.set_cwd(target, cx);
-            } else {
-                self.status = format!("{STATUS_TARGET_GONE}: {}", display_path(&target));
-                cx.notify();
-            }
+            self.set_cwd(committed, cx);
         }
     }
 

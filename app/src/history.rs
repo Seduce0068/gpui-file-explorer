@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Back / forward navigation history.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Default upper bound of the back stack. Shared by [`History::new`] and
+/// [`History::default`] so the two constructors cannot drift apart.
+const DEFAULT_MAX_BACK: usize = 200;
 
 /// Intent of a navigation (DESIGN.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,11 +23,17 @@ pub enum NavMode {
 }
 
 /// Browser-style navigation history with a bounded back stack.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct History {
     back: Vec<PathBuf>,
     forward: Vec<PathBuf>,
     max_back: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl History {
@@ -31,7 +41,7 @@ impl History {
         Self {
             back: Vec::new(),
             forward: Vec::new(),
-            max_back: 200,
+            max_back: DEFAULT_MAX_BACK,
         }
     }
 
@@ -59,6 +69,27 @@ impl History {
         let target = self.forward.pop()?;
         self.back.push(current);
         Some(target)
+    }
+
+    /// Return the directory a back navigation would land on, without touching
+    /// either stack. Callers can validate the target (for example with
+    /// `Path::is_dir`) before committing the navigation via
+    /// [`History::apply`] with [`NavMode::Back`].
+    ///
+    /// `current` is accepted for symmetry with [`History::go_back`]; the target
+    /// itself depends only on the back stack.
+    pub fn peek_back(&self, _current: &Path) -> Option<PathBuf> {
+        self.back.last().cloned()
+    }
+
+    /// Return the directory a forward navigation would land on, without
+    /// touching either stack. Callers can validate the target before
+    /// committing via [`History::apply`] with [`NavMode::Forward`].
+    ///
+    /// `current` is accepted for symmetry with [`History::go_forward`]; the
+    /// target itself depends only on the forward stack.
+    pub fn peek_forward(&self, _current: &Path) -> Option<PathBuf> {
+        self.forward.last().cloned()
     }
 
     /// Apply a navigation and return the next location. `target` is only used
@@ -184,5 +215,58 @@ mod tests {
             Some(p("/"))
         );
         assert_eq!(history.back_len(), 2);
+    }
+
+    #[test]
+    fn default_matches_new() {
+        assert_eq!(History::default(), History::new());
+    }
+
+    #[test]
+    fn default_has_full_back_capacity() {
+        let mut history = History::default();
+        for index in 0..super::DEFAULT_MAX_BACK + 1 {
+            history.visit(p(&format!("/d{index}")), p(&format!("/d{}", index + 1)));
+        }
+        assert_eq!(history.back_len(), super::DEFAULT_MAX_BACK);
+    }
+
+    #[test]
+    fn peek_back_does_not_mutate() {
+        let mut history = History::new();
+        history.visit(p("/a"), p("/b"));
+        history.visit(p("/b"), p("/c"));
+        let snapshot = history.clone();
+
+        assert_eq!(history.peek_back(&p("/c")), Some(p("/b")));
+        assert_eq!(history.peek_back(&p("/c")), Some(p("/b")));
+        assert_eq!(history, snapshot, "peek_back must not change any stack");
+
+        // The peeked value is exactly what the committed navigation returns.
+        assert_eq!(history.go_back(p("/c")), Some(p("/b")));
+    }
+
+    #[test]
+    fn peek_forward_does_not_mutate() {
+        let mut history = History::new();
+        history.visit(p("/a"), p("/b"));
+        history.visit(p("/b"), p("/c"));
+        assert_eq!(history.go_back(p("/c")), Some(p("/b")));
+        assert_eq!(history.go_back(p("/b")), Some(p("/a")));
+        let snapshot = history.clone();
+
+        assert_eq!(history.peek_forward(&p("/a")), Some(p("/b")));
+        assert_eq!(history.peek_forward(&p("/a")), Some(p("/b")));
+        assert_eq!(history, snapshot, "peek_forward must not change any stack");
+
+        assert_eq!(history.go_forward(p("/a")), Some(p("/b")));
+    }
+
+    #[test]
+    fn peek_is_none_when_stack_is_empty() {
+        let history = History::new();
+        assert_eq!(history.peek_back(&p("/a")), None);
+        assert_eq!(history.peek_forward(&p("/a")), None);
+        assert_eq!(history, History::new());
     }
 }
