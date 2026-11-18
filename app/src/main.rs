@@ -3465,11 +3465,15 @@ impl Explorer {
         let next = next_theme(self.settings.theme);
         self.settings.theme = next;
         Theme::change(next, None, cx);
-        let _ = self.save_settings();
-        self.status = format!(
-            "{STATUS_THEME_CHANGED_PREFIX}{}",
-            if next.is_dark() { "dark" } else { "light" }
-        );
+        let saved = self.save_settings();
+        self.status = if !saved {
+            STATUS_SETTINGS_SAVE_FAILED.to_string()
+        } else {
+            format!(
+                "{STATUS_THEME_CHANGED_PREFIX}{}",
+                if next.is_dark() { "dark" } else { "light" }
+            )
+        };
         cx.notify();
     }
 
