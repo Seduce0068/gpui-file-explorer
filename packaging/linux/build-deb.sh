@@ -7,7 +7,7 @@
 #   /usr/bin/gpui-file-explorer
 #   /usr/share/applications/gpui-file-explorer.desktop
 #   /usr/share/icons/hicolor/<size>/apps/gpui-file-explorer.png
-#   /usr/share/doc/gpui-file-explorer/{README.md,copyright,NOTICE.md,NOTICE-app.md}
+#   /usr/share/doc/gpui-file-explorer/{README.md,copyright,LICENSE,NOTICE.md,NOTICE-app.md}
 #
 # `dpkg-deb --root-owner-group` sets root ownership inside the archive, so the
 # script must run as a normal user. Nothing is installed on the host.
@@ -133,7 +133,8 @@ shopt -u nullglob
 
 doc_dir="${stage}/usr/share/doc/${pkg}"
 install -Dm644 "${repo_root}/app/README.md" "${doc_dir}/README.md"
-install -Dm644 "${repo_root}/LICENSE" "${doc_dir}/copyright"
+install -Dm644 "${repo_root}/packaging/linux/copyright" "${doc_dir}/copyright"
+install -Dm644 "${repo_root}/LICENSE" "${doc_dir}/LICENSE"
 install -Dm644 "${repo_root}/NOTICE.md" "${doc_dir}/NOTICE.md"
 install -Dm644 "${repo_root}/app/NOTICE.md" "${doc_dir}/NOTICE-app.md"
 
