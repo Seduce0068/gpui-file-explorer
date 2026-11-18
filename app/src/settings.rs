@@ -853,6 +853,46 @@ impl Settings {
         true
     }
 
+    /// Serialize concurrent saves from multiple app instances. A lock file
+    /// created with O_EXCL is atomic on every supported platform; a stale lock
+    /// older than 60 s is reclaimed so a crashed process cannot block saves
+    /// forever. The lock is advisory — atomic rename already prevents a
+    /// truncated settings file — but it prevents last-writer-wins surprise.
+    fn acquire_save_lock(path: &Path) -> std::io::Result<PathBuf> {
+        use std::io::ErrorKind;
+        let lock = path.with_extension("json.lock");
+        for _ in 0..50 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock)
+            {
+                Ok(file) => {
+                    drop(file);
+                    return Ok(lock);
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&lock)
+                        .ok()
+                        .and_then(|meta| meta.modified().ok())
+                        .and_then(|time| time.elapsed().ok())
+                        .map(|age| age > std::time::Duration::from_secs(60))
+                        .unwrap_or(false);
+                    if stale {
+                        let _ = std::fs::remove_file(&lock);
+                        continue;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(std::io::Error::new(
+            ErrorKind::WouldBlock,
+            "settings save lock timeout",
+        ))
+    }
+
     /// Atomic write (tmp file + rename) so a crash never leaves a truncated
     /// settings file behind. The tmp file is flushed with `sync_all()` before
     /// the rename; a directory fsync is not performed (best-effort).
@@ -869,43 +909,48 @@ impl Settings {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // Stamp the current schema version on the persisted copy even if the
-        // in-memory struct was built with a stale/absent version by a caller.
-        let mut snapshot = self.clone();
-        snapshot.version = SCHEMA_VERSION;
-        let text = serde_json::to_string_pretty(&snapshot).map_err(std::io::Error::other)?;
-        // O_EXCL reservation: a predictable tmp name with `create(true)`
-        // follows a pre-planted symlink (CWE-59). `create_new(true)` refuses
-        // to open an existing path, including symlinks. Use nanos + PID so
-        // stale temp files from earlier runs don't block normal saves.
-        let tmp = path.with_extension(format!(
-            "json.tmp-{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or(0),
-            std::process::id()
-        ));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        // Settings contain bookmarks / recent paths; keep them private.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-        }
+        let lock = Self::acquire_save_lock(path)?;
         let result = (|| -> std::io::Result<()> {
-            file.write_all(text.as_bytes())?;
-            file.sync_all()
+            // Stamp the current schema version on the persisted copy even if
+            // the in-memory struct was built with a stale/absent version.
+            let mut snapshot = self.clone();
+            snapshot.version = SCHEMA_VERSION;
+            let text = serde_json::to_string_pretty(&snapshot).map_err(std::io::Error::other)?;
+            // O_EXCL reservation: a predictable tmp name with `create(true)`
+            // follows a pre-planted symlink (CWE-59). `create_new(true)`
+            // refuses an existing path, including symlinks. Nanos + PID keep
+            // stale temp files from earlier runs from blocking normal saves.
+            let tmp = path.with_extension(format!(
+                "json.tmp-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or(0),
+                std::process::id()
+            ));
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            // Settings contain bookmarks / recent paths; keep them private.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+            }
+            let written = (|| -> std::io::Result<()> {
+                file.write_all(text.as_bytes())?;
+                file.sync_all()
+            })();
+            drop(file);
+            if let Err(error) = written {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(error);
+            }
+            std::fs::rename(&tmp, path)
         })();
-        drop(file);
-        if let Err(error) = result {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(error);
-        }
-        std::fs::rename(&tmp, path)
+        let _ = std::fs::remove_file(&lock);
+        result
     }
 }
 
@@ -958,6 +1003,22 @@ mod tests {
         };
         settings.save_to(&path).unwrap();
         assert!(!path.exists(), "ephemeral settings must not create a file");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_releases_lock_file() {
+        let dir = scratch("save-lock");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let lock = path.with_extension("json.lock");
+        let settings = Settings::default();
+        settings.save_to(&path).unwrap();
+        assert!(!lock.exists(), "lock must be released after save");
+        // A second save must also succeed (no stale lock left behind).
+        settings.save_to(&path).unwrap();
+        assert!(!lock.exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 
