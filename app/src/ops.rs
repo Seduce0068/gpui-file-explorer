@@ -163,7 +163,9 @@ pub fn validate_file_name(name: &str) -> Result<(), OpError> {
 /// the rename-conflict path without lossy conversion.
 pub fn unique_path(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
     let candidate = dir.join(name);
-    if !candidate.exists() {
+    // A dangling symlink reports `exists() == false` but is still an occupied
+    // name; skip it just like `rename_entry` does.
+    if !candidate.exists() && !candidate.is_symlink() {
         return candidate;
     }
     let path = Path::new(name);
@@ -193,7 +195,7 @@ pub fn unique_path(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
             candidate_name.push(extension);
         }
         let candidate = dir.join(candidate_name);
-        if !candidate.exists() {
+        if !candidate.exists() && !candidate.is_symlink() {
             return candidate;
         }
     }
@@ -213,7 +215,9 @@ fn resolve_destination(
         .file_name()
         .ok_or_else(|| OpError::InvalidTarget("移動元の名前を取得できません".to_string()))?;
     let candidate = dest_dir.join(name);
-    if !candidate.exists() {
+    // Mirror `rename_entry`: a dangling symlink is an existing entry even
+    // though `exists()` follows the link and reports false for it.
+    if !candidate.exists() && !candidate.is_symlink() {
         return Ok(Some(candidate));
     }
     match policy {
@@ -566,12 +570,22 @@ pub fn copy_entry(
     };
 
     let mut stats = OpStats::default();
+    // Remember whether the destination was already present before we started.
+    // `exists()` follows symlinks and is false for a dangling one, so include
+    // `is_symlink()`: a pre-existing dangling symlink is still the user's entry
+    // and must never be removed by our cleanup, even if `copy_recursive` fails
+    // with AlreadyExists against it.
+    let dest_existed = dest.exists() || dest.is_symlink();
     if let Err(error) = copy_recursive(src, &dest, cancel, &mut stats, progress) {
         // `copy_recursive` may already have created `dest` (or part of its
         // tree) before failing, for example on cancellation. Clean it up just
         // like the verification-failure path below and the cross-device
         // fallback in `move_entry`, so no half-written destination remains.
-        let _ = remove_entry_safe(&dest);
+        // Only remove it when this operation created it; a pre-existing
+        // destination (notably a dangling symlink) must be left untouched.
+        if !dest_existed {
+            let _ = remove_entry_safe(&dest);
+        }
         return Err(error);
     }
     if let Err(error) = verify_transfer(src, &dest, cancel) {
@@ -996,6 +1010,83 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, OpError::AlreadyExists(_)));
         assert_eq!(fs::read(dest_dir.join("a.txt")).unwrap(), b"old");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_fail_keeps_preexisting_dangling_symlink() {
+        let dir = scratch("copy-dangling-fail");
+        let src = dir.join("a.txt");
+        write(&src, b"new");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+        let missing = Path::new("missing");
+        std::os::unix::fs::symlink(missing, dest_dir.join("a.txt")).unwrap();
+
+        // A dangling symlink reports `exists() == false` but is still an
+        // existing destination entry that must never be overwritten.
+        assert!(!dest_dir.join("a.txt").exists());
+        assert!(dest_dir.join("a.txt").is_symlink());
+
+        let err = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::AlreadyExists(_)));
+        assert_eq!(fs::read(&src).unwrap(), b"new", "source must be unchanged");
+
+        // The user's pre-existing symlink must survive the error cleanup,
+        // still pointing at the same (missing) target.
+        let link = dest_dir.join("a.txt");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "cleanup must not delete a pre-existing dangling symlink"
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), missing);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_rename_keeps_preexisting_dangling_symlink() {
+        let dir = scratch("copy-dangling-rename");
+        let src = dir.join("a.txt");
+        write(&src, b"new");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+        let missing = Path::new("missing");
+        std::os::unix::fs::symlink(missing, dest_dir.join("a.txt")).unwrap();
+
+        copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Rename,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap();
+
+        // A fresh unique name is chosen instead of clobbering the symlink.
+        let link = dest_dir.join("a.txt");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the pre-existing dangling symlink must survive a rename copy"
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), missing);
+        assert_eq!(fs::read(dest_dir.join("a (1).txt")).unwrap(), b"new");
 
         let _ = fs::remove_dir_all(&dir);
     }
