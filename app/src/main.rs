@@ -129,6 +129,40 @@ fn search_view_key_allowed(key: &str, ctrl: bool, alt: bool) -> bool {
     ) || (ctrl && matches!(key, "c" | "q"))
 }
 
+/// The actions the Search-view allowlist above is meant to reach. Checking the
+/// resolved action (not just the shipped keystroke) means a rebind of one of
+/// them still fires while browsing results (finding 4). Destructive actions
+/// such as trash/restore stay blocked because they are not in this set.
+fn search_view_action_allowed(action: KeyAction) -> bool {
+    matches!(
+        action,
+        KeyAction::MoveUp
+            | KeyAction::MoveDown
+            | KeyAction::PageUp
+            | KeyAction::PageDown
+            | KeyAction::SelectFirst
+            | KeyAction::SelectLast
+            | KeyAction::OpenSelected
+            | KeyAction::OpenTerminal
+            | KeyAction::Copy
+            | KeyAction::Quit
+    )
+}
+
+/// Whether a keystroke reaches the normal keymap while browsing Search
+/// results. Keeps the original hardcoded keys and additionally honours any
+/// keymap rebind of an allowed action.
+fn search_view_key_reaches_keymap(
+    keymap: &KeyMap,
+    key: &str,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> bool {
+    search_view_key_allowed(key, ctrl, alt)
+        || search_view_action_allowed(keymap.resolve(key, ctrl, shift, alt))
+}
+
 /// Icon colour per file kind (folders are blue, everything else is tinted).
 fn kind_color(kind: FileKind) -> u32 {
     match kind {
@@ -2559,7 +2593,11 @@ impl Explorer {
                             .collect();
                         this.selection.retain(&remaining);
                         this.apply_search_filter(cx);
-                        this.status = STATUS_CHANGED.to_string();
+                        // `apply_search_filter` already preserves a stale
+                        // warning; do not bury it under a plain "changed"
+                        // status when a removed entry pruned the snapshot.
+                        this.status =
+                            search_filter_status(&this.status, STATUS_CHANGED.to_string());
                         cx.notify();
                         return;
                     }
@@ -3665,10 +3703,17 @@ impl Explorer {
                 return;
             }
             // The query field keeps every key (including F4 / Ctrl+Q) while
-            // typing. With focus on a result row / the root, let navigation,
-            // Ctrl+C, F4 and Ctrl+Q fall through to the normal keymap.
+            // typing. With focus on a result row / the root, let the allowlist
+            // and any keymap rebind of an allowed action fall through to the
+            // normal keymap.
             if self.search_input_focused(window, cx)
-                || !search_view_key_allowed(key, modifiers.control, modifiers.alt)
+                || !search_view_key_reaches_keymap(
+                    &self.keymap,
+                    key,
+                    modifiers.control,
+                    modifiers.shift,
+                    modifiers.alt,
+                )
             {
                 return;
             }
@@ -6543,6 +6588,13 @@ impl Explorer {
                                 this.rebuild_view(None);
                             }
                             this.reload(cx);
+                        } else if this.view == ViewSource::Search {
+                            // The user switched to Search while the op ran.
+                            // The watch was suppressed for our own change and
+                            // `reload()` is a no-op in Search, so the snapshot
+                            // cannot be repaired here: flag it stale instead
+                            // of silently skipping the listing update.
+                            this.status = STATUS_SEARCH_STALE.to_string();
                         }
                     }
                     cx.notify();
@@ -8814,7 +8866,12 @@ impl Explorer {
                         || this.keymap_editor.is_some()
                         || this.label_editor.is_some()
                         || this.properties.is_some()
-                        || this.help_open;
+                        || this.help_open
+                        // A Search view (including one just reopened in the
+                        // same frame) owns focus for its query input; a queued
+                        // restore from `close_search` must not steal it.
+                        || this.view == ViewSource::Search
+                        || this.search.input.is_some();
                     (!busy).then(|| this.focus_handle.clone())
                 })
                 .ok()
@@ -9074,10 +9131,10 @@ fn restore_session(
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
         .filter(|path| path.is_dir());
 
-    // Capture the saved active tab's *path* before anything can reorder the
-    // list. A numeric index is not stable once earlier tabs vanish (finding
-    // 1); the path is. `None` means the saved index was out of range, so the
-    // clamped index below is used as the fallback.
+    // Capture the saved active tab's *path* as a fallback for an out-of-range
+    // index. Missing-directory tabs are kept in `tabs`, so the saved numeric
+    // index stays stable and is preferred when it still points into the list
+    // (finding 1); the path only helps when the index genuinely went stale.
     let active_path = saved.get(active).cloned();
 
     // Keep every saved tab, including directories that are temporarily
@@ -9090,9 +9147,14 @@ fn restore_session(
     // `persist_tabs` to survive later tab switches.
     let mut tabs = saved.to_vec();
 
-    // Resolve the active index by path so a vanished/reordered earlier tab
-    // cannot silently change which directory opens (finding 1).
+    // Prefer the saved numeric index: tabs are no longer dropped when their
+    // directory is temporarily missing, so `active` remains stable even with
+    // duplicate cwds (`position()` would always pick the first tab). Fall back
+    // to the path only when the index is out of range (finding 1).
     let resolve_active = |list: &[PathBuf]| -> usize {
+        if active < list.len() {
+            return active;
+        }
         active_path
             .as_ref()
             .and_then(|path| list.iter().position(|candidate| candidate == path))
@@ -10082,6 +10144,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn restore_session_keeps_numeric_active_with_duplicate_cwd_and_history() {
+        use super::{restore_session, restore_tab_sessions};
+        use crate::settings::{Settings, TabSession};
+
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-active-dup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let a = dir.join("a");
+        std::fs::create_dir_all(&a).unwrap();
+
+        // Both saved tabs have the same cwd but distinct histories; the saved
+        // active tab is the *second* one. A path-based `position()` resolves to
+        // the first tab and would silently activate the wrong history.
+        let mut settings = Settings::default();
+        settings.primary_window_mut().tabs = vec![
+            TabSession {
+                cwd: a.clone(),
+                back: vec![PathBuf::from("/first-parent")],
+                forward: vec![PathBuf::from("/first-forward")],
+            },
+            TabSession {
+                cwd: a.clone(),
+                back: vec![PathBuf::from("/second-parent")],
+                forward: vec![PathBuf::from("/second-forward")],
+            },
+        ];
+        let saved_tabs = vec![a.clone(), a.clone()];
+
+        let (tabs, start, active) = restore_session(&saved_tabs, 1, None, None, None);
+        assert_eq!(tabs, saved_tabs, "duplicate-cwd tabs are preserved");
+        assert_eq!(start, a);
+        assert_eq!(active, 1, "numeric active index must win over first match");
+
+        let tabs = restore_tab_sessions(&settings, &tabs, active, &start);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.active_index(), 1);
+        let mut active_history = tabs.tabs()[tabs.active_index()].history.clone();
+        assert_eq!(
+            active_history.go_back(PathBuf::from("/probe")),
+            Some(PathBuf::from("/second-parent")),
+            "the restored active tab must own the second tab's history"
+        );
+        let mut active_forward = tabs.tabs()[tabs.active_index()].history.clone();
+        assert_eq!(
+            active_forward.go_forward(PathBuf::from("/probe")),
+            Some(PathBuf::from("/second-forward"))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // F6-09: the shared operation sentinel must survive overlapping
     // completion handlers and must be observable by every action, not only
     // paste/copy (trash, undo, redo, restore and rename share it now).
@@ -10257,6 +10376,45 @@ mod tests {
                 "unexpectedly forwarded {key} (ctrl={ctrl})"
             );
         }
+    }
+
+    #[test]
+    fn search_view_key_reaches_keymap_honours_allowed_action_rebinds() {
+        use super::{search_view_key_allowed, search_view_key_reaches_keymap};
+
+        let default = KeyMap::default_keymap();
+        // The shipped keystrokes still work.
+        assert!(search_view_key_reaches_keymap(
+            &default, "up", false, false, false
+        ));
+        assert!(search_view_key_reaches_keymap(
+            &default, "c", true, false, false
+        ));
+        // A destructive action is never forwarded, even if bound to a new key.
+        assert!(!search_view_key_reaches_keymap(
+            &default, "delete", false, false, false
+        ));
+
+        // Rebinding an allowed action to an otherwise unlisted key must make
+        // that key reach normal dispatch in the Search view (finding 4).
+        let mut rebound = KeyMap::default_keymap();
+        assert!(rebound.rebind(KeyAction::Copy, "y", true, false, false));
+        assert!(!search_view_key_allowed("y", true, false));
+        assert!(search_view_key_reaches_keymap(
+            &rebound, "y", true, false, false
+        ));
+        // The action's old keystroke is gone, but the hardcoded allowlist still
+        // forwards it (harmless no-op), matching the pre-rebind behaviour.
+        assert!(search_view_key_reaches_keymap(
+            &rebound, "c", true, false, false
+        ));
+
+        // Rebinding a disallowed action stays blocked.
+        let mut rebound = KeyMap::default_keymap();
+        assert!(rebound.rebind(KeyAction::TrashSelected, "y", true, false, false));
+        assert!(!search_view_key_reaches_keymap(
+            &rebound, "y", true, false, false
+        ));
     }
 
     #[test]
