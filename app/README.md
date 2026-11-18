@@ -24,7 +24,7 @@ cd gpui-file-explorer   # リポジトリ直下
 bash scripts/dev-setup.sh   # 初回のみ（下記「前提」を参照）
 cd app
 cargo build                 # 初回（依存込み）約 1m30s / 2回目以降 約2s / debug バイナリ 約 165MiB
-cargo test                  # 173 tests（データ層 + 監視）
+cargo test                  # 258 tests（データ層 + 監視）
 ```
 
 リポジトリ直下から全体をビルドする場合:
@@ -59,7 +59,6 @@ bash scripts/dev-setup.sh   # app/native-libs/libxkbcommon-x11.so を作成
 - `app/build.rs` が `native-libs/` を **絶対パスで** リンカ検索パスに追加します
   （CWD に依存しないため、どのディレクトリから `cargo build` しても動作します）。
 - symlink が無いホストでは `build.rs` は何もしません（通常のリンクで通ります）。
-
 
 ## 実行
 
@@ -288,7 +287,7 @@ cd app
 
 ```bash
 cargo test
-# running 173 tests ... test result: ok. 173 passed; 0 failed
+# running 258 tests ... test result: ok. 258 passed; 0 failed
 ```
 
 カバレッジ: ディレクトリ読み込み（ディレクトリ先頭・メタデータ・エラー）、
@@ -301,7 +300,7 @@ fingerprint の変化検出、パンくず生成、一意な新規フォルダ�
 
 ## 実行検証記録（2026-11-11, このマシン。テスト数は 2026-11-17 更新）
 
-- `cargo build`: 警告 0 / `cargo test`: 173 passed（初回実機検証時は 36 件）
+- `cargo build`: 警告 0 / `cargo test`: 258 passed（初回実機検証時は 36 件）
 - 起動: stderr 0 行（EGL/Vulkan/Wayland エラーなし）
 - KWin D-Bus（Wayland ネイティブであることの確認）:
 
@@ -407,7 +406,7 @@ bash packaging/linux/build-deb.sh
   総バイト数はコピー前の事前走査による**ベストエフォート**で、symlink は追跡せず、
   読めない項目は除外します（巨大ツリーでは事前走査に時間がかかります）。
   `Esc` で協調キャンセルできます。
-- リネームの**実押下 E2E は未検証**です（Wayland への合成入力ツールが無いため）。
+- リネームの**実押下 E2E は未検証**です（合成入力ツールは導入済みだが KWin の入力制約で届かないため、詳細は冒頭の既知の制限を参照）。
   ダイアログ描画とエンジン（`ops::rename_entry`）は検証済みですが、入力→Enter→反映の
   一連の操作は手動確認をお願いします。UI 検証用に `GPUI_FE_DEBUG_RENAME=1` で起動すると
   最初の項目のリネームダイアログを開いた状態で表示できます（スクリーンショット用）。
@@ -470,11 +469,11 @@ bash packaging/linux/build-deb.sh
   アクティブタブのみ**復元され、各タブの戻る/進む履歴・選択は復元されません。
 - 「最近」は全タブ共通の最大 10 件で、存在しないディレクトリは再読込時に消えます。
   タブごとの履歴はタブ側で保持します。
-- ドラッグ&ドロップの**実操作 E2E は未検証**です（Wayland への合成入力ツールが無いため）。
+- ドラッグ&ドロップの**実操作 E2E は未検証**です（合成入力ツールは導入済みだが KWin の入力制約で届かないため、詳細は冒頭の既知の制限を参照）。
   ドロップ受信パイプラインは `GPUI_FE_DEBUG_DROP_PATH` / `GPUI_FE_DEBUG_DROP_TARGET` で検証済み
   （カレント/フォルダ指定コピー・選択・再読込）。
   デバッグ用フックは `#[cfg(debug_assertions)]` で**無効化していません**。
-  本機に合成入力ツールが無いため release ビルドのスクリーンショット検証でも
+  Wayland ネイティブへ入力が届かないため release ビルドのスクリーンショット検証でも
   同じフックが必要なためです。環境変数を設定しなければ発火しません。
 - 依存監査では `unmaintained` 警告が 8 件（`gpui-kit` が引き込む
   `instant` / `paste` / `rustls-pemfile` / `rustybuzz` / `ttf-parser` /
@@ -510,7 +509,7 @@ DESIGN.md §4.1 の指示に従い、P0 実装で設計からずれた点を記�
 | chrono | std で可（P0 は許容） | chrono 0.4（ローカル時刻表示） | 許容 |
 | `view` フィールド | 詳細/アイコン | `details` / `icons` を保存・復元（Ctrl+1/2 で切替） | 一致 |
 | 空き領域の右クリックメニュー | 明記なし | 未対応（仮想リストが領域を占有。新規フォルダはツールバー/行メニューから） | 既知の制限 |
-| 入力 E2E | §10.3 の手動操作 | 合成入力ツールが無く **キーボード/右クリック/確認ダイアログの実押下は未検証** | 既知の制限（§実行検証記録） |
+| 入力 E2E | §10.3 の手動操作 | 入力ツールは導入済みだが権限/ポータル制約で **実押下は未検証** | 既知の制限（§実行検証記録） |
 
 ## ライセンス
 

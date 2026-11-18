@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 255 tests
+cargo test           # 258 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -41,7 +41,7 @@ cargo test           # 255 tests
 | [poc/](poc/) | スタック検証用の最小 PoC（`gpui-kit` のみ、実機でビルド・起動確認済み） |
 | [notes/](notes/) | 一次調査ノート（GPUI API 棚卸し・エコシステム・OS/FS 差分）と独立検証レポート |
 | [scripts/dev-setup.sh](scripts/dev-setup.sh) | `libxkbcommon-x11` 開発ファイル欠如時のローカル symlink 作成（システム変更なし） |
-| [scripts/setup-e2e-input.sh](scripts/setup-e2e-input.sh) | E2E 入力ツール（`wtype` / `xdotool`）を sudo なしでユーザー空間へ導入 |
+| [scripts/setup-e2e-input.sh](scripts/setup-e2e-input.sh) | E2E 入力ツール（`wtype` / `xdotool` / `ydotool`）を sudo なしでユーザー空間へ導入 |
 | [packaging/linux/](packaging/linux/) | Linux DEB ビルド（`build-deb.sh`、`.desktop`、hicolor アイコン）。root 不要・ホストへインストールしない |
 | [.github/workflows/ci.yml](.github/workflows/ci.yml) | 個人リポジトリ共通の Rust ゲート（`Seduce0068/workflows@v1`）へ委譲。`app/` に加え `extra_gates` で独立プロジェクト `poc/` も fmt/check/test/clippy を検証 |
 
@@ -70,7 +70,7 @@ bash packaging/linux/build-deb.sh --skip-build
 ```
 
 - 収録物: `/usr/bin/gpui-file-explorer`、`.desktop`、hicolor アイコン（16〜512px + scalable）、
-  `README.md` / `copyright` / `NOTICE`
+  `README.md` / `copyright` (DEP-5) / `LICENSE` / `NOTICE.md` / `NOTICE-app.md`
 - `Depends` は `ldd` + `dpkg -S` から自動生成（Vulkan ローダは dlopen のため `libvulkan1` を明示追加）
 - `dpkg-deb --root-owner-group` を使うため **sudo 不要**。ホストへのインストールも行いません
 - 検証済み: `dpkg-deb -x` で展開したバイナリが `--version` / GUI 起動（Wayland）で動作、
@@ -139,5 +139,5 @@ bash scripts/check.sh --app      # app/ のみ
 bash scripts/check.sh --poc      # poc/ のみ
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 255 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 258 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
