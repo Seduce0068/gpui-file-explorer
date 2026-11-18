@@ -166,7 +166,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
 /// Text entry is used instead of raw key capture so Escape / F1 keep their
 /// dialog-ownership role (see `app/src/main.rs` keymap helpers).
 pub const KEYMAP_INPUT_HINT: &str =
-    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。escape / f1 は予約キーです";
+    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。escape / f1 は予約キーです";
 
 // ---------------------------------------------------------------------------
 // 空状態・読み込み
@@ -422,6 +422,7 @@ mod tests {
             .find(|(key, _)| *key == "Alt+K");
         assert!(keymap_entry.is_some(), "Alt+K must be listed in F1 help");
         assert!(KEYMAP_INPUT_HINT.contains("open_preview ctrl+shift+p"));
+        assert!(KEYMAP_INPUT_HINT.contains("unbind アクション名"));
         assert!(KEYMAP_INPUT_HINT.contains("escape / f1"));
     }
 
