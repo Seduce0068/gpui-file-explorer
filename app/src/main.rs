@@ -28,6 +28,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
 use gpui_kit::assets::IconName;
@@ -243,7 +244,7 @@ fn saved_search_save_status(name: &str, stored: bool) -> String {
         // 空の名前／検索語は呼び出し側で別メッセージとして扱われるため、ここ
         // は保存件数の上限に達した場合の案内とする（F6-49）。
         format!(
-            "検索を保存できませんでした: {name}（保存できる検索の上限に達しました。既存の保存済み検索を削除してから再試行してください）"
+            "検索を保存できませんでした: {name}（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）"
         )
     }
 }
@@ -302,6 +303,37 @@ fn summarize_op(verb: &str, stats: &OpStats) -> String {
         }
     }
     message
+}
+
+/// Base log level for a finished transfer, derived from its outcome.
+///
+/// Cancellation is routine user behaviour (debug), a clean run is informational
+/// and any recorded error is at least a failure. The caller downgrades `ERROR`
+/// to `WARN` when some items were still transferred (partial failure).
+fn transfer_log_level(first_error: &Option<OpError>, cancelled: bool) -> Level {
+    if cancelled || matches!(first_error, Some(OpError::Cancelled)) {
+        Level::DEBUG
+    } else if first_error.is_none() {
+        Level::INFO
+    } else {
+        Level::ERROR
+    }
+}
+
+/// Emit an event at a runtime-selected level. `tracing::event!` requires a
+/// constant level (its callsite is a `static`), so dispatch to the level macros.
+macro_rules! transfer_event {
+    ($level:expr, $($fields:tt)*) => {
+        if $level == Level::ERROR {
+            tracing::error!($($fields)*)
+        } else if $level == Level::WARN {
+            tracing::warn!($($fields)*)
+        } else if $level == Level::INFO {
+            tracing::info!($($fields)*)
+        } else {
+            tracing::debug!($($fields)*)
+        }
+    };
 }
 
 /// Final-status suffix for sources filtered out *before* a transfer starts.
@@ -1151,25 +1183,25 @@ fn empty_state_message(
 }
 
 use crate::strings::{
-    EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE, HELP_SECTIONS,
-    KEYMAP_INPUT_HINT, LOADING, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
-    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CHANGED,
-    STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
-    STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
-    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_MISSING_COUNT_SUFFIX,
-    STATUS_NOT_DIRECTORY, STATUS_NO_CLIPBOARD, STATUS_OPENED_DEFAULT_SUFFIX,
-    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
-    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_REDO_EMPTY,
-    STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED, STATUS_RESCAN_FAILED,
-    STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SEARCH_STALE, STATUS_SETTINGS_READ_ONLY,
-    STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
-    STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
-    STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED,
-    STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
-    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
-    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
-    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
+    EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE,
+    FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LOADING, OP_DIRS_SUFFIX, OP_DONE_SUFFIX,
+    OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+    STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+    STATUS_ERROR_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_LAST_TAB,
+    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NO_CLIPBOARD,
+    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
+    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
+    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED,
+    STATUS_RESCAN_FAILED, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SEARCH_STALE,
+    STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
+    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY,
+    STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX,
+    STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
+    STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
+    STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
+    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_WATCH_COUNT_SUFFIX,
+    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
 };
 
 /// One sidebar "place".
@@ -1898,11 +1930,27 @@ impl Explorer {
         // and normal persistence behaviour is preserved.
         settings.ephemeral = debug.ephemeral;
         // Session restoration is not a debug hook and must run in every build.
+        // Validate the CLI directory first so a missing path or a file argument
+        // produces a diagnostic instead of being silently dropped by
+        // `restore_session`'s `is_dir` filter.
+        let (cli_dir, rejected_cli_dir) = match startup_dir() {
+            Some(path) => match validate_cli_dir(path) {
+                Ok(canonical) => (Some(canonical), None),
+                Err(rejected) => (None, Some(rejected)),
+            },
+            None => (None, None),
+        };
+        if let Some(path) = &rejected_cli_dir {
+            eprintln!(
+                "gpui-file-explorer: {STATUS_INVALID_CLI_DIR}: {}",
+                path.display()
+            );
+        }
         let (saved_tabs, start_dir, restored_active) = restore_session(
             &settings.tabs,
             settings.active_tab,
             settings.last_dir.as_deref(),
-            startup_dir(),
+            cli_dir,
             dirs::home_dir(),
         );
         // The env-driven startup overrides are development-only. In release
@@ -2008,6 +2056,14 @@ impl Explorer {
         }
         if let Some(reason) = this.settings.load_error.as_deref() {
             this.status = format!("{STATUS_SETTINGS_READ_ONLY}: {reason}");
+        }
+        // An invalid CLI directory is the most relevant startup problem, so it
+        // takes precedence over the settings notices above.
+        if let Some(rejected) = rejected_cli_dir {
+            this.status = format!(
+                "{STATUS_ERROR_PREFIX}{STATUS_INVALID_CLI_DIR}: {}",
+                display_path(&rejected)
+            );
         }
 
         this.spawn_watch_loop(watch_rx, cx);
@@ -4263,20 +4319,41 @@ impl Explorer {
                 if !this.finish_op(&token, true) {
                     return;
                 }
+                let cancelled = matches!(first_error, Some(OpError::Cancelled));
+                let succeeded = stats.files + stats.dirs > 0;
+                let level = transfer_log_level(&first_error, cancelled);
+                // An error after at least one item was transferred is only a
+                // partial failure; a total failure stays at error level.
+                let level = if level == Level::ERROR && succeeded {
+                    Level::WARN
+                } else {
+                    level
+                };
+                let outcome = if cancelled {
+                    "cancelled"
+                } else if first_error.is_none() {
+                    "success"
+                } else if succeeded {
+                    "partial_failure"
+                } else {
+                    "failure"
+                };
                 let error_text = first_error
                     .as_ref()
                     .map(ToString::to_string)
                     .unwrap_or_default();
-                tracing::info!(
+                transfer_event!(
+                    level,
                     op = verb,
+                    outcome,
+                    success = !cancelled && first_error.is_none(),
                     files = stats.files,
                     dirs = stats.dirs,
                     bytes = stats.bytes,
                     skipped = stats.skipped.len(),
                     error = %error_text,
-                    "file operation completed"
+                    "file operation finished"
                 );
-                let succeeded = stats.files + stats.dirs > 0;
                 // A cut/move clipboard may only be dropped when every source
                 // was moved. `first_error` is consumed by the match below, so
                 // snapshot that fact first (see the clipboard handling below).
@@ -4913,14 +4990,39 @@ impl Explorer {
                         let Some((trashed, failures)) = result else {
                             this.undo.push_redo(action_for_undo);
                             this.status = STATUS_CANCELLED.to_string();
+                            tracing::debug!(
+                                op = "redo",
+                                action = "trash",
+                                outcome = "cancelled",
+                                success = false,
+                                "undo/redo operation finished"
+                            );
                             return;
                         };
-                        tracing::info!(
+                        let failed = trashed.is_empty();
+                        let partial = !failed && !failures.is_empty();
+                        let level = if failed {
+                            Level::ERROR
+                        } else if partial {
+                            Level::WARN
+                        } else {
+                            Level::INFO
+                        };
+                        transfer_event!(
+                            level,
                             op = "redo",
                             action = "trash",
+                            outcome = if failed {
+                                "failure"
+                            } else if partial {
+                                "partial_failure"
+                            } else {
+                                "success"
+                            },
+                            success = !failed && failures.is_empty(),
                             items = trashed.len(),
                             failures = failures.len(),
-                            "undo/redo operation"
+                            "undo/redo operation finished"
                         );
                         if trashed.is_empty() {
                             this.undo.push_redo(action_for_undo);
@@ -5397,7 +5499,7 @@ impl Explorer {
     /// No filesystem walk happens here; only confirming a candidate navigates.
     fn open_fuzzy_jump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.view != ViewSource::Directory {
-            self.status = "クイックジャンプはディレクトリ表示でのみ使えます".to_string();
+            self.status = format!("{FUZZY_JUMP_LABEL}はディレクトリ表示でのみ使えます");
             cx.notify();
             return;
         }
@@ -5505,14 +5607,14 @@ impl Explorer {
         self.focus_list_on_next_render = true;
         if path.is_dir() {
             self.navigate_to(path.clone(), cx);
-            self.status = format!("クイックジャンプ: {}", display_path(&path));
+            self.status = format!("{FUZZY_JUMP_LABEL}: {}", display_path(&path));
         } else if let Some(parent) = path.parent() {
             let parent = parent.to_path_buf();
             if parent.is_dir() {
                 self.navigate_to(parent, cx);
                 // `set_cwd` clears the pending selection, so set it afterwards.
                 self.pending_select = Some(path.clone());
-                self.status = format!("クイックジャンプ: {}", display_path(&path));
+                self.status = format!("{FUZZY_JUMP_LABEL}: {}", display_path(&path));
             } else {
                 self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
             }
@@ -5625,7 +5727,7 @@ impl Explorer {
                 div()
                     .text_lg()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("クイックジャンプ"),
+                    .child(FUZZY_JUMP_LABEL),
             )
             .child(Input::new(&fuzzy.input).w_full())
             .child(list)
@@ -8303,7 +8405,7 @@ impl Explorer {
         );
         let up = icon_button(
             "nav-up",
-            "親フォルダ",
+            PARENT_FOLDER_LABEL,
             IconName::ArrowUp,
             self.view == ViewSource::Trash || parent_dir(&self.cwd).is_some(),
             cx.listener(|this, _event, window, cx| {
@@ -9061,11 +9163,24 @@ enum CliAction {
     Help,
 }
 
+/// Startup status shown when a CLI-supplied directory cannot be opened.
+/// Local to `main.rs` because `strings.rs` is intentionally out of scope here.
+const STATUS_INVALID_CLI_DIR: &str = "起動ディレクトリを開けませんでした（フォルダではありません）";
+
 /// Pure CLI classification, kept separate from `std::env` and stdout for tests.
+///
+/// `--` terminates option parsing: only arguments before it can be flags, so a
+/// file named `--help` passed after `--` is treated as a path, not a request to
+/// print help.
 fn classify_cli(args: &[String]) -> CliAction {
-    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+    let scan_end = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let scan = &args[..scan_end];
+    if scan.iter().any(|arg| arg == "--version" || arg == "-V") {
         CliAction::Version
-    } else if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+    } else if scan.iter().any(|arg| arg == "--help" || arg == "-h") {
         CliAction::Help
     } else {
         CliAction::Run
@@ -9090,14 +9205,19 @@ fn handle_cli() -> bool {
         CliAction::Help => {
             println!(
                 "gpui-file-explorer {}\n\n\
-                 使い方: gpui-file-explorer [ディレクトリ]\n\n\
+                 使い方: gpui-file-explorer [オプション] [ディレクトリ]\n\n\
+                 オプション:\n\
+                   -V, --version   バージョンを表示して終了（ウィンドウは開きません）\n\
+                   -h, --help      この使い方を表示して終了（ウィンドウは開きません）\n\
+                   --              以降の引数をすべてパスとして扱う（`-` で始まる名前も可）\n\n\
                  引数なしの場合は前回のディレクトリ（無ければ $HOME）を開きます。\n\
                  主なキー: F2 名前変更 / Ctrl+C・Ctrl+X・Ctrl+V コピー・切り取り・貼り付け /\n\
-                 Ctrl+P あいまいジャンプ / F4 ターミナル / Alt+K キー設定 /\n\
+                 Ctrl+P {} / F4 ターミナル / Alt+K キー設定 /\n\
                  Ctrl+H 隠しファイル / Ctrl+Shift+N 新規フォルダ / Alt+←→ 戻る・進む / Esc キャンセル\n\n\
-                 ライセンス: AGPL-3.0-or-later
+                 ライセンス: AGPL-3.0-or-later\n\
                  ソース: https://github.com/Seduce0068/gpui-file-explorer",
-                env!("CARGO_PKG_VERSION")
+                env!("CARGO_PKG_VERSION"),
+                FUZZY_JUMP_LABEL
             );
             true
         }
@@ -9105,13 +9225,50 @@ fn handle_cli() -> bool {
     }
 }
 
-/// First non-flag argument, treated as the initial directory.
+/// Resolve the initial directory from raw CLI args (pure, so `--` handling is
+/// testable without touching `std::env`).
+///
+/// `--` is an end-of-options separator: the token itself is skipped and every
+/// argument after it is a path, even one starting with `-` or equal to a flag.
+/// Before the separator, leading-`-` arguments are ignored as flags.
+fn startup_dir_from(args: impl IntoIterator<Item = OsString>) -> Option<PathBuf> {
+    let mut after_separator = false;
+    args.into_iter().find_map(|arg| {
+        if !after_separator {
+            if arg.to_string_lossy() == "--" {
+                after_separator = true;
+                return None;
+            }
+            let path = PathBuf::from(&arg);
+            if path.as_os_str().to_string_lossy().starts_with('-') {
+                return None;
+            }
+            Some(path)
+        } else {
+            Some(PathBuf::from(arg))
+        }
+    })
+}
+
+/// First path argument, treated as the initial directory.
 fn startup_dir() -> Option<PathBuf> {
     // Keep raw bytes: a path may contain non-UTF-8 bytes on Unix (F6-06).
-    std::env::args_os()
-        .skip(1)
-        .map(PathBuf::from)
-        .find(|path| !path.as_os_str().to_string_lossy().starts_with('-'))
+    // Flag matching is ASCII only, so lossy conversion is safe here.
+    startup_dir_from(std::env::args_os().skip(1))
+}
+
+/// Canonicalize a CLI-supplied directory and detect paths that cannot be used.
+///
+/// Returns the canonical path on success, or the original argument on failure
+/// (missing path, regular file, unreadable path). Callers use the error variant
+/// to emit a diagnostic instead of silently falling back to saved tabs/home.
+fn validate_cli_dir(path: PathBuf) -> Result<PathBuf, PathBuf> {
+    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    if canonical.is_dir() {
+        Ok(canonical)
+    } else {
+        Err(path)
+    }
 }
 
 /// Restore the persisted tab set and choose the directory to open first.
@@ -9349,17 +9506,17 @@ mod tests {
         kind_color, labeled_display_name, middle_click_tab_dir, normalize_terminal_command,
         op_is_active, parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
         read_properties_snapshot, remove_keymap_override, saved_search_caption,
-        saved_search_save_status, search_filter_status, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, transfer_skip_notice, trash_batch,
-        trash_delete_status, trash_key_action, trash_undo_status, upsert_keymap_override,
-        version_label, CliAction, DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource,
-        KeyAction, KeyBinding, KeyMap, KeymapInput, SortKey, TrashKeyAction, C_MUTED,
-        GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX, STATUS_RESTORE_FAILED,
+        saved_search_save_status, search_filter_status, startup_dir_from, summarize_op, tab_label,
+        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, transfer_log_level, transfer_skip_notice,
+        trash_batch, trash_delete_status, trash_key_action, trash_undo_status,
+        upsert_keymap_override, validate_cli_dir, version_label, CliAction, DebugSettingsOverrides,
+        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, SortKey,
+        TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX, STATUS_RESTORE_FAILED,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
-    use crate::ops::OpStats;
+    use crate::ops::{OpError, OpStats};
     use crate::settings::{Settings, MAX_KEYMAP_OVERRIDES};
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -9500,6 +9657,20 @@ mod tests {
         assert!(message.contains("1 フォルダ"), "{message}");
         assert!(message.contains("1 件スキップ"), "{message}");
         assert!(message.ends_with(": dest"), "{message}");
+    }
+
+    #[test]
+    fn transfer_log_level_reflects_outcome() {
+        use tracing::Level;
+        assert_eq!(transfer_log_level(&None, false), Level::INFO);
+        assert_eq!(transfer_log_level(&None, true), Level::DEBUG);
+        assert_eq!(
+            transfer_log_level(&Some(OpError::Cancelled), false),
+            Level::DEBUG
+        );
+        let failure = Some(OpError::InvalidTarget("理由".to_string()));
+        assert_eq!(transfer_log_level(&failure, false), Level::ERROR);
+        assert_eq!(transfer_log_level(&failure, true), Level::DEBUG);
     }
 
     #[test]
@@ -9930,6 +10101,70 @@ mod tests {
             classify_cli(&args(&["--help", "--version"])),
             CliAction::Version
         );
+    }
+
+    #[test]
+    fn cli_double_dash_terminates_option_scanning() {
+        let args = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let os_args = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+
+        // Anything after `--` is a path, never a flag: `-- --help` is Run.
+        assert_eq!(classify_cli(&args(&["--", "--help"])), CliAction::Run);
+        assert_eq!(classify_cli(&args(&["--", "--version"])), CliAction::Run);
+        assert_eq!(classify_cli(&args(&["--", "-h", "-V"])), CliAction::Run);
+        // Flags before `--` still classify normally (precedence unchanged).
+        assert_eq!(classify_cli(&args(&["--help", "--"])), CliAction::Help);
+        assert_eq!(
+            classify_cli(&args(&["--version", "--"])),
+            CliAction::Version
+        );
+
+        // `--` itself is skipped and a following `-dir` is accepted as a path.
+        assert_eq!(
+            startup_dir_from(os_args(&["--", "-dir"])),
+            Some(PathBuf::from("-dir"))
+        );
+        // A flag-like token after `--` is a path too.
+        assert_eq!(
+            startup_dir_from(os_args(&["--", "--help"])),
+            Some(PathBuf::from("--help"))
+        );
+        // Before `--`, a leading `-` argument is still ignored as a flag.
+        assert_eq!(
+            startup_dir_from(os_args(&["--flag", "normal-dir"])),
+            Some(PathBuf::from("normal-dir"))
+        );
+        // With no `--`, the first non-flag argument still wins.
+        assert_eq!(
+            startup_dir_from(os_args(&["-h", "/tmp/dir"])),
+            Some(PathBuf::from("/tmp/dir"))
+        );
+        assert_eq!(startup_dir_from(os_args(&["-h", "-V"])), None);
+    }
+
+    #[test]
+    fn invalid_cli_dir_is_reported_instead_of_silently_ignored() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-cli-dir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a-file.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let missing = dir.join("missing");
+
+        // A real directory is accepted; a file and a missing path are rejected
+        // with the original argument so the caller can print it in a warning.
+        assert!(validate_cli_dir(dir.clone()).is_ok());
+        assert_eq!(validate_cli_dir(file.clone()), Err(file));
+        assert_eq!(validate_cli_dir(missing.clone()), Err(missing));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Normalize Windows verbatim paths (`\\?\C:\...`) for cross-platform
