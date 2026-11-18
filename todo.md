@@ -23,6 +23,18 @@ status: current
 
 ### 優先度: 高
 
+> 出典: 第3回タスク発掘（9 エージェント並列・生 81 件 → 親集約）。
+> ID は `R1-*` / `R2-*` / `R3-*` / `R4-*` の発掘担当に対応。
+
+- [ ] **R1-ST01** キーマップ設定で同一 chord が複数アクションに衝突しても検証されない
+  — 根拠 `app/src/settings.rs:876-889` / confirmed / 要解决
+- [ ] **R1-ST02** F1 ヘルプが静的 HELP_SECTIONS でユーザー設定キーマップを反映しない
+  — 根拠 `app/src/main.rs:4974` / confirmed / 要解决
+- [ ] **R1-ST02** ダイアログ検証エラーが入力変更で消えず張り付く
+  — 根拠 `app/src/main.rs:5312-5316` 他 / confirmed / 要解决
+- [ ] **R2-FG01** status 正規定数が未使用で main.rs が監視イベントに上書きされる
+  — 根拠 `app/src/strings.rs:240-246` / confirmed / 要解决
+
 - [x] **F6-01** Undo/Trash 項目の黙っての消失 — `pop_undo()` 後の早期 return と
   `trash_view::list()` 成功依存 — 対応:
   a2375e8
@@ -86,6 +98,27 @@ status: current
 
 - [x] **F6-50** ターミナル起動 — 設定可能コマンド（Linux 既定 konsole）と F4 / コンテキストメニューを追加
 - [x] **F6-51** Fuzzy jump と個人化キーマップ — Ctrl+P オーバーレイとテーブル駆動キーマップを追加（再割当はメモリ上のみ）
+
+### 優先度: 中（第3回発掘・confirmed）
+
+- [ ] **R1-ST01** rename_entry が壊れた symlink を NotFound で拒否（copy/move と不一致）
+  — `app/src/ops.rs:775` / R3-TQ01 と重複統合
+- [ ] **R1-ST01** ブックマーク削除時にラベルが孤立し再追加で復活する
+  — `app/src/settings.rs:503-505` / R3-TQ01 と重複統合
+- [ ] **R3-TQ01** keymap 検証が `contains("f1")` で F10〜F19 を誤拒否
+  — `app/src/settings.rs:185-188`
+- [ ] **R3-TQ01** merge_search_results が上限到達時に最終ソートをスキップ
+  — `app/src/search.rs:259-261`
+- [ ] **R3-TQ01** 内容検索のバイナリ判定が先頭行一致で回避される
+  — `app/src/search.rs:315-327`
+- [ ] **R1-ST02** SIDEBAR_WIDTH_PX=214 が実サイドバー 190px と乖離
+  — `app/src/main.rs:87` vs `:7146`
+- [ ] **R1-ST02** icon_button_active に aria_label が無い
+  — `app/src/main.rs:7690-7714`
+- [ ] **R3-TQ02** kind_for_entry が symlink を無視し icon_for_entry と分類が食い違う
+  — `app/src/icons.rs:26-34`
+- [ ] **R2-FG01** Ctrl+P / F4 / Alt+K が F1 ヘルプ・CLI help に未掲載
+  — `app/src/strings.rs:76-159`
 
 ### 優先度: 低（調査タスク）
 
