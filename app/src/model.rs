@@ -1110,15 +1110,39 @@ mod tests {
     fn sort_toggle_direction_and_new_key_defaults() {
         let mut order = SortOrder::default();
         order = order.toggled(SortKey::Name);
-        assert!(!order.ascending);
-        // Switching key resets direction: size starts descending.
+        assert_eq!(order.key, SortKey::Name);
+        assert!(!order.ascending, "clicking the active key flips direction");
+        order = order.toggled(SortKey::Name);
+        assert!(order.ascending);
+
+        // Switching to a new key resets the direction from that key's default:
+        // Name/Kind start ascending, Size/Modified start descending.
+        order = order.toggled(SortKey::Kind);
+        assert_eq!(order.key, SortKey::Kind);
+        assert!(order.ascending, "a new Kind key must default to ascending");
+        order = order.toggled(SortKey::Kind);
+        assert!(
+            !order.ascending,
+            "the active Kind key must toggle to descending"
+        );
+
         order = order.toggled(SortKey::Size);
         assert_eq!(order.key, SortKey::Size);
-        assert!(!order.ascending);
+        assert!(
+            !order.ascending,
+            "a new Size key must default to descending"
+        );
         order = order.toggled(SortKey::Size);
         assert!(order.ascending);
+
         order = order.toggled(SortKey::Modified);
-        assert!(!order.ascending);
+        assert_eq!(order.key, SortKey::Modified);
+        assert!(
+            !order.ascending,
+            "a new Modified key must default to descending"
+        );
+        order = order.toggled(SortKey::Modified);
+        assert!(order.ascending);
     }
 
     #[test]
@@ -1135,9 +1159,37 @@ mod tests {
     fn datetime_and_age_handle_missing_times() {
         assert_eq!(human_datetime(None), "-");
         assert_eq!(human_age(None), "-");
-        let now = SystemTime::now();
-        assert_eq!(human_datetime(Some(now)).len(), 16); // YYYY-MM-DD HH:MM
-        assert!(human_datetime(Some(now)).contains(':'));
+
+        // Exact shape check: YYYY-MM-DD HH:MM in local time (no timezone text).
+        let formatted = human_datetime(Some(SystemTime::now()));
+        let bytes = formatted.as_bytes();
+        assert_eq!(
+            bytes.len(),
+            16,
+            "expected YYYY-MM-DD HH:MM, got {formatted:?}"
+        );
+        for (index, &byte) in bytes.iter().enumerate() {
+            match index {
+                4 | 7 => assert_eq!(byte, b'-', "expected '-' at {index} in {formatted:?}"),
+                10 => assert_eq!(byte, b' ', "expected space at {index} in {formatted:?}"),
+                13 => assert_eq!(byte, b':', "expected ':' at {index} in {formatted:?}"),
+                _ => assert!(
+                    byte.is_ascii_digit(),
+                    "expected digit at {index} in {formatted:?}"
+                ),
+            }
+        }
+        let year: u32 = formatted[0..4].parse().unwrap();
+        let month: u32 = formatted[5..7].parse().unwrap();
+        let day: u32 = formatted[8..10].parse().unwrap();
+        let hour: u32 = formatted[11..13].parse().unwrap();
+        let minute: u32 = formatted[14..16].parse().unwrap();
+        assert!((1..=9999).contains(&year), "invalid year in {formatted:?}");
+        assert!((1..=12).contains(&month), "invalid month in {formatted:?}");
+        assert!((1..=31).contains(&day), "invalid day in {formatted:?}");
+        assert!(hour < 24, "invalid hour in {formatted:?}");
+        assert!(minute < 60, "invalid minute in {formatted:?}");
+
         assert_eq!(human_age(Some(SystemTime::now())), "たった今");
     }
 
@@ -1153,6 +1205,18 @@ mod tests {
             human_age(Some(now - Duration::from_secs(86_400 * 730))),
             "2年前"
         );
+
+        // Boundary pairs: the unit changes exactly at each threshold, so a
+        // regression from `<` to `<=` (or an off-by-one divisor) is caught.
+        let boundary = |secs| human_age(Some(now - Duration::from_secs(secs)));
+        assert_eq!(boundary(59), "たった今");
+        assert_eq!(boundary(60), "1分前");
+        assert_eq!(boundary(3599), "59分前");
+        assert_eq!(boundary(3600), "1時間前");
+        assert_eq!(boundary(86_399), "23時間前");
+        assert_eq!(boundary(86_400), "1日前");
+        assert_eq!(boundary(86_400 * 364), "364日前");
+        assert_eq!(boundary(86_400 * 365), "1年前");
     }
 
     #[test]
@@ -1163,6 +1227,11 @@ mod tests {
         let mut changed = same.clone();
         changed[0].size = 99;
         assert_ne!(fingerprint(&base), fingerprint(&changed));
+        // A different `modified` alone must change the fingerprint: name,
+        // is_dir and size are identical, only the timestamp is one second later.
+        let mut newer_modified = same.clone();
+        newer_modified[0].modified = Some(base[0].modified.unwrap() + Duration::from_secs(1));
+        assert_ne!(fingerprint(&base), fingerprint(&newer_modified));
         let mut renamed = same.clone();
         renamed[1].name = OsString::from("c");
         renamed[1].name_text = "c".to_string();

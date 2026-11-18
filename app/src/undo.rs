@@ -196,17 +196,62 @@ mod tests {
     #[test]
     fn push_undo_after_redo_is_also_bounded() {
         let mut stack = UndoStack::new();
-        for index in 0..(MAX_UNDO + 3) {
-            stack.push_undo(rename(&format!("/a-{index}"), &format!("/b-{index}")));
+        let extra = 3; // operations beyond the bound, so trimming is observable
+        let newest = MAX_UNDO + extra - 1;
+
+        // Create a real redo entry through the push -> pop_undo -> push_redo
+        // path, so the scenario in the test name actually exists. `push()`
+        // clears redo, so the remaining entries are added in order afterwards.
+        stack.push(rename("/seed", "/seed-done"));
+        let seed = stack.pop_undo().expect("just-pushed action");
+        stack.push_redo(seed);
+        assert_eq!(stack.undo_len(), 0);
+        assert_eq!(stack.redo_len(), 1);
+        for index in 1..(MAX_UNDO + extra) {
+            stack.push_redo(rename(&format!("/old-{index}"), &format!("/new-{index}")));
         }
-        assert_eq!(stack.undo_len(), MAX_UNDO);
-        let newest = stack.pop_undo().unwrap();
+        assert_eq!(stack.redo_len(), MAX_UNDO, "redo must stay bounded");
         assert_eq!(
-            newest,
-            rename(
-                &format!("/a-{}", MAX_UNDO + 2),
-                &format!("/b-{}", MAX_UNDO + 2)
-            )
+            stack.redo_actions().first(),
+            Some(&rename(
+                &format!("/old-{newest}"),
+                &format!("/new-{newest}")
+            )),
+            "the newest redo entry must survive the redo bound"
+        );
+
+        // Unlike push(), push_undo() must not discard the pending redo stack.
+        stack.push_undo(rename("/manual", "/manual-done"));
+        assert_eq!(stack.redo_len(), MAX_UNDO, "push_undo must not clear redo");
+        assert_eq!(stack.undo_len(), 1);
+
+        // Move every redo entry back onto undo: this overflows undo as well,
+        // so the boundedness of the push_undo path is really tested.
+        while let Some(action) = stack.pop_redo() {
+            stack.push_undo(action);
+        }
+        assert_eq!(stack.redo_len(), 0);
+        assert_eq!(stack.undo_len(), MAX_UNDO);
+        let actions = stack.undo_actions();
+        // redo is drained newest-first, so the last one re-pushed onto undo is
+        // the newest undo entry; the first one is now the oldest, and the
+        // interim "/manual" entry was trimmed off the front.
+        assert_eq!(
+            actions.first(),
+            Some(&rename(&format!("/old-{extra}"), &format!("/new-{extra}"))),
+            "the last redone action must be the newest undo action"
+        );
+        assert_eq!(
+            actions.last(),
+            Some(&rename(
+                &format!("/old-{newest}"),
+                &format!("/new-{newest}")
+            )),
+            "oldest entries must be dropped from the front of undo"
+        );
+        assert_eq!(
+            stack.pop_undo().unwrap(),
+            rename(&format!("/old-{extra}"), &format!("/new-{extra}"))
         );
     }
 
