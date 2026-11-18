@@ -313,6 +313,20 @@ pub enum WindowMode {
     Fullscreen,
 }
 
+/// Unknown persisted mode falls back to Windowed so one bad enum value cannot
+/// back up the whole settings file.
+fn deserialize_window_mode<'de, D>(deserializer: D) -> Result<WindowMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        "maximized" => WindowMode::Maximized,
+        "fullscreen" => WindowMode::Fullscreen,
+        _ => WindowMode::default(),
+    })
+}
+
 /// Last known frame of one window, in GPUI screen pixels.
 ///
 /// This is window-scoped state: it belongs to the `WindowSession` that owns
@@ -323,6 +337,7 @@ pub struct WindowBoundsState {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    #[serde(deserialize_with = "deserialize_window_mode")]
     pub mode: WindowMode,
 }
 
@@ -2377,6 +2392,46 @@ mod schema_validation_tests {
         assert_eq!(loaded.terminal_command, "konsole --title build");
         assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
         assert_eq!(loaded.tabs, vec![PathBuf::from("/a"); 2]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_window_mode_falls_back_without_losing_settings() {
+        let (dir, path) = setup("unknown-window-mode");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "view": "icons",
+                "show_hidden": true,
+                "windows": [{
+                    "tabs": [],
+                    "active_tab": 0,
+                    "bounds": {
+                        "x": 0.0, "y": 0.0, "width": 800.0,
+                        "height": 600.0, "mode": "minimized"
+                    }
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let loaded = Settings::load_from(&path);
+        assert!(!loaded.read_only);
+        assert!(path.exists());
+        assert_eq!(loaded.view, ViewLayout::Icons);
+        assert!(loaded.show_hidden);
+        assert_eq!(
+            loaded
+                .primary_window()
+                .unwrap()
+                .bounds
+                .as_ref()
+                .unwrap()
+                .mode,
+            super::WindowMode::Windowed
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
