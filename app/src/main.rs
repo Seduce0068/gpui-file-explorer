@@ -502,25 +502,47 @@ fn parse_keymap_input(input: &str) -> Option<KeymapInput> {
     })
 }
 
+/// Normalize a chord into one stable persisted spelling: modifiers in the
+/// order used by `format_chord` (`ctrl`, `alt`, `shift`) and a lowercased key.
+/// `parse_chord` already treats modifier order and case as irrelevant, so two
+/// spellings of the same keystroke (e.g. `ctrl+shift+p` / `shift+ctrl+p`) must
+/// compare equal when evicting overrides, just as `KeyMap::rebind` does at
+/// runtime. Already-canonical forms such as `ctrl+shift+p` stay unchanged.
+fn canonical_chord(chord: &str) -> String {
+    let Some((key, ctrl, shift, alt)) = parse_chord(chord) else {
+        return chord.trim().to_ascii_lowercase();
+    };
+    format_chord(&KeyBinding {
+        key,
+        ctrl,
+        alt,
+        shift,
+        action: KeyAction::None,
+    })
+}
+
 /// Insert or replace one persisted override, deduplicated by action name.
 /// Returns `false` only when the list is full for a new action; the parser has
-/// already rejected invalid and reserved pairs before this is called.
+/// already rejected invalid and reserved pairs before this is called. The
+/// chord is stored canonically so eviction is independent of modifier order.
 fn upsert_keymap_override(
     overrides: &mut Vec<(String, String)>,
     action: &str,
     chord: &str,
 ) -> bool {
+    let chord = canonical_chord(chord);
     // A chord can only belong to one action. Mirror `KeyMap::rebind`'s eviction
-    // in the persisted list so the binding survives a restart unchanged.
-    overrides.retain(|(name, bound)| name == action || bound != chord);
+    // in the persisted list so the binding survives a restart unchanged. Both
+    // sides are canonicalized because older files may hold a different order.
+    overrides.retain(|(name, bound)| name == action || canonical_chord(bound) != chord);
     if let Some(entry) = overrides.iter_mut().find(|(name, _)| name == action) {
-        entry.1 = chord.to_string();
+        entry.1 = chord;
         return true;
     }
     if overrides.len() >= MAX_KEYMAP_OVERRIDES {
         return false;
     }
-    overrides.push((action.to_string(), chord.to_string()));
+    overrides.push((action.to_string(), chord));
     true
 }
 
@@ -8719,13 +8741,13 @@ mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
-        active_keymap_overrides, build_places, chord_for_action, classify_cli, clear_dialog_error,
-        clear_op_token, format_chord, format_selected, fuzzy_candidates, fuzzy_score, grid_columns,
-        help_overrides_line, install_op_token, internal_drop_paths, keymap_action_name,
-        keymap_chord_reserved, kind_color, labeled_display_name, middle_click_tab_dir,
-        normalize_terminal_command, parse_chord, parse_keymap_input, pending_rename_index,
-        rank_fuzzy, read_properties_snapshot, remove_keymap_override, saved_search_caption,
-        saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
+        active_keymap_overrides, build_places, canonical_chord, chord_for_action, classify_cli,
+        clear_dialog_error, clear_op_token, format_chord, format_selected, fuzzy_candidates,
+        fuzzy_score, grid_columns, help_overrides_line, install_op_token, internal_drop_paths,
+        keymap_action_name, keymap_chord_reserved, kind_color, labeled_display_name,
+        middle_click_tab_dir, normalize_terminal_command, parse_chord, parse_keymap_input,
+        pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
+        saved_search_caption, saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
         trash_key_action, upsert_keymap_override, version_label, CliAction, Explorer,
@@ -10148,6 +10170,47 @@ mod tests {
             "the previous owner of the chord must be evicted"
         );
         assert_eq!(overrides.len(), 2, "unrelated bindings are preserved");
+    }
+
+    #[test]
+    fn canonical_chord_normalizes_modifier_order_and_upsert_evicts_across_spellings() {
+        // Already-canonical persisted spellings must stay byte-identical.
+        assert_eq!(canonical_chord("ctrl+shift+p"), "ctrl+shift+p");
+        assert_eq!(canonical_chord("ctrl+p"), "ctrl+p");
+        assert_eq!(canonical_chord("alt+k"), "alt+k");
+        assert_eq!(canonical_chord("f4"), "f4");
+        // Modifier order and case are irrelevant, key is lowercased.
+        assert_eq!(canonical_chord("shift+ctrl+p"), "ctrl+shift+p");
+        assert_eq!(
+            canonical_chord("SHIFT+Ctrl+P"),
+            canonical_chord("ctrl+shift+p")
+        );
+
+        // A non-canonical spelling of the same chord evicts the stored entry.
+        let mut overrides = vec![("other".to_string(), "shift+ctrl+p".to_string())];
+        assert!(upsert_keymap_override(
+            &mut overrides,
+            "open_preview",
+            "ctrl+shift+p"
+        ));
+        assert_eq!(
+            overrides,
+            vec![("open_preview".to_string(), "ctrl+shift+p".to_string())],
+            "the previous owner of the same chord must be evicted"
+        );
+
+        // Conversely, a newly added non-canonical spelling replaces a
+        // canonical entry and is itself stored canonically.
+        let mut overrides = vec![("open_preview".to_string(), "ctrl+shift+p".to_string())];
+        assert!(upsert_keymap_override(
+            &mut overrides,
+            "other",
+            "shift+ctrl+p"
+        ));
+        assert_eq!(
+            overrides,
+            vec![("other".to_string(), "ctrl+shift+p".to_string())]
+        );
     }
 
     #[test]
