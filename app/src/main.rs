@@ -51,7 +51,9 @@ use crate::search::{
     filter_results, merge_search_results, search_by_name, search_contents, search_roots,
     ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
 };
-use crate::settings::{Settings, TabSession, ViewLayout, WindowBoundsState};
+use crate::settings::{
+    Settings, TabSession, ViewLayout, WindowBoundsState, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES,
+};
 use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
 use crate::watcher::{removed_paths, DirWatcher, FsEvent};
@@ -331,6 +333,8 @@ enum KeyAction {
     OpenTerminal,
     /// Alt+T: edit the terminal-command setting used by F4.
     EditTerminalCommand,
+    /// Alt+K: edit keybinding overrides from the keymap dialog.
+    EditKeymap,
     /// No binding (either unmapped by default or unbound by the user).
     None,
 }
@@ -374,6 +378,76 @@ fn parse_chord(chord: &str) -> Option<(String, bool, Option<bool>, bool)> {
     Some((key?, ctrl, shift, alt))
 }
 
+/// Whether a chord mentions a dialog-ownership key. Mirrors
+/// `settings::sane_keymap_entry`: the loader drops such entries, so the dialog
+/// must reject the same input instead of silently writing a useless override.
+fn keymap_chord_reserved(chord: &str) -> bool {
+    let lowered = chord.to_ascii_lowercase();
+    lowered.contains("escape") || lowered.contains("f1")
+}
+
+/// Parse one line typed into the keymap dialog: `action_name chord`.
+///
+/// A single text input is used instead of raw key capture: GPUI dispatches
+/// `key_down` globally and a modal input cannot safely swallow arbitrary
+/// keystrokes without stealing Escape / F1 from the dialog guards. The action
+/// is validated through serde against `KeyAction`'s snake_case names and the
+/// chord through `parse_chord`, so the returned pair is always applicable by
+/// `KeyMap::from_settings`. The chord is lowercased for canonical storage.
+fn parse_keymap_input(input: &str) -> Option<(String, String)> {
+    let mut fields = input.split_whitespace();
+    let action = fields.next()?;
+    let chord = fields.next()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    if action.len() > MAX_CHORD_BYTES || chord.len() > MAX_CHORD_BYTES {
+        return None;
+    }
+    // `none` is a serde name but not a bindable action (no table row has it).
+    let name = serde_json::Value::String(action.to_string());
+    let parsed = serde_json::from_value::<KeyAction>(name).ok()?;
+    if parsed == KeyAction::None {
+        return None;
+    }
+    parse_chord(chord)?;
+    if keymap_chord_reserved(chord) {
+        return None;
+    }
+    // `parse_chord` tolerates repeated modifiers; the dialog is stricter so a
+    // typo like `ctrl+ctrl+p` is reported instead of being persisted.
+    let mut seen = std::collections::HashSet::new();
+    for token in chord.split('+') {
+        if matches!(
+            token.trim().to_ascii_lowercase().as_str(),
+            "ctrl" | "shift" | "alt"
+        ) && !seen.insert(token.trim().to_ascii_lowercase())
+        {
+            return None;
+        }
+    }
+    Some((action.to_string(), chord.to_ascii_lowercase()))
+}
+
+/// Insert or replace one persisted override, deduplicated by action name.
+/// Returns `false` only when the list is full for a new action; the parser has
+/// already rejected invalid and reserved pairs before this is called.
+fn upsert_keymap_override(
+    overrides: &mut Vec<(String, String)>,
+    action: &str,
+    chord: &str,
+) -> bool {
+    if let Some(entry) = overrides.iter_mut().find(|(name, _)| name == action) {
+        entry.1 = chord.to_string();
+        return true;
+    }
+    if overrides.len() >= MAX_KEYMAP_OVERRIDES {
+        return false;
+    }
+    overrides.push((action.to_string(), chord.to_string()));
+    true
+}
+
 /// Personalized key map. The table is data, so a settings panel (or a test)
 /// can rebind an action without editing `on_key_down` (F6-51).
 #[derive(Clone, Debug)]
@@ -414,12 +488,12 @@ impl KeyMap {
         // Import the variants explicitly: a glob would import `KeyAction::None`
         // and shadow `Option::None` used in the wildcard-shift bindings below.
         use KeyAction::{
-            CloseTab, Copy, Cut, DetailsView, EditTerminalCommand, FocusSearchName, FuzzyJump,
-            GoBack, GoForward, GoParent, IconsView, MoveDown, MoveTabLeft, MoveTabRight, MoveUp,
-            NewFolder, NewTab, NextTab, OpenLocation, OpenPreview, OpenProperties, OpenSearch,
-            OpenSelected, OpenTerminal, PageDown, PageUp, Paste, PrevTab, Quit, Redo, Reload,
-            RestoreClosedTab, RestoreSelected, SelectAll, SelectFirst, SelectLast, StartRename,
-            ToggleBookmark, ToggleHidden, ToggleUndoHistory, TrashSelected, Undo,
+            CloseTab, Copy, Cut, DetailsView, EditKeymap, EditTerminalCommand, FocusSearchName,
+            FuzzyJump, GoBack, GoForward, GoParent, IconsView, MoveDown, MoveTabLeft, MoveTabRight,
+            MoveUp, NewFolder, NewTab, NextTab, OpenLocation, OpenPreview, OpenProperties,
+            OpenSearch, OpenSelected, OpenTerminal, PageDown, PageUp, Paste, PrevTab, Quit, Redo,
+            Reload, RestoreClosedTab, RestoreSelected, SelectAll, SelectFirst, SelectLast,
+            StartRename, ToggleBookmark, ToggleHidden, ToggleUndoHistory, TrashSelected, Undo,
         };
         let binding = |key: &str, ctrl, alt, shift, action| KeyBinding {
             key: key.to_string(),
@@ -485,6 +559,11 @@ impl KeyMap {
                 // usable here: `binding_matches` ignores `alt` for Ctrl
                 // bindings, so it would resolve to Ctrl+T (NewTab) instead.
                 binding("t", false, true, None, EditTerminalCommand),
+                // Alt+K opens the keymap dialog. A Ctrl+Alt+K variant would be
+                // unsafe here: `binding_matches` ignores `alt` for Ctrl, so a
+                // user-added Ctrl+K override would also fire it. Plain Alt+K
+                // has no Ctrl counterpart in the default table (F6 finding 6).
+                binding("k", false, true, None, EditKeymap),
             ],
         }
     }
@@ -812,8 +891,8 @@ fn empty_state_message(
 }
 
 use crate::strings::{
-    EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, HELP_SECTIONS, LOADING,
-    OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
+    EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, HELP_SECTIONS, KEYMAP_INPUT_HINT,
+    LOADING, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
     STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLING, STATUS_CHANGED, STATUS_DROP_EMPTY,
     STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
     STATUS_DROP_SAME_DIRECTORY, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_NOT_DIRECTORY,
@@ -903,6 +982,15 @@ struct LocationState {
 /// Terminal-command settings dialog (Alt+T). Dropping it closes the dialog
 /// and drops the input subscription.
 struct TerminalCommandState {
+    input: Entity<InputState>,
+    /// Keeps the `InputEvent::PressEnter` subscription alive while open.
+    _subscription: Subscription,
+    error: Option<String>,
+}
+
+/// Keymap settings dialog (Alt+K). Dropping it closes the dialog and drops
+/// the input subscription.
+struct KeymapEditorState {
     input: Entity<InputState>,
     /// Keeps the `InputEvent::PressEnter` subscription alive while open.
     _subscription: Subscription,
@@ -1298,6 +1386,8 @@ struct Explorer {
     location: Option<LocationState>,
     /// Terminal-command settings dialog (Alt+T). `None` when closed.
     terminal_command_editor: Option<TerminalCommandState>,
+    /// Keymap settings dialog (Alt+K). `None` when closed.
+    keymap_editor: Option<KeymapEditorState>,
     /// Personalized key map (F6-51). Defaults to the shipped bindings.
     keymap: KeyMap,
     /// Ctrl+P fuzzy jump overlay state. `None` when closed.
@@ -1466,6 +1556,7 @@ impl Explorer {
             help_open: false,
             location: None,
             terminal_command_editor: None,
+            keymap_editor: None,
             keymap,
             fuzzy: None,
             preview: None,
@@ -2714,6 +2805,171 @@ impl Explorer {
         )
     }
 
+    // ------------------------------------------------------------ keymap settings
+
+    /// Alt+K: open the keymap dialog, prefilled with an action name. The chord
+    /// is typed after a space (`open_preview ctrl+shift+p`); raw key capture is
+    /// deliberately avoided because GPUI's `key_down` is global and a modal
+    /// input cannot claim arbitrary chords without stealing Escape / F1.
+    fn open_keymap_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.keymap_editor.is_some() {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).default_value("open_preview "));
+        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.confirm_keymap(cx);
+            }
+        });
+        let focus = input.read(cx).focus_handle(cx).clone();
+        focus.focus(window, cx);
+        self.keymap_editor = Some(KeymapEditorState {
+            input,
+            _subscription: subscription,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    fn close_keymap_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.keymap_editor.take().is_some() {
+            self.focus_handle.focus(window, cx);
+            self.focus_list_on_next_render = true;
+            cx.notify();
+        }
+    }
+
+    /// Enter in the dialog: parse `action chord`, replace any existing override
+    /// for that action, save settings and apply the new table immediately.
+    /// Invalid input keeps the dialog open with an error; Esc closes it.
+    fn confirm_keymap(&mut self, cx: &mut Context<Self>) {
+        let raw = {
+            let Some(editor) = self.keymap_editor.as_ref() else {
+                return;
+            };
+            editor.input.read(cx).value().to_string()
+        };
+        let Some((action, chord)) = parse_keymap_input(&raw) else {
+            self.set_keymap_error(
+                "形式は「アクション名 コード」です（例: open_preview ctrl+shift+p）",
+                cx,
+            );
+            return;
+        };
+        if !upsert_keymap_override(&mut self.settings.keymap, &action, &chord) {
+            self.set_keymap_error(
+                &format!("上書きは最大 {MAX_KEYMAP_OVERRIDES} 件までです"),
+                cx,
+            );
+            return;
+        }
+        // Rebuild the live table so the new binding works without a restart,
+        // exactly as a binding read from settings.json at startup would.
+        self.keymap = KeyMap::from_settings(&self.settings);
+        let saved = self.save_settings();
+        self.keymap_editor = None;
+        self.focus_list_on_next_render = true;
+        self.status = if !saved {
+            STATUS_SETTINGS_SAVE_FAILED.to_string()
+        } else {
+            format!("キーマップを設定しました: {action} → {chord}")
+        };
+        cx.notify();
+    }
+
+    fn set_keymap_error(&mut self, error: &str, cx: &mut Context<Self>) {
+        if let Some(editor) = self.keymap_editor.as_mut() {
+            editor.error = Some(error.to_string());
+        }
+        cx.notify();
+    }
+
+    /// Modal overlay for the keymap settings dialog (Alt+K).
+    fn keymap_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let editor = self.keymap_editor.as_ref()?;
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.close_keymap_settings(window, cx);
+                }),
+            );
+        let cancel = cx.listener(|this, _: &ClickEvent, window, cx| {
+            this.close_keymap_settings(window, cx);
+        });
+        let confirm = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.confirm_keymap(cx);
+        });
+        let mut form = div()
+            .w(px(480.0))
+            .bg(rgb(C_SURFACE))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(C_OVERLAY))
+            .shadow_lg()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("キーマップの設定"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(C_SUBTEXT))
+                    .child(KEYMAP_INPUT_HINT),
+            )
+            .child(Input::new(&editor.input).w_full());
+        if let Some(error) = &editor.error {
+            form = form.child(div().text_sm().text_color(rgb(C_RED)).child(error.clone()));
+        }
+        form = form
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("keymap-cancel")
+                            .label("キャンセル")
+                            .on_click(cancel),
+                    )
+                    .child(
+                        Button::new("keymap-confirm")
+                            .label("設定")
+                            .on_click(confirm),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("Enter で確定 / Esc でキャンセル"),
+            );
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(form),
+        )
+    }
+
     // --------------------------------------------------------------- shortcuts
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -2738,6 +2994,14 @@ impl Explorer {
             // The command input owns keys while open; only Escape closes it.
             if key == "escape" {
                 self.close_terminal_command_settings(window, cx);
+            }
+            return;
+        }
+        if self.keymap_editor.is_some() {
+            // The keymap input owns keys while open; only Escape closes it.
+            // Enter arrives as `InputEvent::PressEnter`.
+            if key == "escape" {
+                self.close_keymap_settings(window, cx);
             }
             return;
         }
@@ -2945,6 +3209,7 @@ impl Explorer {
             FuzzyJump => self.open_fuzzy_jump(window, cx),
             OpenTerminal => self.open_terminal_for_selection(cx),
             EditTerminalCommand => self.open_terminal_command_settings(window, cx),
+            EditKeymap => self.open_keymap_settings(window, cx),
             None => {}
         }
     }
@@ -7736,6 +8001,7 @@ impl Render for Explorer {
         let label_dialog = self.label_dialog(cx);
         let fuzzy_dialog = self.fuzzy_dialog(cx);
         let terminal_command_dialog = self.terminal_command_dialog(cx);
+        let keymap_dialog = self.keymap_dialog(cx);
 
         let grid_mode = self.settings.view == ViewLayout::Icons;
         // Column headers only make sense in the details list.
@@ -7839,6 +8105,7 @@ impl Render for Explorer {
             .children(label_dialog)
             .children(fuzzy_dialog)
             .children(terminal_command_dialog)
+            .children(keymap_dialog)
     }
 }
 
@@ -8091,18 +8358,19 @@ mod tests {
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
         build_places, classify_cli, clear_op_token, format_selected, fuzzy_candidates, fuzzy_score,
-        install_op_token, internal_drop_paths, kind_color, labeled_display_name,
-        normalize_terminal_command, parse_chord, pending_rename_index, rank_fuzzy,
-        read_properties_snapshot, saved_search_caption, saved_search_save_status, summarize_op,
-        tab_label, terminal_dir_for, terminal_disabled_status, terminal_failed_status,
-        terminal_process, terminal_started_status, terminal_target_dir, trash_batch,
-        trash_delete_status, trash_key_action, CliAction, Explorer, FuzzyCandidate, FuzzySource,
+        install_op_token, internal_drop_paths, keymap_chord_reserved, kind_color,
+        labeled_display_name, normalize_terminal_command, parse_chord, parse_keymap_input,
+        pending_rename_index, rank_fuzzy, read_properties_snapshot, saved_search_caption,
+        saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
+        trash_key_action, upsert_keymap_override, CliAction, Explorer, FuzzyCandidate, FuzzySource,
         KeyAction, KeyBinding, KeyMap, TrashKeyAction,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
     use crate::ops::OpStats;
-    use crate::settings::Settings;
+    use crate::settings::{Settings, MAX_KEYMAP_OVERRIDES};
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -9164,6 +9432,128 @@ mod tests {
         );
         assert_eq!(keymap.resolve("f5", false, false, false), KeyAction::Reload);
         assert_eq!(keymap.resolve("q", true, false, false), KeyAction::Quit);
+    }
+
+    #[test]
+    fn parse_keymap_input_accepts_action_and_chord() {
+        let pair = |action: &str, chord: &str| (action.to_string(), chord.to_string());
+        assert_eq!(
+            parse_keymap_input("open_preview ctrl+shift+p"),
+            Some(pair("open_preview", "ctrl+shift+p"))
+        );
+        // Modifier order is irrelevant and the stored chord is canonical.
+        assert_eq!(
+            parse_keymap_input("  fuzzy_jump   SHIFT+ALT+ctrl+PageUp  "),
+            Some(pair("fuzzy_jump", "shift+alt+ctrl+pageup"))
+        );
+        assert_eq!(
+            parse_keymap_input("open_terminal f4"),
+            Some(pair("open_terminal", "f4"))
+        );
+    }
+
+    #[test]
+    fn parse_keymap_input_rejects_unknown_and_unbindable_actions() {
+        for input in [
+            "not_an_action ctrl+p",
+            "OPEN_PREVIEW ctrl+p",
+            "none ctrl+p",
+            "edit_keymap",
+        ] {
+            assert_eq!(parse_keymap_input(input), None, "accepted {input:?}");
+        }
+        // `edit_keymap` is a real serde name, so it parses when a chord follows.
+        assert!(parse_keymap_input("edit_keymap ctrl+k").is_some());
+    }
+
+    #[test]
+    fn parse_keymap_input_rejects_invalid_chords() {
+        for input in [
+            "open_preview ctrl+",
+            "open_preview +p",
+            "open_preview p+ctrl",
+            "open_preview ctrl+ctrl+p",
+        ] {
+            assert_eq!(parse_keymap_input(input), None, "accepted {input:?}");
+        }
+    }
+
+    #[test]
+    fn parse_keymap_input_rejects_reserved_keys() {
+        for chord in ["escape", "f1", "ctrl+f1", "shift+ESCAPE"] {
+            assert!(keymap_chord_reserved(chord), "not reserved: {chord}");
+            let input = format!("open_preview {chord}");
+            assert_eq!(parse_keymap_input(&input), None, "accepted {input:?}");
+        }
+    }
+
+    #[test]
+    fn parse_keymap_input_whitespace_rules() {
+        assert_eq!(
+            parse_keymap_input("\t open_preview \t ctrl+shift+p \n"),
+            Some(("open_preview".to_string(), "ctrl+shift+p".to_string()))
+        );
+        // Exactly two whitespace-separated fields are required: no missing
+        // chord, no extra action words, no empty input.
+        for input in [
+            "",
+            "   ",
+            "open_preview",
+            "open preview ctrl+p",
+            "open_preview ctrl+p extra",
+        ] {
+            assert_eq!(parse_keymap_input(input), None, "accepted {input:?}");
+        }
+    }
+
+    #[test]
+    fn upsert_keymap_override_dedupes_by_action_and_caps_count() {
+        let mut overrides = vec![
+            ("open_preview".to_string(), "space".to_string()),
+            ("reload".to_string(), "f5".to_string()),
+        ];
+        assert!(upsert_keymap_override(
+            &mut overrides,
+            "open_preview",
+            "ctrl+shift+p"
+        ));
+        assert_eq!(
+            overrides,
+            vec![
+                ("open_preview".to_string(), "ctrl+shift+p".to_string()),
+                ("reload".to_string(), "f5".to_string()),
+            ]
+        );
+
+        // A full list accepts replacement of an existing action but no new one.
+        let mut full: Vec<(String, String)> = (0..MAX_KEYMAP_OVERRIDES)
+            .map(|index| (format!("action-{index}"), "f4".to_string()))
+            .collect();
+        assert!(!upsert_keymap_override(&mut full, "open_preview", "ctrl+p"));
+        assert!(upsert_keymap_override(&mut full, "action-0", "ctrl+p"));
+        assert_eq!(full.len(), MAX_KEYMAP_OVERRIDES);
+        assert_eq!(full[0].1, "ctrl+p");
+    }
+
+    #[test]
+    fn edit_keymap_shortcut_does_not_collide_with_ctrl_k() {
+        let mut keymap = KeyMap::default_keymap();
+        assert_eq!(keymap.resolve("k", false, false, false), KeyAction::None);
+        assert_eq!(
+            keymap.resolve("k", false, false, true),
+            KeyAction::EditKeymap
+        );
+        assert_eq!(keymap.resolve("k", true, false, false), KeyAction::None);
+
+        // Even after a user adds Ctrl+K, Alt+K stays distinct: `Ctrl` bindings
+        // ignore `alt`, so Ctrl+Alt+K would follow Ctrl+K instead.
+        assert!(keymap.rebind(KeyAction::Reload, "k", true, false, false));
+        assert_eq!(keymap.resolve("k", true, false, false), KeyAction::Reload);
+        assert_eq!(
+            keymap.resolve("k", false, false, true),
+            KeyAction::EditKeymap
+        );
+        assert_eq!(keymap.resolve("k", true, false, true), KeyAction::Reload);
     }
 
     #[test]
