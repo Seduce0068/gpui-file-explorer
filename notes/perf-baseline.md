@@ -14,7 +14,7 @@ generated:
   at: "2026-11-18T09:58:27+09:00"
 verified:
   by: "perf-baseline"
-  at: "2026-11-18T10:41:06+09:00"
+  at: "2026-11-18T11:09:33+09:00"
 status: "review"
 ---
 
@@ -356,3 +356,120 @@ rmdir "$PERF_ROOT"
 - `/usr/bin/time` の `maxrss` は使用していない。
 - 本タスクでは Rust ソース、Cargo.toml、Git 状態を変更していない。
   再ビルドは `app/target/` の生成物のみである。
+
+## 空ディレクトリのベースライン VmRSS 実測
+
+空ディレクトリを CLI 引数で開き、固定オーバーヘッドを実測した。
+前節の 100,000 件計測（329,712 KiB）との差を、
+エントリに起因する実コストとして扱う。
+
+### 空ディレクトリの計測手順
+
+- 計測時刻: `2026-11-18T11:07:52+09:00` 〜 `11:08:23+09:00`
+- 実行バイナリ: `app/target/release/gpui-file-explorer`
+  （再ビルドなし。前節と同じ 10:37 時点のビルド）
+- 対象: `/tmp/gpui-perf-empty.TdqM08`（`mktemp -d`、中身 0 件）
+- 表示環境: `DISPLAY=:1`、`WAYLAND_DISPLAY=wayland-0`、
+  `XDG_SESSION_TYPE=wayland`
+- PID: 1596386（`pgrep -f` で取得し、`/proc/1596386/exe` が
+  上記リリースバイナリを指すことを確認）
+
+`ls -la` は `.` と `..` のみ、`find -mindepth 1 | wc -l` は 0 だった。
+実行したコマンドは次のとおり。
+
+```bash
+EMPTY_ROOT=$(mktemp -d /tmp/gpui-perf-empty.XXXXXX)
+# EMPTY_ROOT=/tmp/gpui-perf-empty.TdqM08
+ls -la "$EMPTY_ROOT"
+find "$EMPTY_ROOT" -mindepth 1 | wc -l   # 0
+setsid env DISPLAY=:1 WAYLAND_DISPLAY=wayland-0 \
+  XDG_SESSION_TYPE=wayland nohup \
+  ./app/target/release/gpui-file-explorer "$EMPTY_ROOT" \
+  > /tmp/gpui-empty-app.log 2>&1 < /dev/null &
+LAUNCH_PID=$!   # 1596386
+pgrep -f "gpui-file-explorer $EMPTY_ROOT"   # 1596386
+readlink -f /proc/1596386/exe
+sleep 12
+for i in 1 2 3 4 5; do
+  TS=$(date '+%Y-%m-%dT%H:%M:%S%:z')
+  RSS=$(awk '/^VmRSS:/{print $2}' /proc/1596386/status)
+  SIZE=$(awk '/^VmSize:/{print $2}' /proc/1596386/status)
+  DATA=$(awk '/^VmData:/{print $2}' /proc/1596386/status)
+  THR=$(awk '/^Threads:/{print $2}' /proc/1596386/status)
+  echo "$TS,1596386,$RSS,$SIZE,$DATA,$THR"
+  if [ "$i" -lt 5 ]; then sleep 2; fi
+done
+spectacle -b -n -o /tmp/gpui-perf-empty.png
+kill -TERM "$LAUNCH_PID"
+rm -f /tmp/gpui-empty-app.log
+rmdir "$EMPTY_ROOT"
+```
+
+### VmRSS サンプル
+
+全サンプルで `VmSize` は 2,473,936 KiB、`VmData` は 125,372 KiB、
+`Threads` は 29 だった。
+
+| # | 時刻 (+09:00) | VmRSS KiB | VmData KiB | Threads |
+| --- | --- | --- | --- | --- |
+| 1 | 11:08:15 | 204,784 | 125,372 | 29 |
+| 2 | 11:08:17 | 204,792 | 125,372 | 29 |
+| 3 | 11:08:19 | 204,792 | 125,372 | 29 |
+| 4 | 11:08:21 | 204,792 | 125,372 | 29 |
+| 5 | 11:08:23 | 204,796 | 125,372 | 29 |
+
+最小 204,784 / 最大 204,796 / 中央値 204,792 KiB
+（約 200.0 MiB、10 進で約 209.7 MB）。範囲は 12 KiB で
+ほぼ安定していた。
+
+### 空状態の証拠
+
+- `spectacle -b -n -o /tmp/gpui-perf-empty.png` で全画面を保存した。
+  画像は証拠として `/tmp` に残してある。
+- パンくずは `/ > tmp > gpui-perf-empty.TdqM08` だった。
+- 中央に「このフォルダは空です」と表示された。
+- ステータスバーは
+  `/tmp/gpui-perf-empty.TdqM08 | 0 件 | 選択: なし` だった。
+- 計測後に `kill -TERM` で終了し、空ディレクトリを削除した。
+
+### 100,000 件との差分
+
+| 項目 | VmRSS KiB | 換算 |
+| --- | --- | --- |
+| 空ディレクトリ（本節・実測中央値） | 204,792 | 約 200.0 MiB |
+| 100,000 件（前節・実測） | 329,712 | 約 322.0 MiB |
+| 差分（100k 件の実コスト） | 124,920 | 約 122.0 MiB |
+
+差 124,920 KiB はデータ層単体の 61,800 KiB（約 60.4 MiB）の
+約 2.02 倍である。100k 件の増分のうち約 60 MiB がデータ層、
+残り約 61.6 MiB が一覧描画・選択状態等の GUI 側構造に
+相当すると推定される。
+
+旧来の推測（329,712 - 61,800 = 267,912 KiB、約 261.6 MiB が
+ランタイム）は、実測ベースライン 204,792 KiB を
+63,120 KiB（約 61.6 MiB）過大評価していた。
+
+### 証明されたことと依然として推定であること
+
+証明されたこと（Runtime Proof）:
+
+- 空ディレクトリを開いただけの同バイナリが、
+  中央値 204,792 KiB の常駐メモリを使うこと。
+- 100,000 件の GUI プロセスとの差が 124,920 KiB であること。
+- 旧来の「ランタイム約 262 MiB」という推測が
+  実測と一致しないこと。
+
+依然として推定であること:
+
+- 差 124,920 KiB の内訳（データ層 61,800 KiB と
+  GUI 側 63,120 KiB への分割）は、2 種類の計測の
+  単純減算であり、直接の内訳計測ではない。
+- 100k 側と空側で、同時に生存する別プロセス
+  （前節の debug GUI、PID 1141147 等）の有無が
+  管理されていない。共有ライブラリや GPU ドライバの
+  ページが両者の RSS に異なる形で含まれ得る。
+- 双方とも 1 回の起動のみで、起動間ばらつきは未確認。
+- VmRSS は共有ページを含む。PSS / USS は未計測。
+- VmSize の差（2,604,392 - 2,473,936 = 130,456 KiB）は
+  仮想アドレス空間の差であり、常駐メモリではない。
+- 本節でも Rust ソース、Cargo.toml、Git 状態は変更していない。
