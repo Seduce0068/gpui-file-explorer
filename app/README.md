@@ -97,6 +97,7 @@ cd app
 | `F1` | キーボードショートカット一覧（ヘルプ） |
 | `Alt+T` | ターミナル起動コマンドを設定（`F4` で使用。空白で無効化、Enter で保存 / Esc でキャンセル） |
 | `Alt+K` | キーマップを設定（`アクション名 コード` を入力、Enter で保存 / Esc でキャンセル） |
+| `Ctrl+P` | あいまいジャンプ（候補を絞り込み、Enter で移動・Esc でキャンセル） |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 次のタブ / 前のタブ（循環） |
 | `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | アクティブタブを左 / 右へ移動 |
 | `Home` / `End` | 先頭 / 末尾を選択 |

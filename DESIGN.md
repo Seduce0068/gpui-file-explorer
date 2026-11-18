@@ -99,7 +99,7 @@
 | アプリメニューバー | × | × | △ | | `set_menus`。ツールバーで代替（api-notes §8.2） |
 | 完全削除 | × | × | △ | | **P0/MVP 禁止**。P2 で明示確認付きの限定解禁（§6.7） |
 | テーマ切替（ライト/ダーク） | × | × | ◎ | | gpui-component Theme。P0 は既定ダーク固定 |
-| i18n リソース化 | × | × | ◎ | | P0 は `strings.rs` 集約（§8.5） |
+| i18n リソース化 | × | × | ◎ | | P0 は `strings.rs` 集約（§8.4） |
 | ロケール照合（五十音順） | × | × | × | ◎ | ICU4X（fs-notes §1.4） |
 
 **P0 で明確に切るもの**: 名前変更、コピー/移動、複数選択、検索、サムネイル、OS アイコン、タブ、パス入力、完全削除。理由は「P0 の受入（§10.4）を 1〜2 日で通すため」+「IME/入力と衝突解決は独立した設計課題で、中途半端に入れると危険」（RESEARCH §12 Phase1）。
@@ -257,7 +257,7 @@ main()
 | 削除失敗 | 一覧は維持 | 右にトースト（`push_notification`） | 可 |
 
 - `read_dir` 途中の個別エントリ失敗（`NotFound` 等）は**行を落とさず一覧全体を失敗させない**（fs-notes §10-2）。`metadata` 失敗はサイズ/日時を「—」表示。
-- エラー文言は日本語（§8.5）。パスは `display()`（lossy）で表示。
+- エラー文言は日本語（§8.4）。パスは `display()`（lossy）で表示。
 
 ### 3.6 マウス・その他
 
@@ -302,7 +302,7 @@ app/
     │   └── paths.rs            # is_hidden / sort_key / same_path（case-fold は P2）
     ├── settings.rs             # Settings / load / save（原子的書込）/ 既定値
     ├── icons.rs                # 拡張子 -> IconName。UI 非依存（model に依存）
-    ├── strings.rs              # 日本語 UI 文言の集約（i18n 準備、§8.5）
+    ├── strings.rs              # 日本語 UI 文言の集約（i18n 準備、§8.4）
     └── ui/
         ├── mod.rs
         ├── shell.rs            # 全体レイアウト（toolbar/breadcrumb/sidebar/list/status の合成）
