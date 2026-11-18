@@ -211,6 +211,19 @@ status: current
 - [x] **R1-INV01** select_all(&[]) が空選択＋stale anchor を残す — 対応: 0156b17
   — `app/src/model.rs:216-221`
 
+### 優先度: 中（第9回発掘）
+
+- [x] **R1-LEAK01** case-only rename の中間一時ファイルが 2 回目失敗で残存
+  — 対応: e957de5
+- [x] **R1-LEAK01** rename_entry に O_EXCL 予約が無く TOCTOU で上書き可能
+  — 対応: e957de5
+- [x] **R1-LEAK01** remove_entry_safe が再帰中に ReadDir を保持
+  — 対応: e957de5
+- [ ] **R1-LEAK01** watcher 初期化失敗時に debouncer スレッドがリーク
+  — `app/src/watcher.rs:101-122` / 依存側の設計変更が必要（外部判断）
+- [ ] **R3-PERF01** search_lines を全件 Vec 化してから filter している
+  — `app/src/main.rs:5430-5438` / 2 パス化は DESIGN §10.5 と整合
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
