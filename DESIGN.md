@@ -26,6 +26,8 @@
 - 検索インデックス、内容検索、サムネイル生成、PDF/動画プレビュー、タブ、Dock、プラグイン機構。
 - macOS App Store 配布（AGPL と衝突、[`RESEARCH.md`](RESEARCH.md) §11.1.1）。
 - Zed の GPL コード（`crates/ui` 等）の取り込み。参照はするがコピーしない（§9.5）。
+- ブラウザ / wasm（wasm32）対応: P0〜P2 の対象外。デスクトップ専用の
+  決定を維持（詳細は [`notes/wasm-browser-notes.md`](notes/wasm-browser-notes.md)）。
 
 ### 1.3 対象 OS（優先順位）
 
@@ -37,6 +39,8 @@
 
 - P0 の受入は Linux/Wayland のみ（[`RESEARCH.md`](RESEARCH.md) §7.1、[`notes/poc-report.md`](notes/poc-report.md) §0）。
 - Windows/macOS は Phase2 まで「コンパイル可能性を壊さない」ことが目標（OS 固有処理は `#[cfg]` で分離、§7）。
+- ブラウザ / wasm は P0〜P2 の非対象（デスクトップ専用決定を維持）。
+  根拠は [`notes/wasm-browser-notes.md`](notes/wasm-browser-notes.md)。
 
 ### 1.4 想定ユーザー
 
