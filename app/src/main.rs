@@ -89,6 +89,29 @@ const LIST_CHROME_HEIGHT_PX: f64 = 140.0;
 const SIDEBAR_WIDTH_PX: f32 = 190.0;
 const GRID_CELL_WIDTH_PX: f32 = 108.0;
 
+/// Presence check that also sees dangling symlinks.
+///
+/// `Path::exists` follows the link target, so a broken symlink looks absent
+/// even though the directory entry is still there. Undo and reveal must treat
+/// such a link as present; the check mirrors `copy_entry` / `move_entry`.
+fn path_present(path: &Path) -> bool {
+    path.exists() || path.is_symlink()
+}
+
+/// Keys forwarded to the normal keymap while the search view is open and no
+/// search text input owns focus. Text editing keys stay with the query field;
+/// once focus moves to the result list, navigation and copy reach the existing
+/// list handlers. Alt variants keep their prior (blocked) behaviour.
+fn search_view_key_allowed(key: &str, ctrl: bool, alt: bool) -> bool {
+    if alt {
+        return false;
+    }
+    matches!(
+        key,
+        "up" | "down" | "pageup" | "pagedown" | "home" | "end" | "enter"
+    ) || (ctrl && key == "c")
+}
+
 /// Icon colour per file kind (folders are blue, everything else is tinted).
 fn kind_color(kind: FileKind) -> u32 {
     match kind {
@@ -388,7 +411,10 @@ fn parse_chord(chord: &str) -> Option<(String, bool, Option<bool>, bool)> {
 /// must reject the same input instead of silently writing a useless override.
 fn keymap_chord_reserved(chord: &str) -> bool {
     let lowered = chord.to_ascii_lowercase();
-    lowered.contains("escape") || lowered.contains("f1")
+    // Only the final `+`-separated segment is the key: `f10` / `f12` contain
+    // the substring "f1" but are not the reserved F1 dialog key.
+    let key = lowered.rsplit('+').next().unwrap_or(lowered.as_str());
+    key == "f1" || key == "escape"
 }
 
 /// Parse one line typed into the keymap dialog: `action_name chord`.
@@ -3158,8 +3184,16 @@ impl Explorer {
         if self.view == ViewSource::Search {
             if key == "escape" {
                 self.close_search(cx);
+                return;
             }
-            return;
+            // The query field keeps its text-editing keys. With focus on a
+            // result row / the root, let navigation and Ctrl+C fall through to
+            // the normal keymap so search results are keyboard-accessible.
+            if self.search_input_focused(window, cx)
+                || !search_view_key_allowed(key, modifiers.control, modifiers.alt)
+            {
+                return;
+            }
         }
         // Escape is intentionally literal here: no rebind may remove the
         // ability to cancel a running operation from the normal view.
@@ -4044,7 +4078,7 @@ impl Explorer {
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                if !current.exists() {
+                if !path_present(&current) {
                     self.status =
                         format!("元に戻せません: {} が存在しません", display_path(&current));
                     // Keep the action so a later retry or other undo is possible.
@@ -4052,7 +4086,7 @@ impl Explorer {
                     cx.notify();
                     return;
                 }
-                if target.exists() {
+                if path_present(&target) {
                     self.status =
                         format!("元に戻せません: {} が既に存在します", display_path(&target));
                     self.undo.push_undo(retry.clone());
@@ -5741,7 +5775,7 @@ impl Explorer {
     }
 
     fn reveal(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if !path.exists() {
+        if !path_present(&path) {
             self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
             self.reload(cx);
             return;
@@ -5908,6 +5942,21 @@ impl Explorer {
     }
 
     // ------------------------------------------------------------------- search
+
+    /// Whether one of the search bar's text fields currently owns the keyboard.
+    /// While typing, every key except Escape belongs to the input; once the
+    /// result list (or the root) has focus, navigation can reach the keymap.
+    fn search_input_focused(&self, window: &Window, cx: &App) -> bool {
+        [
+            self.search.input.as_ref(),
+            self.search.ext.as_ref(),
+            self.search.name_filter.as_ref(),
+            self.search.save_name.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+    }
 
     /// Open the search bar (Ctrl+F). Only available from the directory view.
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -9105,6 +9154,56 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn path_present_sees_broken_symlinks() {
+        use super::path_present;
+
+        let dir = f618_temp_dir("present");
+        let missing = dir.join("missing");
+        assert!(!missing.exists());
+        assert!(!path_present(&missing));
+
+        let file = dir.join("file.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(path_present(&file));
+
+        let link = dir.join("broken-link");
+        std::os::unix::fs::symlink(dir.join("no-such-target"), &link).unwrap();
+        assert!(!link.exists(), "a dangling link fails Path::exists");
+        assert!(
+            path_present(&link),
+            "the link entry itself still exists and must be undoable/revealable"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_view_key_routing_is_limited_to_navigation_and_copy() {
+        use super::search_view_key_allowed;
+
+        for key in ["up", "down", "pageup", "pagedown", "home", "end", "enter"] {
+            assert!(search_view_key_allowed(key, false, false), "blocked {key}");
+            assert!(
+                !search_view_key_allowed(key, false, true),
+                "Alt+{key} must keep its old behaviour"
+            );
+        }
+        assert!(search_view_key_allowed("c", true, false));
+        for (key, ctrl) in [
+            ("c", false),
+            ("a", true),
+            ("escape", false),
+            ("f2", false),
+            ("delete", false),
+        ] {
+            assert!(
+                !search_view_key_allowed(key, ctrl, false),
+                "unexpectedly forwarded {key} (ctrl={ctrl})"
+            );
+        }
+    }
+
     #[test]
     fn properties_snapshot_reads_file_metadata() {
         let dir = f618_temp_dir("file");
@@ -9667,6 +9766,20 @@ mod tests {
             assert!(keymap_chord_reserved(chord), "not reserved: {chord}");
             let input = format!("open_preview {chord}");
             assert_eq!(parse_keymap_input(&input), None, "accepted {input:?}");
+        }
+    }
+
+    #[test]
+    fn keymap_chord_reserved_matches_only_the_last_segment() {
+        // `f10` / `f12` merely contain the substring "f1" and must remain
+        // bindable, matching `settings::sane_keymap_entry`.
+        for chord in ["f10", "ctrl+f10", "f11", "f12", "ctrl+f12"] {
+            assert!(!keymap_chord_reserved(chord), "rejected {chord}");
+            let input = format!("open_preview {chord}");
+            assert!(parse_keymap_input(&input).is_some(), "rejected {input:?}");
+        }
+        for chord in ["f1", "ctrl+f1", "escape", "alt+escape"] {
+            assert!(keymap_chord_reserved(chord), "not reserved: {chord}");
         }
     }
 
