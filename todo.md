@@ -301,32 +301,32 @@ status: current
 
 ### 優先度: 高（第15回シナリオ発掘・confirmed）
 
-- [ ] **R4-FLOW04** 同一 cwd の複数タブが再起動で1つに圧縮され履歴が失われる
+- [x] **R4-FLOW04** 同一 cwd の複数タブが再起動で1つに圧縮され履歴が失われる — 対応: 9cca8a4
   — `app/src/settings.rs:927,940` / `app/src/main.rs:8986`
-- [ ] **R4-FLOW04** 32 個超のオープンタブが再起動で黙って切り詰められる
+- [x] **R4-FLOW04** 32 個超のオープンタブが再起動で黙って切り詰められる — 対応: 9cca8a4
   — `app/src/main.rs:2582` / `app/src/settings.rs:929`
-- [ ] **R4-FLOW04** 一時的に存在しないブックマーク/最近が永続設定から削除される
+- [x] **R4-FLOW04** 一時的に存在しないブックマーク/最近が永続設定から削除される — 対応: 24d6f0c
   — `app/src/main.rs:2176,2183`
-- [ ] **R4-FLOW04** 未知 enum 値1つで settings.json 全体が退避され全失
+- [x] **R4-FLOW04** 未知 enum 値1つで settings.json 全体が退避され全失 — 対応: 9cca8a4
   — `app/src/settings.rs:851,271` / `app/src/model.rs:313`
 
 ### 優先度: 中（第15回シナリオ発掘・confirmed）
 
-- [ ] **R2-FLOW02** Ctrl+Shift+F が検索ビューで発火しない
+- [x] **R2-FLOW02** Ctrl+Shift+F が検索ビューで発火しない — 対応: 24d6f0c
   — `app/src/main.rs:109-117,3542`
-- [ ] **R2-FLOW02** 検索ビューで Esc が操作キャンセルを奪う
+- [x] **R2-FLOW02** 検索ビューで Esc が操作キャンセルを奪う — 対応: 24d6f0c
   — `app/src/main.rs:3542-3560`
-- [ ] **R2-FLOW02** 検索結果の並び替えヘッダが設定だけ変え表示順は不変
+- [x] **R2-FLOW02** 検索結果の並び替えヘッダが設定だけ変え表示順は不変 — 対応: 24d6f0c
   — `app/src/main.rs:3750` / `app/src/search.rs:166`
-- [ ] **R2-FLOW02** 隠し切替が検索結果に反映されずステータスだけ偽装
+- [x] **R2-FLOW02** 隠し切替が検索結果に反映されずステータスだけ偽装 — 対応: 24d6f0c
   — `app/src/main.rs:3706` / `app/src/search.rs:142`
-- [ ] **R2-FLOW02** フィルタ変更後にビューポートが先頭へスクロールされる
+- [x] **R2-FLOW02** フィルタ変更後にビューポートが先頭へスクロールされる — 対応: 24d6f0c
   — `app/src/main.rs:6657-6674`
-- [ ] **R2-FLOW02** 鮮度警告がフィルタ変更で上書きされる
+- [x] **R2-FLOW02** 鮮度警告がフィルタ変更で上書きされる — 対応: 24d6f0c
   — `app/src/main.rs:2435,6483`
-- [ ] **R3-FLOW04** terminal_command の明示設定が再起動で無効化される
+- [x] **R3-FLOW04** terminal_command の明示設定が再起動で無効化される — 対応: 9cca8a4
   — `app/src/settings.rs:223,971`
-- [ ] **R1-FLOW01** 初回起動で record_recent が呼ばれず「最近」が空
+- [x] **R1-FLOW01** 初回起動で record_recent が呼ばれず「最近」が空 — 対応: 24d6f0c
   — `app/src/main.rs:1899`
 
 ### 優先度: 低（調査タスク）
