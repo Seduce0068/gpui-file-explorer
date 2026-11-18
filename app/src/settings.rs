@@ -1041,6 +1041,39 @@ impl Settings {
         ))
     }
 
+    /// Drop paths serde cannot serialize from a *copy* of the settings before
+    /// writing. `sane_path()` already guards the setters and `validate()` on
+    /// load, but live paths can enter unchecked: `TabSession::from_tab()`
+    /// copies `tab.cwd` verbatim and `main.rs` stores the current directory
+    /// directly. A single non-UTF-8 path would make every later `save_to()`
+    /// fail, so filter it at the last point before serialization.
+    ///
+    /// This mirrors only the path filtering of `validate()`: no existence
+    /// checks, de-duplication, truncation, migration or `read_only` changes,
+    /// and it is applied to the snapshot so in-memory state is untouched.
+    fn sanitize_paths_for_save(settings: &mut Settings) {
+        if settings
+            .last_dir
+            .as_deref()
+            .is_some_and(|dir| !sane_path(dir))
+        {
+            settings.last_dir = None;
+        }
+        settings.recent_dirs.retain(|path| sane_path(path));
+        settings.bookmarks.retain(|path| sane_path(path));
+        settings
+            .bookmark_labels
+            .retain(|entry| sane_path(&entry.path));
+        settings.tabs.retain(|path| sane_path(path));
+        for window in &mut settings.windows {
+            window.tabs.retain(|tab| sane_path(&tab.cwd));
+            for tab in &mut window.tabs {
+                tab.back.retain(|path| sane_path(path));
+                tab.forward.retain(|path| sane_path(path));
+            }
+        }
+    }
+
     /// Atomic write (tmp file + rename) so a crash never leaves a truncated
     /// settings file behind. The tmp file is flushed with `sync_all()` before
     /// the rename; a directory fsync is not performed (best-effort).
@@ -1063,6 +1096,7 @@ impl Settings {
             // the in-memory struct was built with a stale/absent version.
             let mut snapshot = self.clone();
             snapshot.version = SCHEMA_VERSION;
+            Self::sanitize_paths_for_save(&mut snapshot);
             let text = serde_json::to_string_pretty(&snapshot).map_err(std::io::Error::other)?;
             // O_EXCL reservation: a predictable tmp name with `create(true)`
             // follows a pre-planted symlink (CWE-59). `create_new(true)`
@@ -1697,8 +1731,9 @@ mod search_history_tests {
 mod schema_validation_tests {
     use super::{
         schema_status, BookmarkLabel, SavedSearch, SchemaStatus, Settings, TabSession, ViewLayout,
-        MAX_BOOKMARKS, MAX_BOOKMARK_LABELS, MAX_PATH_BYTES, MAX_QUERY_BYTES, MAX_RECENT_DIRS,
-        MAX_RECENT_SEARCHES, MAX_SAVED_SEARCHES, MAX_SETTINGS_BYTES, MAX_TABS, SCHEMA_VERSION,
+        WindowSession, MAX_BOOKMARKS, MAX_BOOKMARK_LABELS, MAX_PATH_BYTES, MAX_QUERY_BYTES,
+        MAX_RECENT_DIRS, MAX_RECENT_SEARCHES, MAX_SAVED_SEARCHES, MAX_SETTINGS_BYTES, MAX_TABS,
+        SCHEMA_VERSION,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2004,6 +2039,75 @@ mod schema_validation_tests {
         settings
             .save_to(&path)
             .expect("save must succeed once bad paths are dropped");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_sanitizes_non_utf8_tab_paths_without_mutating_memory() {
+        use std::os::unix::ffi::OsStringExt;
+
+        use super::sane_path;
+
+        // `TabSession::from_tab()` copies a live tab's cwd unchecked, so a
+        // directory opened through the OS dialog can put this path in memory.
+        let bad = PathBuf::from(std::ffi::OsString::from_vec(vec![
+            b'/', b't', b'm', b'p', b'/', 0xff,
+        ]));
+        assert!(!sane_path(&bad));
+        let good = PathBuf::from("/tmp/valid");
+
+        let (dir, path) = setup("non-utf8-tab-cwd");
+        let settings = Settings {
+            last_dir: Some(bad.clone()),
+            recent_dirs: vec![bad.clone(), good.clone()],
+            bookmarks: vec![bad.clone(), good.clone()],
+            bookmark_labels: vec![BookmarkLabel {
+                path: bad.clone(),
+                label: "bad".to_string(),
+            }],
+            tabs: vec![bad.clone()],
+            windows: vec![WindowSession {
+                tabs: vec![
+                    TabSession {
+                        cwd: bad.clone(),
+                        back: vec![bad.clone()],
+                        forward: vec![bad.clone()],
+                    },
+                    TabSession {
+                        cwd: good.clone(),
+                        back: vec![bad.clone(), good.clone()],
+                        forward: vec![bad.clone(), good.clone()],
+                    },
+                ],
+                ..WindowSession::default()
+            }],
+            ..Settings::default()
+        };
+
+        // Serde cannot encode 0xff: before save-time sanitization this failed
+        // for every later save, including ones unrelated to the bad tab.
+        settings.save_to(&path).expect("save must succeed");
+
+        // Only the serialized snapshot is sanitized; in-memory state survives.
+        assert_eq!(settings.last_dir.as_deref(), Some(bad.as_path()));
+        assert!(settings.recent_dirs.contains(&bad));
+        assert!(settings.bookmarks.contains(&bad));
+        assert_eq!(settings.bookmark_labels[0].path, bad);
+        assert_eq!(settings.tabs, vec![bad.clone()]);
+        assert_eq!(settings.windows[0].tabs[0].cwd, bad);
+
+        let loaded = Settings::load_from(&path);
+        assert!(loaded.last_dir.is_none());
+        assert_eq!(loaded.recent_dirs, vec![good.clone()]);
+        assert_eq!(loaded.bookmarks, vec![good.clone()]);
+        assert!(loaded.bookmark_labels.is_empty());
+        assert!(loaded.tabs.is_empty());
+        let tabs = &loaded.windows[0].tabs;
+        assert_eq!(tabs.len(), 1, "the tab with a bad cwd must be dropped");
+        assert_eq!(tabs[0].cwd, good);
+        assert_eq!(tabs[0].back, vec![good.clone()]);
+        assert_eq!(tabs[0].forward, vec![good.clone()]);
         fs::remove_dir_all(&dir).unwrap();
     }
 }
