@@ -7310,11 +7310,6 @@ impl Explorer {
             self.debug.open_rename_once = false;
             self.start_rename(window, cx);
         }
-        if self.focus_list_on_next_render {
-            self.focus_list_on_next_render = false;
-            let handle = self.focus_handle.clone();
-            window.on_next_frame(move |window, cx| handle.focus(window, cx));
-        }
         if !self.load.is_loading() {
             if self.debug.properties_once && !self.load.is_loading() && !self.entries.is_empty() {
                 self.debug.properties_once = false;
@@ -7403,6 +7398,35 @@ impl Explorer {
     }
 
     /// Development hooks evaluated after the bars and before the dialogs.
+    /// Restore list focus one frame after a dialog closes. Debug hooks live in
+    /// `apply_startup_hooks` (disabled in release), but focus restoration must
+    /// work in every build (finding 1 of the feature review).
+    fn apply_focus_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus_list_on_next_render {
+            return;
+        }
+        self.focus_list_on_next_render = false;
+        let weak = cx.entity().downgrade();
+        window.on_next_frame(move |window, cx| {
+            // A dialog may have opened between scheduling and the next frame;
+            // don't steal focus from its input in that case.
+            let focus = weak
+                .update(cx, |this, _cx| {
+                    let busy = this.renaming.is_some()
+                        || this.location.is_some()
+                        || this.preview.is_some()
+                        || this.undo_history_open
+                        || this.fuzzy.is_some();
+                    (!busy).then(|| this.focus_handle.clone())
+                })
+                .ok()
+                .flatten();
+            if let Some(focus) = focus {
+                focus.focus(window, cx);
+            }
+        });
+    }
+
     fn apply_overlay_hooks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(not(debug_assertions))]
         {
@@ -7450,6 +7474,7 @@ impl Render for Explorer {
         }
         self.apply_startup_hooks(window, cx);
         self.apply_pending_rename(window, cx);
+        self.apply_focus_restore(window, cx);
         let tab_bar = self.tab_bar(cx);
         let search_bar = self.search_bar(cx);
         let search_history_bar = self.search_history_bar(cx);
