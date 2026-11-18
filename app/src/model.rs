@@ -331,6 +331,26 @@ impl SortKey {
     }
 }
 
+/// Deserialize a persisted sort key, mapping an unknown name (e.g. `"date"`)
+/// to the default instead of rejecting the whole settings file.
+///
+/// A `#[serde(other)]` fallback variant would force a wildcard arm into every
+/// exhaustive `SortKey` match (including the UI's header-id mapping in
+/// `main.rs`), so the fallback is applied at the deserialization boundary
+/// instead: the field becomes `SortKey::Name` and all sibling settings survive.
+fn deserialize_sort_key<'de, D>(deserializer: D) -> Result<SortKey, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        "kind" => SortKey::Kind,
+        "size" => SortKey::Size,
+        "modified" => SortKey::Modified,
+        _ => SortKey::default(),
+    })
+}
+
 /// Sort configuration: key + direction. Directories always come first,
 /// independent of the key/direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -489,6 +509,7 @@ impl From<bool> for SortDir {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct SortSpec {
+    #[serde(deserialize_with = "deserialize_sort_key")]
     pub key: SortKey,
     pub dir: SortDir,
     /// Directories always sort before files in P0 (kept in the schema for

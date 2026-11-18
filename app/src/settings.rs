@@ -86,7 +86,10 @@ pub const MAX_RECENT_DIRS: usize = 10;
 pub const MAX_BOOKMARKS: usize = 50;
 /// Maximum number of remembered search queries.
 pub const MAX_RECENT_SEARCHES: usize = 10;
-/// Maximum number of tabs restored from settings.
+/// Runtime tab cap used by the UI. Settings loading deliberately does **not**
+/// truncate to this value: silently dropping tabs (and their back/forward
+/// history) on startup is data loss. The runtime applies this cap explicitly;
+/// settings only log a warning when a loaded file exceeds it.
 pub const MAX_TABS: usize = 32;
 /// Maximum number of window sessions kept in settings. Each window owns one
 /// entry; the primary window is always index 0.
@@ -102,13 +105,14 @@ pub const MAX_WINDOW_SIZE_PX: f32 = 8192.0;
 /// crafted file exhausting memory at startup). Oversized files are backed up
 /// like corrupt ones.
 ///
-/// Derived from the legal data volume, not an arbitrary guess: `validate()`
-/// allows `MAX_WINDOW_SESSIONS` (8) windows × `MAX_TABS` (32) tabs × 200
+/// Derived from the legal data volume, not an arbitrary guess: the runtime
+/// keeps up to `MAX_WINDOW_SESSIONS` (8) windows × `MAX_TABS` (32) tabs × 200
 /// history paths per tab (back + forward share one `MAX_HISTORY_ENTRIES`
 /// budget) ≈ 51,200 paths, plus the legacy top-level lists and metadata. At a
 /// realistic ~100 bytes per JSON-escaped path that is ~5 MiB, so 8 MiB leaves
-/// headroom. A full but legitimate session must never be backed up as if it
-/// were corrupt.
+/// headroom. Loading no longer truncates tabs, so this byte limit — not a tab
+/// count — is the only bound on a legitimate session; a full but legitimate
+/// file must never be backed up as if it were corrupt.
 pub const MAX_SETTINGS_BYTES: u64 = 8 * 1024 * 1024;
 /// Maximum byte length of a single persisted path.
 pub const MAX_PATH_BYTES: usize = 4096;
@@ -163,8 +167,13 @@ fn sane_query(query: &str) -> bool {
 ///
 /// Linux targets Kubuntu/KDE, where `konsole` is available. Other platforms
 /// have no universally installed emulator, so the action starts disabled
-/// there until the user supplies a command. This is also the serde default for
-/// older settings files that predate the field (legacy compatibility).
+/// there until the user supplies a command.
+///
+/// This value is used by `Settings::default()` (which the Alt+T dialog uses to
+/// prefill an empty editor) and by tests. It is deliberately **not** the serde
+/// default for a missing `terminal_command` key: an absent/blank key loads as
+/// the portable empty "unset" value, while a value the user explicitly wrote —
+/// even if it happens to equal this platform default — is preserved verbatim.
 fn default_terminal_command() -> String {
     if cfg!(target_os = "linux") {
         "konsole".to_string()
@@ -178,6 +187,26 @@ fn default_terminal_command() -> String {
 /// (the container `#[serde(default)]` alone would pick `ThemeMode::Light`).
 fn default_theme() -> ThemeMode {
     ThemeMode::Dark
+}
+
+/// Deserialize a persisted theme, falling back to [`default_theme`] for any
+/// unknown name instead of rejecting the whole settings file.
+///
+/// `ThemeMode` comes from gpui-component and only has `light` / `dark`; a value
+/// written by a newer build (e.g. `"system"`) must not cause
+/// [`Settings::back_up_unusable`] to discard every other setting. This mirrors
+/// the `#[serde(other)]` fallback used for locally-defined enums without
+/// touching the external crate.
+fn deserialize_theme<'de, D>(deserializer: D) -> Result<ThemeMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        "dark" => ThemeMode::Dark,
+        "light" => ThemeMode::Light,
+        _ => default_theme(),
+    })
 }
 
 /// Serde default for a missing `version` key. An unversioned file predates
@@ -210,21 +239,6 @@ fn sane_terminal_command(command: &str) -> bool {
     !command.trim().is_empty()
         && command.len() <= MAX_TERMINAL_COMMAND_BYTES
         && !command.chars().any(char::is_control)
-}
-
-/// Treat the *current platform's* default command as "unset" before it reaches
-/// disk (or after loading an old file). `konsole` is a Kubuntu convenience, not
-/// a user choice: persisting it would carry a Linux-only command into a config
-/// opened on another OS, where launching the terminal fails. An empty value
-/// means "no choice yet", so each platform supplies its own default at load
-/// time (also what the settings dialog prefills). A custom command is left
-/// untouched. `terminal_command_argv()` deliberately keeps splitting whatever
-/// is in memory; only the persisted/validated representation is normalized.
-fn clear_platform_terminal_default(command: &mut String) {
-    let default = default_terminal_command();
-    if !default.is_empty() && *command == default {
-        command.clear();
-    }
 }
 
 /// Whether a chord's key is one of the keys reserved for dialog ownership.
@@ -274,6 +288,19 @@ pub enum ViewLayout {
     #[default]
     Details,
     Icons,
+}
+
+/// Deserialize a persisted view layout, mapping unknown names (e.g. a future
+/// `"list"`) to the default instead of backing up the entire settings file.
+fn deserialize_view_layout<'de, D>(deserializer: D) -> Result<ViewLayout, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        "icons" => ViewLayout::Icons,
+        _ => ViewLayout::default(),
+    })
 }
 
 /// Frame state of a window, persisted alongside its bounds.
@@ -428,17 +455,22 @@ pub struct Settings {
     pub last_dir: Option<PathBuf>,
     pub sort: SortSpec,
     pub show_hidden: bool,
+    /// Unknown values deserialize to [`ViewLayout::default`] so a single bad
+    /// string cannot cost the whole settings file.
+    #[serde(deserialize_with = "deserialize_view_layout")]
     pub view: ViewLayout,
     /// Component theme applied at startup and toggled at runtime. Added after
     /// v1: older files get `Dark` through the field-level serde default above.
-    /// Only `dark` / `light` are representable in gpui-component 0.9.1.
-    #[serde(default = "default_theme")]
+    /// Only `dark` / `light` are representable in gpui-component 0.9.1; an
+    /// unknown name (e.g. `"system"`) falls back to `Dark`.
+    #[serde(default = "default_theme", deserialize_with = "deserialize_theme")]
     pub theme: ThemeMode,
     /// Terminal emulator command launched with the selected directory as its
     /// working directory. Empty (or whitespace-only after validation) disables
-    /// the action. Added after v1: older files receive the platform default
-    /// through the field-level serde default below.
-    #[serde(default = "default_terminal_command")]
+    /// the action. Added after v1: a missing key loads as the portable empty
+    /// "unset" value, while an explicit value is preserved exactly as written
+    /// — including when it equals the current platform default.
+    #[serde(default)]
     pub terminal_command: String,
     /// User keymap overrides as `(action_name, chord)` pairs, e.g.
     /// `("open_preview", "ctrl+shift+p")`. A chord is a `+`-joined list of
@@ -924,9 +956,20 @@ impl Settings {
             .retain(|entry| seen_labels.insert(entry.path.clone()));
         self.bookmark_labels.truncate(MAX_BOOKMARK_LABELS);
 
+        // Keep every path as-is. The runtime allows several tabs with the same
+        // cwd, each with its own back/forward history, so de-duplicating by
+        // path here would silently destroy a tab on the next restart. Nor do
+        // we truncate to MAX_TABS on load: the runtime cap is applied by the
+        // UI, and load-time truncation would lose tab history without telling
+        // the user.
         self.tabs.retain(|path| sane_path(path));
-        dedupe_paths(&mut self.tabs);
-        self.tabs.truncate(MAX_TABS);
+        if self.tabs.len() > MAX_TABS {
+            warn!(
+                count = self.tabs.len(),
+                limit = MAX_TABS,
+                "settings contain more tabs than the runtime cap; keeping all of them"
+            );
+        }
         self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
 
         // Window-scoped sessions get the same hardening as the legacy fields.
@@ -937,10 +980,17 @@ impl Settings {
             if session.bounds.is_none_or(|bounds| !bounds.is_valid()) {
                 session.bounds = None;
             }
+            // Same rule as the legacy top-level tabs: repeated cwds are legal
+            // (distinct histories) and no tab is dropped just for exceeding
+            // MAX_TABS. Only unusable paths are filtered.
             session.tabs.retain(|tab| sane_path(&tab.cwd));
-            let mut seen = HashSet::with_capacity(session.tabs.len());
-            session.tabs.retain(|tab| seen.insert(tab.cwd.clone()));
-            session.tabs.truncate(MAX_TABS);
+            if session.tabs.len() > MAX_TABS {
+                warn!(
+                    count = session.tabs.len(),
+                    limit = MAX_TABS,
+                    "window session contains more tabs than the runtime cap; keeping all of them"
+                );
+            }
             for tab in &mut session.tabs {
                 tab.back.retain(|path| sane_path(path));
                 tab.forward.retain(|path| sane_path(path));
@@ -968,14 +1018,13 @@ impl Settings {
         // action when the value is blank or unsafe to pass through argv. An
         // unusable value becomes empty rather than backing up the whole file,
         // matching how the other field-level values are hardened on load.
+        // Explicit values are never normalized to "unset": a user who chose
+        // exactly the platform default still expects the launcher to work
+        // after a restart. Only an absent/blank key loads as unset.
         self.terminal_command = self.terminal_command.trim().to_string();
         if !sane_terminal_command(&self.terminal_command) {
             self.terminal_command.clear();
         }
-        // A platform default is "unset", not a stored user choice. Dropping it
-        // here as well as on save keeps the representation stable across a
-        // load -> save cycle (and stops old files from re-introducing it).
-        clear_platform_terminal_default(&mut self.terminal_command);
 
         // Keymap overrides get the same harden-on-load treatment: trim both
         // sides, drop unusable/reserved entries, cap the count and keep only
@@ -1135,11 +1184,11 @@ impl Settings {
             // the in-memory struct was built with a stale/absent version.
             let mut snapshot = self.clone();
             snapshot.version = SCHEMA_VERSION;
-            // Never persist a platform-specific default: an empty value lets
-            // another OS supply its own default instead of trying to launch
-            // `konsole` where it does not exist. The in-memory value is kept
-            // intact, so `terminal_command_argv()` still works as before.
-            clear_platform_terminal_default(&mut snapshot.terminal_command);
+            // Persist the command exactly as the user chose it. Previously an
+            // explicit `konsole` on Linux was rewritten to "" here, silently
+            // disabling terminal launch after the next restart. An unset field
+            // is already empty in memory (the missing-key serde default), so
+            // nothing platform-specific is invented or carried to another OS.
             Self::sanitize_paths_for_save(&mut snapshot);
             let text = serde_json::to_string_pretty(&snapshot).map_err(std::io::Error::other)?;
             // O_EXCL reservation: a predictable tmp name with `create(true)`
@@ -1753,7 +1802,7 @@ mod bookmark_tests {
 
 #[cfg(test)]
 mod tab_settings_tests {
-    use super::Settings;
+    use super::{Settings, TabSession, MAX_TABS};
     use std::path::PathBuf;
 
     #[test]
@@ -1761,6 +1810,71 @@ mod tab_settings_tests {
         let settings = Settings::default();
         assert!(settings.tabs.is_empty());
         assert_eq!(settings.active_tab, 0);
+    }
+
+    #[test]
+    fn validate_keeps_tabs_with_the_same_cwd_and_their_history() {
+        // The runtime allows several tabs on the same directory with
+        // independent back/forward stacks; de-duplicating by cwd used to lose
+        // a whole tab (and its history) on every restart.
+        let mut settings = Settings {
+            tabs: vec![PathBuf::from("/same"), PathBuf::from("/same")],
+            active_tab: 1,
+            windows: vec![super::WindowSession {
+                tabs: vec![
+                    TabSession {
+                        cwd: PathBuf::from("/same"),
+                        back: vec![PathBuf::from("/old-a")],
+                        forward: Vec::new(),
+                    },
+                    TabSession {
+                        cwd: PathBuf::from("/same"),
+                        back: vec![PathBuf::from("/old-b")],
+                        forward: vec![PathBuf::from("/next-b")],
+                    },
+                ],
+                active_tab: 1,
+                ..super::WindowSession::default()
+            }],
+            ..Settings::default()
+        };
+
+        settings.validate();
+
+        assert_eq!(settings.tabs, vec![PathBuf::from("/same"); 2]);
+        assert_eq!(settings.active_tab, 1);
+        let window_tabs = &settings.primary_window().unwrap().tabs;
+        assert_eq!(window_tabs.len(), 2);
+        assert_eq!(window_tabs[0].back, vec![PathBuf::from("/old-a")]);
+        assert_eq!(window_tabs[1].back, vec![PathBuf::from("/old-b")]);
+        assert_eq!(window_tabs[1].forward, vec![PathBuf::from("/next-b")]);
+        assert_eq!(settings.primary_window().unwrap().active_tab, 1);
+    }
+
+    #[test]
+    fn validate_does_not_truncate_tabs_to_the_runtime_cap() {
+        let many = MAX_TABS + 7;
+        let mut settings = Settings {
+            tabs: (0..many)
+                .map(|i| PathBuf::from(format!("/tab-{i}")))
+                .collect(),
+            windows: vec![super::WindowSession {
+                tabs: (0..many)
+                    .map(|i| TabSession {
+                        cwd: PathBuf::from(format!("/window-tab-{i}")),
+                        back: Vec::new(),
+                        forward: Vec::new(),
+                    })
+                    .collect(),
+                ..super::WindowSession::default()
+            }],
+            ..Settings::default()
+        };
+
+        settings.validate();
+
+        assert_eq!(settings.tabs.len(), many);
+        assert_eq!(settings.primary_window().unwrap().tabs.len(), many);
     }
 
     #[test]
@@ -1824,6 +1938,8 @@ mod schema_validation_tests {
         MAX_QUERY_BYTES, MAX_RECENT_DIRS, MAX_RECENT_SEARCHES, MAX_SAVED_SEARCHES,
         MAX_SETTINGS_BYTES, MAX_TABS, MAX_WINDOW_SESSIONS, SCHEMA_VERSION,
     };
+    use crate::model::{SortDir, SortKey, SortSpec};
+    use gpui_kit::component::ThemeMode;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -1960,7 +2076,9 @@ mod schema_validation_tests {
         assert_eq!(loaded.recent_dirs.len(), MAX_RECENT_DIRS);
         assert_eq!(loaded.bookmarks.len(), MAX_BOOKMARKS);
         assert_eq!(loaded.recent_searches.len(), MAX_RECENT_SEARCHES);
-        assert_eq!(loaded.tabs.len(), MAX_TABS);
+        // Tabs are intentionally not capped on load: the runtime owns that
+        // cap, and truncating here would silently destroy tab history.
+        assert_eq!(loaded.tabs.len(), MAX_TABS + 5);
         assert_eq!(loaded.active_tab, 0);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -1969,7 +2087,6 @@ mod schema_validation_tests {
     fn dedupe_precedes_truncation_for_every_bounded_list() {
         let mut settings = Settings {
             recent_dirs: vec![PathBuf::from("/a"); MAX_RECENT_DIRS],
-            tabs: vec![PathBuf::from("/t"); MAX_TABS],
             recent_searches: vec!["dup".to_string(); MAX_RECENT_SEARCHES],
             saved_searches: vec![SavedSearch::new("dup", "q").unwrap(); MAX_SAVED_SEARCHES],
             bookmarks: vec![PathBuf::from("/l"), PathBuf::from("/m")],
@@ -1980,7 +2097,6 @@ mod schema_validation_tests {
             ..Settings::default()
         };
         settings.recent_dirs.push(PathBuf::from("/b"));
-        settings.tabs.push(PathBuf::from("/u"));
         settings.recent_searches.push("unique".to_string());
         settings
             .saved_searches
@@ -1989,29 +2105,11 @@ mod schema_validation_tests {
             .bookmark_labels
             .push(BookmarkLabel::new(Path::new("/m"), "unique").unwrap());
 
-        settings.primary_window_mut().tabs = vec![
-            TabSession {
-                cwd: PathBuf::from("/w"),
-                back: Vec::new(),
-                forward: Vec::new(),
-            };
-            MAX_TABS
-        ];
-        settings.primary_window_mut().tabs.push(TabSession {
-            cwd: PathBuf::from("/x"),
-            back: Vec::new(),
-            forward: Vec::new(),
-        });
-
         settings.validate();
 
         assert_eq!(
             settings.recent_dirs,
             vec![PathBuf::from("/a"), PathBuf::from("/b")]
-        );
-        assert_eq!(
-            settings.tabs,
-            vec![PathBuf::from("/t"), PathBuf::from("/u")]
         );
         assert_eq!(
             settings.recent_searches,
@@ -2021,9 +2119,6 @@ mod schema_validation_tests {
         assert_eq!(settings.saved_searches[1].name, "unique");
         assert_eq!(settings.bookmark_labels.len(), 2);
         assert_eq!(settings.bookmark_label(Path::new("/m")), Some("unique"));
-        let window_tabs = &settings.primary_window().unwrap().tabs;
-        assert_eq!(window_tabs.len(), 2);
-        assert_eq!(window_tabs[1].cwd, PathBuf::from("/x"));
     }
 
     #[test]
@@ -2249,6 +2344,104 @@ mod schema_validation_tests {
         assert_eq!(tabs[0].cwd, good);
         assert_eq!(tabs[0].back, vec![good.clone()]);
         assert_eq!(tabs[0].forward, vec![good.clone()]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_view_value_falls_back_without_losing_other_settings() {
+        let (dir, path) = setup("unknown-view");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "view": "list",
+                "show_hidden": true,
+                "theme": "light",
+                "terminal_command": "konsole --title build",
+                "bookmarks": ["/home/koppe"],
+                "tabs": ["/a", "/a"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let loaded = Settings::load_from(&path);
+        assert!(
+            !loaded.read_only,
+            "a single bad enum must not back up the file"
+        );
+        assert!(path.exists(), "the original settings file must survive");
+        assert_eq!(loaded.view, ViewLayout::Details);
+        assert!(loaded.show_hidden);
+        assert_eq!(loaded.theme, ThemeMode::Light);
+        assert_eq!(loaded.terminal_command, "konsole --title build");
+        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
+        assert_eq!(loaded.tabs, vec![PathBuf::from("/a"); 2]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_sort_key_falls_back_without_losing_other_settings() {
+        let (dir, path) = setup("unknown-sort-key");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "sort": { "key": "date", "dir": "desc", "dirs_first": false },
+                "show_hidden": true,
+                "view": "icons",
+                "bookmarks": ["/home/koppe"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let loaded = Settings::load_from(&path);
+        assert!(!loaded.read_only);
+        assert!(path.exists());
+        assert_eq!(loaded.sort.key, SortKey::Name);
+        // Sibling fields of the same struct, and unrelated settings, survive.
+        assert_eq!(loaded.sort.dir, SortDir::Desc);
+        assert!(!loaded.sort.dirs_first);
+        assert_eq!(
+            loaded.sort,
+            SortSpec {
+                key: SortKey::Name,
+                dir: SortDir::Desc,
+                dirs_first: false,
+            }
+        );
+        assert!(loaded.show_hidden);
+        assert_eq!(loaded.view, ViewLayout::Icons);
+        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_theme_falls_back_without_losing_other_settings() {
+        let (dir, path) = setup("unknown-theme");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "theme": "system",
+                "show_hidden": true,
+                "view": "icons",
+                "sort": { "key": "size", "dir": "asc", "dirs_first": true },
+                "bookmarks": ["/home/koppe"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let loaded = Settings::load_from(&path);
+        assert!(!loaded.read_only);
+        assert!(path.exists());
+        assert_eq!(loaded.theme, ThemeMode::Dark);
+        assert!(loaded.show_hidden);
+        assert_eq!(loaded.view, ViewLayout::Icons);
+        assert_eq!(loaded.sort.key, SortKey::Size);
+        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
         fs::remove_dir_all(&dir).unwrap();
     }
 }
@@ -2825,9 +3018,10 @@ mod terminal_command_tests {
         fs::write(&path, br#"{"version":1,"show_hidden":true,"view":"icons"}"#).unwrap();
         let loaded = Settings::load_from(&path);
         assert_eq!(loaded.version, SCHEMA_VERSION);
-        // serde supplies the platform default for the missing field, then
-        // validate() normalizes it to "unset" so no OS-specific command is
-        // kept in memory or carried into the next saved file.
+        // A missing key loads as the portable empty "unset" value: no
+        // OS-specific command is invented in memory or carried into the next
+        // saved file. The platform default still exists in
+        // Settings::default() for the dialog's prefill.
         assert!(loaded.terminal_command.is_empty());
         assert!(loaded.terminal_command_argv().is_none());
         assert_eq!(
@@ -2848,29 +3042,45 @@ mod terminal_command_tests {
     }
 
     #[test]
-    fn platform_default_is_normalized_but_custom_command_is_preserved() {
-        let (dir, path) = setup("normalize-default");
+    fn explicit_platform_default_is_preserved_and_survives_a_roundtrip() {
+        let (dir, path) = setup("explicit-default");
         let default = default_terminal_command();
 
-        // validate() (load path): an old file explicitly carrying the current
-        // platform's default is normalized to the unset representation.
+        // An explicitly configured value equal to the platform default is a
+        // real user choice: it must survive both validate() and save_to().
         fs::write(
             &path,
             serde_json::json!({"version": 1, "terminal_command": default}).to_string(),
         )
         .unwrap();
         let loaded = Settings::load_from(&path);
-        assert!(loaded.terminal_command.is_empty());
-        assert!(loaded.terminal_command_argv().is_none());
+        if cfg!(target_os = "linux") {
+            assert_eq!(loaded.terminal_command, default);
+            assert_eq!(loaded.terminal_command_argv(), Some(vec![default.clone()]));
+        } else {
+            // On unsupported platforms the default is empty by definition.
+            assert!(loaded.terminal_command.is_empty());
+        }
         assert!(!loaded.read_only);
+        assert!(path.exists());
 
-        // save_to() (save path): the in-memory default is written as "" while
-        // a custom command is persisted verbatim.
         let saved = dir.join("saved.json");
-        Settings::default().save_to(&saved).unwrap();
+        loaded.save_to(&saved).unwrap();
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&saved).unwrap()).unwrap();
-        assert_eq!(value["terminal_command"].as_str(), Some(""));
+        assert_eq!(value["terminal_command"].as_str(), Some(default.as_str()));
+        let reloaded = Settings::load_from(&saved);
+        assert_eq!(reloaded.terminal_command, default);
+
+        // An in-memory unset value still persists as "" (no OS-specific
+        // command is invented on the save path).
+        let unset_saved = dir.join("unset.json");
+        let mut unset = Settings::default();
+        assert!(unset.set_terminal_command(""));
+        unset.save_to(&unset_saved).unwrap();
+        let unset_value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&unset_saved).unwrap()).unwrap();
+        assert_eq!(unset_value["terminal_command"].as_str(), Some(""));
 
         let custom = "custom-terminal --title build";
         let mut custom_settings = Settings::default();
