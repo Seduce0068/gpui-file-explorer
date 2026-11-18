@@ -13,6 +13,7 @@ use crate::model::Entry;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileKind {
     Folder,
+    Symlink,
     Image,
     Code,
     Archive,
@@ -28,6 +29,8 @@ pub enum FileKind {
 pub fn kind_for_entry(entry: &Entry) -> FileKind {
     if entry.is_dir {
         FileKind::Folder
+    } else if entry.is_symlink {
+        FileKind::Symlink
     } else {
         kind_for_name(&entry.name_text)
     }
@@ -69,6 +72,7 @@ pub fn kind_for_name(name: &str) -> FileKind {
 pub fn icon_for_kind(kind: FileKind) -> IconName {
     match kind {
         FileKind::Folder => IconName::Folder,
+        FileKind::Symlink => IconName::FileSymlink,
         FileKind::Image => IconName::FileImage,
         FileKind::Code => IconName::FileCode,
         FileKind::Archive => IconName::FileArchive,
@@ -98,6 +102,7 @@ mod tests {
     // the built-in `#[test]` attribute.
     use super::{icon_for_entry, icon_for_kind, kind_for_entry, kind_for_name, FileKind};
     use crate::model::Entry;
+    use gpui_kit::assets::IconName;
     use std::path::PathBuf;
     use std::time::SystemTime;
 
@@ -141,6 +146,22 @@ mod tests {
     }
 
     #[test]
+    fn non_directory_symlinks_are_symlinks() {
+        let link = entry("link.rs", false, true);
+        assert_eq!(kind_for_entry(&link), FileKind::Symlink);
+        // The kind-based icon must match the entry-based icon instead of
+        // falling back to the extension mapping (.rs would be FileCode).
+        assert_eq!(
+            format!("{:?}", icon_for_kind(FileKind::Symlink)),
+            format!("{:?}", IconName::FileSymlink)
+        );
+        assert_eq!(
+            format!("{:?}", icon_for_kind(kind_for_entry(&link))),
+            format!("{:?}", icon_for_entry(&link))
+        );
+    }
+
+    #[test]
     fn dotfiles_keep_their_extension_mapping() {
         // ".bashrc" has no extension after the leading dot: the whole name is
         // the "extension" part of rsplit_once? No: rsplit_once('.') on
@@ -155,6 +176,7 @@ mod tests {
         // names keeps the test independent of IconName's PartialEq impl.
         for kind in [
             FileKind::Folder,
+            FileKind::Symlink,
             FileKind::Image,
             FileKind::Code,
             FileKind::Archive,

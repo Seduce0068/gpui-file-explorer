@@ -84,13 +84,18 @@ const PROGRESS_THROTTLE: Duration = Duration::from_millis(80);
 /// them named avoids drift between the row height and the grid cell height.
 const ROW_HEIGHT_PX: f64 = 28.0;
 const LIST_CHROME_HEIGHT_PX: f64 = 140.0;
-const SIDEBAR_WIDTH_PX: f32 = 214.0;
+/// Single source of truth for the sidebar width: used both when rendering the
+/// sidebar and when subtracting it from the viewport for the icon grid.
+const SIDEBAR_WIDTH_PX: f32 = 190.0;
 const GRID_CELL_WIDTH_PX: f32 = 108.0;
 
 /// Icon colour per file kind (folders are blue, everything else is tinted).
 fn kind_color(kind: FileKind) -> u32 {
     match kind {
         FileKind::Folder => C_BLUE,
+        // Symlinks reuse the muted tint already applied to them in the list
+        // and grid render paths.
+        FileKind::Symlink => C_MUTED,
         FileKind::Image => C_GREEN,
         FileKind::Code => C_LAVENDER,
         FileKind::Archive => C_YELLOW,
@@ -7251,7 +7256,7 @@ impl Explorer {
 
     fn sidebar(&self, cx: &mut Context<Self>) -> Div {
         let mut sidebar = div()
-            .w(px(190.0))
+            .w(px(SIDEBAR_WIDTH_PX))
             .h_full()
             .flex()
             .flex_col()
@@ -7546,6 +7551,7 @@ impl Explorer {
         );
         let view_details = icon_button_active(
             "view-details",
+            "詳細リスト",
             IconName::List,
             true,
             self.settings.view == ViewLayout::Details,
@@ -7556,6 +7562,7 @@ impl Explorer {
         );
         let view_grid = icon_button_active(
             "view-grid",
+            "アイコングリッド",
             IconName::LayoutGrid,
             true,
             self.settings.view == ViewLayout::Icons,
@@ -7797,6 +7804,7 @@ impl Explorer {
 /// list/grid layout).
 fn icon_button_active(
     id: &'static str,
+    label: &'static str,
     icon: IconName,
     enabled: bool,
     active: bool,
@@ -7804,6 +7812,7 @@ fn icon_button_active(
 ) -> Stateful<Div> {
     div()
         .id(id)
+        .aria_label(label)
         .flex()
         .items_center()
         .justify_center()
@@ -8467,7 +8476,7 @@ mod tests {
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
         active_keymap_overrides, build_places, chord_for_action, classify_cli, clear_dialog_error,
-        clear_op_token, format_chord, format_selected, fuzzy_candidates, fuzzy_score,
+        clear_op_token, format_chord, format_selected, fuzzy_candidates, fuzzy_score, grid_columns,
         help_overrides_line, install_op_token, internal_drop_paths, keymap_action_name,
         keymap_chord_reserved, kind_color, labeled_display_name, normalize_terminal_command,
         parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
@@ -8475,7 +8484,8 @@ mod tests {
         tab_label, terminal_dir_for, terminal_disabled_status, terminal_failed_status,
         terminal_process, terminal_started_status, terminal_target_dir, trash_batch,
         trash_delete_status, trash_key_action, upsert_keymap_override, CliAction, Explorer,
-        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, TrashKeyAction,
+        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, TrashKeyAction, C_MUTED,
+        GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -8516,6 +8526,21 @@ mod tests {
         ];
         let colors: HashSet<u32> = kinds.iter().map(|kind| kind_color(*kind)).collect();
         assert_eq!(colors.len(), kinds.len(), "each kind needs its own color");
+        // Symlinks intentionally reuse the muted tint already applied to them
+        // in the list and grid render paths, so they are excluded above.
+        assert_eq!(kind_color(FileKind::Symlink), C_MUTED);
+    }
+
+    #[test]
+    fn sidebar_width_is_shared_by_rendering_and_grid_layout() {
+        // The sidebar is rendered with `px(SIDEBAR_WIDTH_PX)` and the icon grid
+        // is laid out in `viewport - SIDEBAR_WIDTH_PX`. Lock the shared value so
+        // the two sites cannot drift apart again (regression: 214 vs 190).
+        assert_eq!(SIDEBAR_WIDTH_PX, 190.0);
+        let viewport_width = 1000.0f32;
+        let content_width = viewport_width - SIDEBAR_WIDTH_PX;
+        assert_eq!(content_width, 810.0);
+        assert_eq!(grid_columns(content_width, GRID_CELL_WIDTH_PX), 7);
     }
 
     #[test]
