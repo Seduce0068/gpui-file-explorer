@@ -1125,8 +1125,14 @@ mod tests {
 
         let mut pre_epoch = same.clone();
         pre_epoch[0].modified = Some(UNIX_EPOCH - Duration::from_secs(1));
-        // Pre-epoch timestamps hash as None without panicking.
-        let _ = fingerprint(&pre_epoch);
+        // Pre-epoch timestamps hash as None, so an otherwise identical entry
+        // set with `modified: None` must produce the same fingerprint.
+        let mut same_entries_with_modified_none = same.clone();
+        same_entries_with_modified_none[0].modified = None;
+        assert_eq!(
+            fingerprint(&pre_epoch),
+            fingerprint(&same_entries_with_modified_none)
+        );
     }
 
     #[test]
