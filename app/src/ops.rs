@@ -914,6 +914,18 @@ pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
     if target.exists() || target.is_symlink() {
         // Case-only rename on a case-insensitive filesystem: the target is the
         // same file. Route through a temporary name.
+        // `canonicalize` fails for a dangling symlink, so fall back to inode
+        // identity on Unix; Windows keeps the canonicalize path (its
+        // case-insensitive FS is covered there and symlink metadata differs).
+        #[cfg(unix)]
+        let same_file = {
+            use std::os::unix::fs::MetadataExt;
+            match (fs::symlink_metadata(src), fs::symlink_metadata(&target)) {
+                (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+                _ => false,
+            }
+        };
+        #[cfg(not(unix))]
         let same_file = fs::canonicalize(src)
             .ok()
             .zip(fs::canonicalize(&target).ok())
@@ -1445,6 +1457,25 @@ mod tests {
         assert_eq!(stats.files, 0);
         assert!(src.exists());
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn case_only_rename_recognises_dangling_symlink_by_inode() {
+        use std::os::unix::fs::symlink;
+
+        let dir = scratch("case-only-dangling");
+        let target_path = dir.join("missing-target");
+        let link = dir.join("Link");
+        symlink(&target_path, &link).unwrap();
+
+        // Renaming a dangling symlink onto the same dirent (identical name on
+        // this case-sensitive FS) must take the case-only branch rather than
+        // failing with AlreadyExists.
+        let renamed = rename_entry(&link, "Link").unwrap();
+        assert_eq!(renamed, link);
+        assert!(link.is_symlink());
         let _ = fs::remove_dir_all(&dir);
     }
 
