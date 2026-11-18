@@ -245,7 +245,7 @@ status: current
 
 - [ ] **R3-AUDIT03** reconcile 完了コールバックが view を再確認せず検索結果を上書き
   — `app/src/main.rs:2176-2194` / 検索ビューへの遷移時に世代を進める案
-- [ ] **R1-AUDIT01** Windows の rename は予約解除後の残存 TOCTOU を文書化
+- [x] **R1-AUDIT01** Windows の rename は予約解除後の残存 TOCTOU を文書化 — 対応: 8dd37f3（残存リスクを文書化）
   — `app/src/ops.rs` / std::fs では atomic replace-if-absent 不可（現状維持）
 
 ### 優先度: 低（調査タスク）
