@@ -53,6 +53,7 @@ install_deb() {
 
 install_deb wtype wtype
 install_deb xdotool xdotool
+install_deb ydotool ydotool
 
 echo
 echo "Add this to your shell (or prefix E2E commands with it):"
@@ -61,3 +62,16 @@ echo
 echo "Probe availability:"
 echo "  DISPLAY=${DISPLAY:-<unset>} xdotool getactivewindow"
 echo "  wtype -k a"
+echo
+echo "NOTE: ydotool needs /dev/uinput access (root:root 0600 by default)."
+echo "This script does NOT change system permissions. On this host neither"
+echo "wtype (KWin lacks zwp_virtual_keyboard_v1) nor XTEST (KWin portal"
+echo "'Control input devices' dialog is unapproved) can reach a Wayland-native"
+echo "app. To grant uinput access, run AS ROOT once:"
+echo "  install -d /etc/udev/rules.d"
+printf '%s\n' '  printf "%s\n" '\''KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess"'\''' \
+  '    > /etc/udev/rules.d/99-uinput.rules'
+echo "  udevadm control --reload"
+echo "  udevadm trigger --subsystem-match=misc"
+echo "Then log out/in and re-login to the Wayland session, then:"
+echo "  ydotool key F1"
