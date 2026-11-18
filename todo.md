@@ -232,7 +232,7 @@ status: current
   — `app/src/settings.rs:968-983`
 - [x] **R3-AUDIT03** 永続 keymap の evict が文字列比較で実効と不一致 — 対応: b31f7c0
   — `app/src/main.rs:513-515`
-- [ ] **R3-AUDIT03** reconcile 完了コールバックが view を再確認せず検索結果を上書き
+- [x] **R3-AUDIT03** reconcile 完了コールバックが view を再確認せず検索結果を上書き — 対応: 13ca37b
   — `app/src/main.rs:2176-2194`
 - [x] **R4-AUDIT04** 空白のみクエリのテストが空振り — 対応: 4c36de6
   — `app/src/search.rs:111-114,449-452`
