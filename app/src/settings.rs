@@ -972,13 +972,18 @@ impl Settings {
             let Some((action, chord)) = sane_keymap_entry(&action, &chord) else {
                 continue;
             };
-            // Evaluate both inserts: short-circuiting would skip recording a
-            // chord when the action was already seen (and vice versa), allowing
-            // duplicate chords / blocking later reassignments.
-            let new_action = seen_actions.insert(action.clone());
-            let new_chord = seen_chords.insert(chord.clone());
-            if new_action && new_chord {
+            // Reserve the chord first: a duplicate chord must not reserve the
+            // action, otherwise a later (valid) rebind of that action to a
+            // different chord would be dropped.
+            if !seen_chords.insert(chord.clone()) {
+                continue;
+            }
+            if seen_actions.insert(action.clone()) {
                 keymap.push((action, chord));
+            } else {
+                // The chord was reserved speculatively but the action is
+                // already bound, so release it for a later entry.
+                seen_chords.remove(&chord);
             }
         }
         self.keymap = keymap;
@@ -2714,9 +2719,8 @@ mod keymap_settings_tests {
             "the first action bound to a chord must win"
         );
 
-        // Both sets must be updated independently: a repeated action must not
-        // skip recording its chord, and a repeated chord must not block a later
-        // reassignment of the action to a different chord.
+        // A rejected duplicate action must not reserve its chord: a later
+        // action can still legitimately claim that chord.
         let mut settings = Settings {
             keymap: vec![
                 ("a".to_string(), "ctrl+p".to_string()),
@@ -2728,8 +2732,32 @@ mod keymap_settings_tests {
         settings.validate();
         assert_eq!(
             settings.keymap,
-            vec![("a".to_string(), "ctrl+p".to_string())],
-            "duplicate action then duplicate chord must not slip through"
+            vec![
+                ("a".to_string(), "ctrl+p".to_string()),
+                ("b".to_string(), "ctrl+shift+p".to_string()),
+            ],
+            "the duplicate chord of a rejected action must stay available"
+        );
+    }
+
+    #[test]
+    fn keymap_validation_does_not_reserve_action_when_chord_is_duplicate() {
+        let mut settings = Settings {
+            keymap: vec![
+                ("a".to_string(), "ctrl+p".to_string()),
+                ("b".to_string(), "ctrl+p".to_string()),
+                ("b".to_string(), "ctrl+o".to_string()),
+            ],
+            ..Settings::default()
+        };
+        settings.validate();
+        assert_eq!(
+            settings.keymap,
+            vec![
+                ("a".to_string(), "ctrl+p".to_string()),
+                ("b".to_string(), "ctrl+o".to_string()),
+            ],
+            "a duplicate chord must not reserve its action for later entries"
         );
     }
 
