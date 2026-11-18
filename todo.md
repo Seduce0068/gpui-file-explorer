@@ -262,9 +262,12 @@ status: current
 - [x] **R2-ER01** カットのキャンセル/失敗時もクリップボードが破棄される — main.rs:3890 — 対応: 5cbe508
 - [ ] **R2-ER01** 部分コピー削除エラーが無視され残骸が残る — ops.rs:585
 - [x] **R2-BV01** 古い進捗コールバックが最終ステータスを上書き — main.rs:3694 — 対応: 5cbe508
-- [ ] **R2-BV01** エラー状態が進行中 reload コールバックに上書きされる — main.rs:2700
-- [ ] **R2-BV01** reload 中の watcher 増分更新が古いスナップショットで消える — main.rs:2281
-- [ ] **R2-BV01** Search 表示中に rebuild_view が呼ばれ検索フィルタが失われる — main.rs:3546
+- [x] **R2-BV01** エラー状態が進行中 reload コールバックに上書きされる
+  — 対応: d9da623
+- [x] **R2-BV01** reload 中の watcher 増分が古いスナップショットで消える
+  — 対応: d9da623
+- [x] **R2-BV01** Search 表示中に rebuild_view が呼ばれフィルタが失われる
+  — 対応: d9da623
 - [ ] **R1-AR01** chord 検証ルールが settings/main に三重分散 — settings.rs:212, main.rs:432,722
 - [ ] **R1-AR01** TabSession が History の公開 API を逆算利用 — settings.rs:327
 - [ ] **R5-TS01** 非 Unix で symlink 非追跡テストが空振り — search.rs:554
