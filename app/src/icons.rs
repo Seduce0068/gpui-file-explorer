@@ -172,24 +172,43 @@ mod tests {
 
     #[test]
     fn icons_cover_all_file_kinds_and_entry_states() {
-        // Every kind must map to a concrete icon without panicking; comparing
-        // names keeps the test independent of IconName's PartialEq impl.
-        for kind in [
-            FileKind::Folder,
-            FileKind::Symlink,
-            FileKind::Image,
-            FileKind::Code,
-            FileKind::Archive,
-            FileKind::Pdf,
-            FileKind::Text,
-            FileKind::Audio,
-            FileKind::Video,
-            FileKind::Unknown,
-        ] {
-            let _ = format!("{:?}", icon_for_kind(kind));
+        // Compare Debug strings (as in `non_directory_symlinks_are_symlinks`)
+        // so the test does not depend on IconName's PartialEq impl while still
+        // failing if a kind maps to the wrong icon.
+        let expected: [(FileKind, IconName); 10] = [
+            (FileKind::Folder, IconName::Folder),
+            (FileKind::Symlink, IconName::FileSymlink),
+            (FileKind::Image, IconName::FileImage),
+            (FileKind::Code, IconName::FileCode),
+            (FileKind::Archive, IconName::FileArchive),
+            (FileKind::Pdf, IconName::FileType),
+            (FileKind::Text, IconName::FileText),
+            (FileKind::Audio, IconName::FileMusic),
+            (FileKind::Video, IconName::FileVideoCamera),
+            (FileKind::Unknown, IconName::File),
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for (kind, expected_icon) in expected {
+            let actual = format!("{:?}", icon_for_kind(kind));
+            assert_eq!(actual, format!("{:?}", expected_icon), "icon for {kind:?}");
+            assert!(
+                seen.insert(actual.clone()),
+                "{kind:?} shares an icon with another kind"
+            );
         }
-        let _ = format!("{:?}", icon_for_entry(&entry("dir", true, false)));
-        let _ = format!("{:?}", icon_for_entry(&entry("link", false, true)));
-        let _ = format!("{:?}", icon_for_entry(&entry("main.rs", false, false)));
+
+        // Entry states must resolve to the expected icons as well.
+        assert_eq!(
+            format!("{:?}", icon_for_entry(&entry("dir", true, false))),
+            format!("{:?}", IconName::Folder)
+        );
+        assert_eq!(
+            format!("{:?}", icon_for_entry(&entry("link", false, true))),
+            format!("{:?}", IconName::FileSymlink)
+        );
+        assert_eq!(
+            format!("{:?}", icon_for_entry(&entry("main.rs", false, false))),
+            format!("{:?}", IconName::FileCode)
+        );
     }
 }
