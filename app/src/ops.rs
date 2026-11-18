@@ -566,7 +566,14 @@ pub fn copy_entry(
     };
 
     let mut stats = OpStats::default();
-    copy_recursive(src, &dest, cancel, &mut stats, progress)?;
+    if let Err(error) = copy_recursive(src, &dest, cancel, &mut stats, progress) {
+        // `copy_recursive` may already have created `dest` (or part of its
+        // tree) before failing, for example on cancellation. Clean it up just
+        // like the verification-failure path below and the cross-device
+        // fallback in `move_entry`, so no half-written destination remains.
+        let _ = remove_entry_safe(&dest);
+        return Err(error);
+    }
     if let Err(error) = verify_transfer(src, &dest, cancel) {
         // Never leave a truncated or structurally different copy behind.
         let _ = remove_entry_safe(&dest);
@@ -794,7 +801,10 @@ pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
     if target == src {
         return Ok(target);
     }
-    if target.exists() {
+    // `Path::exists()` follows the link and reports false for a dangling
+    // symlink; `is_symlink()` uses `symlink_metadata`, so a broken symlink is
+    // still recognised as an existing entry that must never be overwritten.
+    if target.exists() || target.is_symlink() {
         // Case-only rename on a case-insensitive filesystem: the target is the
         // same file. Route through a temporary name.
         let same_file = fs::canonicalize(src)
@@ -1103,6 +1113,52 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_before_directory_copy_leaves_no_destination() {
+        let dir = scratch("cancel-dir-before");
+        let src = dir.join("tree");
+        write(&src.join("a.txt"), b"a");
+        write(&src.join("b.txt"), b"b");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        // Already cancelled: `copy_recursive` rejects the tree at its first
+        // check, before it can create the destination directory.
+        let cancel = CancelFlag::new();
+        cancel.cancel();
+        let err = copy_entry(&src, &dest_dir, ConflictPolicy::Fail, &cancel, |_| {}).unwrap_err();
+        assert!(matches!(err, OpError::Cancelled));
+        assert!(fs::symlink_metadata(dest_dir.join("tree")).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancellation_mid_directory_copy_removes_destination() {
+        let dir = scratch("cancel-dir-mid");
+        let src = dir.join("tree");
+        write(&src.join("a.txt"), b"a");
+        write(&src.join("b.txt"), b"b");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        // Cancel from the progress callback after the first file was copied,
+        // so `copy_recursive` has already created the destination tree when
+        // it observes the cancellation and returns `Err`.
+        let cancel = CancelFlag::new();
+        let err = copy_entry(&src, &dest_dir, ConflictPolicy::Fail, &cancel, |_| {
+            cancel.cancel()
+        })
+        .unwrap_err();
+        assert!(matches!(err, OpError::Cancelled));
+        assert!(
+            fs::symlink_metadata(dest_dir.join("tree")).is_err(),
+            "a cancelled directory copy must not leave a half-written destination behind"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn move_within_same_filesystem() {
         let dir = scratch("move");
         let src = dir.join("a.txt");
@@ -1205,6 +1261,28 @@ mod tests {
         let metadata = fs::symlink_metadata(&renamed).unwrap();
         assert!(metadata.file_type().is_symlink());
         assert_eq!(fs::read_link(&renamed).unwrap(), old_target);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_entry_refuses_to_overwrite_broken_symlink_destination() {
+        let dir = scratch("rename-broken-link-dest");
+        let src = dir.join("a.txt");
+        write(&src, b"a");
+        let dangling_target = Path::new("nonexistent-target.txt");
+        std::os::unix::fs::symlink(dangling_target, dir.join("b.txt")).unwrap();
+
+        // A dangling symlink is an existing entry even though `exists()` is
+        // false; renaming onto it must fail instead of silently replacing it.
+        assert!(!dir.join("b.txt").exists());
+        assert!(dir.join("b.txt").is_symlink());
+
+        let err = rename_entry(&src, "b.txt").unwrap_err();
+        assert!(matches!(err, OpError::AlreadyExists(_)));
+        assert_eq!(fs::read_link(dir.join("b.txt")).unwrap(), dangling_target);
+        assert_eq!(fs::read(&src).unwrap(), b"a", "source must be unchanged");
 
         let _ = fs::remove_dir_all(&dir);
     }
