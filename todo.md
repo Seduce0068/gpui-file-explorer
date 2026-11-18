@@ -101,21 +101,21 @@ status: current
 
 ### 優先度: 中（第3回発掘・confirmed）
 
-- [ ] **R1-ST01** rename_entry が壊れた symlink を NotFound で拒否（copy/move と不一致）
+- [x] **R1-ST01** rename_entry が壊れた symlink を NotFound で拒否（copy/move と不一致） — 対応: 779b327
   — `app/src/ops.rs:775` / R3-TQ01 と重複統合
-- [ ] **R1-ST01** ブックマーク削除時にラベルが孤立し再追加で復活する
+- [x] **R1-ST01** ブックマーク削除時にラベルが孤立し再追加で復活する — 対応: cb7f98a
   — `app/src/settings.rs:503-505` / R3-TQ01 と重複統合
 - [x] **R3-TQ01** keymap 検証が `contains("f1")` で F10〜F19 を誤拒否 — 対応: dbfd1d4
   — `app/src/settings.rs:185-188`
-- [ ] **R3-TQ01** merge_search_results が上限到達時に最終ソートをスキップ
+- [x] **R3-TQ01** merge_search_results が上限到達時に最終ソートをスキップ — 対応: 8ec8969
   — `app/src/search.rs:259-261`
-- [ ] **R3-TQ01** 内容検索のバイナリ判定が先頭行一致で回避される
+- [x] **R3-TQ01** 内容検索のバイナリ判定が先頭行一致で回避される — 対応: 8ec8969
   — `app/src/search.rs:315-327`
-- [ ] **R1-ST02** SIDEBAR_WIDTH_PX=214 が実サイドバー 190px と乖離
+- [x] **R1-ST02** SIDEBAR_WIDTH_PX=214 が実サイドバー 190px と乖離 — 対応: f03c653
   — `app/src/main.rs:87` vs `:7146`
-- [ ] **R1-ST02** icon_button_active に aria_label が無い
+- [x] **R1-ST02** icon_button_active に aria_label が無い — 対応: f03c653
   — `app/src/main.rs:7690-7714`
-- [ ] **R3-TQ02** kind_for_entry が symlink を無視し icon_for_entry と分類が食い違う
+- [x] **R3-TQ02** kind_for_entry が symlink を無視し icon_for_entry と分類が食い違う — 対応: f03c653
   — `app/src/icons.rs:26-34`
 - [x] **R2-FG01** Ctrl+P / F4 / Alt+K が F1 ヘルプ・CLI help に未掲載 — 対応: d3eba3f
   — `app/src/strings.rs:76-159`
