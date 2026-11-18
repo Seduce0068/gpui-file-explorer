@@ -241,6 +241,15 @@ fn terminal_process(argv: &[String], dir: &Path) -> Option<Command> {
     Some(command)
 }
 
+/// Normalize the text typed in the terminal-command settings dialog: trim
+/// surrounding whitespace, and map a blank command to `None` (the "disabled"
+/// state persisted as an empty string). Pure so the rule is unit-testable
+/// without constructing a GPUI input entity.
+fn normalize_terminal_command(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// Status shown when the configured terminal command is missing or unusable.
 fn terminal_disabled_status() -> String {
     "ターミナルを開けません: 起動コマンドが未設定です（設定の terminal_command を確認）".to_string()
@@ -318,6 +327,8 @@ enum KeyAction {
     FuzzyJump,
     /// F4: open a terminal in the selected directory (F6-50).
     OpenTerminal,
+    /// Alt+T: edit the terminal-command setting used by F4.
+    EditTerminalCommand,
     /// No binding (either unmapped by default or unbound by the user).
     None,
 }
@@ -374,12 +385,12 @@ impl KeyMap {
         // Import the variants explicitly: a glob would import `KeyAction::None`
         // and shadow `Option::None` used in the wildcard-shift bindings below.
         use KeyAction::{
-            CloseTab, Copy, Cut, DetailsView, FocusSearchName, FuzzyJump, GoBack, GoForward,
-            GoParent, IconsView, MoveDown, MoveTabLeft, MoveTabRight, MoveUp, NewFolder, NewTab,
-            NextTab, OpenLocation, OpenPreview, OpenProperties, OpenSearch, OpenSelected,
-            OpenTerminal, PageDown, PageUp, Paste, PrevTab, Quit, Redo, Reload, RestoreClosedTab,
-            RestoreSelected, SelectAll, SelectFirst, SelectLast, StartRename, ToggleBookmark,
-            ToggleHidden, ToggleUndoHistory, TrashSelected, Undo,
+            CloseTab, Copy, Cut, DetailsView, EditTerminalCommand, FocusSearchName, FuzzyJump,
+            GoBack, GoForward, GoParent, IconsView, MoveDown, MoveTabLeft, MoveTabRight, MoveUp,
+            NewFolder, NewTab, NextTab, OpenLocation, OpenPreview, OpenProperties, OpenSearch,
+            OpenSelected, OpenTerminal, PageDown, PageUp, Paste, PrevTab, Quit, Redo, Reload,
+            RestoreClosedTab, RestoreSelected, SelectAll, SelectFirst, SelectLast, StartRename,
+            ToggleBookmark, ToggleHidden, ToggleUndoHistory, TrashSelected, Undo,
         };
         let binding = |key, ctrl, alt, shift, action| KeyBinding {
             key,
@@ -441,6 +452,10 @@ impl KeyMap {
                 binding("left", false, true, None, GoBack),
                 binding("right", false, true, None, GoForward),
                 binding("up", false, true, None, GoParent),
+                // Alt+T opens the terminal-command dialog. Ctrl+Alt+T is NOT
+                // usable here: `binding_matches` ignores `alt` for Ctrl
+                // bindings, so it would resolve to Ctrl+T (NewTab) instead.
+                binding("t", false, true, None, EditTerminalCommand),
             ],
         }
     }
@@ -760,9 +775,10 @@ use crate::strings::{
     STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
     STATUS_DROP_SAME_DIRECTORY, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_NOT_DIRECTORY,
     STATUS_NO_CLIPBOARD, STATUS_OP_RUNNING, STATUS_PATH_GONE, STATUS_REDO_NO_TARGET,
-    STATUS_SEARCH_STALE, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT,
-    STATUS_TARGET_GONE, STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
-    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_UNDO_FAILED,
+    STATUS_SEARCH_STALE, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
+    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TARGET_GONE, STATUS_TRASH_LOADING,
+    STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
+    STATUS_TRASH_NO_RENAME, STATUS_UNDO_FAILED,
 };
 
 /// One sidebar "place".
@@ -835,6 +851,15 @@ struct LabelState {
 
 /// Location bar (Ctrl+L): a path input with validation error.
 struct LocationState {
+    input: Entity<InputState>,
+    /// Keeps the `InputEvent::PressEnter` subscription alive while open.
+    _subscription: Subscription,
+    error: Option<String>,
+}
+
+/// Terminal-command settings dialog (Alt+T). Dropping it closes the dialog
+/// and drops the input subscription.
+struct TerminalCommandState {
     input: Entity<InputState>,
     /// Keeps the `InputEvent::PressEnter` subscription alive while open.
     _subscription: Subscription,
@@ -1228,6 +1253,8 @@ struct Explorer {
     help_open: bool,
     /// Path input opened with Ctrl+L.
     location: Option<LocationState>,
+    /// Terminal-command settings dialog (Alt+T). `None` when closed.
+    terminal_command_editor: Option<TerminalCommandState>,
     /// Personalized key map (F6-51). Defaults to the shipped bindings.
     keymap: KeyMap,
     /// Ctrl+P fuzzy jump overlay state. `None` when closed.
@@ -1393,6 +1420,7 @@ impl Explorer {
             properties: None,
             help_open: false,
             location: None,
+            terminal_command_editor: None,
             keymap: KeyMap::default_keymap(),
             fuzzy: None,
             preview: None,
@@ -2482,6 +2510,165 @@ impl Explorer {
         self.open_terminal(dir, cx);
     }
 
+    // ------------------------------------------------ terminal command settings
+
+    /// Alt+T: open the terminal-command settings dialog, prefilled with the
+    /// persisted command (or the platform default when none is configured).
+    fn open_terminal_command_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal_command_editor.is_some() {
+            return;
+        }
+        let current = self.settings.terminal_command.trim();
+        let value = if current.is_empty() {
+            Settings::default().terminal_command
+        } else {
+            current.to_string()
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
+        let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.confirm_terminal_command(cx);
+            }
+        });
+        let focus = input.read(cx).focus_handle(cx).clone();
+        focus.focus(window, cx);
+        self.terminal_command_editor = Some(TerminalCommandState {
+            input,
+            _subscription: subscription,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    fn close_terminal_command_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal_command_editor.take().is_some() {
+            self.focus_handle.focus(window, cx);
+            self.focus_list_on_next_render = true;
+            cx.notify();
+        }
+    }
+
+    /// Enter in the dialog: persist the normalized command, save settings,
+    /// close the dialog and return focus to the list. Invalid input (oversized
+    /// or containing control characters) keeps the dialog open with an error.
+    fn confirm_terminal_command(&mut self, cx: &mut Context<Self>) {
+        let raw = {
+            let Some(editor) = self.terminal_command_editor.as_ref() else {
+                return;
+            };
+            editor.input.read(cx).value().to_string()
+        };
+        let command = normalize_terminal_command(&raw).unwrap_or_default();
+        if !self.settings.set_terminal_command(&command) {
+            self.set_terminal_command_error("コマンドが長すぎるか、制御文字を含んでいます", cx);
+            return;
+        }
+        let saved = self.save_settings();
+        self.terminal_command_editor = None;
+        self.focus_list_on_next_render = true;
+        self.status = if !saved {
+            STATUS_SETTINGS_SAVE_FAILED.to_string()
+        } else if command.is_empty() {
+            "ターミナル起動コマンドを無効にしました".to_string()
+        } else {
+            format!("ターミナル起動コマンドを設定しました: {command}")
+        };
+        cx.notify();
+    }
+
+    fn set_terminal_command_error(&mut self, error: &str, cx: &mut Context<Self>) {
+        if let Some(editor) = self.terminal_command_editor.as_mut() {
+            editor.error = Some(error.to_string());
+        }
+        cx.notify();
+    }
+
+    /// Modal overlay for the terminal-command settings dialog (Alt+T).
+    fn terminal_command_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let editor = self.terminal_command_editor.as_ref()?;
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.close_terminal_command_settings(window, cx);
+                }),
+            );
+        let cancel = cx.listener(|this, _: &ClickEvent, window, cx| {
+            this.close_terminal_command_settings(window, cx);
+        });
+        let confirm = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.confirm_terminal_command(cx);
+        });
+        let mut form = div()
+            .w(px(480.0))
+            .bg(rgb(C_SURFACE))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(C_OVERLAY))
+            .shadow_lg()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("ターミナル起動コマンド"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(C_SUBTEXT))
+                    .child("F4 で開くターミナルの起動コマンド（空白で無効化）"),
+            )
+            .child(Input::new(&editor.input).w_full());
+        if let Some(error) = &editor.error {
+            form = form.child(div().text_sm().text_color(rgb(C_RED)).child(error.clone()));
+        }
+        form = form
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("terminal-command-cancel")
+                            .label("キャンセル")
+                            .on_click(cancel),
+                    )
+                    .child(
+                        Button::new("terminal-command-confirm")
+                            .label("設定")
+                            .on_click(confirm),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(C_MUTED))
+                    .child("Enter で確定 / Esc でキャンセル"),
+            );
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(form),
+        )
+    }
+
     // --------------------------------------------------------------- shortcuts
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -2499,6 +2686,13 @@ impl Explorer {
             // The label input owns keys while open; only Escape closes it.
             if key == "escape" {
                 self.close_label_editor(cx);
+            }
+            return;
+        }
+        if self.terminal_command_editor.is_some() {
+            // The command input owns keys while open; only Escape closes it.
+            if key == "escape" {
+                self.close_terminal_command_settings(window, cx);
             }
             return;
         }
@@ -2705,6 +2899,7 @@ impl Explorer {
             GoForward => self.go_forward(cx),
             FuzzyJump => self.open_fuzzy_jump(window, cx),
             OpenTerminal => self.open_terminal_for_selection(cx),
+            EditTerminalCommand => self.open_terminal_command_settings(window, cx),
             None => {}
         }
     }
@@ -7422,7 +7617,8 @@ impl Explorer {
                         || this.location.is_some()
                         || this.preview.is_some()
                         || this.undo_history_open
-                        || this.fuzzy.is_some();
+                        || this.fuzzy.is_some()
+                        || this.terminal_command_editor.is_some();
                     (!busy).then(|| this.focus_handle.clone())
                 })
                 .ok()
@@ -7494,6 +7690,7 @@ impl Render for Explorer {
         let undo_history_dialog = self.undo_history_dialog(cx);
         let label_dialog = self.label_dialog(cx);
         let fuzzy_dialog = self.fuzzy_dialog(cx);
+        let terminal_command_dialog = self.terminal_command_dialog(cx);
 
         let grid_mode = self.settings.view == ViewLayout::Icons;
         // Column headers only make sense in the details list.
@@ -7596,6 +7793,7 @@ impl Render for Explorer {
             .children(undo_history_dialog)
             .children(label_dialog)
             .children(fuzzy_dialog)
+            .children(terminal_command_dialog)
     }
 }
 
@@ -7849,8 +8047,8 @@ mod tests {
     use super::{
         build_places, classify_cli, clear_op_token, format_selected, fuzzy_candidates, fuzzy_score,
         install_op_token, internal_drop_paths, kind_color, labeled_display_name,
-        pending_rename_index, rank_fuzzy, read_properties_snapshot, saved_search_caption,
-        saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
+        normalize_terminal_command, pending_rename_index, rank_fuzzy, read_properties_snapshot,
+        saved_search_caption, saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
         trash_key_action, CliAction, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
@@ -8938,5 +9136,45 @@ mod tests {
         let all = rank_fuzzy(&candidates, "", 2);
         assert_eq!(all, vec![2, 1]);
         assert!(rank_fuzzy(&candidates, "", 0).is_empty());
+    }
+
+    #[test]
+    fn normalize_terminal_command_trims_and_maps_blank_to_none() {
+        assert_eq!(
+            normalize_terminal_command("  konsole --title build  ").as_deref(),
+            Some("konsole --title build")
+        );
+        assert_eq!(
+            normalize_terminal_command("\t konsole \n").as_deref(),
+            Some("konsole")
+        );
+        assert_eq!(normalize_terminal_command(""), None);
+        assert_eq!(normalize_terminal_command("   \t\n "), None);
+        // Non-ASCII commands survive trimming unchanged.
+        assert_eq!(
+            normalize_terminal_command("  端末 --x  ").as_deref(),
+            Some("端末 --x")
+        );
+    }
+
+    #[test]
+    fn alt_t_terminal_command_shortcut_does_not_collide_with_ctrl_t() {
+        let keymap = KeyMap::default_keymap();
+        // Alt+T is the chosen shortcut for the terminal-command dialog.
+        assert_eq!(
+            keymap.resolve("t", false, false, true),
+            KeyAction::EditTerminalCommand
+        );
+        // Plain "t" stays a no-op as before.
+        assert_eq!(keymap.resolve("t", false, false, false), KeyAction::None);
+        // Existing Ctrl+T / Ctrl+Shift+T are unchanged. Ctrl+Alt+T still
+        // resolves to NewTab because `binding_matches` ignores `alt` for Ctrl
+        // bindings -- the reason Alt+T was chosen instead.
+        assert_eq!(keymap.resolve("t", true, false, false), KeyAction::NewTab);
+        assert_eq!(
+            keymap.resolve("t", true, true, false),
+            KeyAction::RestoreClosedTab
+        );
+        assert_eq!(keymap.resolve("t", true, false, true), KeyAction::NewTab);
     }
 }
