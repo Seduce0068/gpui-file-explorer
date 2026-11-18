@@ -149,6 +149,13 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Q", "終了"),
         ],
     ),
+    (
+        "ライセンス / ソース",
+        &[(
+            "AGPL-3.0-or-later",
+            "ソース: https://github.com/Seduce0068/gpui-file-explorer",
+        )],
+    ),
 ];
 
 /// Keymap settings dialog (Alt+K): the input syntax and the reserved keys.
