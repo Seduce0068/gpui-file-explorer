@@ -443,11 +443,8 @@ fn parse_chord(chord: &str) -> Option<(String, bool, Option<bool>, bool)> {
 /// `settings::sane_keymap_entry`: the loader drops such entries, so the dialog
 /// must reject the same input instead of silently writing a useless override.
 fn keymap_chord_reserved(chord: &str) -> bool {
-    let lowered = chord.to_ascii_lowercase();
-    // Only the final `+`-separated segment is the key: `f10` / `f12` contain
-    // the substring "f1" but are not the reserved F1 dialog key.
-    let key = lowered.rsplit('+').next().unwrap_or(lowered.as_str());
-    key == "f1" || key == "escape"
+    // Single source of truth shared with settings::sane_keymap_entry.
+    crate::settings::is_reserved_chord(chord)
 }
 
 /// One command accepted by the keymap dialog's single text input.
@@ -733,8 +730,9 @@ impl KeyMap {
     /// the table or for a reserved dialog key. `from_settings` applies saved
     /// overrides through this method; a future settings panel can do the same.
     fn rebind(&mut self, action: KeyAction, key: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
-        const RESERVED: [&str; 2] = ["escape", "f1"];
-        if RESERVED.contains(&key) || !self.bindings.iter().any(|b| b.action == action) {
+        if crate::settings::is_reserved_chord(key)
+            || !self.bindings.iter().any(|b| b.action == action)
+        {
             return false;
         }
         // Drop the action's old binding as well: a rebind moves the action,
