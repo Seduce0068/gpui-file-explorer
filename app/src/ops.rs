@@ -592,10 +592,19 @@ pub fn remove_entry_safe(path: &Path) -> Result<(), OpError> {
         return fs::remove_file(path).map_err(|e| io_error(path, e));
     }
     if metadata.is_dir() {
+        // Collect the child paths first and finish with `read_dir` before
+        // recursing: holding a directory handle open while deleting its
+        // children prevents removing the directory itself on Windows, and
+        // mirrors `copy_recursive` / `verify_entry` above.
+        let mut children: Vec<PathBuf> = Vec::new();
         let reader = fs::read_dir(path).map_err(|e| io_error(path, e))?;
         for entry in reader {
             let entry = entry.map_err(|e| io_error(path, e))?;
-            remove_entry_safe(&entry.path())?;
+            children.push(entry.path());
+        }
+        children.sort();
+        for child in children {
+            remove_entry_safe(&child)?;
         }
         return fs::remove_dir(path).map_err(|e| io_error(path, e));
     }
@@ -826,11 +835,60 @@ pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
                 .unwrap_or(0)
         ));
         fs::rename(src, &temp).map_err(|e| io_error(src, e))?;
-        fs::rename(&temp, &target).map_err(|e| io_error(&target, e))?;
+        if let Err(error) = fs::rename(&temp, &target) {
+            // The first rename already removed `src`. Roll back to that path
+            // so a failed second rename never leaves the entry only at the
+            // hidden `.rename-*` temp name. If rollback also fails, surface the
+            // temp location instead of silently losing track of the file.
+            if let Err(rollback_error) = fs::rename(&temp, src) {
+                return Err(OpError::Io {
+                    message: format!(
+                        "リネームに失敗し、元への復元もできませんでした: {error}; 一時ファイル: {}; 復元エラー: {rollback_error}",
+                        temp.display()
+                    ),
+                    path: temp,
+                });
+            }
+            return Err(io_error(&target, error));
+        }
         return Ok(target);
     }
-    fs::rename(src, &target).map_err(|e| io_error(src, e))?;
-    Ok(target)
+    // Reserve `target` with O_EXCL before the final rename so a concurrent
+    // creator cannot slip in between the existence check above and the rename
+    // (the same guard `copy_entry` / `move_entry` use). The case-only branch
+    // deliberately has no reservation: its target already exists.
+    let reservation = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target);
+    match reservation {
+        Ok(file) => {
+            drop(file);
+            // Windows refuses to rename onto an existing file, and on Unix a
+            // directory source cannot be renamed onto a regular-file
+            // reservation (ENOTDIR). A regular file on Unix keeps the
+            // reservation until the rename atomically replaces it.
+            #[cfg(windows)]
+            let _ = fs::remove_file(&target);
+            #[cfg(unix)]
+            if src.is_dir() {
+                let _ = fs::remove_file(&target);
+            }
+            match fs::rename(src, &target) {
+                Ok(()) => Ok(target),
+                Err(error) => {
+                    // Best-effort cleanup of the reservation on failure,
+                    // mirroring `move_entry`.
+                    let _ = fs::remove_file(&target);
+                    Err(io_error(src, error))
+                }
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            Err(OpError::AlreadyExists(target))
+        }
+        Err(error) => Err(io_error(&target, error)),
+    }
 }
 
 /// Minimal batch rename: apply [`rename_entry`] to every `(source, new_name)`
@@ -1283,6 +1341,47 @@ mod tests {
         assert!(matches!(err, OpError::AlreadyExists(_)));
         assert_eq!(fs::read_link(dir.join("b.txt")).unwrap(), dangling_target);
         assert_eq!(fs::read(&src).unwrap(), b"a", "source must be unchanged");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_entry_rolls_back_temp_when_second_rename_fails() {
+        let dir = scratch("rename-rollback");
+        // `src` is a symlink to a nonempty directory and the target is that
+        // directory, so both paths canonicalize identically and rename_entry
+        // takes the case-only branch. The first rename moves the symlink to
+        // `.rename-*`; the second rename (temp symlink -> nonempty directory)
+        // then fails, exercising the rollback path.
+        let folder = dir.join("folder");
+        fs::create_dir(&folder).unwrap();
+        write(&folder.join("child.txt"), b"child");
+        let src = dir.join("link");
+        std::os::unix::fs::symlink("folder", &src).unwrap();
+
+        assert!(rename_entry(&src, "folder").is_err());
+        assert!(
+            fs::symlink_metadata(&src).is_ok(),
+            "original src must be restored after the failed second rename"
+        );
+        assert_eq!(fs::read_link(&src).unwrap(), Path::new("folder"));
+        assert_eq!(fs::read(folder.join("child.txt")).unwrap(), b"child");
+
+        let leftovers: Vec<PathBuf> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".rename-"))
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no .rename-* temp file may be left behind: {leftovers:?}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
