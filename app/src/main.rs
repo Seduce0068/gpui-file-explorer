@@ -267,6 +267,11 @@ fn terminal_target_dir(entry: Option<&Entry>, cwd: &Path) -> PathBuf {
 /// Target of a middle click on a row: a directory row opens that directory in
 /// the new tab; a file row (or any non-directory entry) keeps the current
 /// directory. Pure so the rule can be tested without a GPUI window.
+/// Version text shown at the right edge of the status bar.
+fn version_label() -> String {
+    format!("v{}", env!("CARGO_PKG_VERSION"))
+}
+
 fn middle_click_tab_dir(entry: &Entry, cwd: &Path) -> PathBuf {
     if entry.is_dir {
         entry.path.clone()
@@ -7966,7 +7971,7 @@ impl Explorer {
             .child(
                 div()
                     .text_color(rgb(C_DIM))
-                    .child(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    .child(version_label())
                     .into_any_element(),
             );
         div()
@@ -8672,9 +8677,9 @@ mod tests {
         saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, trash_batch, trash_delete_status,
-        trash_key_action, upsert_keymap_override, CliAction, Explorer, FuzzyCandidate, FuzzySource,
-        KeyAction, KeyBinding, KeyMap, KeymapInput, TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX,
-        SIDEBAR_WIDTH_PX,
+        trash_key_action, upsert_keymap_override, version_label, CliAction, Explorer,
+        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, TrashKeyAction,
+        C_MUTED, GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -9554,6 +9559,13 @@ mod tests {
             terminal_target_dir(Some(&directory), &cwd),
             PathBuf::from("/work/project/item")
         );
+    }
+
+    #[test]
+    fn version_label_matches_cargo_version() {
+        let label = version_label();
+        assert!(label.starts_with('v'));
+        assert_eq!(&label[1..], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
