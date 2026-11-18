@@ -100,7 +100,10 @@ pub fn read_entries(dir: &Path) -> Result<Vec<Entry>, FsError> {
 /// Build an [`Entry`] for a single path, used by watcher updates and search.
 ///
 /// Symlinks are flagged from `symlink_metadata` while their target is followed
-/// for size/time so symlinked directories remain enterable.
+/// for size/time so symlinked directories remain enterable. If the target
+/// cannot be resolved (dangling link), size/time stay unset — the same rule as
+/// [`Entry::from_dir_entry`] — so both constructors produce an identical
+/// fingerprint after watcher events.
 pub fn entry_for_path(path: &Path) -> Option<Entry> {
     let name = path.file_name()?.to_os_string();
     if name.is_empty() {
@@ -110,7 +113,7 @@ pub fn entry_for_path(path: &Path) -> Option<Entry> {
     let sort_key = name_text.to_lowercase();
     let link_metadata = std::fs::symlink_metadata(path).ok()?;
     let is_symlink = link_metadata.file_type().is_symlink();
-    let metadata = std::fs::metadata(path).ok().or(Some(link_metadata));
+    let metadata = std::fs::metadata(path).ok();
     let is_dir = metadata.as_ref().is_some_and(|meta| meta.is_dir());
     let size = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
     let modified = metadata.and_then(|meta| meta.modified().ok());
@@ -370,7 +373,7 @@ pub fn is_hidden_name(name: &str) -> bool {
 
 /// Lower-case extension of a file name (without the dot), or an empty string
 /// when there is no extension.
-fn extension_of(name: &str) -> String {
+pub(crate) fn extension_of(name: &str) -> String {
     match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
             extension.to_lowercase()
@@ -788,10 +791,10 @@ mod tests {
     // which re-exports GPUI's `test` proc-macro and would shadow `#[test]`.
     use super::{
         breadcrumb_segments, clamp_index, compare_names, create_unique_folder, display_path,
-        fingerprint, first_index, human_age, human_datetime, human_size, is_hidden_name,
-        kind_label, last_index, parent_dir, read_entries, sort_entries, step_selection,
-        unique_child_name, visible_entries, AppError, Entry, FsError, FsErrorKind, SortDir,
-        SortKey, SortOrder, SortSpec,
+        entry_for_path, fingerprint, first_index, human_age, human_datetime, human_size,
+        is_hidden_name, kind_label, last_index, parent_dir, read_entries, sort_entries,
+        step_selection, unique_child_name, visible_entries, AppError, Entry, FsError, FsErrorKind,
+        SortDir, SortKey, SortOrder, SortSpec,
     };
     use std::ffi::OsString;
     use std::fs;
@@ -1140,6 +1143,43 @@ mod tests {
             fingerprint(&pre_epoch),
             fingerprint(&same_entries_with_modified_none)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_is_identical_from_both_constructors() {
+        let dir = scratch_dir("dangling-symlink");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let link = dir.join("dangling");
+        std::os::unix::fs::symlink(dir.join("no-such-target"), &link).unwrap();
+
+        let dir_entry = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|item| item.file_name() == std::ffi::OsStr::new("dangling"))
+            .expect("dangling symlink should appear in read_dir");
+        let from_dir = Entry::from_dir_entry(dir_entry).expect("entry from read_dir");
+        let from_path = entry_for_path(&link).expect("entry from path");
+
+        assert!(from_dir.is_symlink);
+        assert!(from_path.is_symlink);
+        assert_eq!(from_dir.is_dir, from_path.is_dir);
+        assert_eq!(from_dir.size, from_path.size);
+        assert_eq!(from_dir.modified, from_path.modified);
+        assert_eq!(
+            from_dir.size, 0,
+            "unresolvable target must not report link length"
+        );
+        assert_eq!(from_dir.modified, None);
+
+        // A watcher rebuild via `entry_for_path` must not change the fingerprint.
+        assert_eq!(
+            fingerprint(std::slice::from_ref(&from_dir)),
+            fingerprint(std::slice::from_ref(&from_path))
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
