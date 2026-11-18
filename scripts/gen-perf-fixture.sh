@@ -37,6 +37,13 @@ die() {
     exit 1
 }
 
+# True only when DIR holds a marker bearing this script's signature. A file
+# merely named .perf-fixture-marker is not proof that we created the directory.
+has_our_marker() {
+    [[ -f $1/$MARKER ]] || return 1
+    grep -qxF 'fixture=gpui-file-explorer/read_entries' "$1/$MARKER"
+}
+
 # Canonicalise a path that may not exist yet, without requiring realpath(1).
 canonicalise() {
     local path=$1
@@ -120,6 +127,8 @@ esac
 if [[ $cleanup -eq 1 ]]; then
     [[ -e $out_dir_abs ]] || die "nothing to clean: $out_dir_abs"
     [[ -f $out_dir_abs/$MARKER ]] || die "refusing to remove a directory without our marker: $out_dir_abs"
+    has_our_marker "$out_dir_abs" || \
+        die "refusing to remove a directory whose marker was not created by this script: $out_dir_abs"
     [[ $(basename -- "$out_dir_abs") == gpui-fe-perf-* ]] || \
         die "refusing to remove a directory with an unexpected name: $out_dir_abs"
     rm -rf -- "$out_dir_abs"
@@ -127,7 +136,24 @@ if [[ $cleanup -eq 1 ]]; then
     exit 0
 fi
 
-# Clean up a partially created fixture if generation fails midway.
+# Never adopt a pre-existing directory that is not already one of our fixtures.
+# Otherwise we would stamp our marker onto user data, and a later --cleanup
+# would delete the whole directory as if it were ours.
+if [[ -e $out_dir_abs || -L $out_dir_abs ]]; then
+    [[ -d $out_dir_abs && ! -L $out_dir_abs ]] || \
+        die "OUTPUT_DIR exists but is not a directory: $out_dir_abs"
+    [[ -f $out_dir_abs/$MARKER ]] || \
+        die "refusing to write into pre-existing directory without our marker (would overwrite user data): $out_dir_abs"
+    has_our_marker "$out_dir_abs" || \
+        die "refusing to write into pre-existing directory whose marker was not created by this script: $out_dir_abs"
+    created=0
+else
+    mkdir -p -- "$out_dir_abs"
+    created=1
+fi
+
+# Clean up a partially created fixture if generation fails midway. Only a
+# directory that we created in this run is eligible for automatic removal.
 partial=0
 cleanup_partial() {
     if [[ $partial -eq 1 && -f $out_dir_abs/$MARKER ]]; then
@@ -136,14 +162,14 @@ cleanup_partial() {
 }
 trap cleanup_partial ERR
 
-mkdir -p -- "$out_dir_abs"
-partial=1
-
-{
-    printf 'fixture=gpui-file-explorer/read_entries\n'
-    printf 'count=%s\n' "$count"
-    printf 'created_at=%s\n' "$(date +%Y-%m-%dT%H:%M:%S%:z)"
-} > "$out_dir_abs/$MARKER"
+if [[ $created -eq 1 ]]; then
+    partial=1
+    {
+        printf 'fixture=gpui-file-explorer/read_entries\n'
+        printf 'count=%s\n' "$count"
+        printf 'created_at=%s\n' "$(date +%Y-%m-%dT%H:%M:%S%:z)"
+    } > "$out_dir_abs/$MARKER"
+fi
 
 (
     cd -- "$out_dir_abs"
