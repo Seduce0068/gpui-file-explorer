@@ -44,8 +44,8 @@ use crate::icons::{icon_for_entry, kind_for_entry, FileKind};
 use crate::model::{
     breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
     grid_columns, grid_row_count, human_age, human_datetime, human_size, last_index, parent_dir,
-    read_entries, resolve_location_input, step_selection, visible_entries, Entry, Selection,
-    SortKey, SortSpec,
+    read_entries, resolve_location_input, sort_entries, step_selection, visible_entries, Entry,
+    Selection, SortKey, SortSpec,
 };
 use crate::mounts::MountPoint;
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
@@ -55,7 +55,7 @@ use crate::search::{
 };
 use crate::settings::{
     next_theme, Settings, TabSession, ViewLayout, WindowBoundsState, MAX_CHORD_BYTES,
-    MAX_KEYMAP_OVERRIDES,
+    MAX_KEYMAP_OVERRIDES, MAX_TABS,
 };
 use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
@@ -99,6 +99,19 @@ const GRID_CELL_WIDTH_PX: f32 = 108.0;
 /// such a link as present; the check mirrors `copy_entry` / `move_entry`.
 fn path_present(path: &Path) -> bool {
     path.exists() || path.is_symlink()
+}
+
+/// Status shown after a search-filter refresh (kind/extension/name/sort).
+///
+/// The watcher may have flagged the snapshot as stale
+/// ([`STATUS_SEARCH_STALE`]); a mere filter tweak must not bury that
+/// "再検索が必要です" notice under a plain result count.
+fn search_filter_status(current: &str, summary: String) -> String {
+    if current.starts_with(STATUS_SEARCH_STALE) {
+        format!("{STATUS_SEARCH_STALE}・{summary}")
+    } else {
+        summary
+    }
 }
 
 /// Keys forwarded to the normal keymap while the search view is open and no
@@ -1897,6 +1910,11 @@ impl Explorer {
         // Remember the directory we actually started in (also proves the
         // settings file round-trips on the very first launch).
         this.settings.last_dir = Some(this.cwd.clone());
+        // A first run has no persisted tabs, so nothing has populated 「最近」
+        // yet. Seed it with the directory we actually started in.
+        if this.settings.tabs.is_empty() {
+            this.settings.record_recent(&this.cwd);
+        }
         if !this.save_settings() {
             this.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
         }
@@ -2170,18 +2188,31 @@ impl Explorer {
         }
     }
 
-    /// Re-check which recent directories still exist. Called from `reload`
-    /// only — never from render.
+    /// Re-check which recent directories still exist for the **display cache**
+    /// only. The persisted `settings.recent_dirs` must survive a temporarily
+    /// missing directory (e.g. an unmounted drive) so it reappears when back.
+    /// Called from `reload` only — never from render.
     fn refresh_recent(&mut self) {
-        self.settings.recent_dirs.retain(|path| path.is_dir());
-        self.recent = self.settings.recent_dirs.clone();
+        self.recent = self
+            .settings
+            .recent_dirs
+            .iter()
+            .filter(|path| path.is_dir())
+            .cloned()
+            .collect();
     }
 
-    /// Re-check which bookmarks still exist. Called from `reload` only — never
-    /// from render.
+    /// Re-check which bookmarks still exist for the display cache only; keep
+    /// `settings.bookmarks` intact (see [`Self::refresh_recent`]). Called from
+    /// `reload` only — never from render.
     fn refresh_bookmarks(&mut self) {
-        self.settings.bookmarks.retain(|path| path.is_dir());
-        self.bookmarks = self.settings.bookmarks.clone();
+        self.bookmarks = self
+            .settings
+            .bookmarks
+            .iter()
+            .filter(|path| path.is_dir())
+            .cloned()
+            .collect();
     }
 
     /// Toggle a bookmark for the current directory (Ctrl+D).
@@ -2632,6 +2663,11 @@ impl Explorer {
             cx.notify();
             return;
         }
+        if self.tabs.len() >= MAX_TABS {
+            self.status = format!("タブは最大 {MAX_TABS} 個までです");
+            cx.notify();
+            return;
+        }
         self.sync_active_tab();
         self.tabs.new_tab(self.cwd.clone());
         let tab = self.tabs.active().clone();
@@ -2647,6 +2683,11 @@ impl Explorer {
         }
         if !path.is_dir() {
             self.status = format!("{STATUS_NOT_DIRECTORY}: {}", display_path(&path));
+            cx.notify();
+            return;
+        }
+        if self.tabs.len() >= MAX_TABS {
+            self.status = format!("タブは最大 {MAX_TABS} 個までです");
             cx.notify();
             return;
         }
@@ -3541,7 +3582,25 @@ impl Explorer {
         }
         if self.view == ViewSource::Search {
             if key == "escape" {
-                self.close_search(cx);
+                // A running operation owns the first Escape: cancel it before
+                // closing the search view. The next Escape then closes search.
+                if self.op_cancel.is_some() {
+                    self.cancel_op(cx);
+                } else {
+                    self.close_search(cx);
+                }
+                return;
+            }
+            // Ctrl+Shift+F (FocusSearchName) must reach the name filter even
+            // while a search text input owns the keyboard. Handle it before
+            // the input-focus guard below, which swallows every other key
+            // typed into the query field. Using the keymap keeps rebindings.
+            if self
+                .keymap
+                .resolve(key, modifiers.control, modifiers.shift, modifiers.alt)
+                == KeyAction::FocusSearchName
+            {
+                self.focus_search_name(window, cx);
                 return;
             }
             // The query field keeps every key (including F4 / Ctrl+Q) while
@@ -3632,13 +3691,7 @@ impl Explorer {
             SelectAll => self.select_all(cx),
             ToggleBookmark => self.toggle_current_bookmark(cx),
             OpenSearch => self.open_search(window, cx),
-            FocusSearchName => {
-                if let Some(input) = self.search.name_filter.clone() {
-                    let focus = input.read(cx).focus_handle(cx).clone();
-                    focus.focus(window, cx);
-                    cx.notify();
-                }
-            }
+            FocusSearchName => self.focus_search_name(window, cx),
             OpenProperties => self.open_selected_properties(cx),
             OpenLocation => self.open_location(window, cx),
             Undo => self.undo_last(cx),
@@ -3715,9 +3768,12 @@ impl Explorer {
         let _ = self.save_settings();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
         if self.view == ViewSource::Search {
+            // The snapshot was captured with the old hidden setting, so a
+            // filter-only refresh cannot add/remove hidden hits. Re-run the
+            // query with the new setting (`run_search` reads it again).
             // `rebuild_view` would replace search results with the directory
             // listing and drop kind/extension/name filters (finding 3).
-            self.apply_search_filter(cx);
+            self.run_search(cx);
         } else {
             self.rebuild_view(keep);
         }
@@ -6443,6 +6499,17 @@ impl Explorer {
         .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
     }
 
+    /// Move keyboard focus to the search bar's optional name filter
+    /// (Ctrl+Shift+F / `FocusSearchName`). Shared by normal keymap dispatch and
+    /// the early Search-view handler so both paths behave identically.
+    fn focus_search_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = self.search.name_filter.clone() {
+            let focus = input.read(cx).focus_handle(cx).clone();
+            focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
     /// Open the search bar (Ctrl+F). Only available from the directory view.
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.view == ViewSource::Search {
@@ -6648,12 +6715,16 @@ impl Explorer {
             .name_filter
             .as_ref()
             .map(|input| input.read(cx).value().to_string());
-        let filtered = filter_results(
+        let mut filtered = filter_results(
             &self.all_entries,
             self.search.kind,
             extension.as_deref(),
             name_filter.as_deref(),
         );
+        // `all_entries` arrives path-sorted from the walker. Reuse the shared
+        // comparator so the sort headers actually reorder search results,
+        // keeping Directory and Search views consistent.
+        sort_entries(&mut filtered, self.settings.sort.order());
         let paths: Vec<PathBuf> = filtered.iter().map(|entry| entry.path.clone()).collect();
         self.selection.retain(&paths);
         self.entries = filtered;
@@ -6671,7 +6742,7 @@ impl Explorer {
             .first()
             .and_then(|path| self.entries.iter().position(|entry| &entry.path == path))
             .unwrap_or(0);
-        self.scroll_to_entry(0);
+        self.scroll_to_entry(self.selected);
         let mode_label = if self.search.mode == SearchMode::Content {
             "（内容）"
         } else {
@@ -6692,10 +6763,13 @@ impl Explorer {
                 }
             }
         };
-        self.status = format!(
-            "検索{mode_label}{scope_label}: 「{}」 {} 件",
-            self.search.query,
-            self.entries.len()
+        self.status = search_filter_status(
+            &self.status,
+            format!(
+                "検索{mode_label}{scope_label}: 「{}」 {} 件",
+                self.search.query,
+                self.entries.len()
+            ),
         );
         cx.notify();
     }
@@ -9104,7 +9178,7 @@ mod tests {
         kind_color, labeled_display_name, middle_click_tab_dir, normalize_terminal_command,
         op_is_active, parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
         read_properties_snapshot, remove_keymap_override, saved_search_caption,
-        saved_search_save_status, summarize_op, tab_label, terminal_dir_for,
+        saved_search_save_status, search_filter_status, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, transfer_skip_notice, trash_batch,
         trash_delete_status, trash_key_action, upsert_keymap_override, version_label, CliAction,
@@ -9946,6 +10020,25 @@ mod tests {
                 "unexpectedly forwarded {key} (ctrl={ctrl})"
             );
         }
+    }
+
+    #[test]
+    fn search_filter_status_keeps_freshness_warning() {
+        let summary = "検索: 「rs」 3 件".to_string();
+
+        // A freshness warning must survive a filter tweak and stay first.
+        let stale = search_filter_status("変更を検出しました（再検索が必要です）", summary.clone());
+        assert!(stale.starts_with("変更を検出しました（再検索が必要です）"));
+        assert!(stale.contains("3 件"));
+        // Repeated tweaks must not duplicate the warning.
+        let twice = search_filter_status(&stale, summary.clone());
+        assert_eq!(twice.matches("再検索が必要です").count(), 1);
+
+        // Ordinary statuses still get replaced by the fresh result count.
+        assert_eq!(
+            search_filter_status("検索中…「rs」", summary.clone()),
+            summary
+        );
     }
 
     #[test]
