@@ -344,26 +344,26 @@ status: current
 
 ### 優先度: 高（第18回シナリオ発掘・confirmed）
 
-- [ ] **R1-MW01** 保存タブの消失で active インデックスが別タブを指す
+- [x] **R1-MW01** 保存タブの消失で active インデックスが別タブを指す — 対応: e2480b6
   — `app/src/main.rs:9015,9032`
-- [ ] **R1-MW01** 同一 cwd タブの復元で履歴を first-match が取り違える
+- [x] **R1-MW01** 同一 cwd タブの復元で履歴を first-match が取り違える — 対応: e2480b6
   — `app/src/main.rs:9073-9076`
 
 ### 優先度: 中（第18回シナリオ発掘）
 
-- [ ] **R1-MW01** ウィンドウ終了時の bounds 失敗でタブ保存がスキップされる
+- [x] **R1-MW01** ウィンドウ終了時の bounds 失敗でタブ保存がスキップされる — 対応: e2480b6
   — `app/src/main.rs:9157-9166`
-- [ ] **R1-MW01** 一時的に存在しないタブが起動時に破棄され履歴も失われる
+- [x] **R1-MW01** 一時的に存在しないタブが起動時に破棄され履歴も失われる — 対応: e2480b6
   — `app/src/main.rs:9015`
-- [ ] **R2-RES01** プロパティのメタデータ読み取りタスクに serial ガードが無い
+- [x] **R2-RES01** プロパティのメタデータ読み取りタスクに serial ガードが無い — 対応: e2480b6
   — `app/src/main.rs:5692-5741`
-- [ ] **R2-RES01** reconcile に実行中フラグが無く並走しスナップショットが蓄積
+- [x] **R2-RES01** reconcile に実行中フラグが無く並走しスナップショットが蓄積 — 対応: e2480b6
   — `app/src/main.rs:2387-2401`
-- [ ] **R3-IO01** exists()/is_dir() が EACCES を NotFound に誤分類
+- [x] **R3-IO01** exists()/is_dir() が EACCES を NotFound に誤分類 — 対応: 45ebca4
   — `app/src/ops.rs:581,831,925`
-- [ ] **R3-IO01** 長いファイル名で .partial-* が NAME_MAX 超過
+- [x] **R3-IO01** 長いファイル名で .partial-* が NAME_MAX 超過 — 対応: 45ebca4
   — `app/src/ops.rs:287-315`
-- [ ] **R3-IO01** create_unique_folder が dangling symlink で100回失敗
+- [x] **R3-IO01** create_unique_folder が dangling symlink で100回失敗 — 対応: 45ebca4
   — `app/src/model.rs:766-777`
 
 ### 優先度: 低（調査タスク）
