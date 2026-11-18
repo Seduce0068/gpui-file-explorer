@@ -121,7 +121,7 @@ pub fn validate_file_name(name: &str) -> Result<(), OpError> {
             "`.` と `..` は名前として使えません".to_string(),
         ));
     }
-    if name.contains('/') || name.contains('\\') {
+    if name.contains('/') {
         return Err(OpError::InvalidTarget(
             "名前にパス区切り文字は使えません".to_string(),
         ));
@@ -133,6 +133,11 @@ pub fn validate_file_name(name: &str) -> Result<(), OpError> {
     }
     #[cfg(windows)]
     {
+        if name.contains('\\') {
+            return Err(OpError::InvalidTarget(
+                "名前にパス区切り文字は使えません".to_string(),
+            ));
+        }
         const RESERVED: [&str; 22] = [
             "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
             "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -868,8 +873,17 @@ mod tests {
         assert!(validate_file_name(".").is_err());
         assert!(validate_file_name("..").is_err());
         assert!(validate_file_name("a/b").is_err());
-        assert!(validate_file_name("a\\b").is_err());
+        #[cfg(windows)]
+        {
+            assert!(validate_file_name("a\\b").is_err());
+        }
         assert!(validate_file_name("a\0b").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_file_name_accepts_backslash_on_unix() {
+        assert!(validate_file_name("a\\b").is_ok());
     }
 
     #[test]
