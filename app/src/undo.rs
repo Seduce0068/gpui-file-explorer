@@ -77,6 +77,9 @@ impl UndoStack {
     /// Put an action back after a successful undo (so it can be redone).
     pub fn push_redo(&mut self, action: UndoAction) {
         self.redo.push(action);
+        if self.redo.len() > MAX_UNDO {
+            self.redo.remove(0);
+        }
     }
 
     /// Take the most recent action to redo.
@@ -200,6 +203,24 @@ mod tests {
             rename(
                 &format!("/a-{}", MAX_UNDO + 2),
                 &format!("/b-{}", MAX_UNDO + 2)
+            )
+        );
+    }
+
+    #[test]
+    fn redo_stack_is_bounded() {
+        let mut stack = UndoStack::new();
+        for index in 0..(MAX_UNDO + 5) {
+            stack.push_redo(rename(&format!("/old-{index}"), &format!("/new-{index}")));
+        }
+        assert_eq!(stack.redo_len(), MAX_UNDO);
+        // The newest entry survives; the oldest were dropped.
+        let newest = stack.pop_redo().unwrap();
+        assert_eq!(
+            newest,
+            rename(
+                &format!("/old-{}", MAX_UNDO + 4),
+                &format!("/new-{}", MAX_UNDO + 4)
             )
         );
     }
