@@ -165,6 +165,23 @@ status: current
 - [x] **R3-DOC01** Ctrl+P が README のキーバインド表に欠落 — 対応: b1f9263
   — `app/src/strings.rs:86` / `README.md:48`
 
+### 優先度: 中（第6回発掘・confirmed）
+
+- [x] **R1-SCH01** version 欠落が SCHEMA_VERSION で埋まり legacy 判定が失效する
+  — 対応: 1bc2374
+- [x] **R1-SCH01** 配列重複排除が truncate 後で手編集設定の末尾項目が消える
+  — 対応: 1bc2374
+- [ ] **R2-SAF01** copy_recursive 中Ok/エラー時にコピー先ディレクトリが残存する
+  — `app/src/ops.rs:569`
+- [ ] **R2-SAF01** rename_entry が壊れた symlink 宛先を黙って上書きする
+  — `app/src/ops.rs:797`
+- [ ] **R4-INT01** Alt+Shift+T のテーマ保存失敗が通知されない
+  — `app/src/main.rs:3464-3473`
+- [ ] **R4-INT01** README に unbind 構文の記載が無い
+  — `app/src/strings.rs:168` / `app/README.md:99`
+- [ ] **R5-DOC01** app/README の version 挙動が古い
+  — 対応: 0d664d5
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
