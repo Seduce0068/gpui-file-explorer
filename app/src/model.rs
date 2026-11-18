@@ -610,8 +610,6 @@ pub struct SavedSearch {
 
 impl SavedSearch {
     /// Build a normalized entry, or `None` for blank/oversized/NUL text.
-    // UI-facing constructor; the saved-search panel is wired in a follow-up.
-    #[allow(dead_code)]
     pub fn new(name: &str, query: &str) -> Option<Self> {
         let search = Self {
             name: name.trim().to_owned(),
@@ -651,8 +649,6 @@ pub struct BookmarkLabel {
 
 impl BookmarkLabel {
     /// Build a normalized entry, rejecting an empty path or an unusable label.
-    // UI-facing constructor; the bookmark-label panel is wired in a follow-up.
-    #[allow(dead_code)]
     pub fn new(path: &Path, label: &str) -> Option<Self> {
         if path.as_os_str().is_empty() {
             return None;

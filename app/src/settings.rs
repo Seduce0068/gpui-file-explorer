@@ -683,11 +683,9 @@ impl Settings {
     }
 }
 
-/// F6-38 personalization API. These methods are intentionally not wired into
-/// the UI yet; `main.rs` will call them when the saved-search / label views
-/// land. `#[allow(dead_code)]` keeps the `-D warnings` gate green until then
-/// without weakening the rest of the module.
-#[allow(dead_code)]
+/// F6-38 personalization API, wired into the `main.rs` UI: the saved-search bar
+/// calls `save_search` / `saved_search` / `remove_search`, and bookmark labels
+/// call `set_bookmark_label` / `bookmark_label` / `remove_bookmark_label`.
 impl Settings {
     /// Save a named search. A name that already exists (case-insensitively) is
     /// replaced in place; a new name is refused at `MAX_SAVED_SEARCHES`.
