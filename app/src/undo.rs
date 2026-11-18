@@ -13,6 +13,7 @@
 //! clears the redo stack. This module is GPUI-free so the stack can be unit
 //! tested headlessly.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// Maximum number of undoable operations kept in memory.
@@ -26,8 +27,9 @@ pub enum UndoAction {
     /// Items moved to the system trash; undo restores them.
     ///
     /// Each entry pairs the original path with the trash item id, so undo can
-    /// find the exact item even if the trash changed meanwhile.
-    Trash { items: Vec<(PathBuf, String)> },
+    /// find the exact item even if the trash changed meanwhile. The id is an
+    /// `OsString` (matching `trash::TrashItem::id`) so non-UTF-8 bytes survive.
+    Trash { items: Vec<(PathBuf, OsString)> },
 }
 
 impl UndoAction {
@@ -125,6 +127,7 @@ impl UndoStack {
 #[cfg(test)]
 mod tests {
     use super::{UndoAction, UndoStack, MAX_UNDO};
+    use std::ffi::OsString;
     use std::path::PathBuf;
 
     fn p(value: &str) -> PathBuf {
@@ -229,8 +232,8 @@ mod tests {
     fn trash_action_reports_item_count() {
         let action = UndoAction::Trash {
             items: vec![
-                (p("/a.txt"), "id-1".to_string()),
-                (p("/b.txt"), "id-2".to_string()),
+                (p("/a.txt"), OsString::from("id-1")),
+                (p("/b.txt"), OsString::from("id-2")),
             ],
         };
         assert_eq!(action.len(), 2);
@@ -264,5 +267,33 @@ mod tests {
         assert!(stack.pop_redo().is_none());
         assert!(!stack.can_undo());
         assert!(!stack.can_redo());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trash_action_preserves_non_utf8_id() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let id_bytes = b"/trash/info/non-utf8-\xff.trashinfo".to_vec();
+        let id = OsString::from_vec(id_bytes.clone());
+        let action = UndoAction::Trash {
+            items: vec![(p("/tmp/t/non-utf8.txt"), id.clone())],
+        };
+
+        let mut stack = UndoStack::new();
+        stack.push(action.clone());
+        let popped = stack.pop_undo().expect("undo");
+        stack.push_redo(popped.clone());
+        let redone = stack.pop_redo().expect("redo");
+
+        for observed in [popped, redone] {
+            let UndoAction::Trash { items } = observed else {
+                panic!("expected a trash action");
+            };
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].0, p("/tmp/t/non-utf8.txt"));
+            assert_eq!(items[0].1, id);
+            assert_eq!(items[0].1.as_os_str().as_bytes(), id_bytes.as_slice());
+        }
     }
 }
