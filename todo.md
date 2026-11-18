@@ -101,7 +101,8 @@ status: current
 
 ### 優先度: 中（第3回発掘・confirmed）
 
-- [x] **R1-ST01** rename_entry が壊れた symlink を NotFound で拒否（copy/move と不一致） — 対応: 779b327
+- [x] **R1-ST01** rename_entry が壊れた symlink を拒否（copy/move と不一致）
+  — 対応: 779b327
   — `app/src/ops.rs:775` / R3-TQ01 と重複統合
 - [x] **R1-ST01** ブックマーク削除時にラベルが孤立し再追加で復活する — 対応: cb7f98a
   — `app/src/settings.rs:503-505` / R3-TQ01 と重複統合
