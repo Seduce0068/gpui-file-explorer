@@ -482,6 +482,9 @@ fn upsert_keymap_override(
     action: &str,
     chord: &str,
 ) -> bool {
+    // A chord can only belong to one action. Mirror `KeyMap::rebind`'s eviction
+    // in the persisted list so the binding survives a restart unchanged.
+    overrides.retain(|(name, bound)| name == action || bound != chord);
     if let Some(entry) = overrides.iter_mut().find(|(name, _)| name == action) {
         entry.1 = chord.to_string();
         return true;
@@ -9911,6 +9914,28 @@ mod tests {
         ] {
             assert_eq!(parse_keymap_input(input), None, "accepted {input:?}");
         }
+    }
+
+    #[test]
+    fn upsert_keymap_override_evicts_other_action_on_same_chord() {
+        let mut overrides = vec![
+            ("open_preview".to_string(), "alt+p".to_string()),
+            ("other".to_string(), "f5".to_string()),
+        ];
+        assert!(upsert_keymap_override(
+            &mut overrides,
+            "open_terminal",
+            "alt+p"
+        ));
+        assert!(
+            overrides.contains(&("open_terminal".to_string(), "alt+p".to_string())),
+            "the new binding must be present"
+        );
+        assert!(
+            !overrides.contains(&("open_preview".to_string(), "alt+p".to_string())),
+            "the previous owner of the chord must be evicted"
+        );
+        assert_eq!(overrides.len(), 2, "unrelated bindings are preserved");
     }
 
     #[test]
