@@ -104,6 +104,8 @@ cd app
 | `Backspace` / `Alt+Up` / ↑ボタン | 親ディレクトリへ |
 | `Alt+Left` / `Alt+Right` | 戻る / 進む（履歴） |
 | `Ctrl+H` | 隠しファイル（`.` 始まり）の表示切替 |
+| `Alt+Shift+T` | テーマをダーク ⇔ ライトで切替（`settings.json` の `theme` に保存） |
+| `ミドルクリック` | 行 / グリッドセルを新しいタブで開く（フォルダ行はそのフォルダ、それ以外は現在のディレクトリ） |
 | `PageUp` / `PageDown` | 可視行数分の選択移動 |
 | `Delete` | 選択項目をゴミ箱へ移動（確認ダイアログあり） |
 | `Ctrl+R` / `F5` / ⟳ボタン | 再読み込み |
@@ -163,6 +165,25 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
   最大 64 件まで保持されます。
 - UI での変更は即時に反映され再起動後も復元されます。手編集の反映は次回
   起動時です。既定値に戻す場合は `keymap` を `[]` にするか削除します。
+
+### テーマ設定
+
+`settings.json` の `theme` でコンポーネントテーマを指定します（`Alt+Shift+T`
+で切り替えると同じ値が保存されます）。
+
+```json
+{
+  "version": 1,
+  "theme": "dark"
+}
+```
+
+- 値は `"dark"` / `"light"` のみです。省略時（旧バージョンの設定ファイル
+  を含む）は `"dark"` として扱われます。
+- DESIGN.md §8.2 の `"system"`（OS テーマ追従）は未対応です。gpui-component
+  0.9.1 の `ThemeMode` に `System` バリアントがなく、ダーク／ライトの 2 状態
+  しか表現できないためです（ステータスバーの色自体はアプリ側の固定パレット
+  で、テーマ切替の対象はメニュー／ダイアログ等のコンポーネントです）。
 
 ## 実装済み機能（P0）
 
@@ -552,7 +573,7 @@ DESIGN.md §4.1 の指示に従い、P0 実装で設計からずれた点を記�
 | 選択 | `Selection`（`PathBuf` キー、複数選択） | `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択・バッチ操作対応） | 一致（`BTreeSet` 化は見送り） |
 | ロード状態 | `LoadState` / `FsError` の型 | `LoadState`（Loading/Ready/Error）+ `FsError` / `FsErrorKind` を導入 | 一致（generation も LoadState が保持） |
 | ステータスバー | gpui-component `StatusBar` | 自作 `div`（5 領域の 1 つ） | 見た目同等。置換は任意 |
-| テーマ | gpui-component 既定ダークテーマの意味色 | Catppuccin 系の色を直書き（`Theme::change(Dark)` はメニュー/ダイアログ用に実施） | P0 は許容（DESIGN §8.2 の「色直書きは最小限」からは逸脱） |
+| テーマ | gpui-component のテーマ（`dark` / `light` / `system`） | `settings.json` の `theme`（既定 `dark`）を起動時に適用し、`Alt+Shift+T` で dark ⇔ light 切替。本体の配色は Catppuccin 系の直書きのまま | `system` は gpui-component 0.9.1 に `System` バリアントが無いため未対応（README「テーマ設定」に記録） |
 | 日本語文言 | `strings.rs` に集約 | `strings.rs` にヘルプ・空状態・固定ステータス文言を集約。値埋め込みの `format!` 文言は呼び出し側 | 部分対応（段階的 i18n） |
 | アイコン | 拡張子→`IconName` の静的対応表 | `icons.rs` の `FileKind` 経由（同一役割） | 一致 |
 | `dirs` crate | 7.0.0 推奨（6 系も許容と明記） | 6.0.0 | 許容（`config_dir()` API 同一） |

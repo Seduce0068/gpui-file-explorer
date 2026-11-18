@@ -33,7 +33,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{Icon, Theme, ThemeMode};
+use gpui_kit::component::{Icon, Theme};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -52,7 +52,8 @@ use crate::search::{
     ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
 };
 use crate::settings::{
-    Settings, TabSession, ViewLayout, WindowBoundsState, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES,
+    next_theme, Settings, TabSession, ViewLayout, WindowBoundsState, MAX_CHORD_BYTES,
+    MAX_KEYMAP_OVERRIDES,
 };
 use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
@@ -262,6 +263,17 @@ fn terminal_target_dir(entry: Option<&Entry>, cwd: &Path) -> PathBuf {
     }
 }
 
+/// Target of a middle click on a row: a directory row opens that directory in
+/// the new tab; a file row (or any non-directory entry) keeps the current
+/// directory. Pure so the rule can be tested without a GPUI window.
+fn middle_click_tab_dir(entry: &Entry, cwd: &Path) -> PathBuf {
+    if entry.is_dir {
+        entry.path.clone()
+    } else {
+        cwd.to_path_buf()
+    }
+}
+
 /// Build the child process from an already-split argv. The target path never
 /// enters the command line: it is passed only via `Command::current_dir`, so a
 /// user-controlled path cannot be interpreted as a shell fragment (F6-50).
@@ -363,6 +375,8 @@ enum KeyAction {
     EditTerminalCommand,
     /// Alt+K: edit keybinding overrides from the keymap dialog.
     EditKeymap,
+    /// Alt+Shift+T: cycle the persisted component theme (dark / light).
+    ToggleTheme,
     /// No binding (either unmapped by default or unbound by the user).
     None,
 }
@@ -524,7 +538,8 @@ impl KeyMap {
             MoveUp, NewFolder, NewTab, NextTab, OpenLocation, OpenPreview, OpenProperties,
             OpenSearch, OpenSelected, OpenTerminal, PageDown, PageUp, Paste, PrevTab, Quit, Redo,
             Reload, RestoreClosedTab, RestoreSelected, SelectAll, SelectFirst, SelectLast,
-            StartRename, ToggleBookmark, ToggleHidden, ToggleUndoHistory, TrashSelected, Undo,
+            StartRename, ToggleBookmark, ToggleHidden, ToggleTheme, ToggleUndoHistory,
+            TrashSelected, Undo,
         };
         let binding = |key: &str, ctrl, alt, shift, action| KeyBinding {
             key: key.to_string(),
@@ -586,6 +601,11 @@ impl KeyMap {
                 binding("left", false, true, None, GoBack),
                 binding("right", false, true, None, GoForward),
                 binding("up", false, true, None, GoParent),
+                // Alt+Shift+T cycles the theme. It must precede the Alt+T
+                // binding below: that binding has `shift: None` (matches both
+                // shift states) and the table is first-match-wins, so plain
+                // Alt+T still reaches EditTerminalCommand unchanged.
+                binding("t", false, true, Some(true), ToggleTheme),
                 // Alt+T opens the terminal-command dialog. Ctrl+Alt+T is NOT
                 // usable here: `binding_matches` ignores `alt` for Ctrl
                 // bindings, so it would resolve to Ctrl+T (NewTab) instead.
@@ -998,9 +1018,9 @@ use crate::strings::{
     STATUS_DROP_SAME_DIRECTORY, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_NOT_DIRECTORY,
     STATUS_NO_CLIPBOARD, STATUS_OP_RUNNING, STATUS_PATH_GONE, STATUS_REDO_NO_TARGET,
     STATUS_SEARCH_STALE, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
-    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TARGET_GONE, STATUS_TRASH_LOADING,
-    STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
-    STATUS_TRASH_NO_RENAME, STATUS_UNDO_FAILED,
+    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TARGET_GONE, STATUS_THEME_CHANGED_PREFIX,
+    STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_PASTE,
+    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_UNDO_FAILED,
 };
 
 /// One sidebar "place".
@@ -2338,6 +2358,38 @@ impl Explorer {
         self.load_tab(tab, cx);
     }
 
+    /// Open a new tab rooted at `path` (middle click on a row / grid cell).
+    fn new_tab_at(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.view != ViewSource::Directory {
+            self.status = STATUS_TABS_ONLY_DIRECTORY.to_string();
+            cx.notify();
+            return;
+        }
+        if !path.is_dir() {
+            self.status = format!("{STATUS_NOT_DIRECTORY}: {}", display_path(&path));
+            cx.notify();
+            return;
+        }
+        self.sync_active_tab();
+        self.tabs.new_tab(path.clone());
+        let tab = self.tabs.active().clone();
+        self.load_tab(tab, cx);
+        self.status = format!("新しいタブで開きました: {}", display_path(&path));
+        cx.notify();
+    }
+
+    /// Shared middle-click handler for list rows and grid cells.
+    fn open_row_in_new_tab(this: &mut Self, index: usize, cx: &mut Context<Self>) {
+        let Some(target) = this
+            .entries
+            .get(index)
+            .map(|entry| middle_click_tab_dir(entry, &this.cwd))
+        else {
+            return;
+        };
+        this.new_tab_at(target, cx);
+    }
+
     fn close_tab(&mut self, cx: &mut Context<Self>) {
         if self.view != ViewSource::Directory {
             self.status = STATUS_TABS_ONLY_DIRECTORY.to_string();
@@ -3270,6 +3322,7 @@ impl Explorer {
                 }
             }
             ToggleHidden => self.toggle_hidden(cx),
+            ToggleTheme => self.toggle_theme(cx),
             SelectAll => self.select_all(cx),
             ToggleBookmark => self.toggle_current_bookmark(cx),
             OpenSearch => self.open_search(window, cx),
@@ -3354,6 +3407,20 @@ impl Explorer {
         } else {
             "隠しファイルを非表示にしました".to_string()
         };
+        cx.notify();
+    }
+
+    /// Cycle the persisted component theme (Alt+Shift+T). gpui-component 0.9.1
+    /// exposes only `Dark` / `Light`, so there is no "system" mode to offer.
+    fn toggle_theme(&mut self, cx: &mut Context<Self>) {
+        let next = next_theme(self.settings.theme);
+        self.settings.theme = next;
+        Theme::change(next, None, cx);
+        let _ = self.save_settings();
+        self.status = format!(
+            "{STATUS_THEME_CHANGED_PREFIX}{}",
+            if next.is_dark() { "dark" } else { "light" }
+        );
         cx.notify();
     }
 
@@ -6992,6 +7059,10 @@ impl Explorer {
                 this.select_single_index(index, cx);
             }
         });
+        let middle_click = cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+            this.focus_handle.focus(window, cx);
+            Self::open_row_in_new_tab(this, index, cx);
+        });
         let entity = cx.entity();
         let batch_paths = if this.selection.contains(&entry.path) {
             this.selection.paths().to_vec()
@@ -7043,6 +7114,7 @@ impl Explorer {
                 })
                 .on_click(click)
                 .on_mouse_down(MouseButton::Right, right_click)
+                .on_mouse_down(MouseButton::Middle, middle_click)
                 .when(drag_out, |row| {
                     row.on_drag(drag_paths, |_paths, _, _, cx| cx.new(|_| Empty))
                         .external_drag_payload(|paths: &Vec<PathBuf>, _window, _cx| {
@@ -7206,6 +7278,10 @@ impl Explorer {
                 this.select_single_index(index, cx);
             }
         });
+        let middle_click = cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+            this.focus_handle.focus(window, cx);
+            Self::open_row_in_new_tab(this, index, cx);
+        });
         let entity = cx.entity();
         let batch_paths = if this.selection.contains(&entry.path) {
             this.selection.paths().to_vec()
@@ -7258,6 +7334,7 @@ impl Explorer {
                 })
                 .on_click(click)
                 .on_mouse_down(MouseButton::Right, right_click)
+                .on_mouse_down(MouseButton::Middle, middle_click)
                 .when(drag_out, |cell| {
                     cell.on_drag(drag_paths, |_paths, _, _, cx| cx.new(|_| Empty))
                         .external_drag_payload(|paths: &Vec<PathBuf>, _window, _cx| {
@@ -7830,7 +7907,15 @@ impl Explorer {
                     .text_color(rgb(C_YELLOW))
                     .child(format!("監視: 無効 — {reason}"))
                     .into_any_element()
-            });
+            })
+            // Right edge: monitor status followed by the build version
+            // (DESIGN.md status-bar requirement).
+            .child(
+                div()
+                    .text_color(rgb(C_DIM))
+                    .child(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    .into_any_element(),
+            );
         div()
             .flex()
             .items_center()
@@ -8455,8 +8540,10 @@ fn main() {
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     app.run(|cx: &mut App| {
         gpui_kit::init(cx);
-        // Dark component theme so context menus / prompts match the app.
-        Theme::change(ThemeMode::Dark, None, cx);
+        // Load once at startup: the persisted theme styles context menus /
+        // prompts, and the same snapshot seeds the restored window frame.
+        let settings = Settings::load();
+        Theme::change(settings.theme, None, cx);
 
         cx.on_window_closed(|cx, _window_id| {
             if cx.windows().is_empty() {
@@ -8468,7 +8555,6 @@ fn main() {
         // Restore the saved frame of the primary window. The centered fallback
         // remains for a fresh install, unusable saved values and off-screen
         // origins (e.g. after a monitor change).
-        let settings = Settings::load();
         let window_bounds = settings
             .primary_window()
             .and_then(|session| session.bounds)
@@ -8527,14 +8613,14 @@ mod tests {
         active_keymap_overrides, build_places, chord_for_action, classify_cli, clear_dialog_error,
         clear_op_token, format_chord, format_selected, fuzzy_candidates, fuzzy_score, grid_columns,
         help_overrides_line, install_op_token, internal_drop_paths, keymap_action_name,
-        keymap_chord_reserved, kind_color, labeled_display_name, normalize_terminal_command,
-        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
-        read_properties_snapshot, saved_search_caption, saved_search_save_status, summarize_op,
-        tab_label, terminal_dir_for, terminal_disabled_status, terminal_failed_status,
-        terminal_process, terminal_started_status, terminal_target_dir, trash_batch,
-        trash_delete_status, trash_key_action, upsert_keymap_override, CliAction, Explorer,
-        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, TrashKeyAction, C_MUTED,
-        GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX,
+        keymap_chord_reserved, kind_color, labeled_display_name, middle_click_tab_dir,
+        normalize_terminal_command, parse_chord, parse_keymap_input, pending_rename_index,
+        rank_fuzzy, read_properties_snapshot, saved_search_caption, saved_search_save_status,
+        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
+        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
+        trash_batch, trash_delete_status, trash_key_action, upsert_keymap_override, CliAction,
+        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, TrashKeyAction,
+        C_MUTED, GRID_CELL_WIDTH_PX, SIDEBAR_WIDTH_PX,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -9409,6 +9495,31 @@ mod tests {
     }
 
     #[test]
+    fn middle_click_tab_dir_uses_directory_row_or_cwd() {
+        let cwd = PathBuf::from("/work/project");
+        let file = Entry {
+            name: OsString::from("item"),
+            name_text: "item".to_string(),
+            sort_key: "item".to_string(),
+            path: PathBuf::from("/work/project/item"),
+            is_dir: false,
+            is_symlink: false,
+            size: 0,
+            modified: None,
+        };
+        // A file row keeps the listing's directory (not the file's parent).
+        assert_eq!(middle_click_tab_dir(&file, &cwd), cwd);
+        let directory = Entry {
+            is_dir: true,
+            ..file
+        };
+        assert_eq!(
+            middle_click_tab_dir(&directory, &cwd),
+            PathBuf::from("/work/project/item")
+        );
+    }
+
+    #[test]
     fn terminal_process_passes_path_only_as_current_dir() {
         use std::ffi::OsStr;
         // A hostile-looking directory must never be spliced into argv.
@@ -9987,6 +10098,28 @@ mod tests {
             keymap.resolve("t", true, true, false),
             KeyAction::RestoreClosedTab
         );
+        assert_eq!(keymap.resolve("t", true, false, true), KeyAction::NewTab);
+    }
+
+    #[test]
+    fn alt_shift_t_toggles_theme_without_stealing_alt_t() {
+        let keymap = KeyMap::default_keymap();
+        // Alt+Shift+T is the new theme cycle; it precedes the Alt+T wildcard
+        // binding so plain Alt+T (and the Ctrl variants) still work.
+        assert_eq!(
+            keymap.resolve("t", false, true, true),
+            KeyAction::ToggleTheme
+        );
+        assert_eq!(
+            keymap.resolve("t", false, false, true),
+            KeyAction::EditTerminalCommand
+        );
+        assert_eq!(keymap.resolve("t", true, false, false), KeyAction::NewTab);
+        assert_eq!(
+            keymap.resolve("t", true, true, false),
+            KeyAction::RestoreClosedTab
+        );
+        // Ctrl+Alt+T remains NewTab: `binding_matches` ignores alt for Ctrl.
         assert_eq!(keymap.resolve("t", true, false, true), KeyAction::NewTab);
     }
 }

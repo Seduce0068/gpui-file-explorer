@@ -125,6 +125,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Shift+F", "検索結果を名前で絞り込み"),
             ("Ctrl+I", "プロパティ"),
             ("Space / F3", "テキストプレビュー"),
+            ("Alt+Shift+T", "テーマをダーク / ライトで切替"),
         ],
     ),
     (
@@ -134,6 +135,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Shift+T", "閉じたタブを復元"),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "次のタブ / 前のタブ"),
             ("Ctrl+Shift+PageUp / PageDown", "タブを左 / 右へ移動"),
+            ("ミドルクリック", "行のフォルダを新しいタブで開く"),
             ("Ctrl+D", "現在のディレクトリをブックマーク"),
         ],
     ),
@@ -319,6 +321,9 @@ pub const STATUS_REDO_FAILED: &str = "やり直せません";
 pub const STATUS_RENAME_FAILED: &str = "変更できません";
 #[allow(dead_code)]
 pub const STATUS_TARGET_MISSING: &str = "対象は既に存在しません";
+/// テーマ切替後の通知（値は ThemeMode::name(): `dark` / `light`）。
+#[allow(dead_code)]
+pub const STATUS_THEME_CHANGED_PREFIX: &str = "テーマ: ";
 /// ゴミ箱操作の全件失敗と部分失敗（後者は `（{n} 件失敗: 「{name}」: {reason}）` の一部）。
 #[allow(dead_code)]
 pub const STATUS_TRASH_ALL_FAILED: &str = "ゴミ箱へ移動できません";
@@ -560,6 +565,7 @@ mod tests {
             STATUS_TRASH_ALL_FAILED,
             STATUS_TRASH_PARTIAL_FAILED,
             STATUS_RESTORE_FAILED,
+            STATUS_THEME_CHANGED_PREFIX,
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
         }
