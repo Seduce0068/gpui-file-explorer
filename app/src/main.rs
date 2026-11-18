@@ -1342,6 +1342,23 @@ impl LoadState {
     }
 }
 
+/// Build an error load state on a **fresh** generation.
+///
+/// Errors raised outside a reload callback (bad navigation path, mkdir
+/// failure, trash failure) must advance `generation` before being stored:
+/// the reload callback only applies when its captured generation still equals
+/// `load.generation()`. Reusing the current generation lets a reload that was
+/// already in flight pass that guard and replace the error with `Ready` plus
+/// stale entries (concurrency finding 1). Kept pure so the rule is unit-testable
+/// without a live GPUI `Context`.
+fn error_state_with_fresh_generation(generation: &mut u64, error: String) -> LoadState {
+    *generation = generation.wrapping_add(1);
+    LoadState::Error {
+        generation: *generation,
+        error,
+    }
+}
+
 /// Whether a successful background reconcile may clear a stale error overlay.
 ///
 /// Only `Error` qualifies. `Loading` must be left alone: an explicit reload
@@ -1595,6 +1612,11 @@ struct Explorer {
     preview_serial: u64,
     /// Foreground waiter of the latest load. Dropping it cancels the wait.
     load_task: Option<Task<()>>,
+    /// A watcher event landed while a reload was in flight. Its incremental
+    /// edit cannot be applied to `all_entries` (the in-flight read may predate
+    /// it and would be overwritten by `apply_loaded`), so the load re-issues a
+    /// fresh reload once it completes (finding 2).
+    needs_reload_after_load: bool,
     watcher: DirWatcher,
     /// Self-triggered FS operations suppress the watcher for a short window.
     suppress_until: Option<Instant>,
@@ -1828,6 +1850,7 @@ impl Explorer {
             pending_rename: None,
             preview_serial: 0,
             load_task: None,
+            needs_reload_after_load: false,
             watcher,
             suppress_until: None,
             places,
@@ -1913,7 +1936,13 @@ impl Explorer {
                 this.load = LoadState::Ready;
                 match result {
                     Ok(entries) => {
-                        this.apply_loaded(entries);
+                        let needs_reload = this.apply_loaded(entries);
+                        if needs_reload {
+                            // Re-read after events that landed past this
+                            // snapshot (finding 2). Bumps generation so this
+                            // callback's own result cannot land twice.
+                            this.reload(cx);
+                        }
                         // Keep self-operation notifications ("ゴミ箱へ移動しました",
                         // "フォルダを作成しました", "変更を検出しました") visible; they are
                         // replaced by the next action's message.
@@ -1941,6 +1970,16 @@ impl Explorer {
         });
         self.load_task = Some(task);
         cx.notify();
+    }
+
+    /// Set a load error from a path outside the reload callback.
+    ///
+    /// All such sites go through here so the generation is always advanced and
+    /// any reload already in flight is invalidated (finding 1). The error
+    /// raised *inside* the reload callback keeps its captured generation and is
+    /// deliberately not routed through this helper.
+    fn set_load_error(&mut self, error: String) {
+        self.load = error_state_with_fresh_generation(&mut self.generation, error);
     }
 
     /// Load the system trash into the virtual listing (background executor).
@@ -2041,7 +2080,11 @@ impl Explorer {
 
     /// Apply a freshly loaded listing, keeping the selection on the same path
     /// when possible and honouring `pending_select` (new folder).
-    fn apply_loaded(&mut self, entries: Vec<Entry>) {
+    ///
+    /// Returns `true` when a watcher event was deferred because this load was
+    /// already in flight; the caller must then trigger a fresh reload so those
+    /// events are not lost to this snapshot (finding 2).
+    fn apply_loaded(&mut self, entries: Vec<Entry>) -> bool {
         let keep = self
             .pending_select
             .take()
@@ -2049,6 +2092,7 @@ impl Explorer {
         self.all_entries = entries;
         self.fingerprint = fingerprint(&self.all_entries);
         self.rebuild_view(keep);
+        std::mem::take(&mut self.needs_reload_after_load)
     }
 
     /// Re-filter and re-sort the cached listing.
@@ -2330,9 +2374,12 @@ impl Explorer {
                     // explicit transition below is still needed to drop the
                     // error overlay. Calling it once here covers both paths
                     // without a double-apply when both flags are true.
-                    this.apply_loaded(entries);
+                    let needs_reload = this.apply_loaded(entries);
                     if clear_error {
                         this.load = LoadState::Ready;
+                    }
+                    if needs_reload {
+                        this.reload(cx);
                     }
                     cx.notify();
                 }
@@ -2400,6 +2447,14 @@ impl Explorer {
                         this.apply_search_filter(cx);
                         this.status = STATUS_CHANGED.to_string();
                         cx.notify();
+                        return;
+                    }
+                    if this.load.is_loading() {
+                        // A reload's snapshot may predate these events. Mutating
+                        // `all_entries` here would be undone when its callback
+                        // replaces the vec with the stale snapshot (finding 2).
+                        // Defer: the load will re-issue itself on completion.
+                        this.needs_reload_after_load = true;
                         return;
                     }
                     if batch
@@ -2774,10 +2829,7 @@ impl Explorer {
             return;
         }
         if !path.is_dir() {
-            self.load = LoadState::Error {
-                generation: self.generation,
-                error: format!("{STATUS_NOT_DIRECTORY}: {}", display_path(&path)),
-            };
+            self.set_load_error(format!("{STATUS_NOT_DIRECTORY}: {}", display_path(&path)));
             cx.notify();
             return;
         }
@@ -3623,7 +3675,13 @@ impl Explorer {
         self.settings.show_hidden = !self.settings.show_hidden;
         let _ = self.save_settings();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
-        self.rebuild_view(keep);
+        if self.view == ViewSource::Search {
+            // `rebuild_view` would replace search results with the directory
+            // listing and drop kind/extension/name filters (finding 3).
+            self.apply_search_filter(cx);
+        } else {
+            self.rebuild_view(keep);
+        }
         self.status = if self.settings.show_hidden {
             "隠しファイルを表示しています".to_string()
         } else {
@@ -3655,7 +3713,14 @@ impl Explorer {
         self.settings.sort = SortSpec::from_order(order);
         let _ = self.save_settings();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
-        self.rebuild_view(keep);
+        if self.view == ViewSource::Search {
+            // Keep the search filters intact; a directory `rebuild_view` here
+            // would discard them and `reload()` cannot restore them in Search
+            // (finding 3).
+            self.apply_search_filter(cx);
+        } else {
+            self.rebuild_view(keep);
+        }
         cx.notify();
     }
 
@@ -3694,10 +3759,7 @@ impl Explorer {
                         }
                     }
                     Err(error) => {
-                        this.load = LoadState::Error {
-                            generation: this.generation,
-                            error: format!("フォルダを作成できません: {error}"),
-                        };
+                        this.set_load_error(format!("フォルダを作成できません: {error}"));
                     }
                 }
                 cx.notify();
@@ -6114,6 +6176,10 @@ impl Explorer {
             cx.notify();
             return;
         }
+        // The modal prompt and the background move are asynchronous. Remember
+        // which listing owned these paths so a completion that lands after the
+        // user switched views cannot rewrite the new listing (finding 3).
+        let view_at_start = self.view;
         let mut existing: Vec<PathBuf> = Vec::new();
         for path in paths {
             if path.exists() || path.is_symlink() {
@@ -6183,17 +6249,24 @@ impl Explorer {
                     if !this.finish_op(&token, false) {
                         return;
                     }
+                    // The modal prompt and the background move are async. Do not
+                    // rewrite a listing that was not active when the paths were
+                    // captured (finding 3): a switch to Search must not be
+                    // clobbered by directory entries from this completion.
+                    let view_unchanged = this.view == view_at_start;
                     if trashed.is_empty() && !cancelled {
-                        this.load = LoadState::Error {
-                            generation: this.generation,
-                            error: format!(
-                                "ゴミ箱へ移動できません: {}",
-                                failures
-                                    .first()
-                                    .map(|(_, message)| message.clone())
-                                    .unwrap_or_default()
-                            ),
-                        };
+                        let message = format!(
+                            "ゴミ箱へ移動できません: {}",
+                            failures
+                                .first()
+                                .map(|(_, message)| message.clone())
+                                .unwrap_or_default()
+                        );
+                        if view_unchanged && this.view != ViewSource::Search {
+                            this.set_load_error(message);
+                        } else {
+                            this.status = message;
+                        }
                     } else {
                         if !trashed.is_empty() {
                             this.suppress_for(SELF_OP_SUPPRESS);
@@ -6234,11 +6307,21 @@ impl Explorer {
                         if !recorded.is_empty() {
                             this.undo.push(UndoAction::Trash { items: recorded });
                         }
-                        this.all_entries
-                            .retain(|entry| !trashed.contains(&entry.path));
-                        this.fingerprint = fingerprint(&this.all_entries);
-                        this.rebuild_view(None);
-                        this.reload(cx);
+                        if view_unchanged {
+                            this.all_entries
+                                .retain(|entry| !trashed.contains(&entry.path));
+                            this.fingerprint = fingerprint(&this.all_entries);
+                            if this.view == ViewSource::Search {
+                                // Preserve kind/extension/name filters: the
+                                // generic rebuild would drop them, and
+                                // `reload()` is a no-op in Search so it could
+                                // never repair the listing (finding 3).
+                                this.apply_search_filter(cx);
+                            } else {
+                                this.rebuild_view(None);
+                            }
+                            this.reload(cx);
+                        }
                     }
                     cx.notify();
                 });
@@ -9320,6 +9403,35 @@ mod tests {
         assert!(!ready.is_loading());
         assert_eq!(ready.error_message(), None);
         assert_eq!(ready.generation(), None);
+    }
+
+    #[test]
+    fn load_error_invalidates_in_flight_reload_generation() {
+        use super::error_state_with_fresh_generation;
+
+        // Regression (finding 1): an error raised outside a reload callback
+        // must carry a *new* generation. Otherwise an in-flight callback whose
+        // captured generation still matches `load.generation()` passes its
+        // guard and overwrites the error with `Ready` + stale entries.
+        let mut generation = 5u64;
+        let in_flight_generation = generation;
+        let error = error_state_with_fresh_generation(&mut generation, "移動失敗".to_string());
+        assert_eq!(generation, in_flight_generation.wrapping_add(1));
+        assert_eq!(error.generation(), Some(generation));
+        assert_ne!(error.generation(), Some(in_flight_generation));
+        assert_eq!(error.error_message(), Some("移動失敗"));
+
+        // The generation check is the exact guard used by the reload callback.
+        let callback_generation = Some(in_flight_generation);
+        let stale = callback_generation != error.generation();
+        assert!(stale, "古いリロードはエラーを上書きできないこと");
+
+        // Wrapping at the u64 boundary must not panic (release build) or
+        // accidentally reuse the previous generation.
+        let mut generation = u64::MAX;
+        let error = error_state_with_fresh_generation(&mut generation, "迂回".to_string());
+        assert_eq!(generation, 0);
+        assert_eq!(error.generation(), Some(0));
     }
 
     #[test]
