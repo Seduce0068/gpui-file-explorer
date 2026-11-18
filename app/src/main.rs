@@ -1315,6 +1315,17 @@ fn should_clear_error_on_reconcile(load: &LoadState) -> bool {
     matches!(load, LoadState::Error { .. })
 }
 
+/// Whether a successful reconcile must (re-)apply the freshly read listing.
+///
+/// A changed fingerprint obviously needs a reload. A stale error overlay needs
+/// one too: the error path clears `entries`, so merely flipping `load` back to
+/// `Ready` would leave an empty list on screen (regression this helper guards).
+/// Kept pure so the recovery decision is unit-testable — the full state machine
+/// needs a live GPUI `Context` and cannot run in a unit test.
+fn should_apply_loaded_on_reconcile(changed: bool, clear_error: bool) -> bool {
+    changed || clear_error
+}
+
 /// Identity of one background operation.
 ///
 /// Every long-running or destructive action (transfer, trash, undo, redo,
@@ -1803,6 +1814,12 @@ impl Explorer {
                     Err(error) => {
                         this.all_entries.clear();
                         this.entries.clear();
+                        // Keep the fingerprint in sync with the cleared listing.
+                        // Otherwise it still describes the last successful load,
+                        // so a later reconcile whose read matches that load sees
+                        // `changed == false` and skips the reload. Defence in
+                        // depth alongside the explicit clear-error re-apply.
+                        this.fingerprint = fingerprint(&this.all_entries);
                         this.selected = 0;
                         this.selection.clear();
                         this.status.clear();
@@ -2178,18 +2195,23 @@ impl Explorer {
                     return;
                 }
                 // A successful read clears a stale error overlay on both the
-                // changed and unchanged-fingerprint paths. `Loading` is never
-                // touched here (guarded above), so an explicit reload that
-                // started after this read was dispatched still wins.
+                // changed and unchanged-fingerprint paths, and re-applies the
+                // freshly read listing so the cleared error list is refilled.
+                // `Loading` is never touched here (guarded above), so an
+                // explicit reload that started after this read was dispatched
+                // still wins.
                 let clear_error = should_clear_error_on_reconcile(&this.load);
                 let changed = fingerprint(&entries) != this.fingerprint;
-                if changed {
+                if should_apply_loaded_on_reconcile(changed, clear_error) {
+                    // `apply_loaded` rebuilds the view and recomputes the
+                    // fingerprint itself, but does not touch `load`; the
+                    // explicit transition below is still needed to drop the
+                    // error overlay. Calling it once here covers both paths
+                    // without a double-apply when both flags are true.
                     this.apply_loaded(entries);
-                }
-                if clear_error {
-                    this.load = LoadState::Ready;
-                }
-                if changed || clear_error {
+                    if clear_error {
+                        this.load = LoadState::Ready;
+                    }
                     cx.notify();
                 }
             });
@@ -9116,6 +9138,27 @@ mod tests {
             generation: 4
         }));
         assert!(!should_clear_error_on_reconcile(&LoadState::Ready));
+    }
+
+    #[test]
+    fn reconcile_error_recovery_restores_entries() {
+        use super::should_apply_loaded_on_reconcile;
+
+        // Regression: after an error cleared `entries`, the fingerprint still
+        // matched the last successful read (`changed == false`). A stale Error
+        // overlay must nonetheless re-apply the fresh listing so the list is
+        // repopulated when the overlay is cleared.
+        assert!(should_apply_loaded_on_reconcile(false, true));
+        // Normal change and the combined case must still re-apply exactly once.
+        assert!(should_apply_loaded_on_reconcile(true, false));
+        assert!(should_apply_loaded_on_reconcile(true, true));
+        // No change and no error: skip rebuild/notify.
+        assert!(!should_apply_loaded_on_reconcile(false, false));
+
+        // A full state-machine test would need a live GPUI `Context<Explorer>`
+        // plus the 10s timer to drive `cx.spawn`; `reconcile` cannot be invoked
+        // from a unit test. The decision that caused the regression is captured
+        // in the pure predicate above instead.
     }
 
     #[test]
