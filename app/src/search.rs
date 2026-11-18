@@ -554,11 +554,17 @@ mod tests {
     #[test]
     fn does_not_follow_symlinked_directories() {
         let dir = scratch("symlink");
+        // Fixture OUTSIDE the search root: the walk must never escape `root`.
+        // This is a non-vacuous exclusion check on every platform.
         let outside = dir.join("outside");
         write(&outside.join("secret.txt"));
         let root = dir.join("root");
         fs::create_dir_all(&root).unwrap();
-        write(&root.join("own.txt"));
+        // Positive control: the query really matches a visible in-root file,
+        // so the exclusions below are meaningful rather than vacuous.
+        write(&root.join("secret-own.txt"));
+        // Hidden in-root match: excluded by the hidden filter everywhere.
+        write(&root.join(".secret-hidden.txt"));
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, root.join("link-to-outside")).unwrap();
 
@@ -568,7 +574,11 @@ mod tests {
             SearchOptions::default(),
             &AtomicBool::new(false),
         );
-        assert!(found.is_empty(), "symlinked dir must not be traversed");
+        // Verified on all platforms: only the visible in-root match is
+        // returned. `outside/secret.txt` is out of scope and
+        // `.secret-hidden.txt` is hidden. On Unix the symlink is not followed,
+        // so `secret.txt` is absent even though the link lives in `root`.
+        assert_eq!(names(&found), vec!["secret-own.txt"]);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -881,14 +891,22 @@ mod content_tests {
     #[test]
     fn skips_symlinks_and_hidden_entries() {
         let dir = scratch("symlink");
-        write(&dir.join("real.txt"), b"TARGET real");
-        write(&dir.join(".hidden.txt"), b"TARGET hidden");
-        write(&dir.join(".hidden-dir/inside.txt"), b"TARGET hidden dir");
+        let root = dir.join("root");
+        fs::create_dir_all(&root).unwrap();
+        // Fixture OUTSIDE the search root: content search must stay in `root`
+        // on every platform (non-vacuous root-confinement control).
+        let outside = dir.join("outside");
+        write(&outside.join("secret.txt"), b"TARGET outside");
+        // Positive control: a visible in-root file with matching content.
+        write(&root.join("real.txt"), b"TARGET real");
+        // Hidden in-root matches: excluded by default, included on request.
+        write(&root.join(".hidden.txt"), b"TARGET hidden");
+        write(&root.join(".hidden-dir/inside.txt"), b"TARGET hidden dir");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link-to-outside")).unwrap();
 
         let found = search_contents(
-            &dir,
+            &root,
             "target",
             ContentSearchOptions::default(),
             &AtomicBool::new(false),
@@ -897,18 +915,24 @@ mod content_tests {
             .iter()
             .map(|entry| entry.entry.name_text.clone())
             .collect();
+        // Verified everywhere: the visible in-root file is found while hidden
+        // entries and the out-of-root file are excluded. On Unix the symlink
+        // is skipped, so "secret.txt" never appears even though the link is
+        // present in `root`.
         assert_eq!(names, vec!["real.txt"]);
 
         let options = ContentSearchOptions {
             include_hidden: true,
             ..Default::default()
         };
-        let found = search_contents(&dir, "target", options, &AtomicBool::new(false));
+        let found = search_contents(&root, "target", options, &AtomicBool::new(false));
         let mut names: Vec<_> = found
             .iter()
             .map(|entry| entry.entry.name_text.clone())
             .collect();
         names.sort();
+        // Hidden entries now appear; root confinement still holds (no
+        // "secret.txt") on all platforms, and the symlink is skipped on Unix.
         assert_eq!(names, vec![".hidden.txt", "inside.txt", "real.txt"]);
 
         let _ = fs::remove_dir_all(&dir);
