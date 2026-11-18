@@ -5,15 +5,18 @@
 //! The debouncer callback runs on its own thread, so it may only signal a
 //! channel; the UI entity is updated by a GPUI foreground task (`Explorer`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use notify_debouncer_full::notify::event::{EventKind, ModifyKind, RenameMode};
-use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
+use notify_debouncer_full::notify::{
+    Config, Error, EventHandler, RecommendedWatcher, RecursiveMode, Result as NotifyResult,
+    Watcher, WatcherKind,
+};
+use notify_debouncer_full::{new_debouncer_opt, DebounceEventResult, Debouncer, RecommendedCache};
 use tracing::error;
 
-type FileEventWatcher = Debouncer<RecommendedWatcher, RecommendedCache>;
+type FileEventWatcher = Debouncer<SafeWatcher, RecommendedCache>;
 
 /// Normalized filesystem event, independent of `notify`'s event types.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +91,77 @@ pub fn normalize_events(result: &DebounceEventResult) -> Vec<FsEvent> {
 /// Debounce window for change events.
 pub const DEBOUNCE: Duration = Duration::from_millis(400);
 
+/// Fail-soft adapter around the platform watcher.
+///
+/// `new_debouncer_opt` spawns its worker thread *before* calling `T::new(...)?`.
+/// When the OS watcher fails to initialize (ENOSPC / EMFILE / permission), that
+/// `?` returns early and the orphaned thread loops forever on a stop flag no
+/// surviving guard can set (upstream notify-debouncer-full 0.7.0 bug). Returning
+/// `Ok` even on failure keeps the debouncer guard alive, so the existing `Drop`
+/// stops the thread normally.
+struct SafeWatcher {
+    inner: Option<RecommendedWatcher>,
+    init_error: Option<String>,
+}
+
+impl SafeWatcher {
+    /// Rebuild a `notify::Error` from the stored cause. `notify::Error` is not
+    /// `Clone`, so the failure message is kept as a `String`.
+    fn init_failure(&self) -> Error {
+        Error::generic(
+            self.init_error
+                .as_deref()
+                .unwrap_or("OS watcher initialization failed"),
+        )
+    }
+}
+
+impl Watcher for SafeWatcher {
+    fn new<F: EventHandler>(handler: F, config: Config) -> NotifyResult<Self> {
+        match RecommendedWatcher::new(handler, config) {
+            Ok(inner) => Ok(Self {
+                inner: Some(inner),
+                init_error: None,
+            }),
+            Err(error) => {
+                let reason = error.to_string();
+                error!(%reason, "OS watcher initialization failed inside debouncer");
+                // Never propagate the error: the debouncer thread already exists
+                // at this point, and returning `Err` would leak it forever.
+                Ok(Self {
+                    inner: None,
+                    init_error: Some(reason),
+                })
+            }
+        }
+    }
+
+    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> NotifyResult<()> {
+        match &mut self.inner {
+            Some(inner) => inner.watch(path, recursive_mode),
+            None => Err(self.init_failure()),
+        }
+    }
+
+    fn unwatch(&mut self, path: &Path) -> NotifyResult<()> {
+        match &mut self.inner {
+            Some(inner) => inner.unwatch(path),
+            None => Err(self.init_failure()),
+        }
+    }
+
+    fn configure(&mut self, option: Config) -> NotifyResult<bool> {
+        match &mut self.inner {
+            Some(inner) => inner.configure(option),
+            None => Err(self.init_failure()),
+        }
+    }
+
+    fn kind() -> WatcherKind {
+        RecommendedWatcher::kind()
+    }
+}
+
 /// Owns the OS watcher for the directories currently displayed.
 pub struct DirWatcher {
     debouncer: Option<FileEventWatcher>,
@@ -99,9 +173,28 @@ impl DirWatcher {
     /// Create the debounced watcher. `on_change` is called (from the watcher
     /// thread) with normalized events after every debounced batch.
     pub fn new(on_change: impl Fn(Vec<FsEvent>) + Send + 'static) -> Self {
-        match new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
-            on_change(normalize_events(&result));
-        }) {
+        // The debouncer spawns its worker thread before constructing the OS
+        // watcher. Fail here, while no thread exists yet, for the common case
+        // of an unavailable watcher; `SafeWatcher` covers the TOCTOU remainder.
+        if let Err(error) = RecommendedWatcher::new(|_| {}, Config::default()) {
+            let reason = format!("ファイル監視を初期化できませんでした: {error}");
+            error!(%reason, "watcher initialization failed");
+            return Self {
+                debouncer: None,
+                watched: Vec::new(),
+                last_error: Some(reason),
+            };
+        }
+
+        match new_debouncer_opt::<_, SafeWatcher, _>(
+            DEBOUNCE,
+            None,
+            move |result: DebounceEventResult| {
+                on_change(normalize_events(&result));
+            },
+            RecommendedCache::new(),
+            Config::default(),
+        ) {
             Ok(debouncer) => Self {
                 debouncer: Some(debouncer),
                 watched: Vec::new(),
@@ -225,6 +318,36 @@ mod tests {
     #[test]
     fn watcher_errors_become_rescan() {
         assert_eq!(normalize_events(&Err(vec![])), vec![FsEvent::Rescan]);
+    }
+
+    #[test]
+    fn safe_watcher_without_inner_reports_init_failure() {
+        use notify_debouncer_full::notify::{RecursiveMode, Watcher};
+
+        use super::SafeWatcher;
+
+        let dir = scratch("safe-watcher");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Simulate the debouncer having kept its thread alive while the real OS
+        // watcher failed, without needing to force an actual kernel failure.
+        let mut watcher = SafeWatcher {
+            inner: None,
+            init_error: Some("injected init failure".to_string()),
+        };
+
+        let err = watcher
+            .watch(&dir, RecursiveMode::NonRecursive)
+            .expect_err("fail-soft watcher must report the stored init error");
+        assert!(
+            err.to_string().contains("injected init failure"),
+            "stored cause should be preserved: {err}"
+        );
+        assert!(watcher.unwatch(&dir).is_err());
+        assert!(watcher.configure(Default::default()).is_err());
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
