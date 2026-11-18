@@ -246,6 +246,31 @@ status: current
 - [x] **R1-AUDIT01** Windows の rename は予約解除後の残存 TOCTOU を文書化
   — 対応: 8dd37f3（std::fs では atomic replace-if-absent 不可のため現状維持）
 
+### 優先度: 高（第12回 project-review / 一部対応済み）
+
+- [x] **R4-CI01** CI の extra_gates に release 検証が無い
+  — 対応: 3221859
+- [x] **R3-DE01** release で GPUI_FE_DEBUG_* が実設定を書き換える
+  — 対応: 37d0c24（compile-time gate、strings で ABSENT 確認）
+- [x] **R1-CF01** config_dir 不在時に save が成功を返す / size cap 矛盾 / terminal 既定値の永続化
+  — 対応: bf7f58e
+
+### 優先度: 中（第12回 project-review / confirmed）
+
+- [ ] **R2-ER01** OS ドロップのスキップ通知が run_transfer で上書きされる — main.rs:4040
+- [ ] **R2-ER01** ブックマーク/ラベル系で設定保存失敗が握りつぶされる — main.rs:2068
+- [ ] **R2-ER01** カットのキャンセル/失敗時もクリップボードが破棄される — main.rs:3890
+- [ ] **R2-ER01** 部分コピー削除エラーが無視され残骸が残る — ops.rs:585
+- [ ] **R2-BV01** 古い進捗コールバックが最終ステータスを上書き — main.rs:3694
+- [ ] **R2-BV01** エラー状態が進行中 reload コールバックに上書きされる — main.rs:2700
+- [ ] **R2-BV01** reload 中の watcher 増分更新が古いスナップショットで消える — main.rs:2281
+- [ ] **R2-BV01** Search 表示中に rebuild_view が呼ばれ検索フィルタが失われる — main.rs:3546
+- [ ] **R1-AR01** chord 検証ルールが settings/main に三重分散 — settings.rs:212, main.rs:432,722
+- [ ] **R1-AR01** TabSession が History の公開 API を逆算利用 — settings.rs:327
+- [ ] **R5-TS01** 非 Unix で symlink 非追跡テストが空振り — search.rs:554
+- [ ] **R5-TS01** クロスデバイス移動フォールバックが実質未テスト — ops.rs:855
+- [ ] **R5-DC01** review-report の行数/構造化ログ記述がドリフト — review-report.md:30,278
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
