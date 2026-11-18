@@ -423,6 +423,15 @@ status: current
 - [x] **R4-LOG01** 失敗/キャンセル転送が INFO「completed」として記録される — 対応: 7ddc803
   — `app/src/main.rs:4266`
 
+### 優先度: 中（第22回発掘・confirmed）
+
+- [ ] **R2-IDEM01** ブックマーク上限追い出しでラベルが孤立し再追加で復活
+  — `app/src/settings.rs:668-670`
+- [ ] **R2-IDEM01** 未ブックマーク行に設定したラベルが再起動で失われる
+  — `app/src/main.rs:7562` / `app/src/settings.rs:745`
+- [ ] **R3-CANCEL01** ゴミ箱 redo キャンセル時に部分完了結果が破棄される
+  — `app/src/main.rs:4966-5001`
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
