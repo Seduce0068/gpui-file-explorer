@@ -22,6 +22,21 @@
 //!   Unix the reservation is replaced atomically by `rename`; on Windows
 //!   `rename` refuses to replace it, so it is removed first and a residual
 //!   TOCTOU window remains (see `Reservation` below).
+//! - **Failure cleanup only removes what we created.** `copy_entry` and the
+//!   cross-device fallback of `move_entry` key cleanup on a `dest_created` flag
+//!   reported by `copy_recursive`, not on a pre-copy existence snapshot. If an
+//!   exclusive create loses a race to a concurrent creator, their entry is
+//!   never recursively deleted.
+//! - **Partial temp names are unique per operation.** A process-wide nonce
+//!   joins the timestamp and PID in every `.partial-*` name, and a temp-name
+//!   collision is retried instead of deleting a file we did not create.
+//!
+//! Residual TOCTOU (deliberately documented, not hidden): `std` exposes no
+//! atomic "replace only if still ours" primitive for an entire directory tree
+//! or for Windows. A concurrent creator that swaps the destination *after* our
+//! copy succeeded but *before* verification/cleanup can therefore still have
+//! its entry removed; the fix closes the common check→create race, not every
+//! theoretically racy interleaving.
 //!
 //! This module is intentionally GPUI-free so it can be unit tested headlessly.
 //! It is exercised by the tests below and backs the cut/copy/paste UI.
@@ -29,7 +44,7 @@
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::model::{AppError, BoxedCause};
 
@@ -304,6 +319,30 @@ fn ensure_not_into_itself(src: &Path, dest_dir: &Path) -> Result<(), OpError> {
     Ok(())
 }
 
+/// Process-wide, monotonically increasing nonce for `.partial-*` temp names.
+///
+/// Two concurrent copies in this process share the same PID and both start with
+/// `stats.files == 0`. On a coarse clock the timestamp can be identical too, so
+/// without this nonce they would pick the same temp path: one `create_new`
+/// would fail with `AlreadyExists` and its error cleanup would delete the other
+/// operation's in-progress partial. The nonce makes the name unique within the
+/// process; the timestamp + PID keep it distinct from stale files of earlier
+/// runs. Wrapping after `u64::MAX` is harmless because the clock component has
+/// advanced by then.
+static PARTIAL_NONCE: AtomicU64 = AtomicU64::new(0);
+
+fn next_partial_nonce() -> u64 {
+    PARTIAL_NONCE.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Build a NAME_MAX-safe partial-file name. The destination name is deliberately
+/// not embedded here (see [`copy_file_atomic`]); `files` is the per-operation
+/// counter and `nonce` is the process-wide unique value from
+/// [`next_partial_nonce`].
+fn partial_temp_name(nanos: u128, pid: u32, files: u64, nonce: u64) -> String {
+    format!(".partial-{nanos}-{pid}-{files}-{nonce}")
+}
+
 /// Copy a single file atomically: write a sibling `.partial-*` file, flush,
 /// then link it into place. `dest` must not exist.
 fn copy_file_atomic(
@@ -320,33 +359,60 @@ fn copy_file_atomic(
         .ok_or_else(|| OpError::InvalidTarget("コピー先の親がありません".to_string()))?;
     // O_EXCL reservation with an unpredictable name: `File::create` on a
     // predictable `.partial-*` path follows a pre-planted symlink and can
-    // truncate an unrelated file (CWE-59). nanos + PID + file counter keep
-    // concurrent copies distinct without colliding with stale temp files.
-    // The destination name is deliberately *not* embedded: a legal name close
-    // to NAME_MAX would otherwise push the temp name past the limit and make
-    // the copy fail with ENAMETOOLONG. `create_new` below still reserves the
-    // name exclusively, so the collision/symlink protection is unchanged.
-    let partial = parent.join(format!(
-        ".partial-{}-{}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0),
-        std::process::id(),
-        stats.files
-    ));
-
+    // truncate an unrelated file (CWE-59). nanos + PID + per-operation counter
+    // + process-wide nonce keep concurrent copies distinct without colliding
+    // with stale temp files. The destination name is deliberately *not*
+    // embedded: a legal name close to NAME_MAX would otherwise push the temp
+    // name past the limit and make the copy fail with ENAMETOOLONG.
+    //
+    // A `create_new` collision on the temp name is retried with a fresh nonce
+    // instead of being reported as a destination conflict. Crucially, the error
+    // path below only removes a partial we successfully opened ourselves, so a
+    // retry never deletes another operation's in-progress file.
     // Report progress relative to the bytes copied by previous files, so the
     // callback receives a monotonically increasing byte count for the whole
     // operation.
     let base_bytes = stats.bytes;
-    let result = (|| -> Result<u64, OpError> {
-        let mut input = fs::File::open(src).map_err(|e| io_error(src, e))?;
-        let mut output = fs::OpenOptions::new()
+
+    // Open the source before reserving a temp name so a missing/unreadable
+    // source leaves no partial behind at all.
+    let mut input = fs::File::open(src).map_err(|e| io_error(src, e))?;
+
+    // Bound the retry loop so a directory pre-planted with many colliding names
+    // cannot spin forever; the nonce changes on every attempt, so reaching the
+    // cap is only plausible under deliberate interference.
+    const PARTIAL_CREATE_ATTEMPTS: usize = 32;
+    let mut attempts = 0usize;
+    let (partial, mut output) = loop {
+        let candidate = parent.join(partial_temp_name(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0),
+            std::process::id(),
+            stats.files,
+            next_partial_nonce(),
+        ));
+        match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&partial)
-            .map_err(|e| io_error(dest, e))?;
+            .open(&candidate)
+        {
+            Ok(file) => break (candidate, file),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                attempts += 1;
+                if attempts >= PARTIAL_CREATE_ATTEMPTS {
+                    return Err(OpError::Io {
+                        path: dest.to_path_buf(),
+                        message: "一時ファイル名を確保できませんでした".to_string(),
+                    });
+                }
+            }
+            Err(error) => return Err(io_error(dest, error)),
+        }
+    };
+
+    let result = (|| -> Result<u64, OpError> {
         let mut buffer = vec![0u8; COPY_CHUNK_SIZE];
         let mut total = 0u64;
         loop {
@@ -445,12 +511,21 @@ fn copy_symlink(src: &Path, dest: &Path, stats: &mut OpStats) -> Result<(), OpEr
 }
 
 /// Recursively copy `src` to `dest` (which must not exist yet).
+///
+/// `dest_created` is flipped to `true` exactly when this call successfully
+/// creates its `dest`. The flag is shared by the whole recursion: recursion is
+/// top-down, so a successful creation at any depth implies the root `dest` was
+/// created by this operation first, making one monotone flag sufficient to key
+/// the caller's failure cleanup. When the root creation loses a race to a
+/// concurrent creator it fails *before* the flag is set, so cleanup leaves that
+/// foreign entry untouched (see [`copy_entry`] and `move_entry`'s EXDEV path).
 fn copy_recursive(
     src: &Path,
     dest: &Path,
     cancel: &CancelFlag,
     stats: &mut OpStats,
     progress: &mut dyn FnMut(u64),
+    dest_created: &mut bool,
 ) -> Result<(), OpError> {
     if cancel.is_cancelled() {
         return Err(OpError::Cancelled);
@@ -458,10 +533,13 @@ fn copy_recursive(
     let metadata = fs::symlink_metadata(src).map_err(|e| io_error(src, e))?;
 
     if metadata.file_type().is_symlink() {
-        return copy_symlink(src, dest, stats);
+        copy_symlink(src, dest, stats)?;
+        *dest_created = true;
+        return Ok(());
     }
     if metadata.is_dir() {
         fs::create_dir(dest).map_err(|e| io_error(dest, e))?;
+        *dest_created = true;
         stats.dirs += 1;
         let mut entries: Vec<PathBuf> = Vec::new();
         let reader = fs::read_dir(src).map_err(|e| io_error(src, e))?;
@@ -474,7 +552,14 @@ fn copy_recursive(
             let name = child.file_name().ok_or_else(|| {
                 OpError::InvalidTarget("子要素の名前を取得できません".to_string())
             })?;
-            copy_recursive(&child, &dest.join(name), cancel, stats, progress)?;
+            copy_recursive(
+                &child,
+                &dest.join(name),
+                cancel,
+                stats,
+                progress,
+                dest_created,
+            )?;
         }
         #[cfg(unix)]
         {
@@ -485,7 +570,9 @@ fn copy_recursive(
         return Ok(());
     }
     if metadata.is_file() {
-        return copy_file_atomic(src, dest, cancel, stats, progress);
+        copy_file_atomic(src, dest, cancel, stats, progress)?;
+        *dest_created = true;
+        return Ok(());
     }
     Err(OpError::Unsupported(format!(
         "特殊ファイルはコピーできません: {}",
@@ -627,20 +714,22 @@ pub fn copy_entry(
     };
 
     let mut stats = OpStats::default();
-    // Remember whether the destination was already present before we started.
-    // `exists()` follows symlinks and is false for a dangling one, so include
-    // `is_symlink()`: a pre-existing dangling symlink is still the user's entry
-    // and must never be removed by our cleanup, even if `copy_recursive` fails
-    // with AlreadyExists against it.
-    let dest_existed = dest.exists() || dest.is_symlink();
-    if let Err(error) = copy_recursive(src, &dest, cancel, &mut stats, progress) {
+    // Ownership-aware cleanup: only a destination this operation actually
+    // created may be removed on failure. A pre-copy `dest_existed` snapshot is
+    // not enough — a concurrent creator can plant `dest` *after* that check and
+    // before our exclusive create, and an `AlreadyExists` error must then leave
+    // the foreign entry alone. `copy_recursive` reports creation through this
+    // flag instead. (A pre-existing dangling symlink is likewise never created
+    // by us, so it is also preserved.)
+    let mut dest_created = false;
+    if let Err(error) = copy_recursive(src, &dest, cancel, &mut stats, progress, &mut dest_created)
+    {
         // `copy_recursive` may already have created `dest` (or part of its
         // tree) before failing, for example on cancellation. Clean it up just
         // like the verification-failure path below and the cross-device
         // fallback in `move_entry`, so no half-written destination remains.
-        // Only remove it when this operation created it; a pre-existing
-        // destination (notably a dangling symlink) must be left untouched.
-        let cleanup = if !dest_existed {
+        // The flag guarantees we only ever delete our own entry.
+        let cleanup = if dest_created {
             remove_entry_safe(&dest)
         } else {
             Ok(())
@@ -648,7 +737,11 @@ pub fn copy_entry(
         return Err(with_cleanup_failure(error, &dest, cleanup));
     }
     if let Err(error) = verify_transfer(src, &dest, cancel) {
-        // Never leave a truncated or structurally different copy behind.
+        // `copy_recursive` succeeded, so `dest_created` is true and the entry is
+        // ours; never leave a truncated or structurally different copy behind.
+        // Residual TOCTOU: a concurrent creator that swaps `dest` between the
+        // copy and this cleanup could still lose its entry — `std` exposes no
+        // atomic "replace only if still ours" primitive for the whole tree.
         let cleanup = remove_entry_safe(&dest);
         return Err(with_cleanup_failure(error, &dest, cleanup));
     }
@@ -908,10 +1001,25 @@ pub fn move_entry(
             reservation.cleanup();
             let mut stats = OpStats::default();
             let progress: &mut dyn FnMut(u64) = &mut on_progress;
-            if let Err(copy_err) = copy_recursive(src, &dest, cancel, &mut stats, progress) {
-                let cleanup = remove_entry_safe(&dest);
+            // Once our reservation is released there is a window in which a
+            // concurrent creator can claim `dest`. Track whether the fallback
+            // copy actually created it so an `AlreadyExists` failure never
+            // turns our cleanup into a recursive delete of foreign data.
+            let mut dest_created = false;
+            if let Err(copy_err) =
+                copy_recursive(src, &dest, cancel, &mut stats, progress, &mut dest_created)
+            {
+                let cleanup = if dest_created {
+                    remove_entry_safe(&dest)
+                } else {
+                    Ok(())
+                };
                 return Err(with_cleanup_failure(copy_err, &dest, cleanup));
             }
+            // The copy succeeded, so `dest` is ours; the verify/cancel paths
+            // below clean it up. Residual TOCTOU: a concurrent creator that
+            // swaps `dest` after our copy could still lose its entry, because
+            // `std` offers no atomic "replace only if still ours" for a tree.
             if let Err(verify_err) = verify_transfer(src, &dest, cancel) {
                 let cleanup = remove_entry_safe(&dest);
                 return Err(with_cleanup_failure(verify_err, &dest, cleanup));
@@ -1085,6 +1193,73 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn partial_names_are_unique_within_one_process() {
+        // Two concurrent copies share PID and start with files == 0. Even with
+        // an identical (coarse) timestamp, the process-wide nonce must make the
+        // temp names differ so neither operation deletes the other's partial.
+        let nanos = 1_700_000_000_000_000_000u128;
+        let pid = std::process::id();
+        let first_nonce = next_partial_nonce();
+        let second_nonce = next_partial_nonce();
+        assert_ne!(first_nonce, second_nonce, "nonce must be monotonic");
+
+        let first = partial_temp_name(nanos, pid, 0, first_nonce);
+        let second = partial_temp_name(nanos, pid, 0, second_nonce);
+        assert_ne!(
+            first, second,
+            "identical clock/PID must still yield unique names"
+        );
+        assert!(first.starts_with(".partial-"));
+        assert!(second.starts_with(".partial-"));
+        // NAME_MAX-safe: destination name is deliberately not embedded.
+        assert!(first.len() < 255 && second.len() < 255);
+    }
+
+    #[test]
+    fn concurrent_copies_keep_their_own_partials() {
+        // Distinct destination names avoid a destination-level race, isolating
+        // the temp-name race: both operations have the same PID and files == 0.
+        let dir = scratch("concurrent-partials");
+        let a_src = dir.join("a-src/a.txt");
+        let b_src = dir.join("b-src/b.txt");
+        write(&a_src, b"aaa");
+        write(&b_src, b"bbb");
+        // One shared destination directory: both partials are created as
+        // siblings there, so a name collision would make one operation delete
+        // the other's in-progress file. The destination file names differ, so
+        // there is no destination-level race to confuse the result.
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let a_dest = dest_dir.clone();
+        let b_dest = dest_dir.clone();
+        let a = std::thread::spawn(move || {
+            copy_entry(
+                &a_src,
+                &a_dest,
+                ConflictPolicy::Fail,
+                &CancelFlag::new(),
+                |_| {},
+            )
+        });
+        let b = std::thread::spawn(move || {
+            copy_entry(
+                &b_src,
+                &b_dest,
+                ConflictPolicy::Fail,
+                &CancelFlag::new(),
+                |_| {},
+            )
+        });
+        assert_eq!(a.join().unwrap().unwrap().files, 1);
+        assert_eq!(b.join().unwrap().unwrap().files, 1);
+        assert_eq!(fs::read(dest_dir.join("a.txt")).unwrap(), b"aaa");
+        assert_eq!(fs::read(dest_dir.join("b.txt")).unwrap(), b"bbb");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
