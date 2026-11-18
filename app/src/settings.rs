@@ -182,8 +182,11 @@ fn sane_keymap_entry(action: &str, chord: &str) -> Option<(String, String)> {
     if !sane(action) || !sane(chord) {
         return None;
     }
+    // Only the final `+`-separated segment is the key. Comparing the whole
+    // chord would also reject `ctrl+f10` / `f12` because they contain "f1".
     let lowered = chord.to_ascii_lowercase();
-    if lowered.contains("escape") || lowered.contains("f1") {
+    let key = lowered.rsplit('+').next().unwrap_or(lowered.as_str());
+    if key == "f1" || key == "escape" {
         return None;
     }
     Some((action.to_string(), chord.to_string()))
@@ -871,10 +874,13 @@ impl Settings {
 
         // Keymap overrides get the same harden-on-load treatment: trim both
         // sides, drop unusable/reserved entries, cap the count and keep only
-        // the first override per action. Unknown action names are kept; the
-        // application ignores them when it builds the key map.
+        // the first override per action AND per chord. Two actions bound to
+        // the same chord would make key resolution depend on iteration order,
+        // so a later entry with a duplicate chord is dropped. Unknown action
+        // names are kept; the application ignores them when building the map.
         let mut keymap = Vec::new();
         let mut seen_actions = HashSet::new();
+        let mut seen_chords = HashSet::new();
         for (action, chord) in std::mem::take(&mut self.keymap) {
             if keymap.len() >= MAX_KEYMAP_OVERRIDES {
                 break;
@@ -882,7 +888,7 @@ impl Settings {
             let Some((action, chord)) = sane_keymap_entry(&action, &chord) else {
                 continue;
             };
-            if seen_actions.insert(action.clone()) {
+            if seen_actions.insert(action.clone()) && seen_chords.insert(chord.clone()) {
                 keymap.push((action, chord));
             }
         }
@@ -996,11 +1002,14 @@ impl Settings {
                 file.sync_all()
             })();
             drop(file);
-            if let Err(error) = written {
+            // A failed write AND a failed rename share the same cleanup
+            // branch: a leftover tmp file would block later saves because
+            // the reservation uses `create_new(true)`.
+            if let Err(error) = written.and_then(|()| std::fs::rename(&tmp, path)) {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(error);
             }
-            std::fs::rename(&tmp, path)
+            Ok(())
         })();
         let _ = std::fs::remove_file(&lock);
         result
@@ -1041,6 +1050,30 @@ mod tests {
         // A directory as the target path makes the final rename fail.
         let settings = Settings::default();
         assert!(settings.save_to(&dir).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_removes_tmp_file_when_rename_fails() {
+        let dir = scratch("tmp-cleanup");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // A directory as the target path makes the final rename fail, while
+        // keeping the tmp file inside `dir` where the test can inspect it.
+        let target = dir.join("settings.json");
+        fs::create_dir(&target).unwrap();
+        let settings = Settings::default();
+        assert!(settings.save_to(&target).is_err());
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains("json.tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no json.tmp-* file should survive a failed rename: {leftovers:?}"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2180,7 +2213,7 @@ mod terminal_command_tests {
 
 #[cfg(test)]
 mod keymap_settings_tests {
-    use super::{Settings, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES};
+    use super::{sane_keymap_entry, Settings, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES};
     use std::fs;
     use std::path::PathBuf;
 
@@ -2243,6 +2276,43 @@ mod keymap_settings_tests {
                 ("unknown_action".to_string(), "ctrl+y".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn keymap_validation_keeps_first_entry_per_chord() {
+        let mut settings = Settings {
+            keymap: vec![
+                ("a".to_string(), "ctrl+p".to_string()),
+                ("b".to_string(), "ctrl+p".to_string()),
+                ("c".to_string(), "ctrl+shift+p".to_string()),
+            ],
+            ..Settings::default()
+        };
+        settings.validate();
+        assert_eq!(
+            settings.keymap,
+            vec![
+                ("a".to_string(), "ctrl+p".to_string()),
+                ("c".to_string(), "ctrl+shift+p".to_string()),
+            ],
+            "the first action bound to a chord must win"
+        );
+    }
+
+    #[test]
+    fn sane_keymap_entry_allows_high_function_keys_and_rejects_reserved_keys() {
+        for chord in ["f10", "ctrl+f12", "shift+f19"] {
+            assert!(
+                sane_keymap_entry("act", chord).is_some(),
+                "{chord} should be accepted"
+            );
+        }
+        for chord in ["f1", "ctrl+f1", "escape", "alt+escape"] {
+            assert!(
+                sane_keymap_entry("act", chord).is_none(),
+                "{chord} should be rejected"
+            );
+        }
     }
 
     #[test]
