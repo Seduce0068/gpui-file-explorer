@@ -392,17 +392,18 @@ status: current
 
 ### 優先度: 中（第20回保守性発掘）
 
-- [ ] **R1-MAINT01/R2-MAINT02** stale dead_code と古いコメント
+- [x] **R1-MAINT01/R2-MAINT02** stale dead_code と古いコメント — 対応: 7ef58e6
   — settings 個人化 API / model コンストラクタ / strings F6-36
-- [ ] **R3-E2E01** app/README 内で E2E ツールの導入状態が矛盾（未導入 vs 導入済み）
+- [x] **R3-E2E01** app/README 内で E2E ツールの導入状態が矛盾（未導入 vs 導入済み） — 対応: f62a6df
   — `app/README.md:467` vs `:489`
-- [ ] **R3-E2E01** setup-e2e-input.sh が libxdo 依存を検証せず xdotool を「installed」と報告しうる
+- [x] **R3-E2E01** setup-e2e-input.sh が libxdo 依存を検証せず誤報告する
+  — 対応: f62a6df
   — `scripts/setup-e2e-input.sh:55`
-- [ ] **R3-E2E01** E2E probe の実行証跡が未記録（ローカル完結で可能な準備）
+- [x] **R3-E2E01** E2E probe の実行証跡が未記録（ローカル完結で可能な準備） — 対応: f62a6df
   — `README.md:69,107`
-- [ ] **R4-WASM01** gpui-kit feature 調整による stable wasm 経路の可否が未検証
+- [x] **R4-WASM01** gpui-kit feature 調整による stable wasm 経路の可否が未検証 — 対応: 539292a
   — `notes/wasm-browser-notes.md:28-38`
-- [ ] **R4-WASM01** wasm 失敗ログが現行 Cargo.toml の trash ゲートと矛盾
+- [x] **R4-WASM01** wasm 失敗ログが現行 Cargo.toml の trash ゲートと矛盾 — 対応: 539292a
   — `notes/wasm-browser-notes.md:43`
 
 ### 優先度: 低（調査タスク）
