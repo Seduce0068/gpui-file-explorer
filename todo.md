@@ -366,6 +366,30 @@ status: current
 - [x] **R3-IO01** create_unique_folder が dangling symlink で100回失敗 — 対応: 45ebca4
   — `app/src/model.rs:766-777`
 
+### 優先度: 高（第19回相互作用監査）
+
+- [ ] **R3-INT03** copy失敗時 cleanup が並行作成者の宛先を再帰削除する
+  — `app/src/ops.rs:635-648,911-917`
+- [ ] **R4-INT04** 未知 enum フォールバック値が次回 save で書き戻される
+  — `app/src/settings.rs:200-210,924-936`
+
+### 優先度: 中（第19回相互作用監査）
+
+- [ ] **R1-INT01** active-by-path が同一 cwd タブの先頭一致を選び履歴と active が食い違う
+  — `app/src/main.rs:9095-9100`
+- [ ] **R2-INT02** 操作完了後の Search でスナップショットが無警告で古くなる
+  — `app/src/main.rs:6404,6478`
+- [ ] **R2-INT02** watcher Removed が STATUS_SEARCH_STALE を消す
+  — `app/src/main.rs:2562`
+- [ ] **R2-INT02** Search のキーホワイトリストが keymap 再バインドと矛盾
+  — `app/src/main.rs:122-130`
+- [ ] **R3-INT03** 短縮 .partial-* 名に nonce が無く並行コピーで衝突
+  — `app/src/ops.rs:329-337`
+- [ ] **R4-INT04** sanitize_paths_for_save に合計バイト上限が無い
+  — `app/src/settings.rs:1147-1178`
+- [ ] **R4-INT04** terminal_command のコメントが現行実装と矛盾
+  — `app/src/settings.rs:1444,2809`
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
