@@ -48,7 +48,15 @@
 //! versions are loaded but never written back), and [`Settings::validate`]
 //! enforces ranges/caps and drops unusable paths. [`Settings::save_to`] always
 //! stamps the current [`SCHEMA_VERSION`] on what it writes.
+//!
+//! An unrecognized persisted enum string (e.g. `"view": "list"` from a newer
+//! build) is likewise kept read-only: the field deserializers substitute the
+//! default so loading never fails, but [`Settings::load_from`] then marks the
+//! session read-only with a [`Settings::load_error`] reason. Saving is a no-op
+//! in that state, so the original string is never overwritten by the fallback
+//! (which a newer build may understand).
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -189,6 +197,34 @@ fn default_theme() -> ThemeMode {
     ThemeMode::Dark
 }
 
+std::thread_local! {
+    /// Cross-deserializer signal that an unrecognized persisted enum string
+    /// was replaced by a fallback on this thread. Every field-level enum
+    /// deserializer (here and in `model`) reports through
+    /// [`note_unknown_persisted_enum`]; [`Settings::load_from_with_backup`]
+    /// clears it before parsing and consumes it afterwards so the loaded
+    /// session can be kept read-only. Not persisted and never shared across
+    /// threads.
+    static UNKNOWN_ENUM_SEEN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Record that a persisted enum string is not recognized by this build.
+///
+/// The field deserializers still substitute a safe default so one bad value
+/// cannot back up the whole file, but [`Settings::load_from_with_backup`] uses
+/// this signal to make the session read-only: writing the fallback back would
+/// silently destroy the original value.
+pub(crate) fn note_unknown_persisted_enum() {
+    UNKNOWN_ENUM_SEEN.with(|seen| seen.set(true));
+}
+
+/// Clear and return the signal for the current load. Called once before
+/// deserialization (to drop any stray signal from a direct `from_str` call)
+/// and once after it.
+fn take_unknown_persisted_enum() -> bool {
+    UNKNOWN_ENUM_SEEN.with(|seen| seen.replace(false))
+}
+
 /// Deserialize a persisted theme, falling back to [`default_theme`] for any
 /// unknown name instead of rejecting the whole settings file.
 ///
@@ -196,7 +232,8 @@ fn default_theme() -> ThemeMode {
 /// written by a newer build (e.g. `"system"`) must not cause
 /// [`Settings::back_up_unusable`] to discard every other setting. This mirrors
 /// the `#[serde(other)]` fallback used for locally-defined enums without
-/// touching the external crate.
+/// touching the external crate. The fallback also marks the load read-only via
+/// [`note_unknown_persisted_enum`], so the unknown string is never rewritten.
 fn deserialize_theme<'de, D>(deserializer: D) -> Result<ThemeMode, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -205,7 +242,10 @@ where
     Ok(match value.as_str() {
         "dark" => ThemeMode::Dark,
         "light" => ThemeMode::Light,
-        _ => default_theme(),
+        _ => {
+            note_unknown_persisted_enum();
+            default_theme()
+        }
     })
 }
 
@@ -292,14 +332,20 @@ pub enum ViewLayout {
 
 /// Deserialize a persisted view layout, mapping unknown names (e.g. a future
 /// `"list"`) to the default instead of backing up the entire settings file.
+/// Known values are matched explicitly so only a genuinely unknown string
+/// triggers [`note_unknown_persisted_enum`] and makes the load read-only.
 fn deserialize_view_layout<'de, D>(deserializer: D) -> Result<ViewLayout, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = String::deserialize(deserializer)?;
     Ok(match value.as_str() {
+        "details" => ViewLayout::Details,
         "icons" => ViewLayout::Icons,
-        _ => ViewLayout::default(),
+        _ => {
+            note_unknown_persisted_enum();
+            ViewLayout::default()
+        }
     })
 }
 
@@ -314,16 +360,22 @@ pub enum WindowMode {
 }
 
 /// Unknown persisted mode falls back to Windowed so one bad enum value cannot
-/// back up the whole settings file.
+/// back up the whole settings file. As with the other enum deserializers, the
+/// unknown string is reported via [`note_unknown_persisted_enum`] so the
+/// session stays read-only and the original value survives on disk.
 fn deserialize_window_mode<'de, D>(deserializer: D) -> Result<WindowMode, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = String::deserialize(deserializer)?;
     Ok(match value.as_str() {
+        "windowed" => WindowMode::Windowed,
         "maximized" => WindowMode::Maximized,
         "fullscreen" => WindowMode::Fullscreen,
-        _ => WindowMode::default(),
+        _ => {
+            note_unknown_persisted_enum();
+            WindowMode::default()
+        }
     })
 }
 
@@ -337,6 +389,8 @@ pub struct WindowBoundsState {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Persisted frame mode. An unknown string falls back to `Windowed` and
+    /// keeps the load read-only so the original value survives on disk.
     #[serde(deserialize_with = "deserialize_window_mode")]
     pub mode: WindowMode,
 }
@@ -471,13 +525,15 @@ pub struct Settings {
     pub sort: SortSpec,
     pub show_hidden: bool,
     /// Unknown values deserialize to [`ViewLayout::default`] so a single bad
-    /// string cannot cost the whole settings file.
+    /// string cannot cost the whole settings file. The load is then read-only
+    /// (see the module docs), so saving cannot replace the original string.
     #[serde(deserialize_with = "deserialize_view_layout")]
     pub view: ViewLayout,
     /// Component theme applied at startup and toggled at runtime. Added after
     /// v1: older files get `Dark` through the field-level serde default above.
     /// Only `dark` / `light` are representable in gpui-component 0.9.1; an
-    /// unknown name (e.g. `"system"`) falls back to `Dark`.
+    /// unknown name (e.g. `"system"`) falls back to `Dark` and keeps the load
+    /// read-only so the original name is not rewritten on save.
     #[serde(default = "default_theme", deserialize_with = "deserialize_theme")]
     pub theme: ThemeMode,
     /// Terminal emulator command launched with the selected directory as its
@@ -515,9 +571,11 @@ pub struct Settings {
     /// added in F6-38, optional in older schema files).
     #[serde(default)]
     pub saved_searches: Vec<SavedSearch>,
-    /// Set when a corrupt settings file could not be backed up. Prevents a
-    /// subsequent `save()` from overwriting the retained original with
-    /// defaults. Not persisted.
+    /// Set when a corrupt settings file could not be backed up, the schema is
+    /// newer than this build, or an enum value is unrecognized. Prevents a
+    /// subsequent `save()` from overwriting the retained original (with
+    /// defaults, a downgraded schema, or a substituted enum fallback).
+    /// Not persisted.
     #[serde(skip)]
     pub read_only: bool,
     /// Human-readable reason for `read_only` or an unavailable config location,
@@ -895,15 +953,32 @@ impl Settings {
         // Serde rejects wrong field types outright; `#[serde(default)]` only
         // fills in fields that are absent, so a mistyped `version` or
         // `show_hidden` lands in the backup-and-defaults branch below.
+        // The enum field deserializers report unknown strings through a
+        // thread-local signal. Clear any stale value first (a direct
+        // `serde_json::from_str::<Settings>` elsewhere on this thread may have
+        // set it) and consume the result immediately after parsing.
+        let _ = take_unknown_persisted_enum();
         let Ok(mut settings) = serde_json::from_str::<Settings>(&text) else {
             // Keep the broken file for debugging (DESIGN.md §8.1) instead of
             // failing to start. If the backup rename fails, stay read-only so
             // a later save() cannot overwrite the retained original.
             return Self::back_up_unusable(path, &backup);
         };
+        let unknown_enum = take_unknown_persisted_enum();
         let loaded_version = settings.version;
         settings.migrate(loaded_version);
         settings.validate();
+        if unknown_enum && !settings.read_only {
+            // An unknown enum was replaced by a fallback in memory. Writing
+            // that fallback would permanently destroy the original string,
+            // which a newer build may still understand. Reuse the existing
+            // read-only mechanism so every save() becomes a no-op and the
+            // status bar can explain why via `load_error`.
+            let reason = "設定にこのバージョンでは解釈できない値が含まれています。元の値を保持するため書き込みは行いません";
+            warn!(%reason, "unknown persisted enum; settings are read-only");
+            settings.read_only = true;
+            settings.load_error = Some(reason.to_string());
+        }
         settings
     }
 
@@ -1180,6 +1255,11 @@ impl Settings {
     /// Atomic write (tmp file + rename) so a crash never leaves a truncated
     /// settings file behind. The tmp file is flushed with `sync_all()` before
     /// the rename; a directory fsync is not performed (best-effort).
+    ///
+    /// Read-only / ephemeral sessions are a successful no-op. If serialization
+    /// would exceed [`MAX_SETTINGS_BYTES`], this returns an error without
+    /// creating any file: a file over the cap would be backed up as corrupt on
+    /// the next load, turning an oversized-but-valid session into total loss.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if self.ephemeral {
             return Ok(());
@@ -1206,6 +1286,19 @@ impl Settings {
             // nothing platform-specific is invented or carried to another OS.
             Self::sanitize_paths_for_save(&mut snapshot);
             let text = serde_json::to_string_pretty(&snapshot).map_err(std::io::Error::other)?;
+            // `load_from` refuses files above this limit (and backs them up),
+            // so writing one here would destroy the user's whole session on
+            // the next start. Fail the save instead; never create the file and
+            // let the caller surface STATUS_SETTINGS_SAVE_FAILED.
+            if text.len() as u64 > MAX_SETTINGS_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "serialized settings are {} bytes, over the {MAX_SETTINGS_BYTES}-byte limit",
+                        text.len()
+                    ),
+                ));
+            }
             // O_EXCL reservation: a predictable tmp name with `create(true)`
             // follows a pre-planted symlink (CWE-59). `create_new(true)`
             // refuses an existing path, including symlinks. Nanos + PID keep
@@ -1255,7 +1348,10 @@ impl Settings {
 mod tests {
     // Explicit imports only: the crate root glob re-exports GPUI's `test`
     // proc-macro which would shadow the built-in `#[test]`.
-    use super::{next_theme, Settings, ViewLayout, APP_DIR, LEGACY_SCHEMA_VERSION, SCHEMA_VERSION};
+    use super::{
+        next_theme, Settings, ViewLayout, APP_DIR, LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES,
+        SCHEMA_VERSION,
+    };
     use crate::model::{SortDir, SortKey, SortSpec};
     use gpui_kit::component::ThemeMode;
     use std::fs;
@@ -1328,6 +1424,46 @@ mod tests {
         // A directory as the target path makes the final rename fail.
         let settings = Settings::default();
         assert!(settings.save_to(&dir).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn oversized_serialized_settings_are_never_written() {
+        let dir = scratch("oversized-save");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        // Each query is individually valid (<= MAX_QUERY_BYTES), but enough of
+        // them push the serialized document past the load-time cap. Writing
+        // such a file would make the next load back it up as corrupt and lose
+        // the whole session, so save_to must fail before creating any file.
+        let settings = Settings {
+            recent_searches: (0..9_000)
+                .map(|index| format!("{index:08}-{}", "q".repeat(1_000)))
+                .collect(),
+            ..Settings::default()
+        };
+        assert!(
+            serde_json::to_string(&settings).unwrap().len() as u64 > MAX_SETTINGS_BYTES,
+            "test data must actually exceed the cap"
+        );
+        let error = settings
+            .save_to(&path)
+            .expect_err("an oversized save must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            !path.exists(),
+            "an unreadable settings file must never be written"
+        );
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no tmp/lock/backup file should survive: {leftovers:?}"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1441,8 +1577,9 @@ mod tests {
                 dirs_first: true,
             },
             show_hidden: true,
-            // A custom command is not the platform default, so it survives
-            // the round-trip untouched (the default is normalized to "unset").
+            // Explicit commands are persisted verbatim (including when they
+            // equal the platform default), so this checks plain round-trip
+            // fidelity rather than a normalization rule.
             terminal_command: "custom-terminal --title build".to_string(),
             ..Settings::default()
         };
@@ -2363,7 +2500,7 @@ mod schema_validation_tests {
     }
 
     #[test]
-    fn unknown_view_value_falls_back_without_losing_other_settings() {
+    fn unknown_view_value_falls_back_and_keeps_the_file_read_only() {
         let (dir, path) = setup("unknown-view");
         fs::write(
             &path,
@@ -2382,9 +2519,12 @@ mod schema_validation_tests {
 
         let loaded = Settings::load_from(&path);
         assert!(
-            !loaded.read_only,
-            "a single bad enum must not back up the file"
+            loaded.read_only,
+            "an unknown enum must make the session read-only so the original survives"
         );
+        assert!(loaded
+            .load_error
+            .is_some_and(|reason| reason.contains("設定")));
         assert!(path.exists(), "the original settings file must survive");
         assert_eq!(loaded.view, ViewLayout::Details);
         assert!(loaded.show_hidden);
@@ -2396,7 +2536,7 @@ mod schema_validation_tests {
     }
 
     #[test]
-    fn unknown_window_mode_falls_back_without_losing_settings() {
+    fn unknown_window_mode_falls_back_and_keeps_the_file_read_only() {
         let (dir, path) = setup("unknown-window-mode");
         fs::write(
             &path,
@@ -2418,7 +2558,11 @@ mod schema_validation_tests {
         .unwrap();
 
         let loaded = Settings::load_from(&path);
-        assert!(!loaded.read_only);
+        assert!(
+            loaded.read_only,
+            "unknown mode must keep the load read-only"
+        );
+        assert!(loaded.load_error.is_some());
         assert!(path.exists());
         assert_eq!(loaded.view, ViewLayout::Icons);
         assert!(loaded.show_hidden);
@@ -2436,7 +2580,7 @@ mod schema_validation_tests {
     }
 
     #[test]
-    fn unknown_sort_key_falls_back_without_losing_other_settings() {
+    fn unknown_sort_key_falls_back_and_keeps_the_file_read_only() {
         let (dir, path) = setup("unknown-sort-key");
         fs::write(
             &path,
@@ -2452,7 +2596,11 @@ mod schema_validation_tests {
         .unwrap();
 
         let loaded = Settings::load_from(&path);
-        assert!(!loaded.read_only);
+        assert!(
+            loaded.read_only,
+            "unknown sort key must keep the load read-only"
+        );
+        assert!(loaded.load_error.is_some());
         assert!(path.exists());
         assert_eq!(loaded.sort.key, SortKey::Name);
         // Sibling fields of the same struct, and unrelated settings, survive.
@@ -2473,7 +2621,7 @@ mod schema_validation_tests {
     }
 
     #[test]
-    fn unknown_theme_falls_back_without_losing_other_settings() {
+    fn unknown_theme_falls_back_and_keeps_the_file_read_only() {
         let (dir, path) = setup("unknown-theme");
         fs::write(
             &path,
@@ -2490,13 +2638,74 @@ mod schema_validation_tests {
         .unwrap();
 
         let loaded = Settings::load_from(&path);
-        assert!(!loaded.read_only);
+        assert!(
+            loaded.read_only,
+            "unknown theme must keep the load read-only"
+        );
+        assert!(loaded.load_error.is_some());
         assert!(path.exists());
         assert_eq!(loaded.theme, ThemeMode::Dark);
         assert!(loaded.show_hidden);
         assert_eq!(loaded.view, ViewLayout::Icons);
         assert_eq!(loaded.sort.key, SortKey::Size);
         assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_enum_roundtrip_never_overwrites_the_original_file() {
+        let (dir, path) = setup("unknown-enum-roundtrip");
+        let original = serde_json::json!({
+            "version": 1,
+            "view": "list",
+            "theme": "system",
+            "sort": { "key": "date", "dir": "sideways", "dirs_first": true },
+            "show_hidden": true,
+            "windows": [{
+                "bounds": {
+                    "x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0,
+                    "mode": "minimized"
+                },
+                "tabs": [],
+                "active_tab": 0
+            }]
+        })
+        .to_string();
+        fs::write(&path, &original).unwrap();
+
+        let loaded = Settings::load_from(&path);
+        assert!(
+            loaded.read_only,
+            "unknown enums must keep the load read-only"
+        );
+        assert!(loaded.load_error.is_some());
+        // Fallbacks apply in memory so the app can still start.
+        assert_eq!(loaded.view, ViewLayout::Details);
+        assert_eq!(loaded.theme, ThemeMode::Dark);
+        assert_eq!(loaded.sort.key, SortKey::Name);
+        assert_eq!(loaded.sort.dir, SortDir::Asc);
+        assert_eq!(
+            loaded
+                .primary_window()
+                .unwrap()
+                .bounds
+                .as_ref()
+                .unwrap()
+                .mode,
+            super::WindowMode::Windowed
+        );
+
+        // save() is a no-op in read-only mode: the exact original bytes,
+        // including every unknown enum string, must survive untouched.
+        loaded.save_to(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+        // Reloading still sees the unknown values instead of the fallbacks
+        // having been persisted over them.
+        let reloaded = Settings::load_from(&path);
+        assert!(reloaded.read_only);
+        assert!(reloaded.load_error.is_some());
+        assert_eq!(reloaded.view, ViewLayout::Details);
         fs::remove_dir_all(&dir).unwrap();
     }
 }
@@ -2806,8 +3015,9 @@ mod personalization_settings_tests {
     fn saved_search_lookup_remove_and_file_roundtrip() {
         let (dir, path) = setup("saved-search-roundtrip");
         let mut settings = Settings::default();
-        // Use a custom command so this test still checks plain round-trip
-        // fidelity; the platform default is intentionally normalized on save.
+        // Use a custom command so this test also exercises an explicit value:
+        // commands are no longer normalized to "unset" on save, so any value
+        // the user chose must round-trip verbatim.
         assert!(settings.set_terminal_command("custom-terminal"));
         settings.save_search("Todos", "TODO");
         assert_eq!(settings.saved_search("todos").unwrap().query, "TODO");

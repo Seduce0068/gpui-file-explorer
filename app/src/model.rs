@@ -338,16 +338,22 @@ impl SortKey {
 /// exhaustive `SortKey` match (including the UI's header-id mapping in
 /// `main.rs`), so the fallback is applied at the deserialization boundary
 /// instead: the field becomes `SortKey::Name` and all sibling settings survive.
+/// The unknown string is also reported to `settings` so the load becomes
+/// read-only instead of writing the fallback back over the original value.
 fn deserialize_sort_key<'de, D>(deserializer: D) -> Result<SortKey, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = String::deserialize(deserializer)?;
     Ok(match value.as_str() {
+        "name" => SortKey::Name,
         "kind" => SortKey::Kind,
         "size" => SortKey::Size,
         "modified" => SortKey::Modified,
-        _ => SortKey::default(),
+        _ => {
+            crate::settings::note_unknown_persisted_enum();
+            SortKey::default()
+        }
     })
 }
 
@@ -490,15 +496,21 @@ pub enum SortDir {
 }
 
 /// Unknown persisted direction falls back to Asc at the deserialize boundary
-/// so one bad enum value cannot back up the whole settings file.
+/// so one bad enum value cannot back up the whole settings file. As with the
+/// sort key, the unknown string makes the `Settings` load read-only so it is
+/// never overwritten on save.
 fn deserialize_sort_dir<'de, D>(deserializer: D) -> Result<SortDir, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = String::deserialize(deserializer)?;
     Ok(match value.as_str() {
+        "asc" => SortDir::Asc,
         "desc" => SortDir::Desc,
-        _ => SortDir::default(),
+        _ => {
+            crate::settings::note_unknown_persisted_enum();
+            SortDir::default()
+        }
     })
 }
 
