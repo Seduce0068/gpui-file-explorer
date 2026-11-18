@@ -14,7 +14,7 @@ generated:
   at: "2026-11-18T09:58:27+09:00"
 verified:
   by: "perf-baseline"
-  at: "2026-11-18T09:58:06+09:00"
+  at: "2026-11-18T10:41:06+09:00"
 status: "review"
 ---
 
@@ -245,3 +245,114 @@ DESIGN が指定する `/proc/<pid>/status` の VmRSS そのものではない�
 - [DESIGN.md §10.5 性能目標](../DESIGN.md)
 - [review-report.md（F6-42）](../review-report.md)
 - [計測用スクリプト](../scripts/gen-perf-fixture.sh)
+
+## 実 GUI プロセスの VmRSS 実測（100,000 件）
+
+前節で未計測だった実 GUI の VmRSS を、CLI 引数で
+フィクスチャを指定する方法で計測した。
+採用した値は `/proc/<pid>/status` の `VmRSS` のみである。
+
+### 実行内容
+
+- 計測時刻: `2026-11-18T10:37:51+09:00` 〜 `10:38:21+09:00`
+- 実行バイナリ: `app/target/release/gpui-file-explorer`
+- 再ビルド: `cd app && cargo build --release --locked`
+  （終了コード 0、10.66 秒。旧バイナリより `settings.rs` と
+  `main.rs` が新しかったため実行した）
+- 表示環境: `DISPLAY=:1`、`WAYLAND_DISPLAY=wayland-0`、
+  `XDG_SESSION_TYPE=wayland`
+- 生成前の確認: `/tmp` 空き 19 GiB、空き inode 8,046,518。
+  空ファイル 100,000 個でも枯渇リスクは低いと判断した。
+
+実際に実行したコマンド（フィクスチャは `/tmp` 配下のみ、
+計測後に削除済み）。
+
+```bash
+PERF_ROOT=$(mktemp -d /tmp/gpui-perf-vmss.XXXXXX)
+# PERF_ROOT=/tmp/gpui-perf-vmss.7tY8zu
+bash scripts/gen-perf-fixture.sh --tmp-root "$PERF_ROOT" 100000
+setsid env DISPLAY=:1 WAYLAND_DISPLAY=wayland-0 \
+  XDG_SESSION_TYPE=wayland nohup \
+  ./app/target/release/gpui-file-explorer \
+  /tmp/gpui-perf-vmss.7tY8zu/gpui-fe-perf-100000 \
+  > /tmp/gpui-vmss-app.log 2>&1 < /dev/null &
+LAUNCH_PID=$!  # 1486301
+pgrep -a -f \
+  'gpui-file-explorer /tmp/gpui-perf-vmss.7tY8zu/gpui-fe-perf-100000'
+sleep 10
+for i in 1 2 3 4 5; do
+  TS=$(date '+%Y-%m-%dT%H:%M:%S%:z')
+  RSS=$(awk '/^VmRSS:/{print $2}' /proc/1486301/status)
+  SIZE=$(awk '/^VmSize:/{print $2}' /proc/1486301/status)
+  DATA=$(awk '/^VmData:/{print $2}' /proc/1486301/status)
+  THR=$(awk '/^Threads:/{print $2}' /proc/1486301/status)
+  echo "$TS,1486301,$RSS,$SIZE,$DATA,$THR"
+  if [ "$i" -lt 5 ]; then sleep 2; fi
+done
+kill -TERM "$LAUNCH_PID"
+bash scripts/gen-perf-fixture.sh --tmp-root "$PERF_ROOT" \
+  --cleanup 100000
+rmdir "$PERF_ROOT"
+```
+
+### VmRSS サンプルと目標照合
+
+`VmSize` は全サンプルで 2,604,392 KiB、`VmData` と
+`Threads` は下記のとおりだった。
+
+| # | 時刻 (+09:00) | VmRSS KiB | VmData KiB | Threads |
+| --- | --- | --- | --- | --- |
+| 1 | 10:38:13 | 329,712 | 292,756 | 29 |
+| 2 | 10:38:15 | 329,712 | 292,756 | 29 |
+| 3 | 10:38:17 | 329,712 | 292,756 | 29 |
+| 4 | 10:38:19 | 329,712 | 292,756 | 29 |
+| 5 | 10:38:21 | 329,712 | 292,756 | 29 |
+
+最小・最大・中央値はいずれも 329,712 KiB で、変動はなかった。
+これは約 322.0 MiB、10 進では約 337.8 MB に相当する。
+
+| DESIGN §10.5 の項目 | 目標 | 実測 | 判定 |
+| --- | --- | --- | --- |
+| 100,000 件のメモリ | 200 MB 以下 | 329,712 KiB | 未達 |
+
+200 MiB 基準では 124,912 KiB（約 122.0 MiB）超過、
+200 MB（10 進）基準でも約 137.8 MB 超過である。
+比率はそれぞれ約 1.61 倍、約 1.69 倍。
+よって本計測では目標を満たしていない。
+
+### 一覧が表示されたことの証拠
+
+- `spectacle -b -n -o /tmp/gpui-vmss-100k.png` で全画面を保存した。
+- 前面ウィンドウのパンくずは
+  `/ > tmp > gpui-perf-vmss.7tY8zu > gpui-fe-perf-100000` だった。
+- 同ステータスバーは `100000 件`、
+  `選択: entry_000001 (0 B / ただいま)`、
+  `隠し 1件`、`監視:2 イベント` を示した。
+- 可視領域には `entry_000001` から `entry_000020` まで
+  連続して表示され、サイズはすべて `0 B` だった。
+- 拡大確認用の画像は `/tmp/gpui-vmss-statusbar.png` と
+  `/tmp/gpui-vmss-listcrop.png` に保存した。
+- `xwininfo -root -tree` には該当ウィンドウが現れなかった
+  （Wayland ネイティブと推定）ため、spectacle の画像を
+  証拠として採用した。
+
+### 残る注意点
+
+- VmRSS はプロセス全体の常駐ページである。GPUI ランタイム、
+  wgpu / GPU ドライバのマッピング、テキストレイアウト、
+  監視スレッド等を含み、前節のデータ層約 60 MiB と
+  直接比較できない。
+- 1 回の起動・1 フィクスチャのみである。ロード後 8 秒間の
+  5 サンプルでは変動がなかったが、起動間のばらつきは
+  未確認である。
+- フィクスチャは tmpfs 上の空ファイルである。実ディスクの
+  stat コストやページキャッシュの挙動は反映されない。
+- 計測中に別の debug ビルド GUI（`/tmp` を表示、PID 1141147）が
+  同時に生存していた。共有ライブラリや GPU ドライバの
+  ページが両プロセスの RSS に数えられている可能性がある。
+- ウィンドウは前面に描画された状態だった。最小化時等は
+  別の値になり得る。
+- VmRSS は共有ページを含む。PSS は未計測である。
+- `/usr/bin/time` の `maxrss` は使用していない。
+- 本タスクでは Rust ソース、Cargo.toml、Git 状態を変更していない。
+  再ビルドは `app/target/` の生成物のみである。
