@@ -34,6 +34,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Theme};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -1099,10 +1100,11 @@ use crate::strings::{
     STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
     STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
     STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED,
-    STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_PASTE,
-    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
-    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_WATCH_COUNT_SUFFIX,
-    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
+    STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
+    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
+    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
 };
 
 /// One sidebar "place".
@@ -1169,6 +1171,9 @@ struct RenameState {
     /// Keeps the `InputEvent::Change` / `PressEnter` subscription alive while open.
     _subscription: Subscription,
     error: Option<String>,
+    /// Op token claimed by `confirm_rename`, if this dialog submitted a rename
+    /// that is still running. Esc only cancels an op this dialog actually owns.
+    op: Option<OpToken>,
 }
 
 /// Inline bookmark-label editor (F6-49). Dropping it closes the dialog.
@@ -2266,7 +2271,7 @@ impl Explorer {
             self.settings.set_bookmark_label(&path, &label)
         };
         let saved = if changed { self.save_settings() } else { true };
-        self.label_editor = None;
+        self.close_label_editor(cx);
         self.status = if !saved {
             STATUS_SETTINGS_SAVE_FAILED.to_string()
         } else if label.is_empty() {
@@ -2299,6 +2304,10 @@ impl Explorer {
 
     fn close_label_editor(&mut self, cx: &mut Context<Self>) {
         if self.label_editor.take().is_some() {
+            // Dropping the editor also drops its focused input; hand focus back
+            // to the list on the next render (commit / Esc / Cancel / delete
+            // all funnel through here).
+            self.restore_focus_next_frame();
             cx.notify();
         }
     }
@@ -2328,6 +2337,12 @@ impl Explorer {
     /// reload only when the content fingerprint actually changed. This covers
     /// events lost by the OS watcher (queue overflow, unwatchable paths, ...).
     fn reconcile(&mut self, cx: &mut Context<Self>) {
+        // Hotplugged volumes must appear even while a non-directory view is
+        // active — the directory-only work below is skipped in that case.
+        // `refresh_mounts` offloads the `/proc/mounts` read and discards stale
+        // results by generation, so refreshing on every 10s tick is cheap and
+        // safe (a `reload` may still request one sooner).
+        self.refresh_mounts(cx);
         // The trash view has its own listing; the directory reconcile must not
         // overwrite it with the current directory contents.
         if self.load.is_loading() || self.view != ViewSource::Directory {
@@ -2747,6 +2762,7 @@ impl Explorer {
         for (index, tab) in self.tabs.tabs().iter().enumerate() {
             let active = index == self.tabs.active_index();
             let label = tab_label(&tab.cwd);
+            let close_aria = format!("{label} タブを閉じる");
             let mut item = div()
                 .id(("tab", index))
                 .flex()
@@ -2769,6 +2785,7 @@ impl Explorer {
                 item = item.child(
                     div()
                         .id("tab-close")
+                        .aria_label(close_aria)
                         .px_1()
                         .rounded_md()
                         .hover(|style| style.bg(rgb(C_OVERLAY)))
@@ -2784,6 +2801,7 @@ impl Explorer {
         bar = bar.child(
             div()
                 .id("tab-new")
+                .aria_label("新しいタブ")
                 .px_2()
                 .py_0p5()
                 .rounded_md()
@@ -3477,6 +3495,10 @@ impl Explorer {
             return;
         }
         if self.help_open {
+            // Keyboard scrolling is intentionally skipped here: the overlay
+            // body is a plain `.overflow_y_scroll()` div and gpui-pre 0.3.12
+            // `ScrollHandle` exposes no `scroll_by`, so PageUp/PageDown/
+            // Home/End have no scroll action to reach. Mouse wheel works.
             if key == "escape" {
                 self.help_open = false;
                 cx.notify();
@@ -3490,6 +3512,9 @@ impl Explorer {
             return;
         }
         if self.undo_history_open {
+            // Same limitation as the F1 overlay: no `ScrollHandle::scroll_by`
+            // API exists for its `.overflow_y_scroll()` body, so only Escape
+            // is routed here; scrolling stays mouse-wheel only.
             if key == "escape" {
                 self.undo_history_open = false;
                 cx.notify();
@@ -3679,6 +3704,13 @@ impl Explorer {
     // ------------------------------------------------------------------ actions
 
     fn toggle_hidden(&mut self, cx: &mut Context<Self>) {
+        if self.view == ViewSource::Trash {
+            // Trash pseudo-entries have no hidden flag: toggling here would
+            // pollute the persisted directory preference without any effect.
+            self.status = STATUS_TRASH_NO_HIDDEN.to_string();
+            cx.notify();
+            return;
+        }
         self.settings.show_hidden = !self.settings.show_hidden;
         let _ = self.save_settings();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
@@ -3716,6 +3748,13 @@ impl Explorer {
     }
 
     fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
+        if self.view == ViewSource::Trash {
+            // The trash list has its own pseudo-entry order: rewriting the
+            // directory sort spec from its header would not sort anything.
+            self.status = STATUS_TRASH_NO_SORT.to_string();
+            cx.notify();
+            return;
+        }
         let order = self.settings.sort.order().toggled(key);
         self.settings.sort = SortSpec::from_order(order);
         let _ = self.save_settings();
@@ -5603,6 +5642,15 @@ impl Explorer {
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| display_path(&path));
+                // Reopening (possibly for a different path) supersedes any
+                // recursive size scan started by the previously open dialog:
+                // cancel it and drop its task before installing new state.
+                if let Some(old) = this.properties.as_mut() {
+                    if let Some(cancel) = old.size_cancel.take() {
+                        cancel.cancel();
+                    }
+                    old.size_task = None;
+                }
                 this.properties = Some(PropsState {
                     name,
                     path,
@@ -5660,7 +5708,9 @@ impl Explorer {
             return;
         }
         let path = props.path.clone();
+        let check_path = path.clone();
         let cancel = Arc::new(CancelFlag::new());
+        let scan_cancel = cancel.clone();
         if let Some(props) = self.properties.as_mut() {
             props.size_loading = true;
             props.dir_size = None;
@@ -5674,6 +5724,18 @@ impl Explorer {
                 let Some(props) = this.properties.as_mut() else {
                     return;
                 };
+                // Only the scan still represented by the current state may
+                // write back. If the dialog was closed/reopened for another
+                // file (or a fresh scan replaced this one), these stats are
+                // stale and must not clobber the current snapshot/task.
+                let current = props.path == check_path
+                    && props
+                        .size_cancel
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, &scan_cancel));
+                if !current {
+                    return;
+                }
                 props.size_loading = false;
                 props.size_task = None;
                 props.size_cancel = None;
@@ -5852,6 +5914,7 @@ impl Explorer {
             input,
             _subscription: subscription,
             error: None,
+            op: None,
         });
         cx.notify();
     }
@@ -5894,6 +5957,11 @@ impl Explorer {
         let Some(token) = self.begin_op(cx) else {
             return;
         };
+        // Record ownership so Esc on this dialog cancels only this op, never
+        // an unrelated transfer that happened to be running when F2 was hit.
+        if let Some(rename) = self.renaming.as_mut() {
+            rename.op = Some(token.clone());
+        }
         self.status = "名前を変更しています…（Esc でキャンセル）".to_string();
         cx.notify();
         let rename_source = target.clone();
@@ -5954,8 +6022,18 @@ impl Explorer {
 
     fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Esc must also stop a rename that was already submitted and is now
-        // running in the background, not merely close the dialog.
-        self.cancel_op(cx);
+        // running in the background, not merely close the dialog. Only cancel
+        // when this dialog still owns the active op token: Esc on a dialog
+        // that never submitted (or whose rename already settled) must not
+        // abort an unrelated transfer.
+        let owns_op = self
+            .renaming
+            .as_ref()
+            .and_then(|rename| rename.op.as_ref())
+            .is_some_and(|token| self.is_current_op(token));
+        if owns_op {
+            self.cancel_op(cx);
+        }
         if self.renaming.take().is_some() {
             self.focus_handle.focus(window, cx);
             cx.notify();
@@ -5964,6 +6042,10 @@ impl Explorer {
 
     fn close_rename(&mut self, cx: &mut Context<Self>) {
         if self.renaming.take().is_some() {
+            // The dialog's input is dropped here; schedule focus restoration
+            // so the unchanged-name and cancelled paths don't leave focus on
+            // a destroyed input (the success path schedules it as well).
+            self.restore_focus_next_frame();
             cx.notify();
         }
     }
@@ -6095,8 +6177,7 @@ impl Explorer {
             let path = editor.path.clone();
             cx.listener(move |this, _: &ClickEvent, _window, cx| {
                 this.clear_bookmark_label(&path, cx);
-                this.label_editor = None;
-                cx.notify();
+                this.close_label_editor(cx);
             })
         };
         let form = div()
@@ -6656,6 +6737,9 @@ impl Explorer {
         self.selection.clear();
         self.selected = 0;
         self.status.clear();
+        // The search input is destroyed by `clear_search`; restore list focus
+        // on the next render instead of leaving it on a removed element.
+        self.restore_focus_next_frame();
         self.reload(cx);
     }
 
@@ -6939,6 +7023,7 @@ impl Explorer {
                 .child(
                     div()
                         .id(("saved-search-delete", index))
+                        .aria_label(format!("{name} を削除"))
                         .px_1()
                         .py_0p5()
                         .rounded_md()
@@ -7271,6 +7356,7 @@ impl Explorer {
         };
         let base = div()
             .id(id)
+            .aria_label(format!("{} で並び替え", key.label()))
             .h_full()
             .flex()
             .items_center()
@@ -7282,11 +7368,17 @@ impl Explorer {
             Some(width) => base.w(px(width)).text_right(),
             None => base.flex_1(),
         };
+        // In the trash the timestamp is the deletion time, not the mtime.
+        let label = if key == SortKey::Modified && self.view == ViewSource::Trash {
+            "削除日時"
+        } else {
+            key.label()
+        };
         base.on_click(cx.listener(move |this, _event, window, cx| {
             this.focus_handle.focus(window, cx);
             this.set_sort(key, cx);
         }))
-        .child(format!("{arrow} {}", key.label()))
+        .child(format!("{arrow} {label}"))
     }
 
     fn sort_header(&self, cx: &mut Context<Self>) -> Div {
@@ -7348,6 +7440,13 @@ impl Explorer {
 
     fn list_row(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
+        // Trash rows are virtual (path = trash id), so recover the restore
+        // destination from the listing snapshot for a per-row tooltip.
+        let trash_parent = if this.view == ViewSource::Trash {
+            trash_view::original_parent_for_path(&this.trash_items, &entry.path)
+        } else {
+            None
+        };
         let display_name =
             display_name_for(&entry, this.view, &this.cwd, &this.search.active_roots);
         let display_name = match this.search_lines.get(&entry.path) {
@@ -7488,6 +7587,14 @@ impl Explorer {
                     // hovers it, so the drop target is obvious before release.
                     .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(rgb(C_BLUE)))
                     .drag_over::<Vec<PathBuf>>(|style, _, _, _| style.bg(rgb(C_BLUE)))
+                })
+                // `.context_menu` wraps the element in `ContextMenu`, which no
+                // longer exposes `tooltip`, so attach the tooltip first.
+                .when_some(trash_parent, |row, parent| {
+                    row.tooltip(move |window, cx| {
+                        let text = format!("復元先: {}", parent.clone());
+                        Tooltip::new(text).build(window, cx)
+                    })
                 })
                 .context_menu(context_menu)
                 .child(
@@ -7879,6 +7986,13 @@ impl Explorer {
                 } else {
                     mount.path.display().to_string()
                 };
+                // Surface the previously unused device/fs fields on hover.
+                let detail = format!(
+                    "{} · {} · {}",
+                    mount.path.display(),
+                    mount.fs_type,
+                    mount.source
+                );
                 let target = mount.path.clone();
                 sidebar = sidebar.child(
                     div()
@@ -7899,6 +8013,7 @@ impl Explorer {
                             this.focus_handle.focus(window, cx);
                             this.navigate_to(target.clone(), cx);
                         }))
+                        .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
                         .child(Icon::new(IconName::HardDrive))
                         .child(div().min_w_0().truncate().child(label)),
                 );
@@ -7934,12 +8049,20 @@ impl Explorer {
         let last = segments.len().saturating_sub(1);
         for (index, (label, path)) in segments.into_iter().enumerate() {
             if index > 0 {
-                breadcrumb = breadcrumb.child(div().text_xs().text_color(rgb(C_DIM)).child("›"));
+                breadcrumb = breadcrumb.child(
+                    div()
+                        .id(("breadcrumb-sep", index))
+                        .aria_label("階層の区切り")
+                        .text_xs()
+                        .text_color(rgb(C_DIM))
+                        .child("›"),
+                );
             }
             let is_last = index == last;
             breadcrumb = breadcrumb.child(
                 div()
                     .id(10_000 + index as u64)
+                    .aria_label(format!("{label} へ移動"))
                     .px_1()
                     .py_0p5()
                     .rounded_sm()
@@ -8117,11 +8240,23 @@ impl Explorer {
                             Some(entry)
                                 if !self.entries.is_empty() && self.view == ViewSource::Trash =>
                             {
-                                format!(
-                                    "選択: {}（削除: {}）",
-                                    entry.name_text,
-                                    human_datetime(entry.modified)
-                                )
+                                let parent = trash_view::original_parent_for_path(
+                                    &self.trash_items,
+                                    &entry.path,
+                                );
+                                match parent {
+                                    Some(parent) => format!(
+                                        "選択: {}（削除: {} / 復元先: {}）",
+                                        entry.name_text,
+                                        human_datetime(entry.modified),
+                                        parent
+                                    ),
+                                    None => format!(
+                                        "選択: {}（削除: {}）",
+                                        entry.name_text,
+                                        human_datetime(entry.modified)
+                                    ),
+                                }
                             }
                             Some(entry) if !self.entries.is_empty() => {
                                 format!("選択: {}", format_selected(entry))
@@ -8527,7 +8662,11 @@ impl Explorer {
                         || this.preview.is_some()
                         || this.undo_history_open
                         || this.fuzzy.is_some()
-                        || this.terminal_command_editor.is_some();
+                        || this.terminal_command_editor.is_some()
+                        || this.keymap_editor.is_some()
+                        || this.label_editor.is_some()
+                        || this.properties.is_some()
+                        || this.help_open;
                     (!busy).then(|| this.focus_handle.clone())
                 })
                 .ok()

@@ -162,6 +162,18 @@ pub fn entries_from_items(items: &[TrashItem]) -> Vec<Entry> {
     entries
 }
 
+/// Restore destination of the trash item addressed by a virtual row path.
+///
+/// Trash rows carry the trash id as their [`Entry::path`], so the original
+/// parent is recovered from the listing snapshot instead of being stored in
+/// the `Entry` itself. Pure/display-only: used for tooltips and the status bar.
+pub fn original_parent_for_path(items: &[TrashItem], path: &std::path::Path) -> Option<String> {
+    items
+        .iter()
+        .find(|item| item.id.as_os_str() == path.as_os_str())
+        .map(|item| item.original_parent.to_string_lossy().into_owned())
+}
+
 /// Select the trash items addressed by virtual row paths.
 ///
 /// Trash rows use the trash id as their `path`, so a keyboard (Enter / R) or
@@ -199,6 +211,7 @@ pub fn record_ids(items: &[TrashItem], paths: &[PathBuf]) -> Vec<(PathBuf, OsStr
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::path::Path;
 
     fn item(id: &str, name: &str, parent: &str, deleted: i64) -> TrashItem {
         TrashItem {
@@ -231,6 +244,31 @@ mod tests {
     fn negative_timestamps_map_to_none() {
         let entries = entries_from_items(&[item("/trash/info/x.trashinfo", "x", "/home/u", -1)]);
         assert_eq!(entries[0].modified, None);
+    }
+
+    #[test]
+    fn original_parent_for_path_resolves_restore_destination() {
+        let items = vec![
+            item("/trash/info/a.trashinfo", "a.txt", "/home/u/Documents", 100),
+            item("/trash/info/b.trashinfo", "b.txt", "/mnt/usb", 200),
+        ];
+        let rows = entries_from_items(&items);
+        // Rows are keyed by trash id; lookups must follow them, not the name.
+        let parents: Vec<_> = rows
+            .iter()
+            .map(|row| original_parent_for_path(&items, &row.path))
+            .collect();
+        assert_eq!(
+            parents,
+            vec![
+                Some("/mnt/usb".to_string()),
+                Some("/home/u/Documents".to_string()),
+            ]
+        );
+        assert_eq!(
+            original_parent_for_path(&items, Path::new("/not/in/trash")),
+            None
+        );
     }
 
     #[test]
