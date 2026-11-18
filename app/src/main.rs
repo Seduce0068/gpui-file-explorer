@@ -1306,6 +1306,15 @@ impl LoadState {
     }
 }
 
+/// Whether a successful background reconcile may clear a stale error overlay.
+///
+/// Only `Error` qualifies. `Loading` must be left alone: an explicit reload
+/// may have been dispatched after the reconcile read started, and its
+/// in-flight state is newer than the reconcile result.
+fn should_clear_error_on_reconcile(load: &LoadState) -> bool {
+    matches!(load, LoadState::Error { .. })
+}
+
 /// Identity of one background operation.
 ///
 /// Every long-running or destructive action (transfer, trash, undo, redo,
@@ -2168,11 +2177,21 @@ impl Explorer {
                 if this.generation != generation || this.load.is_loading() {
                     return;
                 }
-                if fingerprint(&entries) == this.fingerprint {
-                    return;
+                // A successful read clears a stale error overlay on both the
+                // changed and unchanged-fingerprint paths. `Loading` is never
+                // touched here (guarded above), so an explicit reload that
+                // started after this read was dispatched still wins.
+                let clear_error = should_clear_error_on_reconcile(&this.load);
+                let changed = fingerprint(&entries) != this.fingerprint;
+                if changed {
+                    this.apply_loaded(entries);
                 }
-                this.apply_loaded(entries);
-                cx.notify();
+                if clear_error {
+                    this.load = LoadState::Ready;
+                }
+                if changed || clear_error {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -6347,6 +6366,11 @@ impl Explorer {
             cancel.store(true, Ordering::SeqCst);
         }
         self.search.task.take();
+        // Invalidate completions already queued on the executor: a late search
+        // callback checks only `search.generation`, so without this bump it
+        // could overwrite `load = Ready` / `all_entries` while the directory
+        // reload triggered by leaving the search view is in flight.
+        self.search.generation = self.search.generation.wrapping_add(1);
         self.search.input = None;
         self.search.subscription = None;
         self.search.ext = None;
@@ -9072,6 +9096,21 @@ mod tests {
         assert!(!ready.is_loading());
         assert_eq!(ready.error_message(), None);
         assert_eq!(ready.generation(), None);
+    }
+
+    #[test]
+    fn reconcile_success_clears_only_error_load_state() {
+        use super::{should_clear_error_on_reconcile, LoadState};
+
+        assert!(should_clear_error_on_reconcile(&LoadState::Error {
+            generation: 3,
+            error: "読み込み失敗".to_string(),
+        }));
+        // An explicit reload may be in flight: its Loading state must win.
+        assert!(!should_clear_error_on_reconcile(&LoadState::Loading {
+            generation: 4
+        }));
+        assert!(!should_clear_error_on_reconcile(&LoadState::Ready));
     }
 
     #[test]

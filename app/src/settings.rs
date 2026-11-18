@@ -135,11 +135,16 @@ fn schema_status(loaded_version: u32) -> SchemaStatus {
     }
 }
 
-/// A persisted path is usable only if it is non-empty, bounded and cannot
-/// contain an embedded NUL (which would make every filesystem call fail).
+/// A persisted path is usable only if it is non-empty, bounded, free of an
+/// embedded NUL (which would make every filesystem call fail) and valid UTF-8.
+/// serde's `PathBuf` serializer cannot encode non-UTF-8 paths, so accepting one
+/// here would make every subsequent `save_to` fail.
 fn sane_path(path: &Path) -> bool {
     let bytes = path.as_os_str().as_encoded_bytes();
-    !bytes.is_empty() && bytes.len() <= MAX_PATH_BYTES && !bytes.contains(&0)
+    !bytes.is_empty()
+        && bytes.len() <= MAX_PATH_BYTES
+        && !bytes.contains(&0)
+        && path.to_str().is_some()
 }
 
 fn sane_query(query: &str) -> bool {
@@ -525,7 +530,9 @@ impl Settings {
 
     /// Remember `path` as the most recent directory (de-duplicated, bounded).
     pub fn record_recent(&mut self, path: &std::path::Path) {
-        if path.as_os_str().is_empty() {
+        // Only persist paths serde can serialize: a non-UTF-8 path would make
+        // every later save() fail.
+        if !sane_path(path) {
             return;
         }
         self.recent_dirs.retain(|existing| existing != path);
@@ -541,7 +548,7 @@ impl Settings {
     /// Add or remove `path` from the bookmarks. Returns `true` when it was
     /// added, `false` when it was removed (or the path was empty).
     pub fn toggle_bookmark(&mut self, path: &std::path::Path) -> bool {
-        if path.as_os_str().is_empty() {
+        if !sane_path(path) {
             return false;
         }
         if let Some(index) = self.bookmarks.iter().position(|bookmark| bookmark == path) {
@@ -772,36 +779,55 @@ impl Settings {
                 return Self::back_up_unusable(path, &backup);
             }
         }
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // A fresh install has no settings file yet; defaults are fine.
-                return Self::default();
-            }
-            Err(error) => {
-                // EACCES and other read failures must not be overwritten by a
-                // later save() with defaults (third cross-review F6-04).
-                let reason = format!(
-                    "設定ファイルを読み込めませんでした（{}: {error}）。書き込みは行いません",
-                    path.display()
-                );
-                error!(%reason, "settings read failed");
-                return Self {
-                    read_only: true,
-                    load_error: Some(reason),
-                    ..Self::default()
-                };
+        // `read_to_string` allocates the whole file before a post-hoc size
+        // check, so a TOCTOU size race could still exhaust memory. Read through
+        // `take` instead: at most MAX_SETTINGS_BYTES + 1 bytes can be allocated.
+        let read_failed = |error: std::io::Error| -> Self {
+            let reason = format!(
+                "設定ファイルを読み込めませんでした（{}: {error}）。書き込みは行いません",
+                path.display()
+            );
+            error!(%reason, "settings read failed");
+            Self {
+                read_only: true,
+                load_error: Some(reason),
+                ..Self::default()
             }
         };
-        // Metadata can be stale/racy, so bound the decoded length as well.
-        if text.len() as u64 > MAX_SETTINGS_BYTES {
+        let mut bytes = Vec::new();
+        let read = std::fs::File::open(path).and_then(|file| {
+            use std::io::Read;
+            file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)
+        });
+        if let Err(error) = read {
+            // A fresh install has no settings file yet; defaults are fine.
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Self::default();
+            }
+            // EACCES, EISDIR and other read failures must not be overwritten by
+            // a later save() with defaults (third cross-review F6-04).
+            return read_failed(error);
+        }
+        // Metadata can be stale/racy, so enforce the limit on the bytes actually
+        // read as well. The extra byte above only serves as an oversize sentinel
+        // and is never parsed.
+        if bytes.len() as u64 > MAX_SETTINGS_BYTES {
             warn!(
-                size = text.len(),
+                size = bytes.len(),
                 limit = MAX_SETTINGS_BYTES,
                 "oversized settings file"
             );
             return Self::back_up_unusable(path, &backup);
         }
+        // Invalid UTF-8 is corruption, not a transient read error: preserve the
+        // original under a backup name and start from defaults.
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                warn!(path = %path.display(), "settings file is not valid UTF-8");
+                return Self::back_up_unusable(path, &backup);
+            }
+        };
         // Serde rejects wrong field types outright; `#[serde(default)]` only
         // fills in fields that are absent, so a mistyped `version` or
         // `show_hidden` lands in the backup-and-defaults branch below.
@@ -1074,7 +1100,11 @@ impl Settings {
             }
             Ok(())
         })();
-        let _ = std::fs::remove_file(&lock);
+        if let Err(error) = std::fs::remove_file(&lock) {
+            // Without this log a failed release looks like a 60-second stale
+            // lock on every later save, with no clue why it was not removed.
+            warn!(path = %lock.display(), %error, "failed to release settings save lock");
+        }
         result
     }
 }
@@ -1721,6 +1751,17 @@ mod schema_validation_tests {
     }
 
     #[test]
+    fn invalid_utf8_settings_file_is_backed_up() {
+        let (dir, path) = setup("invalid-utf8");
+        fs::write(&path, [b'{', b'"', 0xff, b'"', b':', b'1', b'}']).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded, Settings::default());
+        assert!(!path.exists(), "corrupt file must be moved aside");
+        assert_eq!(backup_names(&dir).len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn all_persisted_arrays_are_bounded_on_load() {
         let (dir, path) = setup("array-caps");
         let json = serde_json::json!({
@@ -1928,6 +1969,41 @@ mod schema_validation_tests {
             loaded.recent_searches,
             vec!["ping".to_string(), "dup".to_string()]
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_paths_are_rejected_and_dropped_before_save() {
+        use std::os::unix::ffi::OsStringExt;
+
+        use super::sane_path;
+
+        // A path whose bytes are not valid UTF-8 cannot be serialized by serde;
+        // one such entry would break every later settings save.
+        let bad = PathBuf::from(std::ffi::OsString::from_vec(vec![
+            b'/', b't', b'm', b'p', b'/', 0xff,
+        ]));
+        assert!(!sane_path(&bad), "non-UTF-8 paths must be refused");
+        let mut via_setters = Settings::default();
+        via_setters.record_recent(&bad);
+        assert!(via_setters.recent_dirs.is_empty());
+        assert!(!via_setters.toggle_bookmark(&bad));
+        assert!(via_setters.bookmarks.is_empty());
+
+        let (dir, path) = setup("non-utf8-path");
+        let mut settings = Settings {
+            recent_dirs: vec![bad.clone(), PathBuf::from("/ok")],
+            bookmarks: vec![bad.clone()],
+            ..Settings::default()
+        };
+        settings.validate();
+        assert!(!settings.recent_dirs.contains(&bad));
+        assert!(!settings.bookmarks.contains(&bad));
+        assert_eq!(settings.recent_dirs, vec![PathBuf::from("/ok")]);
+        settings
+            .save_to(&path)
+            .expect("save must succeed once bad paths are dropped");
         fs::remove_dir_all(&dir).unwrap();
     }
 }
