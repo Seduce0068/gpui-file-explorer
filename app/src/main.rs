@@ -7634,7 +7634,8 @@ fn handle_cli() -> bool {
                  引数なしの場合は前回のディレクトリ（無ければ $HOME）を開きます。\n\
                  主なキー: F2 名前変更 / Ctrl+C・Ctrl+X・Ctrl+V コピー・切り取り・貼り付け /\n\
                  Ctrl+H 隠しファイル / Ctrl+Shift+N 新規フォルダ / Alt+←→ 戻る・進む / Esc キャンセル\n\n\
-                 ライセンス: AGPL-3.0-or-later",
+                 ライセンス: AGPL-3.0-or-later
+                 ソース: https://github.com/Seduce0068/gpui-file-explorer",
                 env!("CARGO_PKG_VERSION")
             );
             true
