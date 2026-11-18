@@ -131,7 +131,8 @@ status: current
 ### 優先度: 中（第4回発掘・confirmed）
 
 - [x] **R1-FG01** 通知トースト未実装（ステータス行で代替）
-  — 対応: 設計判断で現状維持（DESIGN 差分は未記録）
+  — 対応: 設計判断で現状維持。`app/README.md`「設計（DESIGN.md）からの
+  差分」に記録済み（2026-11-18 確認）
   — `DESIGN.md:807` / `app/src/main.rs:2586`
 - [x] **R2-TQ02** 破損 symlink の Undo / reveal が `exists()` で誤判定 — 対応: 5b1b1fa
   — `app/src/main.rs:4047`
