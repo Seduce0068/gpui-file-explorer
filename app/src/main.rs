@@ -182,6 +182,109 @@ fn kind_color(kind: FileKind) -> u32 {
     }
 }
 
+/// Sentinels rendered in amber: stale search, cancellation and the
+/// `STATUS_*NO_*` "not available here" notices. Checked **before** the error
+/// markers because several `STATUS_*FAILED` strings (e.g. "変更できません")
+/// are substrings of a longer `STATUS_*NO_*` notice; the specific notice wins.
+const STATUS_WARNING_MARKERS: &[&str] = &[
+    STATUS_SEARCH_STALE,
+    STATUS_CANCELLED,
+    STATUS_NO_CLIPBOARD,
+    STATUS_DROP_NO_DESTINATION,
+    STATUS_REDO_NO_TARGET,
+    STATUS_TRASH_NO_COPY,
+    STATUS_TRASH_NO_CUT,
+    STATUS_TRASH_NO_PASTE,
+    STATUS_TRASH_NO_RENAME,
+    STATUS_TRASH_NO_PURGE,
+    STATUS_TRASH_NO_HIDDEN,
+    STATUS_TRASH_NO_SORT,
+];
+
+/// Sentinels rendered in red: wrapped errors and the concrete
+/// `STATUS_*FAILED` / partial-failure messages.
+const STATUS_ERROR_MARKERS: &[&str] = &[
+    STATUS_ERROR_PREFIX,
+    STATUS_SETTINGS_SAVE_FAILED,
+    STATUS_RESCAN_FAILED,
+    STATUS_TRASH_ALL_FAILED,
+    STATUS_RESTORE_FAILED,
+    STATUS_UNDO_FAILED,
+    STATUS_REDO_FAILED,
+    STATUS_RENAME_FAILED,
+    STATUS_OP_FAILED_SUFFIX,
+    STATUS_PARTIAL_FAILURE_SUFFIX,
+    STATUS_TRASH_PARTIAL_FAILED,
+];
+
+/// Pure colour decision for the primary status text (U-01). Errors are red,
+/// stale/cancelled/`NO_*` warnings are amber, everything else stays success
+/// green. `contains` also covers composed messages such as
+/// "…しました（一部失敗: …）".
+fn status_color(status: &str) -> u32 {
+    if STATUS_WARNING_MARKERS.iter().any(|m| status.contains(m)) {
+        C_YELLOW
+    } else if STATUS_ERROR_MARKERS.iter().any(|m| status.contains(m)) {
+        C_RED
+    } else {
+        C_GREEN
+    }
+}
+
+/// Secondary right-side status-bar slots in descending priority (U-10).
+/// The watch slot is last because `STATUS_PRIORITY` lists "監視状態" last;
+/// it is therefore the first slot dropped on a narrow bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecondarySlot {
+    HiddenCount,
+    UndoCount,
+    Version,
+    Watch,
+}
+
+const SECONDARY_SLOT_PRIORITY: &[SecondarySlot] = &[
+    SecondarySlot::HiddenCount,
+    SecondarySlot::UndoCount,
+    SecondarySlot::Version,
+    SecondarySlot::Watch,
+];
+
+/// Characters of primary status text tolerated per `STATUS_PRIORITY` tier
+/// before one secondary slot is hidden.
+const STATUS_CHAR_BUDGET_PER_TIER: usize = 16;
+
+/// Pure width approximation: return the secondary slots that still fit beside
+/// `status`. The budget scales with `STATUS_PRIORITY.len()`; every extra tier
+/// of status text hides the lowest-priority remaining slot first.
+fn visible_secondary_slots(status: &str) -> &'static [SecondarySlot] {
+    let budget = STATUS_CHAR_BUDGET_PER_TIER * STATUS_PRIORITY.len();
+    let over = status.chars().count().saturating_sub(budget) / STATUS_CHAR_BUDGET_PER_TIER;
+    let hide = over.min(SECONDARY_SLOT_PRIORITY.len());
+    &SECONDARY_SLOT_PRIORITY[..SECONDARY_SLOT_PRIORITY.len() - hide]
+}
+
+/// U-22: join several startup notices with a visible separator so none of them
+/// is silently replaced by a later assignment to `status`.
+fn join_status_notices(notices: &[String]) -> String {
+    notices.join(" / ")
+}
+
+/// Status-bar text for the current selection (U-11).
+///
+/// `selected` is only the keyboard cursor: with an empty selection it must not
+/// be reported as a selected entry. `detail` is the already-formatted text for
+/// the single selected entry, when there is one.
+fn selection_status_text(selection_count: usize, detail: Option<&str>) -> String {
+    match selection_count {
+        0 => "選択なし".to_string(),
+        1 => detail
+            .filter(|text| !text.is_empty())
+            .unwrap_or("選択なし")
+            .to_string(),
+        count => format!("{count} 件選択"),
+    }
+}
+
 /// Expression in the status bar (relaxed English/Japanese)
 fn format_selected(entry: &Entry) -> String {
     if entry.is_dir {
@@ -506,6 +609,16 @@ enum KeyAction {
     EditKeymap,
     /// Alt+Shift+T: cycle the persisted component theme (dark / light).
     ToggleTheme,
+    /// Ctrl+Shift+L: jump to the first sidebar place (Home). Sidebar rows are
+    /// click-only, so this is the minimal keyboard path into the sidebar
+    /// (U-07); the other places stay mouse-only.
+    FocusSidebar,
+    /// Ctrl+Space: toggle the focused row in the non-contiguous selection,
+    /// the keyboard equivalent of Ctrl+click (U-08).
+    ToggleSelection,
+    /// Ctrl+Shift+C: copy the focused row's path, reusing the context-menu
+    /// handler. Reveal-in-manager and set-label stay context-menu-only.
+    CopyPath,
     /// No binding (either unmapped by default or unbound by the user).
     None,
 }
@@ -760,6 +873,10 @@ impl KeyMap {
                 binding("f", true, false, Some(true), FocusSearchName),
                 binding("i", true, false, Some(false), OpenProperties),
                 binding("l", true, false, Some(false), OpenLocation),
+                // U-07: Ctrl+Shift+L jumps to the first sidebar place (Home).
+                // OpenLocation above is shift=Some(false), so the shifted
+                // chord cannot collide under `binding_matches`.
+                binding("l", true, false, Some(true), KeyAction::FocusSidebar),
                 binding("z", true, false, Some(false), Undo),
                 binding("z", true, false, Some(true), Redo),
                 binding("u", true, false, Some(true), ToggleUndoHistory),
@@ -775,6 +892,18 @@ impl KeyMap {
                 binding("r", true, false, None, Reload),
                 binding("n", true, false, Some(true), NewFolder),
                 binding("c", true, false, Some(false), Copy),
+                // Ctrl+Shift+C copies the focused row's path via the
+                // context-menu handler; plain Ctrl+C above is shift=Some(false).
+                binding("c", true, false, Some(true), KeyAction::CopyPath),
+                // Ctrl+Space toggles the focused row in the non-contiguous
+                // selection (U-08); plain Space (OpenPreview) is ctrl=false.
+                binding(
+                    "space",
+                    true,
+                    false,
+                    Some(false),
+                    KeyAction::ToggleSelection,
+                ),
                 binding("x", true, false, Some(false), Cut),
                 binding("v", true, false, Some(false), Paste),
                 binding("enter", true, false, Some(false), RestoreSelected),
@@ -1163,7 +1292,11 @@ fn empty_state_message(
     entries: usize,
 ) -> Option<(String, Option<String>)> {
     if let Some(error) = error {
-        return Some((format!("{STATUS_ERROR_PREFIX}{error}"), None));
+        // U-20: an error overlay with no next action leaves the user stuck.
+        return Some((
+            format!("{STATUS_ERROR_PREFIX}{error}"),
+            Some(LOAD_ERROR_HINT.to_string()),
+        ));
     }
     if loading {
         return Some((LOADING.to_string(), None));
@@ -1196,14 +1329,15 @@ fn empty_state_message(
 
 use crate::strings::{
     EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE,
-    FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LOADING, OP_DIRS_SUFFIX, OP_DONE_SUFFIX,
-    OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL, STATUS_BOOKMARKS_ONLY_DIRECTORY,
-    STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-    STATUS_ERROR_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_LAST_TAB,
-    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NO_CLIPBOARD,
-    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
-    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
+    FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT,
+    OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
+    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CHANGED,
+    STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
+    STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
+    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_MISSING_COUNT_SUFFIX,
+    STATUS_NOT_DIRECTORY, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
+    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
+    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PRIORITY,
     STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED,
     STATUS_RESCAN_FAILED, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SEARCH_STALE,
     STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
@@ -2063,20 +2197,22 @@ impl Explorer {
         if this.settings.tabs.is_empty() {
             this.settings.record_recent(&this.cwd);
         }
+        // U-22: collect every startup notice instead of assigning `this.status`
+        // three times (the last assignment used to swallow the earlier ones).
+        let mut startup_notices: Vec<String> = Vec::new();
         if !this.save_settings() {
-            this.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
+            startup_notices.push(STATUS_SETTINGS_SAVE_FAILED.to_string());
         }
         if let Some(reason) = this.settings.load_error.as_deref() {
-            this.status = format!("{STATUS_SETTINGS_READ_ONLY}: {reason}");
+            startup_notices.push(format!("{STATUS_SETTINGS_READ_ONLY}: {reason}"));
         }
-        // An invalid CLI directory is the most relevant startup problem, so it
-        // takes precedence over the settings notices above.
         if let Some(rejected) = rejected_cli_dir {
-            this.status = format!(
+            startup_notices.push(format!(
                 "{STATUS_ERROR_PREFIX}{STATUS_INVALID_CLI_DIR}: {}",
                 display_path(&rejected)
-            );
+            ));
         }
+        this.status = join_status_notices(&startup_notices);
 
         this.spawn_watch_loop(watch_rx, cx);
         this.spawn_reconcile_loop(cx);
@@ -2989,6 +3125,9 @@ impl Explorer {
             let active = index == self.tabs.active_index();
             let label = tab_label(&tab.cwd);
             let close_aria = format!("{label} タブを閉じる");
+            // U-18: the label keeps only the last component, so same-named
+            // directories are ambiguous without the full path on hover.
+            let full_path = tab.cwd.display().to_string();
             let mut item = div()
                 .id(("tab", index))
                 .flex()
@@ -3002,6 +3141,7 @@ impl Explorer {
                 .when(active, |item| item.bg(rgb(C_SURFACE)))
                 .text_color(if active { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
                 .hover(|style| style.bg(rgb(C_SURFACE)))
+                .tooltip(move |window, cx| Tooltip::new(full_path.clone()).build(window, cx))
                 .on_click(cx.listener(move |this, _event, window, cx| {
                     this.focus_handle.focus(window, cx);
                     this.switch_tab(index, cx);
@@ -3271,6 +3411,41 @@ impl Explorer {
 
     fn selected_entry(&self) -> Option<&Entry> {
         self.entries.get(self.selected)
+    }
+
+    /// U-07: keyboard access to the sidebar. Sidebar rows are click-only
+    /// (`on_click`) and have no per-row `FocusHandle`; making them tab-focusable
+    /// would be invasive, so the minimal safe path jumps straight to the first
+    /// sidebar place (Home). Limitation: bookmarks, recent, drives and trash
+    /// sidebar entries remain mouse-only.
+    fn focus_sidebar(&mut self, cx: &mut Context<Self>) {
+        let home = self
+            .places
+            .first()
+            .filter(|place| place.exists)
+            .and_then(|place| place.path.clone());
+        if let Some(path) = home {
+            self.navigate_to(path, cx);
+        }
+    }
+
+    /// U-08: toggle the focused row in the non-contiguous selection from the
+    /// keyboard, i.e. the keyboard equivalent of Ctrl+click. Reuses the single
+    /// modifier-aware selection path so Shift ranges keep working unchanged.
+    fn toggle_selection(&mut self, cx: &mut Context<Self>) {
+        let selected = self.selected;
+        self.select_with_modifiers(selected, true, false, cx);
+    }
+
+    /// Keyboard path for the context-menu "パスをコピー" action (Ctrl+Shift+C).
+    /// Limitation (documented): "ファイルマネージャで表示" (reveal) and
+    /// "ラベルを設定…" (set label) stay context-menu-only; adding a key action
+    /// for each is deferred to keep this change scoped to one high-value one.
+    fn copy_path_for_selection(&mut self, cx: &mut Context<Self>) {
+        let path = self.selected_entry().map(|entry| entry.path.clone());
+        if let Some(path) = path {
+            self.copy_path(path, cx);
+        }
     }
 
     // ---------------------------------------------------------------- terminal
@@ -3880,6 +4055,9 @@ impl Explorer {
             }
             ToggleHidden => self.toggle_hidden(cx),
             ToggleTheme => self.toggle_theme(cx),
+            FocusSidebar => self.focus_sidebar(cx),
+            ToggleSelection => self.toggle_selection(cx),
+            CopyPath => self.copy_path_for_selection(cx),
             SelectAll => self.select_all(cx),
             ToggleBookmark => self.toggle_current_bookmark(cx),
             OpenSearch => self.open_search(window, cx),
@@ -4072,6 +4250,8 @@ impl Explorer {
     fn copy_selected(&mut self, cx: &mut Context<Self>) {
         let paths = self.action_paths();
         if paths.is_empty() {
+            self.status = STATUS_NO_SELECTION.to_string();
+            cx.notify();
             return;
         }
         let count = paths.len();
@@ -4092,6 +4272,8 @@ impl Explorer {
     fn cut_selected(&mut self, cx: &mut Context<Self>) {
         let paths = self.action_paths();
         if paths.is_empty() {
+            self.status = STATUS_NO_SELECTION.to_string();
+            cx.notify();
             return;
         }
         let count = paths.len();
@@ -6562,6 +6744,8 @@ impl Explorer {
     fn trash_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = self.action_paths();
         if paths.is_empty() {
+            self.status = STATUS_NO_SELECTION.to_string();
+            cx.notify();
             return;
         }
         self.trash_paths(paths, window, cx);
@@ -6617,7 +6801,7 @@ impl Explorer {
             PromptLevel::Warning,
             &message,
             Some(&detail),
-            &["cancel", "ゴミ箱へ移動"],
+            &[LABEL_CANCEL, "ゴミ箱へ移動"],
             cx,
         );
         let background = cx.background_executor().clone();
@@ -6767,6 +6951,9 @@ impl Explorer {
         if let Some(input) = self.search.name_filter.clone() {
             let focus = input.read(cx).focus_handle(cx).clone();
             focus.focus(window, cx);
+            cx.notify();
+        } else {
+            self.status = "先に Ctrl+F で検索を開いてください".to_string();
             cx.notify();
         }
     }
@@ -7862,6 +8049,13 @@ impl Explorer {
                 batch_paths,
             ))
         };
+        // U-09: the truncated name cell needs a tooltip carrying the full
+        // value: the full path in Search, the full name in every other view.
+        let name_tooltip_text = if this.view == ViewSource::Search {
+            entry.path.display().to_string()
+        } else {
+            entry.name_text.clone()
+        };
 
         Some(
             div()
@@ -7880,6 +8074,10 @@ impl Explorer {
                 } else {
                     rgb(C_BASE)
                 })
+                // U-02/U-03: the keyboard cursor gets a distinct high-contrast
+                // left border. It is independent of `selected`, so the cursor
+                // stays visible inside a multi-selection and differs from hover.
+                .when(focused, |row| row.border_l_2().border_color(rgb(C_BLUE)))
                 .cursor_pointer()
                 .hover(|style| {
                     style.bg(if selected {
@@ -7939,7 +8137,18 @@ impl Explorer {
                         .justify_center()
                         .child(Icon::new(icon).text_color(rgb(icon_color))),
                 )
-                .child(div().flex_1().truncate().child(display_name))
+                .child(
+                    // `tooltip` needs an interactive (Stateful) element, hence
+                    // the explicit id on the truncated name cell.
+                    div()
+                        .id(("row-name", index))
+                        .flex_1()
+                        .truncate()
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(name_tooltip_text.clone()).build(window, cx)
+                        })
+                        .child(display_name),
+                )
                 .child(
                     div()
                         .w(px(90.0))
@@ -8108,6 +8317,9 @@ impl Explorer {
                 } else {
                     rgb(C_BASE)
                 })
+                // U-02/U-03: same focus indicator as the list row (independent
+                // of `selected` so it is visible inside a multi-selection).
+                .when(focused, |cell| cell.border_l_2().border_color(rgb(C_BLUE)))
                 .cursor_pointer()
                 .hover(|style| {
                     style.bg(if selected {
@@ -8207,6 +8419,11 @@ impl Explorer {
                 .text_sm()
                 .text_color(if existing { rgb(C_SUBTEXT) } else { rgb(C_DIM) })
                 .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                .when(!existing, |row| {
+                    row.tooltip(move |window, cx| {
+                        Tooltip::new("フォルダがありません（F5 で再確認）").build(window, cx)
+                    })
+                })
                 .child(Icon::new(place.icon))
                 .child(place.label);
             if is_trash {
@@ -8522,6 +8739,16 @@ impl Explorer {
                 this.toggle_hidden(cx);
             }),
         );
+        let help = icon_button(
+            "help",
+            "ヘルプ (F1)",
+            IconName::CircleQuestionMark,
+            true,
+            cx.listener(|this, _event, _window, cx| {
+                this.help_open = true;
+                cx.notify();
+            }),
+        );
 
         div()
             .flex()
@@ -8543,10 +8770,44 @@ impl Explorer {
             .child(breadcrumb)
             .child(new_folder)
             .child(toggle_hidden)
+            .child(help)
     }
 
     fn status_bar(&self, cx: &mut Context<Self>) -> Div {
         let hidden_count = self.all_entries.len().saturating_sub(self.entries.len());
+        // U-10: a long primary status eats the bar; the pure helper drops the
+        // lowest-priority secondary slots first (STATUS_PRIORITY tail: 監視状態).
+        let visible_slots = visible_secondary_slots(&self.status);
+        // U-11: `selected` is the keyboard cursor, not a selection. Build the
+        // detail text only when an entry is actually selected.
+        let selection_detail = if self.selection.len() == 1 {
+            self.selected_entry().and_then(|entry| {
+                if self.entries.is_empty() {
+                    return None;
+                }
+                if self.view == ViewSource::Trash {
+                    let parent =
+                        trash_view::original_parent_for_path(&self.trash_items, &entry.path);
+                    Some(match parent {
+                        Some(parent) => format!(
+                            "選択: {}（削除: {} / 復元先: {}）",
+                            entry.name_text,
+                            human_datetime(entry.modified),
+                            parent
+                        ),
+                        None => format!(
+                            "選択: {}（削除: {}）",
+                            entry.name_text,
+                            human_datetime(entry.modified)
+                        ),
+                    })
+                } else {
+                    Some(format!("選択: {}", format_selected(entry)))
+                }
+            })
+        } else {
+            None
+        };
         let left = div()
             .flex()
             .items_center()
@@ -8565,45 +8826,16 @@ impl Explorer {
             )
             .child(div().text_color(rgb(C_DIM)).child("|"))
             .child(format!("{} 件", self.entries.len()))
-            .child(
-                div()
-                    .text_color(rgb(C_MUTED))
-                    .child(if self.selection.len() > 1 {
-                        format!("{} 件選択", self.selection.len())
-                    } else {
-                        match self.selected_entry() {
-                            Some(entry)
-                                if !self.entries.is_empty() && self.view == ViewSource::Trash =>
-                            {
-                                let parent = trash_view::original_parent_for_path(
-                                    &self.trash_items,
-                                    &entry.path,
-                                );
-                                match parent {
-                                    Some(parent) => format!(
-                                        "選択: {}（削除: {} / 復元先: {}）",
-                                        entry.name_text,
-                                        human_datetime(entry.modified),
-                                        parent
-                                    ),
-                                    None => format!(
-                                        "選択: {}（削除: {}）",
-                                        entry.name_text,
-                                        human_datetime(entry.modified)
-                                    ),
-                                }
-                            }
-                            Some(entry) if !self.entries.is_empty() => {
-                                format!("選択: {}", format_selected(entry))
-                            }
-                            _ => "選択なし".to_string(),
-                        }
-                    }),
-            );
+            .child(div().text_color(rgb(C_MUTED)).child(selection_status_text(
+                self.selection.len(),
+                selection_detail.as_deref(),
+            )));
         let right = div()
             .flex()
             .items_center()
             .gap_2()
+            .min_w_0()
+            .truncate()
             .child(if let Some(error) = self.load.error_message() {
                 div()
                     .text_color(rgb(C_RED))
@@ -8615,8 +8847,15 @@ impl Explorer {
                     .child("読み込み中…")
                     .into_any_element()
             } else if !self.status.is_empty() {
+                // U-05: GPUI 0.3.12 には live region / `aria_live` に相当する API が
+                // 無い（`StatefulInteractiveElement` に無く、`AriaProperties` にも
+                // live フィールドが無い。AccessKit の `Live` は公開されていない）。
+                // そのためスクリーンリーダーへの自動読み上げは実装できず、ここでは
+                // 色分け（U-01）と省略（U-10）のみ行う（既知の制限事項）。
                 div()
-                    .text_color(rgb(C_GREEN))
+                    .min_w_0()
+                    .truncate()
+                    .text_color(rgb(status_color(&self.status)))
                     .child(self.status.clone())
                     .into_any_element()
             } else {
@@ -8657,40 +8896,54 @@ impl Explorer {
             } else {
                 div().into_any_element()
             })
-            .child(if self.view == ViewSource::Search && hidden_count > 0 {
-                // Search results were narrowed by the kind/extension filter.
-                div()
-                    .text_color(rgb(C_MUTED))
-                    .child(format!("除外 {hidden_count} 件"))
-                    .into_any_element()
-            } else if hidden_count > 0 && !self.settings.show_hidden {
-                div()
-                    .text_color(rgb(C_MUTED))
-                    .child(format!("隠し {hidden_count} 件"))
-                    .into_any_element()
-            } else {
+            .child(
+                if visible_slots.contains(&SecondarySlot::HiddenCount)
+                    && self.view == ViewSource::Search
+                    && hidden_count > 0
+                {
+                    // Search results were narrowed by the kind/extension filter.
+                    div()
+                        .text_color(rgb(C_SUBTEXT))
+                        .child(format!("除外 {hidden_count} 件"))
+                        .into_any_element()
+                } else if visible_slots.contains(&SecondarySlot::HiddenCount)
+                    && hidden_count > 0
+                    && !self.settings.show_hidden
+                {
+                    div()
+                        .text_color(rgb(C_SUBTEXT))
+                        .child(format!("隠し {hidden_count} 件"))
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                },
+            )
+            .child(
+                if !visible_slots.contains(&SecondarySlot::UndoCount)
+                    || self.undo.undo_len() + self.undo.redo_len() == 0
+                {
+                    div().into_any_element()
+                } else {
+                    div()
+                        .id("undo-counter")
+                        .text_color(rgb(C_MUTED))
+                        .cursor_pointer()
+                        .hover(|style| style.text_color(rgb(C_TEXT)))
+                        .child(format!(
+                            "元に戻す {} / やり直す {}",
+                            self.undo.undo_len(),
+                            self.undo.redo_len()
+                        ))
+                        .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                            this.undo_history_open = true;
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                },
+            )
+            .child(if !visible_slots.contains(&SecondarySlot::Watch) {
                 div().into_any_element()
-            })
-            .child(if self.undo.undo_len() + self.undo.redo_len() == 0 {
-                div().into_any_element()
-            } else {
-                div()
-                    .id("undo-counter")
-                    .text_color(rgb(C_MUTED))
-                    .cursor_pointer()
-                    .hover(|style| style.text_color(rgb(C_TEXT)))
-                    .child(format!(
-                        "元に戻す {} / やり直す {}",
-                        self.undo.undo_len(),
-                        self.undo.redo_len()
-                    ))
-                    .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                        this.undo_history_open = true;
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            })
-            .child(if self.view == ViewSource::Trash {
+            } else if self.view == ViewSource::Trash {
                 div()
                     .text_color(rgb(C_MUTED))
                     .child("ゴミ箱（自動更新なし）")
@@ -8705,7 +8958,7 @@ impl Explorer {
                         .into_any_element()
                 } else {
                     div()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(C_SUBTEXT))
                         .child(format!(
                             "{STATUS_WATCH_PREFIX}{}{STATUS_WATCH_COUNT_SUFFIX}",
                             self.watcher.watched_paths().len()
@@ -8724,14 +8977,16 @@ impl Explorer {
                     ))
                     .into_any_element()
             })
-            // Right edge: monitor status followed by the build version
-            // (DESIGN.md status-bar requirement).
-            .child(
+            // Right edge: build version (DESIGN.md status-bar requirement).
+            // Hidden before the watch slot when the primary status is long.
+            .child(if visible_slots.contains(&SecondarySlot::Version) {
                 div()
-                    .text_color(rgb(C_DIM))
+                    .text_color(rgb(C_SUBTEXT))
                     .child(version_label())
-                    .into_any_element(),
-            );
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            });
         div()
             .flex()
             .items_center()
@@ -8777,6 +9032,7 @@ fn icon_button_active(
                 .hover(|style| style.bg(rgb(C_SURFACE)))
                 .on_click(on_click)
         })
+        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
         .child(Icon::new(icon))
 }
 
@@ -8803,6 +9059,7 @@ fn icon_button(
                 .hover(|style| style.bg(rgb(C_SURFACE)))
                 .on_click(on_click)
         })
+        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
         .child(Icon::new(icon))
 }
 
@@ -9534,18 +9791,23 @@ mod tests {
         active_keymap_overrides, apply_debug_settings_overrides, build_places, canonical_chord,
         chord_for_action, classify_cli, clear_dialog_error, clear_op_token, format_chord,
         format_selected, fuzzy_candidates, fuzzy_score, grid_columns, help_overrides_line,
-        install_op_token, internal_drop_paths, keymap_action_name, keymap_chord_reserved,
-        kind_color, labeled_display_name, middle_click_tab_dir, normalize_terminal_command,
-        op_is_active, parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
-        read_properties_snapshot, remove_keymap_override, saved_search_caption,
-        saved_search_save_status, search_filter_status, startup_dir_from, summarize_op, tab_label,
-        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, transfer_log_level, transfer_skip_notice,
-        trash_batch, trash_delete_status, trash_key_action, trash_redo_cancelled_status,
-        trash_undo_status, upsert_keymap_override, validate_cli_dir, version_label, CliAction,
+        install_op_token, internal_drop_paths, join_status_notices, keymap_action_name,
+        keymap_chord_reserved, kind_color, labeled_display_name, middle_click_tab_dir,
+        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
+        pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
+        saved_search_caption, saved_search_save_status, search_filter_status, startup_dir_from,
+        status_color, summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
+        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
+        transfer_log_level, transfer_skip_notice, trash_batch, trash_delete_status,
+        trash_key_action, trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override,
+        validate_cli_dir, version_label, visible_secondary_slots, CliAction,
         DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
-        KeyMap, KeymapInput, SortKey, TrashKeyAction, C_MUTED, GRID_CELL_WIDTH_PX,
-        SIDEBAR_WIDTH_PX, STATUS_CANCELLED, STATUS_RESTORE_FAILED,
+        KeyMap, KeymapInput, SecondarySlot, SortKey, TrashKeyAction, C_GREEN, C_MUTED, C_RED,
+        C_YELLOW, GRID_CELL_WIDTH_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_CANCELLED,
+        STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_PREFIX,
+        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PRIORITY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
+        STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE, STATUS_SETTINGS_SAVE_FAILED,
+        STATUS_TRASH_NO_COPY,
     };
     use crate::icons::FileKind;
     use crate::model::Entry;
@@ -9554,6 +9816,91 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
+
+    #[test]
+    fn status_color_classifies_errors_warnings_and_success() {
+        let wrapped_error = format!("{STATUS_ERROR_PREFIX}ファイルを読み取れません");
+        // (status, expected colour): a table so every branch of the helper has
+        // a concrete regression case, including composed messages.
+        let cases = [
+            (wrapped_error.as_str(), C_RED),
+            (STATUS_SETTINGS_SAVE_FAILED, C_RED),
+            (STATUS_RESTORE_FAILED, C_RED),
+            (STATUS_REDO_FAILED, C_RED),
+            ("コピーできません: 権限がありません", C_RED),
+            ("3 件コピーしました（一部失敗: 権限がありません）", C_RED),
+            (STATUS_SEARCH_STALE, C_YELLOW),
+            (STATUS_CANCELLED, C_YELLOW),
+            (STATUS_TRASH_NO_COPY, C_YELLOW),
+            // NO_* notices must win over the *_FAILED phrase they contain.
+            (STATUS_REDO_NO_TARGET, C_YELLOW),
+            (STATUS_CHANGED, C_GREEN),
+            ("3 件をコピーしました", C_GREEN),
+            ("", C_GREEN),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(status_color(status), expected, "status = {status:?}");
+        }
+        // The partial-failure suffix alone must also be classified as an error.
+        assert_eq!(
+            status_color(&format!(
+                "移動しました{STATUS_PARTIAL_FAILURE_SUFFIX}理由）"
+            )),
+            C_RED
+        );
+    }
+
+    #[test]
+    fn status_priority_anchors_secondary_slot_order() {
+        assert_eq!(STATUS_PRIORITY.last(), Some(&"監視状態"));
+        assert_eq!(SECONDARY_SLOT_PRIORITY.len(), 4);
+        assert_eq!(SECONDARY_SLOT_PRIORITY.last(), Some(&SecondarySlot::Watch));
+    }
+
+    #[test]
+    fn visible_secondary_slots_hide_lowest_priority_first() {
+        let budget = STATUS_CHAR_BUDGET_PER_TIER * STATUS_PRIORITY.len();
+        assert_eq!(visible_secondary_slots(""), SECONDARY_SLOT_PRIORITY);
+        let short_status = "a".repeat(budget - 1);
+        assert_eq!(
+            visible_secondary_slots(&short_status),
+            SECONDARY_SLOT_PRIORITY
+        );
+
+        // Each extra full tier of status text hides one slot: 96/112/128/144 chars.
+        let at_budget = "a".repeat(budget);
+        assert_eq!(visible_secondary_slots(&at_budget), SECONDARY_SLOT_PRIORITY);
+        let one = "a".repeat(budget + STATUS_CHAR_BUDGET_PER_TIER);
+        assert_eq!(visible_secondary_slots(&one), &SECONDARY_SLOT_PRIORITY[..3]);
+        let two = "a".repeat(budget + STATUS_CHAR_BUDGET_PER_TIER * 2);
+        assert_eq!(visible_secondary_slots(&two), &SECONDARY_SLOT_PRIORITY[..2]);
+        let three = "a".repeat(budget + STATUS_CHAR_BUDGET_PER_TIER * 3);
+        assert_eq!(
+            visible_secondary_slots(&three),
+            &SECONDARY_SLOT_PRIORITY[..1]
+        );
+        let all = "a".repeat(budget + STATUS_CHAR_BUDGET_PER_TIER * 4);
+        assert!(visible_secondary_slots(&all).is_empty());
+        // Never panic or wrap even for a pathologically long status.
+        let huge = "a".repeat(budget + 10_000);
+        assert!(visible_secondary_slots(&huge).is_empty());
+    }
+
+    #[test]
+    fn join_status_notices_keeps_every_startup_message() {
+        let notices = vec![
+            "設定を保存できませんでした".to_string(),
+            "設定を読み取り専用で開きました: 理由".to_string(),
+            "エラー: 起動ディレクトリを開けませんでした".to_string(),
+        ];
+        assert_eq!(
+            join_status_notices(&notices),
+            "設定を保存できませんでした / 設定を読み取り専用で開きました: 理由 / エラー: 起動ディレクトリを開けませんでした"
+        );
+        assert_eq!(join_status_notices(&[]), "");
+        let single = vec!["唯一の通知".to_string()];
+        assert_eq!(join_status_notices(&single), "唯一の通知");
+    }
 
     #[test]
     fn debug_settings_overrides_defaults_leave_settings_untouched() {
@@ -9893,11 +10240,32 @@ mod tests {
         let (title, _) = empty_state_message(ViewSource::Directory, true, None, 0, 0).unwrap();
         assert_eq!(title, "読み込み中…");
 
-        let (title, _) =
+        let (title, hint) =
             empty_state_message(ViewSource::Directory, false, Some("読めません"), 0, 0).unwrap();
         assert_eq!(title, "エラー: 読めません");
+        assert_eq!(hint.as_deref(), Some(crate::strings::LOAD_ERROR_HINT));
 
         assert!(empty_state_message(ViewSource::Directory, false, None, 3, 2).is_none());
+    }
+
+    #[test]
+    fn selection_status_text_distinguishes_cursor_from_selection() {
+        use super::selection_status_text;
+
+        // U-11: with no selection the cursor must not be reported as a choice.
+        assert_eq!(
+            selection_status_text(0, Some("選択: first.txt")),
+            "選択なし"
+        );
+        assert_eq!(
+            selection_status_text(1, Some("選択: first.txt")),
+            "選択: first.txt"
+        );
+        assert_eq!(selection_status_text(1, None), "選択なし");
+        assert_eq!(
+            selection_status_text(3, Some("選択: first.txt")),
+            "3 件選択"
+        );
     }
 
     #[test]
@@ -11182,6 +11550,38 @@ mod tests {
                 "duplicate keystroke in default keymap: {spec:?}"
             );
         }
+    }
+
+    #[test]
+    fn keyboard_accessibility_actions_resolve_without_collisions() {
+        let keymap = KeyMap::default_keymap();
+
+        // U-07 / U-08 / context-menu copy-path keyboard paths.
+        assert_eq!(
+            keymap.resolve("l", true, true, false),
+            KeyAction::FocusSidebar
+        );
+        assert_eq!(
+            keymap.resolve("space", true, false, false),
+            KeyAction::ToggleSelection
+        );
+        assert_eq!(keymap.resolve("c", true, true, false), KeyAction::CopyPath);
+
+        // The original shifted-off bindings keep their meaning.
+        assert_eq!(
+            keymap.resolve("l", true, false, false),
+            KeyAction::OpenLocation
+        );
+        assert_eq!(
+            keymap.resolve("space", false, false, false),
+            KeyAction::OpenPreview
+        );
+        assert_eq!(keymap.resolve("c", true, false, false), KeyAction::Copy);
+
+        // Ctrl bindings treat alt as a don't-care, so the new chords also
+        // resolve with alt held; they must not steal a plain-Ctrl shortcut.
+        assert_eq!(keymap.resolve("c", true, true, true), KeyAction::CopyPath);
+        assert_eq!(keymap.resolve("c", true, false, true), KeyAction::Copy);
     }
 
     #[test]
