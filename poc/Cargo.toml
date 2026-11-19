@@ -3,6 +3,10 @@
 name = "gpui-file-explorer-poc"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "GPUI widget proof-of-concept for gpui-file-explorer"
+repository = "https://github.com/Seduce0068/gpui-file-explorer"
+homepage = "https://github.com/Seduce0068/gpui-file-explorer"
 
 [dependencies]
 gpui-kit = "=0.9.1"
