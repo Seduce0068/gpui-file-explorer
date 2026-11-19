@@ -92,6 +92,20 @@ const LIST_CHROME_HEIGHT_PX: f64 = 140.0;
 /// sidebar and when subtracting it from the viewport for the icon grid.
 const SIDEBAR_WIDTH_PX: f32 = 190.0;
 const GRID_CELL_WIDTH_PX: f32 = 108.0;
+/// `grid_row` adds `.px_3()` (24px total horizontal padding) and `.gap_2()`
+/// (8px between cells). The column calculation must budget for both or the
+/// last column overflows the viewport (U-17).
+const GRID_ROW_PADDING_PX: f32 = 24.0;
+const GRID_GAP_PX: f32 = 8.0;
+
+/// Icon-grid column count for the width left after the sidebar, folding the
+/// row padding and inter-cell gaps into `grid_columns`.
+fn grid_columns_for_width(content_width: f32) -> usize {
+    grid_columns(
+        content_width - GRID_ROW_PADDING_PX - GRID_GAP_PX,
+        GRID_CELL_WIDTH_PX + GRID_GAP_PX,
+    )
+}
 
 /// Presence check that also sees dangling symlinks.
 ///
@@ -8377,7 +8391,7 @@ impl Explorer {
     }
 
     fn sidebar(&self, cx: &mut Context<Self>) -> Div {
-        let mut sidebar = div()
+        let sidebar = div()
             .w(px(SIDEBAR_WIDTH_PX))
             .h_full()
             .flex()
@@ -8394,6 +8408,16 @@ impl Explorer {
                     .text_color(rgb(C_MUTED))
                     .child("場所"),
             );
+        // U-16: nine places plus bookmarks/recent/drives can exceed the window
+        // height. Keep the header fixed and make only the list area scrollable;
+        // `min_h_0` lets this flex child shrink so overflow can take effect.
+        let mut scroll_area = div()
+            .id("sidebar-scroll")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .overflow_y_scroll();
         // Cached places only: no `dirs::*_dir()` / `is_dir()` I/O in render.
         for (index, place) in self.places.iter().enumerate() {
             let existing = place.exists;
@@ -8443,10 +8467,10 @@ impl Explorer {
                         this.navigate_to(target.clone(), cx);
                     }));
             }
-            sidebar = sidebar.child(row);
+            scroll_area = scroll_area.child(row);
         }
         if !self.bookmarks.is_empty() {
-            sidebar = sidebar.child(
+            scroll_area = scroll_area.child(
                 div()
                     .px_3()
                     .py_1()
@@ -8459,7 +8483,7 @@ impl Explorer {
                 let label =
                     labeled_display_name(&tab_label(path), self.settings.bookmark_label(path));
                 let target = path.clone();
-                sidebar = sidebar.child(
+                scroll_area = scroll_area.child(
                     div()
                         .id(32_000 + index as u64)
                         .mx_2()
@@ -8485,7 +8509,7 @@ impl Explorer {
         }
         let recent = &self.recent;
         if !recent.is_empty() {
-            sidebar = sidebar.child(
+            scroll_area = scroll_area.child(
                 div()
                     .px_3()
                     .py_1()
@@ -8498,7 +8522,7 @@ impl Explorer {
                 let label =
                     labeled_display_name(&tab_label(path), self.settings.bookmark_label(path));
                 let target = path.clone();
-                sidebar = sidebar.child(
+                scroll_area = scroll_area.child(
                     div()
                         .id(31_000 + index as u64)
                         .mx_2()
@@ -8523,7 +8547,7 @@ impl Explorer {
             }
         }
         if !self.mounts.is_empty() {
-            sidebar = sidebar.child(
+            scroll_area = scroll_area.child(
                 div()
                     .px_3()
                     .py_1()
@@ -8546,7 +8570,7 @@ impl Explorer {
                     mount.source
                 );
                 let target = mount.path.clone();
-                sidebar = sidebar.child(
+                scroll_area = scroll_area.child(
                     div()
                         .id(30_000 + index as u64)
                         .mx_2()
@@ -8571,7 +8595,7 @@ impl Explorer {
                 );
             }
         }
-        sidebar
+        sidebar.child(scroll_area)
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> Div {
@@ -9345,10 +9369,8 @@ impl Render for Explorer {
         } else {
             Some(self.sort_header(cx))
         };
-        let columns = grid_columns(
-            window.viewport_size().width.to_f64() as f32 - SIDEBAR_WIDTH_PX,
-            GRID_CELL_WIDTH_PX,
-        );
+        let columns =
+            grid_columns_for_width(window.viewport_size().width.to_f64() as f32 - SIDEBAR_WIDTH_PX);
         self.grid_column_count = columns;
         let item_count = if grid_mode {
             grid_row_count(self.entries.len(), columns)
@@ -9790,20 +9812,21 @@ mod tests {
     use super::{
         active_keymap_overrides, apply_debug_settings_overrides, build_places, canonical_chord,
         chord_for_action, classify_cli, clear_dialog_error, clear_op_token, format_chord,
-        format_selected, fuzzy_candidates, fuzzy_score, grid_columns, help_overrides_line,
-        install_op_token, internal_drop_paths, join_status_notices, keymap_action_name,
-        keymap_chord_reserved, kind_color, labeled_display_name, middle_click_tab_dir,
-        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
-        pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
-        saved_search_caption, saved_search_save_status, search_filter_status, startup_dir_from,
-        status_color, summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
-        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
-        transfer_log_level, transfer_skip_notice, trash_batch, trash_delete_status,
-        trash_key_action, trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override,
-        validate_cli_dir, version_label, visible_secondary_slots, CliAction,
-        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
-        KeyMap, KeymapInput, SecondarySlot, SortKey, TrashKeyAction, C_GREEN, C_MUTED, C_RED,
-        C_YELLOW, GRID_CELL_WIDTH_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_CANCELLED,
+        format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
+        help_overrides_line, install_op_token, internal_drop_paths, join_status_notices,
+        keymap_action_name, keymap_chord_reserved, kind_color, labeled_display_name,
+        middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
+        parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
+        remove_keymap_override, saved_search_caption, saved_search_save_status,
+        search_filter_status, startup_dir_from, status_color, summarize_op, tab_label,
+        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, transfer_log_level, transfer_skip_notice,
+        trash_batch, trash_delete_status, trash_key_action, trash_redo_cancelled_status,
+        trash_undo_status, upsert_keymap_override, validate_cli_dir, version_label,
+        visible_secondary_slots, CliAction, DebugSettingsOverrides, Explorer, FuzzyCandidate,
+        FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, SecondarySlot, SortKey,
+        TrashKeyAction, C_GREEN, C_MUTED, C_RED, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
+        GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_CANCELLED,
         STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_PREFIX,
         STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PRIORITY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
         STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE, STATUS_SETTINGS_SAVE_FAILED,
@@ -9988,7 +10011,33 @@ mod tests {
         let viewport_width = 1000.0f32;
         let content_width = viewport_width - SIDEBAR_WIDTH_PX;
         assert_eq!(content_width, 810.0);
-        assert_eq!(grid_columns(content_width, GRID_CELL_WIDTH_PX), 7);
+        assert_eq!(grid_columns_for_width(content_width), 6);
+    }
+
+    #[test]
+    fn grid_columns_budget_padding_and_gaps_within_viewport() {
+        // U-17: each `grid_row` costs `.px_3()` (24px horizontal) plus
+        // `.gap_2()` (8px × (n-1)) on top of the 108px cells. The computed
+        // column count must fit the entire row inside the content area.
+        for viewport_width in [800.0, 1000.0, 1100.0, 1280.0, 1920.0] {
+            let content_width = viewport_width - SIDEBAR_WIDTH_PX;
+            let columns = grid_columns_for_width(content_width);
+            let required = GRID_ROW_PADDING_PX
+                + columns as f32 * GRID_CELL_WIDTH_PX
+                + columns.saturating_sub(1) as f32 * GRID_GAP_PX;
+            assert!(
+                required <= content_width,
+                "viewport {viewport_width}: {columns} columns need {required}px > {content_width}px"
+            );
+        }
+        // Default 1100x728 window: plain division gave 8 columns (944px needed
+        // for 910px of content); the padded calculation must drop to 7.
+        let content_width = 1100.0 - SIDEBAR_WIDTH_PX;
+        assert_eq!(grid_columns_for_width(content_width), 7);
+        assert_eq!(
+            GRID_ROW_PADDING_PX + 7.0 * GRID_CELL_WIDTH_PX + 6.0 * GRID_GAP_PX,
+            828.0
+        );
     }
 
     #[test]
