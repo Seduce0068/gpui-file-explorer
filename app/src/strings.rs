@@ -91,12 +91,17 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Home / End", "先頭 / 末尾へ"),
             ("PageUp / PageDown", "ページ単位で移動"),
             ("Ctrl+P", FUZZY_JUMP_LABEL),
+            (
+                "Ctrl+Shift+L",
+                "サイドバーのホームへ移動（他の場所はマウスのみ）",
+            ),
         ],
     ),
     (
         "選択",
         &[
             ("Ctrl+A", "全選択"),
+            ("Ctrl+Space", "フォーカス行の選択を切替（非連続選択）"),
             ("Shift+↑↓", "範囲選択"),
             ("Ctrl+クリック / Shift+クリック", "追加選択 / 範囲選択"),
         ],
@@ -108,6 +113,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "Ctrl+C / Ctrl+X / Ctrl+V",
                 "コピー / 切り取り / 貼り付け（常に別名保存）",
             ),
+            ("Ctrl+Shift+C", "フォーカス行のパスをコピー"),
             ("F2", "名前変更"),
             ("Delete", "ゴミ箱へ移動（完全削除なし）"),
             ("R / Ctrl+Enter", "選択項目を元の場所へ復元（ゴミ箱ビュー）"),
@@ -195,13 +201,15 @@ pub const EMPTY_SEARCH: (&str, &str) = (
 );
 pub const EMPTY_DIRECTORY: (&str, &str) = (
     "このフォルダは空です",
-    "ここにファイルをドロップするとコピーできます",
+    "ここにファイルをドロップするか、Ctrl+Shift+N で新規フォルダ / Ctrl+V で貼り付け",
 );
 pub const EMPTY_FILTERED: (&str, &str) = (
     "絞り込みで全て除外されました",
     "種別や拡張子の条件を変更してください",
 );
 pub const LOADING: &str = "読み込み中…";
+/// Recovery hint shown under a load error in the empty-state overlay (U-20).
+pub const LOAD_ERROR_HINT: &str = "F5 で再読込 / Ctrl+L で別のパスへ移動";
 
 // ---------------------------------------------------------------------------
 // ステータスバー（共通・タブ・ゴミ箱）
@@ -225,6 +233,8 @@ pub const STATUS_TRASH_NO_PURGE: &str = "ゴミ箱内の完全削除は未対応
 pub const STATUS_TRASH_NO_HIDDEN: &str = "ゴミ箱ビューでは隠しファイルの切替はできません";
 pub const STATUS_TRASH_NO_SORT: &str = "ゴミ箱ビューでは並び替えはできません";
 pub const STATUS_CANCELLING: &str = "キャンセルしています…";
+/// コピー / 切り取り / ゴミ箱移動で選択項目がないときの共通通知。
+pub const STATUS_NO_SELECTION: &str = "選択項目がありません";
 pub const STATUS_NO_CLIPBOARD: &str = "コピー/切り取りした項目がありません";
 pub const STATUS_OP_RUNNING: &str = "ファイル操作を実行中です（Esc でキャンセル）";
 pub const STATUS_DROP_ONLY_DIRECTORY: &str = "ドロップはディレクトリ表示でのみ使えます";
@@ -319,7 +329,8 @@ pub const STATUS_RESTORE_FAILED: &str = "復元できません";
 
 /// 表示層の優先順位（高い順）。狭いステータスバーでは後ろから省略する。
 /// 実行時のスロットではなく、競合時に参照する規約データ（r5-render-09）。
-#[allow(dead_code)]
+/// `main.rs` の二次スロット省略ヘルパーがこの長さと末尾（"監視状態"）を
+/// 参照するため、変更時はそちらの順序定数も同期させること。
 pub const STATUS_PRIORITY: &[&str] = &["エラー", "操作通知", "進捗", "選択情報", "監視状態"];
 /// 1 回の操作完了内での分岐順（高い順）。成功と失敗が競合しても成功を消さず、
 /// 一部失敗として併記するための規約。
@@ -337,7 +348,6 @@ pub const OP_RESULT_PRIORITY: &[&str] = &["キャンセル", "一部失敗", "�
 #[allow(dead_code)]
 pub const VALUE_UNKNOWN: &str = "-";
 /// Canonical cancel label. Do not use the English `cancel` in prompt buttons.
-#[allow(dead_code)]
 pub const LABEL_CANCEL: &str = "キャンセル";
 
 /// `種類` 列のラベル（現在は `model::kind_label` に直書き）。
@@ -437,6 +447,21 @@ mod tests {
         };
         assert_eq!(find("Ctrl+P"), Some(FUZZY_JUMP_LABEL));
         assert_eq!(find("Alt+↑ / Backspace"), Some(PARENT_FOLDER_LABEL));
+    }
+
+    #[test]
+    fn help_lists_keyboard_accessibility_shortcuts() {
+        let keys: Vec<&str> = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, entries)| *entries)
+            .map(|(key, _)| *key)
+            .collect();
+        for expected in ["Ctrl+Shift+L", "Ctrl+Space", "Ctrl+Shift+C"] {
+            assert!(
+                keys.contains(&expected),
+                "{expected} must be listed in F1 help"
+            );
+        }
     }
 
     #[test]
@@ -562,6 +587,7 @@ mod tests {
             STATUS_SKIPPED_PREFIX,
             STATUS_SKIPPED_SUFFIX,
             STATUS_CANCELLED,
+            STATUS_NO_SELECTION,
             STATUS_OP_IN_PROGRESS_SUFFIX,
             STATUS_RESCAN_FAILED,
             STATUS_WATCH_PREFIX,
