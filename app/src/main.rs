@@ -285,16 +285,24 @@ fn join_status_notices(notices: &[String]) -> String {
 
 /// Status-bar text for the current selection (U-11).
 ///
-/// `selected` is only the keyboard cursor: with an empty selection it must not
-/// be reported as a selected entry. `detail` is the already-formatted text for
-/// the single selected entry, when there is one.
-fn selection_status_text(selection_count: usize, detail: Option<&str>) -> String {
+/// `detail` is the already-formatted text for the single selected entry,
+/// without a prefix. `implicit` is true when that entry was auto-selected by a
+/// load/reload (the keyboard needs a target) rather than picked by the user:
+/// the entry is still a real, actionable selection, but the bar shows
+/// "カーソル:" instead of claiming a user-made "選択:".
+fn selection_status_text(selection_count: usize, detail: Option<&str>, implicit: bool) -> String {
     match selection_count {
         0 => "選択なし".to_string(),
-        1 => detail
-            .filter(|text| !text.is_empty())
-            .unwrap_or("選択なし")
-            .to_string(),
+        1 => {
+            let Some(detail) = detail.filter(|text| !text.is_empty()) else {
+                return "選択なし".to_string();
+            };
+            if implicit {
+                format!("カーソル: {detail}")
+            } else {
+                format!("選択: {detail}")
+            }
+        }
         count => format!("{count} 件選択"),
     }
 }
@@ -1873,6 +1881,10 @@ struct Explorer {
     selected: usize,
     /// Multi-selection keyed by path so it survives reloads and re-sorting.
     selection: Selection,
+    /// True when the single selected path was auto-selected by a load/reload
+    /// (keyboard ops need a target) rather than picked by the user. Only the
+    /// status-bar label changes: the path stays a real selection for actions.
+    implicit_selection: bool,
     /// Current listing source (real directory or the system trash).
     view: ViewSource,
     /// Trash items backing the virtual listing (empty in directory view).
@@ -2152,6 +2164,7 @@ impl Explorer {
             entries: Vec::new(),
             selected: 0,
             selection: Selection::default(),
+            implicit_selection: true,
             view: ViewSource::Directory,
             trash_items: Vec::new(),
             search: SearchState::default(),
@@ -2380,6 +2393,9 @@ impl Explorer {
         self.selected = clamp_index(focused, self.entries.len());
         if self.selection.is_empty() {
             if let Some(entry) = self.entries.get(self.selected) {
+                // Keyboard ops need a target, but the user picked nothing:
+                // mark it implicit so the bar says "カーソル:".
+                self.implicit_selection = true;
                 self.selection.select_single(entry.path.clone());
             }
         }
@@ -2452,6 +2468,9 @@ impl Explorer {
         self.selected = clamp_index(focused, self.entries.len());
         if self.selection.is_empty() {
             if let Some(entry) = self.entries.get(self.selected) {
+                // Keyboard ops need a target, but the user picked nothing:
+                // mark it implicit so the bar says "カーソル:".
+                self.implicit_selection = true;
                 self.selection.select_single(entry.path.clone());
             }
         }
@@ -3336,6 +3355,7 @@ impl Explorer {
     /// Select one row (plain click / arrow key) and move the keyboard cursor.
     fn select_single_index(&mut self, index: usize, cx: &mut Context<Self>) {
         let index = clamp_index(index, self.entries.len());
+        self.implicit_selection = false;
         self.selected = index;
         if let Some(entry) = self.entries.get(index) {
             self.selection.select_single(entry.path.clone());
@@ -3360,6 +3380,7 @@ impl Explorer {
         let Some(entry) = self.entries.get(index) else {
             return;
         };
+        self.implicit_selection = false;
         let path = entry.path.clone();
         let paths: Vec<PathBuf> = self
             .entries
@@ -3389,6 +3410,7 @@ impl Explorer {
     }
 
     fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.implicit_selection = false;
         let paths: Vec<PathBuf> = self
             .entries
             .iter()
@@ -7193,6 +7215,8 @@ impl Explorer {
         self.fingerprint = fingerprint(&self.entries);
         if self.selection.is_empty() {
             if let Some(entry) = self.entries.first() {
+                // Auto-selected search target, not a user pick.
+                self.implicit_selection = true;
                 self.selection.select_single(entry.path.clone());
             }
         }
@@ -8814,19 +8838,19 @@ impl Explorer {
                         trash_view::original_parent_for_path(&self.trash_items, &entry.path);
                     Some(match parent {
                         Some(parent) => format!(
-                            "選択: {}（削除: {} / 復元先: {}）",
+                            "{}（削除: {} / 復元先: {}）",
                             entry.name_text,
                             human_datetime(entry.modified),
                             parent
                         ),
                         None => format!(
-                            "選択: {}（削除: {}）",
+                            "{}（削除: {}）",
                             entry.name_text,
                             human_datetime(entry.modified)
                         ),
                     })
                 } else {
-                    Some(format!("選択: {}", format_selected(entry)))
+                    Some(format_selected(entry))
                 }
             })
         } else {
@@ -8853,6 +8877,7 @@ impl Explorer {
             .child(div().text_color(rgb(C_MUTED)).child(selection_status_text(
                 self.selection.len(),
                 selection_detail.as_deref(),
+                self.implicit_selection,
             )));
         let right = div()
             .flex()
@@ -10302,19 +10327,58 @@ mod tests {
         use super::selection_status_text;
 
         // U-11: with no selection the cursor must not be reported as a choice.
+        for implicit in [true, false] {
+            assert_eq!(
+                selection_status_text(0, Some("first.txt（フォルダ）"), implicit),
+                "選択なし"
+            );
+        }
+
+        // A load/reload auto-target is shown as a cursor, not a user pick.
         assert_eq!(
-            selection_status_text(0, Some("選択: first.txt")),
-            "選択なし"
+            selection_status_text(1, Some("__pycache__（フォルダ）"), true),
+            "カーソル: __pycache__（フォルダ）"
+        );
+        // An explicit click / keyboard selection keeps the "選択" label.
+        assert_eq!(
+            selection_status_text(1, Some("first.txt（フォルダ）"), false),
+            "選択: first.txt（フォルダ）"
+        );
+
+        // Missing or empty detail never claims a selection.
+        assert_eq!(selection_status_text(1, None, true), "選択なし");
+        assert_eq!(selection_status_text(1, None, false), "選択なし");
+        assert_eq!(selection_status_text(1, Some(""), false), "選択なし");
+
+        // Multi-selection count is independent of the implicit flag.
+        for implicit in [true, false] {
+            assert_eq!(
+                selection_status_text(3, Some("first.txt（フォルダ）"), implicit),
+                "3 件選択"
+            );
+        }
+    }
+
+    #[test]
+    fn implicit_selection_only_changes_the_single_entry_label() {
+        use super::selection_status_text;
+
+        // Dogfooding regression: a fresh load auto-selects the first row and
+        // must report it as a cursor, never as a user selection.
+        let detail = Some("__pycache__（フォルダ）");
+        assert_eq!(
+            selection_status_text(1, detail, true),
+            "カーソル: __pycache__（フォルダ）"
         );
         assert_eq!(
-            selection_status_text(1, Some("選択: first.txt")),
-            "選択: first.txt"
+            selection_status_text(1, detail, false),
+            "選択: __pycache__（フォルダ）"
         );
-        assert_eq!(selection_status_text(1, None), "選択なし");
-        assert_eq!(
-            selection_status_text(3, Some("選択: first.txt")),
-            "3 件選択"
-        );
+
+        // Operations still use `selection.len()`; an implicit path remains a
+        // real selection internally, so only the 1-entry text differs.
+        assert_eq!(selection_status_text(2, detail, true), "2 件選択");
+        assert_eq!(selection_status_text(2, detail, false), "2 件選択");
     }
 
     #[test]
