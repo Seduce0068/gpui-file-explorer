@@ -437,7 +437,9 @@ status: current
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
   [unconfirmed-followup.md](notes/task-discovery-2/unconfirmed-followup.md)。性能実測は
   [perf-baseline.md](notes/perf-baseline.md) にあり（200 MB 目標は未達）。
-  実機再現・法的判断・フレーム時間計測は未実施で、必要手順を同ファイルに記録。
+  実機再現・フレーム時間計測は未実施で、必要手順を同ファイルに記録。
+  AGPL §13 導線と DEP-5 copyright は対応済み。Debian 登録は現時点では
+  行わない（ユーザー判断、将来配布方針決定時に再評価）。
 
 ## 完了
 

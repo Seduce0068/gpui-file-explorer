@@ -320,8 +320,11 @@ status: complete
   `wasm_thread 0.3.3` が `#![feature(stdarch_wasm_atomic_wait)]` を
   要求し、stable コンパイラで E0554 で失敗。
   同ノート §1-1 の「nightly 必須」という結論は実測で再確認された。
-- Web デモで改変版をネットワーク越しに使わせる場合の
-  AGPL §13 の適用・十分な案内形式は法的に未確認。
+- AGPL §13 のソース案内導線は対応済み（2026-11-18 追記）:
+  README 末尾の「ソース・ライセンス」節と F1 ヘルプに
+  [リポジトリ URL](https://github.com/Seduce0068/gpui-file-explorer) を表示。
+  ネットワーク配布時の案内形式が十分かどうかの法的な
+  確証はないが、現時点ではデスクトップ配布のみを対象とする。
 - 本調査は法的判断を行わない。
 
 ### F6-46 に必要な環境・手順
@@ -399,13 +402,17 @@ status: complete
 
 ### F6-48 で未確認の事項
 
-- この DEB はローカルビルド品であり、Debian アーカイブ
-  登録を前提とするなら Debian Policy §5.6.7 / DEP-5 の
-  適用範囲を確認する必要がある（法的・手続き的判断は未実施）。
+- DEP-5 形式の `copyright` は対応済み（2026-11-18 追記、
+  `packaging/linux/copyright`）。著作権者は git author と
+  Maintainer から `2026 koppe <keitaonodera0903@gmail.com>`
+  を記載している。
+- Debian アーカイブ登録は現時点では行わない（ユーザー判断、
+  2026-11-19）。将来的に配布方針を決める際に、Debian Policy
+  §5.6.7 / DEP-5 の適用範囲と `lintian` 検査を再評価する。
 - バイナリ配布で各推移依存のライセンス本文をどこまで
   同梱すべきか、ISC 本文が必要かは未確認。
-- `deny.toml` の allow 一覧が実際の配布物に十分かは
-  `cargo deny check` の実行結果に依存し、本タスクでは未実行。
+- `deny.toml` の allow 一覧は `cargo deny check` で検証済み
+  （advisories / bans / licenses / sources すべて ok）。
 
 ### F6-48 に必要な環境・手順
 
