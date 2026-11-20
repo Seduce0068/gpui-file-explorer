@@ -511,8 +511,9 @@ status: current
 ### 優先度: 中（継続ループ R1）
 
 - [x] **C06** terminal/keymap 入力編集で dirty が立たない — settings_ui.rs:273 — 対応: loop-c01
-- [x] **C07** --skip-build が build.rs/native-libs を鮮度対象外にしている — build-deb.sh:134 — 対応: loop-docs
-- [ ] **C08** stale allow(dead_code) と「配線待ち」コメント群
+- [x] **C07** --skip-build の鮮度ガード missing build.rs
+  — 対応: loop-docs
+- [x] **C08** stale allow(dead_code) と「配線待ち」コメント群 — 対応: 親
   — settings.rs / settings_ui.rs / system_icons.rs
 - [x] **C09** Ctrl+, が両 README のキーバインド表に未掲載 — README.md / app/README.md — 対応: loop-docs
 - [x] **C10** 設定画面のキーマップ構文 `action=chord;` が無説明 — settings_ui.rs:192 — 対応: loop-docs

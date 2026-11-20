@@ -14,9 +14,6 @@ mod mounts;
 mod ops;
 mod preview;
 mod search;
-// `next_theme` is the legacy two-state cycle kept for settings-file
-// compatibility; the UI now cycles `ThemeChoice` via `next_theme_choice`.
-#[allow(dead_code)]
 mod settings;
 mod settings_ui;
 mod strings;
