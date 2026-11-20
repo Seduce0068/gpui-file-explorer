@@ -495,6 +495,28 @@ status: current
 - [x] **UX-C** テーマ選択を Light / Dark / System の3値に拡張しライトテーマを実現 — 対応: 436fe1d/3e4caaf/4a3b0df/1cdbc0c
   — `settings.rs` スキーマ + `main.rs` パレット192箇所
 
+### 優先度: 高（継続ループ R1・confirmed）
+
+- [ ] **C01** 設定画面のテーマ保存が apply_theme_mode を通らず本体に反映されない
+  — main.rs:10102-10110 / 複数エージェントが一致指摘
+- [ ] **C02** キーマップ入力エラーが Shortcuts タブに表示されない
+  — settings_ui.rs:602 / main.rs:10078
+- [ ] **C03** ライトテーマでツールバーアイコンがほぼ不可視（Mocha 固定色）
+  — main.rs:9464-9500
+- [ ] **C04** 設定画面 Save が sort.dir を黙って上書きする
+  — main.rs:10117-10126
+- [ ] **C05** 3値テーマに対して README/F1/DESIGN が2値のまま誤案内
+  — app/README.md / DESIGN.md
+
+### 優先度: 中（継続ループ R1）
+
+- [ ] **C06** terminal/keymap 入力編集で dirty が立たない — settings_ui.rs:273
+- [ ] **C07** --skip-build が build.rs/native-libs を鮮度対象外にしている — build-deb.sh:134
+- [ ] **C08** stale allow(dead_code) と「配線待ち」コメント群
+  — settings.rs / settings_ui.rs / system_icons.rs
+- [ ] **C09** Ctrl+, が両 README のキーバインド表に未掲載 — README.md / app/README.md
+- [ ] **C10** 設定画面のキーマップ構文 `action=chord;` が無説明 — settings_ui.rs:192
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
