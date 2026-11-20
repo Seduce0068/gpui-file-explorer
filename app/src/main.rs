@@ -46,7 +46,7 @@ use crate::model::{
     breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
     grid_columns, grid_row_count, human_age, human_datetime, human_size, last_index, parent_dir,
     read_entries, resolve_location_input, sort_entries, step_selection, visible_entries, Entry,
-    Selection, SortKey, SortSpec,
+    FsError, FsErrorKind, Selection, SortKey, SortSpec,
 };
 use crate::mounts::MountPoint;
 use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
@@ -230,6 +230,15 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     STATUS_PARTIAL_FAILURE_SUFFIX,
     STATUS_TRASH_PARTIAL_FAILED,
 ];
+
+/// Status shown when a bookmark toggle targets a path serde cannot persist
+/// (non-UTF-8). Local to `main.rs` because `strings.rs` is intentionally out of
+/// scope for this module.
+const STATUS_BOOKMARK_NOT_PERSISTABLE: &str = "このパスはブックマークできません（非UTF-8）";
+
+/// Status shown when the properties metadata read is denied by the OS.
+/// Local to `main.rs` for the same reason as [`STATUS_BOOKMARK_NOT_PERSISTABLE`].
+const STATUS_ACCESS_DENIED: &str = "アクセスが拒否されました";
 
 /// Pure colour decision for the primary status text (U-01). Errors are red,
 /// stale/cancelled/`NO_*` warnings are amber, everything else stays success
@@ -1791,9 +1800,12 @@ struct PropertiesSnapshot {
 ///
 /// Blocking: call from the background executor only, never from render. The
 /// order and fallbacks mirror the previous inline implementation exactly.
-fn read_properties_snapshot(path: &Path) -> Result<PropertiesSnapshot, ()> {
-    // `symlink_metadata` sees broken links too and never follows them.
-    let link_metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
+fn read_properties_snapshot(path: &Path) -> Result<PropertiesSnapshot, FsError> {
+    // `symlink_metadata` sees broken links too and never follows them. Keep the
+    // io error so the caller can distinguish "gone" from "denied" and other
+    // failures instead of always blaming a vanished path.
+    let link_metadata = std::fs::symlink_metadata(path)
+        .map_err(|err| FsError::from_io(path.to_path_buf(), &err))?;
     let is_symlink = link_metadata.file_type().is_symlink();
     let metadata = std::fs::metadata(path).ok().or(Some(link_metadata.clone()));
     let size = if link_metadata.is_dir() {
@@ -1826,6 +1838,44 @@ fn read_properties_snapshot(path: &Path) -> Result<PropertiesSnapshot, ()> {
         permissions,
         symlink_target,
     })
+}
+
+/// Pure mapping from a failed properties metadata read to the UI reaction.
+/// Only `NotFound` reloads the listing; a permission error and every other
+/// failure keep the current view and show a distinct status.
+#[derive(Debug, PartialEq, Eq)]
+enum PropertiesErrorReaction {
+    PathGone,
+    AccessDenied,
+    Other,
+}
+
+impl PropertiesErrorReaction {
+    fn for_error(error: &FsError) -> Self {
+        match error {
+            FsError::Fs { kind, .. } | FsError::FsCause { kind, .. } => match kind {
+                FsErrorKind::NotFound => Self::PathGone,
+                FsErrorKind::PermissionDenied => Self::AccessDenied,
+                _ => Self::Other,
+            },
+            _ => Self::Other,
+        }
+    }
+
+    /// `(status text, whether to reload)` — pure so it can be tested directly.
+    fn apply(self, path: &Path, error: &FsError) -> (String, bool) {
+        match self {
+            Self::PathGone => (format!("{STATUS_PATH_GONE}: {}", display_path(path)), true),
+            Self::AccessDenied => (
+                format!("{STATUS_ACCESS_DENIED}: {}", display_path(path)),
+                false,
+            ),
+            Self::Other => (
+                format!("{STATUS_ERROR_PREFIX}{}", error.message_ja()),
+                false,
+            ),
+        }
+    }
 }
 
 /// Resolve the trash ids of freshly trashed paths from a previously read
@@ -2035,6 +2085,20 @@ fn apply_debug_settings_overrides(
     }
     if overrides.search_history {
         settings.recent_searches = vec!["TODO".to_string(), "rs".to_string(), "config".to_string()];
+    }
+}
+
+/// Pure guard for the Ctrl+D bookmark toggle. `Some(status)` means the path
+/// cannot be persisted and the caller must return before touching
+/// `toggle_bookmark` (and its `debug_assert_eq!`); `None` means toggle normally.
+///
+/// Kept separate from the GPUI method so the non-UTF-8 rejection is
+/// regression-testable without a running window.
+fn bookmark_toggle_rejection(path: &Path) -> Option<String> {
+    if Settings::can_persist_path(path) {
+        None
+    } else {
+        Some(STATUS_BOOKMARK_NOT_PERSISTABLE.to_string())
     }
 }
 
@@ -2548,6 +2612,14 @@ impl Explorer {
             return;
         }
         let path = self.cwd.clone();
+        // A non-UTF-8 path is rejected by `toggle_bookmark` (sane_path), which
+        // would trip the assertion below in debug and show a false "removed"
+        // message in release. Refuse it before any state is touched.
+        if let Some(status) = bookmark_toggle_rejection(&path) {
+            self.status = status;
+            cx.notify();
+            return;
+        }
         let was_bookmarked = self.settings.is_bookmarked(&path);
         let added = self.settings.toggle_bookmark(&path);
         debug_assert_eq!(added, !was_bookmarked);
@@ -5504,7 +5576,7 @@ impl Explorer {
                 }),
             );
         let meta = if preview.loading {
-            "読み込み中…".to_string()
+            LOADING.to_string()
         } else if let Some(error) = &preview.error {
             error.clone()
         } else if preview.truncated {
@@ -5759,7 +5831,8 @@ impl Explorer {
         let candidates = self.build_fuzzy_candidates();
         let results = rank_fuzzy(&candidates, "", FUZZY_MAX_RESULTS);
         let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("ファイル名／フォルダ名であいまい検索…")
+            InputState::new(window, cx)
+                .placeholder(format!("ファイル名／フォルダ名で{FUZZY_JUMP_LABEL}…"))
         });
         let subscription =
             cx.subscribe(&input, |this, input, event: &InputEvent, cx| match event {
@@ -5904,7 +5977,10 @@ impl Explorer {
                     .py_1()
                     .text_sm()
                     .text_color(rgb(C_MUTED))
-                    .child("一致する項目がありません（タブ・ブックマーク・最近・階層・このフォルダを検索）"),
+                    .child(format!(
+                        "{}（タブ・ブックマーク・最近・階層・このフォルダを検索）",
+                        EMPTY_SEARCH.0
+                    )),
             );
         }
         for (rank, index) in fuzzy.results.iter().enumerate() {
@@ -6148,10 +6224,19 @@ impl Explorer {
                 if !should_apply_properties_read(this.props_serial, serial) {
                     return;
                 }
-                let Ok(snapshot) = result else {
-                    this.status = format!("{STATUS_PATH_GONE}: {}", display_path(&path));
-                    this.reload(cx);
-                    return;
+                let snapshot = match result {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        let reaction = PropertiesErrorReaction::for_error(&error);
+                        let (status, reload) = reaction.apply(&path, &error);
+                        this.status = status;
+                        // A permission failure or any other io error must not
+                        // discard the visible listing (only a gone path does).
+                        if reload {
+                            this.reload(cx);
+                        }
+                        return;
+                    }
                 };
                 let kind = if snapshot.is_symlink {
                     "シンボリックリンク"
@@ -7914,9 +7999,16 @@ impl Explorer {
         } else {
             " "
         };
+        // In the trash the timestamp is the deletion time, not the mtime.
+        // Compute the displayed label first so the aria label stays in sync.
+        let label = if key == SortKey::Modified && self.view == ViewSource::Trash {
+            "削除日時"
+        } else {
+            key.label()
+        };
         let base = div()
             .id(id)
-            .aria_label(format!("{} で並び替え", key.label()))
+            .aria_label(format!("{} で並び替え", label))
             .h_full()
             .flex()
             .items_center()
@@ -7927,12 +8019,6 @@ impl Explorer {
         let base = match width {
             Some(width) => base.w(px(width)).text_right(),
             None => base.flex_1(),
-        };
-        // In the trash the timestamp is the deletion time, not the mtime.
-        let label = if key == SortKey::Modified && self.view == ViewSource::Trash {
-            "削除日時"
-        } else {
-            key.label()
         };
         base.on_click(cx.listener(move |this, _event, window, cx| {
             this.focus_handle.focus(window, cx);
@@ -8893,7 +8979,7 @@ impl Explorer {
             } else if self.load.is_loading() {
                 div()
                     .text_color(rgb(C_YELLOW))
-                    .child("読み込み中…")
+                    .child(LOADING)
                     .into_any_element()
             } else if !self.status.is_empty() {
                 // U-05: GPUI 0.3.12 には live region / `aria_live` に相当する API が
@@ -9835,30 +9921,32 @@ mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
-        active_keymap_overrides, apply_debug_settings_overrides, build_places, canonical_chord,
-        chord_for_action, classify_cli, clear_dialog_error, clear_op_token, format_chord,
-        format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
-        help_overrides_line, install_op_token, internal_drop_paths, join_status_notices,
-        keymap_action_name, keymap_chord_reserved, kind_color, labeled_display_name,
-        middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
-        parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
-        remove_keymap_override, saved_search_caption, saved_search_save_status,
-        search_filter_status, startup_dir_from, status_color, summarize_op, tab_label,
-        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, transfer_log_level, transfer_skip_notice,
-        trash_batch, trash_delete_status, trash_key_action, trash_redo_cancelled_status,
-        trash_undo_status, upsert_keymap_override, validate_cli_dir, version_label,
-        visible_secondary_slots, CliAction, DebugSettingsOverrides, Explorer, FuzzyCandidate,
-        FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, SecondarySlot, SortKey,
-        TrashKeyAction, C_GREEN, C_MUTED, C_RED, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
-        GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_CANCELLED,
-        STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_PREFIX,
-        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PRIORITY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
+        active_keymap_overrides, apply_debug_settings_overrides, bookmark_toggle_rejection,
+        build_places, canonical_chord, chord_for_action, classify_cli, clear_dialog_error,
+        clear_op_token, format_chord, format_selected, fuzzy_candidates, fuzzy_score,
+        grid_columns_for_width, help_overrides_line, install_op_token, internal_drop_paths,
+        join_status_notices, keymap_action_name, keymap_chord_reserved, kind_color,
+        labeled_display_name, middle_click_tab_dir, normalize_terminal_command, op_is_active,
+        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
+        read_properties_snapshot, remove_keymap_override, saved_search_caption,
+        saved_search_save_status, search_filter_status, startup_dir_from, status_color,
+        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
+        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
+        transfer_log_level, transfer_skip_notice, trash_batch, trash_delete_status,
+        trash_key_action, trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override,
+        validate_cli_dir, version_label, visible_secondary_slots, CliAction,
+        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
+        KeyMap, KeymapInput, PropertiesErrorReaction, SecondarySlot, SortKey, TrashKeyAction,
+        C_GREEN, C_MUTED, C_RED, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX,
+        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CHANGED,
+        STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_PREFIX, STATUS_PARTIAL_FAILURE_SUFFIX,
+        STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
         STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE, STATUS_SETTINGS_SAVE_FAILED,
         STATUS_TRASH_NO_COPY,
     };
     use crate::icons::FileKind;
-    use crate::model::Entry;
+    use crate::model::{Entry, FsError};
     use crate::ops::{OpError, OpStats};
     use crate::settings::{Settings, MAX_KEYMAP_OVERRIDES};
     use std::ffi::OsString;
@@ -11252,6 +11340,61 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bookmark_toggle_rejects_non_utf8_directory() {
+        use std::os::unix::ffi::OsStringExt;
+
+        // A cwd reached through the OS dialog can contain invalid UTF-8; the
+        // Ctrl+D guard must refuse it before `toggle_bookmark` and its assert.
+        let bad = PathBuf::from(OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xff]));
+        assert_eq!(
+            bookmark_toggle_rejection(&bad),
+            Some(STATUS_BOOKMARK_NOT_PERSISTABLE.to_string())
+        );
+        assert_eq!(
+            bookmark_toggle_rejection(&PathBuf::from("/tmp/valid")),
+            None
+        );
+    }
+
+    #[test]
+    fn properties_error_reaction_distinguishes_not_found_denied_and_other() {
+        let path = PathBuf::from("/tmp/props");
+        let io_error =
+            |kind: std::io::ErrorKind| FsError::from_io(path.clone(), &std::io::Error::from(kind));
+
+        let missing = io_error(std::io::ErrorKind::NotFound);
+        assert_eq!(
+            PropertiesErrorReaction::for_error(&missing),
+            PropertiesErrorReaction::PathGone
+        );
+        let (status, reload) = PropertiesErrorReaction::for_error(&missing).apply(&path, &missing);
+        assert!(status.contains(STATUS_PATH_GONE), "{status}");
+        assert!(reload, "only a gone path may trigger a reload");
+
+        let denied = io_error(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            PropertiesErrorReaction::for_error(&denied),
+            PropertiesErrorReaction::AccessDenied
+        );
+        let (status, reload) = PropertiesErrorReaction::for_error(&denied).apply(&path, &denied);
+        assert!(status.contains(STATUS_ACCESS_DENIED), "{status}");
+        assert!(!reload, "a denied read must keep the current listing");
+
+        let other = io_error(std::io::ErrorKind::Other);
+        assert_eq!(
+            PropertiesErrorReaction::for_error(&other),
+            PropertiesErrorReaction::Other
+        );
+        let (status, reload) = PropertiesErrorReaction::for_error(&other).apply(&path, &other);
+        assert!(status.contains(STATUS_ERROR_PREFIX), "{status}");
+        assert!(
+            !reload,
+            "an unrelated io error must keep the current listing"
+        );
     }
 
     // F6-49: the personalization wiring uses these pure helpers plus the real
