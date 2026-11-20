@@ -646,6 +646,16 @@ impl Settings {
         self.recent_dirs.truncate(MAX_RECENT_DIRS);
     }
 
+    /// Whether `path` can be written to the settings file at all.
+    ///
+    /// Public form of [`sane_path`]: callers that mutate bookmark/session state
+    /// must consult this *before* changing anything, otherwise a path serde
+    /// cannot serialise (e.g. non-UTF-8) would enter memory and break every
+    /// later `save_to`.
+    pub fn can_persist_path(path: &Path) -> bool {
+        sane_path(path)
+    }
+
     /// Whether `path` is bookmarked.
     pub fn is_bookmarked(&self, path: &std::path::Path) -> bool {
         self.bookmarks.iter().any(|bookmark| bookmark == path)
@@ -2507,6 +2517,11 @@ mod schema_validation_tests {
             b'/', b't', b'm', b'p', b'/', 0xff,
         ]));
         assert!(!sane_path(&bad), "non-UTF-8 paths must be refused");
+        assert!(
+            !Settings::can_persist_path(&bad),
+            "the public guard must agree with sane_path"
+        );
+        assert!(Settings::can_persist_path(Path::new("/tmp/valid")));
         let mut via_setters = Settings::default();
         via_setters.record_recent(&bad);
         assert!(via_setters.recent_dirs.is_empty());
