@@ -861,7 +861,13 @@ pub fn confirm_and_trash(
 
 - P0: gpui-component の既定 Theme（ダーク）をそのまま使う。色は `ActiveTheme`（`cx.theme()`）の意味色を参照し、`rgb()` の直書きは `ui/` 内の最小限（アイコン色など）に留める。
 - 意味色の割当: ディレクトリ=青系、シンボリックリンク=水色、隠し=減光、選択=アクセント背景、危険操作=赤。
-- P2: ライト/ダーク切替 + システム追従（`ThemeMode`）。設定 `theme` を追加（`"system" | "light" | "dark"`）。
+- 実装済み: ダーク / ライト / システムの 3 値切替。`settings.json` の
+  `theme_choice`（`"dark" | "light" | "system"`、既定 `dark`）に永続化し、
+  `Alt+Shift+T` で Dark → Light → System → Dark を循環する。`system` は
+  OS の外観（GPUI が観測する window appearance）から実効テーマを解決し、
+  変更を監視して自動追従する。gpui-component 0.9.1 の `ThemeMode` には
+  `System` バリアントがないため、選択は独自の `ThemeChoice` で表現し、
+  `theme` は解決済みモード（ダーク／ライト）の互換用フィールドとして保持する。
 - コントラスト: 選択行とフォーカス行を区別（選択=背景、フォーカス=枠線）。色だけで状態を伝えない（アイコン/文字も併用）。
 
 ### 8.3 アイコン方針

@@ -24,7 +24,7 @@ cd gpui-file-explorer   # リポジトリ直下
 bash scripts/dev-setup.sh   # 初回のみ（下記「前提」を参照）
 cd app
 cargo build                 # 初回（依存込み）約 1m30s / 2回目以降 約2s / debug バイナリ 約 165MiB
-cargo test                  # 425 tests（データ層 + 監視）
+cargo test                  # 426 tests（データ層 + 監視）
 ```
 
 リポジトリ直下から全体をビルドする場合:
@@ -111,6 +111,7 @@ cd app
 | `F1` | キーボードショートカット一覧（ヘルプ） |
 | `Alt+T` | ターミナル起動コマンドを設定（`F4` で使用。空白で無効化、Enter で保存 / Esc でキャンセル） |
 | `Alt+K` | キーマップを設定（`アクション名 コード` / `unbind アクション名`、Enter で保存 / Esc でキャンセル） |
+| `Ctrl+,` | 設定を開く（5 タブ。保存 / キャンセル。Alt+K / Alt+T の個別ダイアログを包含・補完） |
 | `Ctrl+P` | クイックジャンプ（候補を絞り込み、Enter で移動・Esc でキャンセル） |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 次のタブ / 前のタブ（循環） |
 | `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | アクティブタブを左 / 右へ移動 |
@@ -119,7 +120,7 @@ cd app
 | `Backspace` / `Alt+Up` / ↑ボタン | 親ディレクトリへ |
 | `Alt+Left` / `Alt+Right` | 戻る / 進む（履歴） |
 | `Ctrl+H` | 隠しファイル（`.` 始まり）の表示切替 |
-| `Alt+Shift+T` | テーマをダーク ⇔ ライトで切替（`settings.json` の `theme` に保存） |
+| `Alt+Shift+T` | テーマをダーク → ライト → システム → ダークに切替（`theme_choice` に保存） |
 | `ミドルクリック` | 行 / グリッドセルを新しいタブで開く（フォルダ行はそのフォルダ、それ以外は現在のディレクトリ） |
 | `PageUp` / `PageDown` | 可視行数分の選択移動 |
 | `Delete` | 選択項目をゴミ箱へ移動（確認ダイアログあり） |
@@ -159,6 +160,13 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 アクション名は `KeyAction` の serde 名（snake_case）、コードは既存の
 `parse_chord` で検証します。
 
+設定画面（`Ctrl+,` → 「ショートカット」タブ）の入力欄は構文が異なります。
+**`action=chord;`** を **`;` 区切り**で記述します（例:
+`open_preview=ctrl+shift+p;quit=ctrl+q;`）。保存すると入力欄の内容が
+上書き一覧を**すべて置き換え**ます。削除したい場合は入力欄から該当項目を
+消して保存してください（`unbind` 構文はありません。`Alt+K` ダイアログは
+`action chord` / `unbind action` で 1 件ずつ登録・解除します）。
+
 手編集する場合はアプリを終了した状態で次のように書きます（起動時に読み込み、
 終了時の保存で上書きされます）。
 
@@ -191,22 +199,25 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 
 ### テーマ設定
 
-`settings.json` の `theme` でコンポーネントテーマを指定します（`Alt+Shift+T`
+`settings.json` の `theme_choice` でテーマの選択を指定します（`Alt+Shift+T`
 で切り替えると同じ値が保存されます）。
 
 ```json
 {
   "version": 1,
-  "theme": "dark"
+  "theme_choice": "system"
 }
 ```
 
-- 値は `"dark"` / `"light"` のみです。省略時（旧バージョンの設定ファイル
-  を含む）は `"dark"` として扱われます。
-- DESIGN.md §8.2 の `"system"`（OS テーマ追従）は未対応です。gpui-component
-  0.9.1 の `ThemeMode` に `System` バリアントがなく、ダーク／ライトの 2 状態
-  しか表現できないためです（ステータスバーの色自体はアプリ側の固定パレット
-  で、テーマ切替の対象はメニュー／ダイアログ等のコンポーネントです）。
+- 値は `"dark"` / `"light"` / `"system"` の 3 種類です。省略時（旧バージョン
+  の設定ファイルを含む）は `"dark"` として扱われます。
+- `Alt+Shift+T` は **Dark → Light → System → Dark** の順に循環します。
+- `"system"` を選ぶと、GPUI が観測するウィンドウの外観（OS のライト／
+  ダーク設定）から実効テーマを解決します。OS 側の設定が変わると自動的に
+  追従します（アプリ側のパレットとコンポーネントテーマの両方に適用されます）。
+- 旧形式の `"theme"` キー（`"dark"` / `"light"` / `"system"`）は読み込み時に
+  `theme_choice` へ引き継がれます。保存時は `theme_choice` が優先され、
+  `theme` は解決済みのモード（`"dark"` / `"light"`）を互換用に保持します。
 
 ## 実装済み機能（P0）
 
@@ -379,7 +390,7 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 
 ```bash
 cargo test
-# running 425 tests ... test result: ok. 425 passed; 0 failed
+# running 426 tests ... test result: ok. 426 passed; 0 failed
 ```
 
 カバレッジ: ディレクトリ読み込み（ディレクトリ先頭・メタデータ・エラー）、
@@ -392,7 +403,7 @@ fingerprint の変化検出、パンくず生成、一意な新規フォルダ�
 
 ## 実行検証記録（2026-11-11, このマシン。テスト数は 2026-11-18 更新）
 
-- `cargo build`: 警告 0 / `cargo test`: 425 passed（初回実機検証時は 36 件）
+- `cargo build`: 警告 0 / `cargo test`: 426 passed（初回実機検証時は 36 件）
 - 起動: stderr 0 行（EGL/Vulkan/Wayland エラーなし）
 - KWin D-Bus（Wayland ネイティブであることの確認）:
 
@@ -606,7 +617,7 @@ DESIGN.md §4.1 の指示に従い、P0 実装で設計からずれた点を記�
 | 選択 | `Selection`（`PathBuf` キー、複数選択） | `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択・バッチ操作対応） | 一致（`BTreeSet` 化は見送り） |
 | ロード状態 | `LoadState` / `FsError` の型 | `LoadState`（Loading/Ready/Error）+ `FsError` / `FsErrorKind` を導入 | 一致（generation も LoadState が保持） |
 | ステータスバー | gpui-component `StatusBar` | 自作 `div`（5 領域の 1 つ） | 見た目同等。置換は任意 |
-| テーマ | gpui-component のテーマ（`dark` / `light` / `system`） | `settings.json` の `theme`（既定 `dark`）を起動時に適用し、`Alt+Shift+T` で dark ⇔ light 切替。本体の配色は Catppuccin 系の直書きのまま | `system` は gpui-component 0.9.1 に `System` バリアントが無いため未対応（README「テーマ設定」に記録） |
+| テーマ | gpui-component のテーマ（`dark` / `light` / `system`） | `settings.json` の `theme_choice`（既定 `dark`）を起動時に解決して適用。`Alt+Shift+T` で dark → light → system → dark を循環し、`system` は OS 外観に追従。本体の配色も Catppuccin Mocha / Latte を切替 | 一致（3 値は独自の `theme_choice` で表現し、`theme` は解決済みモードの互換用として保持） |
 | 日本語文言 | `strings.rs` に集約 | `strings.rs` にヘルプ・空状態・固定ステータス文言を集約。値埋め込みの `format!` 文言は呼び出し側 | 部分対応（段階的 i18n） |
 | アイコン | 拡張子→`IconName` の静的対応表 | `icons.rs` の `FileKind` 経由（同一役割） | 一致 |
 | `dirs` crate | 7.0.0 推奨（6 系も許容と明記） | 6.0.0 | 許容（`config_dir()` API 同一） |

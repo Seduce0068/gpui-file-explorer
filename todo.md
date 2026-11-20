@@ -497,25 +497,25 @@ status: current
 
 ### 優先度: 高（継続ループ R1・confirmed）
 
-- [ ] **C01** 設定画面のテーマ保存が apply_theme_mode を通らず本体に反映されない
+- [x] **C01** 設定画面のテーマ保存が apply_theme_mode を通らず本体に反映されない — 対応: loop-c01
   — main.rs:10102-10110 / 複数エージェントが一致指摘
-- [ ] **C02** キーマップ入力エラーが Shortcuts タブに表示されない
+- [x] **C02** キーマップ入力エラーが Shortcuts タブに表示されない — 対応: loop-c01
   — settings_ui.rs:602 / main.rs:10078
-- [ ] **C03** ライトテーマでツールバーアイコンがほぼ不可視（Mocha 固定色）
+- [x] **C03** ライトテーマでツールバーアイコンがほぼ不可視（Mocha 固定色） — 対応: loop-c03
   — main.rs:9464-9500
-- [ ] **C04** 設定画面 Save が sort.dir を黙って上書きする
+- [x] **C04** 設定画面 Save が sort.dir を黙って上書きする — 対応: loop-c01
   — main.rs:10117-10126
-- [ ] **C05** 3値テーマに対して README/F1/DESIGN が2値のまま誤案内
+- [x] **C05** 3値テーマに対して README/F1/DESIGN が2値のまま誤案内 — 対応: loop-docs
   — app/README.md / DESIGN.md
 
 ### 優先度: 中（継続ループ R1）
 
-- [ ] **C06** terminal/keymap 入力編集で dirty が立たない — settings_ui.rs:273
-- [ ] **C07** --skip-build が build.rs/native-libs を鮮度対象外にしている — build-deb.sh:134
+- [x] **C06** terminal/keymap 入力編集で dirty が立たない — settings_ui.rs:273 — 対応: loop-c01
+- [x] **C07** --skip-build が build.rs/native-libs を鮮度対象外にしている — build-deb.sh:134 — 対応: loop-docs
 - [ ] **C08** stale allow(dead_code) と「配線待ち」コメント群
   — settings.rs / settings_ui.rs / system_icons.rs
-- [ ] **C09** Ctrl+, が両 README のキーバインド表に未掲載 — README.md / app/README.md
-- [ ] **C10** 設定画面のキーマップ構文 `action=chord;` が無説明 — settings_ui.rs:192
+- [x] **C09** Ctrl+, が両 README のキーバインド表に未掲載 — README.md / app/README.md — 対応: loop-docs
+- [x] **C10** 設定画面のキーマップ構文 `action=chord;` が無説明 — settings_ui.rs:192 — 対応: loop-docs
 
 ### 優先度: 低（調査タスク）
 
