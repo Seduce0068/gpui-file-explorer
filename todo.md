@@ -476,6 +476,15 @@ status: current
 - [ ] **L09** strings 正規定数（KIND_*/AGE_*/VALUE_UNKNOWN）が model で未適用 — model.rs:412,737
 - [ ] **L10** DESIGN の非目的が実装済み機能（内容検索/タブ）と矛盾 — DESIGN.md:26,109
 
+### 優先度: 高（ユーザー要望・設定/外観）
+
+- [ ] **UX-A** 統合設定画面（TabBar 5タブ: 外観/ファイル/ショートカット/ターミナル/個人化）を追加
+  — 新規 `app/src/settings_ui.rs` + `main.rs` 配線
+- [ ] **UX-B** ファイルアイコンを Breeze のシステム多色アイコンに変更（`gpui_kit::img(&Path)`）
+  — 新規 `app/src/system_icons.rs` + `icons.rs` + `main.rs` 描画
+- [ ] **UX-C** テーマ選択を Light / Dark / System の3値に拡張しライトテーマを実現
+  — `settings.rs` スキーマ + `main.rs` パレット192箇所
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
