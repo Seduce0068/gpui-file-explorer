@@ -465,16 +465,26 @@ status: current
 
 ### 優先度: 高（制限プロファイル R1・confirmed）
 
-- [ ] **L01** 設定保存失敗が10経路で無視され成功表示される — main.rs:3000,3126,3136,3238,3408,4150,4174,4222,7493,7527,9813
-- [x] **L02** 非UTF-8パスのブックマーク切替で debug_assert panic / リリースで誤報告 — main.rs:2551-2581 — 対応: 8993961
-- [x] **L03** プロパティのメタデータ読み取りエラーが種別を失い「パスがありません」と誤通知 — main.rs:1794,6151 — 対応: 8993961
-- [ ] **L04** --skip-build の陳腐バイナリがバージョン文字列では検出不可 — build-deb.sh:112-120
-- [ ] **L05** ゴミ箱ソートヘッダの aria_label が表示文言と不一致 — main.rs:7919
-- [ ] **L06** app/README キーバインド表が F1 ヘルプと乖離（5キー未掲載） — app/README.md:90-133
-- [ ] **L07** Ctrl+P 名称が README と UI で不一致 — app/README.md:111, main.rs:5762
-- [ ] **L08** 読み込み中/0件表示が strings 定数を迂回して直書き — main.rs:5507,8896,5907
-- [ ] **L09** strings 正規定数（KIND_*/AGE_*/VALUE_UNKNOWN）が model で未適用 — model.rs:412,737
-- [ ] **L10** DESIGN の非目的が実装済み機能（内容検索/タブ）と矛盾 — DESIGN.md:26,109
+- [x] **L01** 設定保存失敗が10経路で無視され成功表示される
+  — 対応: limited-l01
+- [x] **L02** 非UTF-8パスのブックマーク切替で panic / 誤報告
+  — 対応: 8993961
+- [x] **L03** プロパティ読み取りエラーが「パスがありません」と誤通知
+  — 対応: 8993961
+- [x] **L04** --skip-build の陳腐バイナリがバージョン文字列では検出不可
+  build-deb.sh:112-120 — 対応: limited-l04
+- [x] **L05** ゴミ箱ソートヘッダの aria_label が表示文言と不一致 — main.rs:7919 — 対応: limited-docs
+- [x] **L06** app/README キーバインド表が F1 ヘルプと乖離（5キー未掲載）
+  app/README.md:90-133 — 対応: limited-docs
+- [x] **L07** Ctrl+P 名称が README と UI で不一致
+  app/README.md:111, main.rs:5762 — 対応: limited-docs
+- [x] **L08** 読み込み中/0件表示が strings 定数を迂回して直書き
+  main.rs:5507,8896,5907 — 対応: limited-docs
+- [x] **L09** strings 正規定数
+  （KIND_*/AGE_*/VALUE_UNKNOWN）が model で未適用 — model.rs:412,737
+  対応: limited-docs
+- [x] **L10** DESIGN の非目的が実装済み機能（内容検索/タブ）と矛盾
+  DESIGN.md:26,109 — 対応: limited-docs
 
 ### 優先度: 高（ユーザー要望・設定/外観）
 

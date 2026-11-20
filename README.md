@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 424 tests
+cargo test           # 425 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -54,6 +54,8 @@ cargo test           # 424 tests
   `escape` / `f1` は予約キーで上書き不可。不正なコードや未知のアクション名は
   無視されます。詳細は [app/README.md](app/README.md) の
   「キーマップの上書き」を参照してください。
+- 全キーバインドの一覧は [app/README.md](app/README.md) の「キーバインド」、
+  またはアプリ内の `F1` ヘルプで確認できます。
 - `unbind アクション名` で上書きを解除し、既定のキーバインドに戻せます。
 
 ## リポジトリ構成
@@ -75,7 +77,7 @@ cargo test           # 424 tests
 
 ## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-18 更新）
 
-- `cargo build` 警告 0 / `cargo test` **424 passed / 0 failed**（2026-11-21 時点。初回実機検証時は 36 件）
+- `cargo build` 警告 0 / `cargo test` **425 passed / 0 failed**（2026-11-21 時点。初回実機検証時は 36 件）
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
 - 起動中に外部からファイル作成 → 一覧が自動更新（14→15 件）
@@ -167,7 +169,7 @@ bash scripts/check.sh --app      # app/ のみ
 bash scripts/check.sh --poc      # poc/ のみ
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 424 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 425 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
 
 ## ソース・ライセンス
