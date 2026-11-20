@@ -4,6 +4,11 @@
 //! The prototype does not extract OS-native file icons; it maps file kinds to
 //! the bundled Lucide icon set shipped by `gpui-kit-assets`, which keeps the
 //! design portable across Linux/Windows/macOS.
+//!
+//! Full-colour, Dolphin-like icons from the installed freedesktop theme are a
+//! separate concern: [`crate::system_icons`] resolves them to on-disk paths,
+//! which `main.rs` renders with `gpui_kit::img(&Path)`. The Lucide mapping
+//! below stays intact as the monochrome fallback when no system icon exists.
 
 use gpui_kit::assets::IconName;
 
@@ -95,12 +100,28 @@ pub fn icon_for_entry(entry: &Entry) -> IconName {
     }
 }
 
+/// Primary freedesktop icon name that [`crate::system_icons`] will try first
+/// for this entry (e.g. `text-rust`, `inode-directory`). Useful as a hint or
+/// for diagnostics; the caller resolves it to a path with
+/// `SystemIconResolver::icon_path_for_entry`, then renders via
+/// `gpui_kit::img(&Path)`. `icon_for_entry` remains the Lucide fallback.
+///
+/// This is an opt-in UI helper: in a binary crate an unused `pub` function is
+/// still flagged as dead code, so the attribute keeps the module lint-clean
+/// until the UI chooses to display the hint.
+#[allow(dead_code)]
+pub fn system_icon_hint(entry: &Entry) -> String {
+    crate::system_icons::icon_name_for_kind(kind_for_entry(entry), &entry.name_text).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
     // Explicit imports only: `use gpui_kit::*` in the crate root would shadow
     // the built-in `#[test]` attribute.
-    use super::{icon_for_entry, icon_for_kind, kind_for_entry, kind_for_name, FileKind};
+    use super::{
+        icon_for_entry, icon_for_kind, kind_for_entry, kind_for_name, system_icon_hint, FileKind,
+    };
     use crate::model::Entry;
     use gpui_kit::assets::IconName;
     use std::path::PathBuf;
@@ -168,6 +189,30 @@ mod tests {
         // ".bashrc" gives ("", "bashrc") -> treated as unknown extension.
         assert_eq!(kind_for_name(".bashrc"), FileKind::Unknown);
         assert_eq!(kind_for_name(".hidden.png"), FileKind::Image);
+    }
+
+    #[test]
+    fn system_icon_hint_delegates_to_system_icons() {
+        assert_eq!(
+            system_icon_hint(&entry("dir", true, false)),
+            "inode-directory"
+        );
+        assert_eq!(
+            system_icon_hint(&entry("link", false, true)),
+            "inode-symlink"
+        );
+        assert_eq!(
+            system_icon_hint(&entry("main.rs", false, false)),
+            "text-rust"
+        );
+        assert_eq!(
+            system_icon_hint(&entry("paper.pdf", false, false)),
+            "application-pdf"
+        );
+        assert_eq!(
+            system_icon_hint(&entry("no-extension", false, false)),
+            "text-x-generic"
+        );
     }
 
     #[test]
