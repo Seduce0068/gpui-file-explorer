@@ -13,9 +13,8 @@
 //! parent builds the overlay backdrop and centres the element returned by
 //! [`render_settings_content`].
 
-// The public API below is consumed by `main.rs` once the host side of the
-// overlay is wired. Scoped to this module so it disappears with the file; it
-// keeps `clippy -D warnings` clean during the incremental wiring phase.
+// `main.rs` consumes this module's public API. A few optional helpers remain
+// unused, so the allow is scoped to this file; remove it when they are wired.
 #![allow(dead_code)]
 
 use gpui_kit::component::button::{Button, ButtonVariants};

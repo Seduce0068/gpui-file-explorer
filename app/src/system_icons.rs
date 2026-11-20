@@ -12,9 +12,9 @@
 //! `IconTheme` binding. We search the standard theme directories directly and
 //! cache the result (including misses) per `(icon name, target size)`.
 
-// The consuming UI code lives in `main.rs` (wired by the parent agent). In a
-// binary crate even `pub` items are flagged as dead code until a caller exists,
-// so keep this module clean under `-D warnings` while that wiring lands.
+// `main.rs` resolves icons via `icon_path_for_entry`. The optional
+// `icon_path_for_name` / `roots` helpers are test-only, so the allow stays
+// scoped to this file under `-D warnings`.
 #![allow(dead_code)]
 
 use std::collections::HashMap;

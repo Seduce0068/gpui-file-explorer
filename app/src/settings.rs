@@ -318,11 +318,12 @@ fn legacy_schema_version() -> u32 {
     LEGACY_SCHEMA_VERSION
 }
 
-/// Legacy two-state cycle on the *resolved* mode, kept so existing callers of
-/// `toggle_theme` keep working. New code should cycle the persisted preference
-/// with [`next_theme_choice`] and derive the effective mode with
+/// Legacy two-state cycle on the *resolved* mode, retained for the historical
+/// serialization test only. Production code cycles the persisted preference
+/// with [`next_theme_choice`] and derives the effective mode with
 /// [`resolve_theme`]; this function cannot express `System` because
 /// gpui-component 0.9.1 `ThemeMode` has only `Light` and `Dark`.
+#[cfg(test)]
 pub fn next_theme(current: ThemeMode) -> ThemeMode {
     match current {
         ThemeMode::Dark => ThemeMode::Light,
@@ -336,10 +337,9 @@ pub fn next_theme(current: ThemeMode) -> ThemeMode {
 /// system appearance (obtained from GPUI's window-appearance APIs), which is
 /// used only for [`ThemeChoice::System`]. The two explicit choices ignore it.
 ///
-/// Public UI-facing API: the appearance-observation wiring lands separately
-/// from this persistence change, so allow it to be unused until then (same
-/// pattern as the re-exported personalization constants above).
-#[allow(dead_code)]
+/// Used by the settings overlay and startup/toggle appearance resolution in
+/// `main.rs`. `system` must be the observed OS appearance
+/// (`cx.window_appearance().into()`), never a previously persisted theme.
 pub fn resolve_theme(choice: ThemeChoice, system: ThemeMode) -> ThemeMode {
     match choice {
         ThemeChoice::Light => ThemeMode::Light,
@@ -353,9 +353,7 @@ pub fn resolve_theme(choice: ThemeChoice, system: ThemeMode) -> ThemeMode {
 /// Unlike [`next_theme`] this keeps `System` representable, so a UI toggle can
 /// offer all three options described in DESIGN.md §8.2.
 ///
-/// Public UI-facing API; see the note on [`resolve_theme`] about the separate
-/// wiring of the new toggle/appearance UI.
-#[allow(dead_code)]
+/// Used by `toggle_theme` in `main.rs` to cycle the persisted preference.
 pub fn next_theme_choice(current: ThemeChoice) -> ThemeChoice {
     match current {
         ThemeChoice::Dark => ThemeChoice::Light,
