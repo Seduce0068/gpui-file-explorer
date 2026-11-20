@@ -506,6 +506,17 @@ fn saved_search_save_status(name: &str, stored: bool) -> String {
     }
 }
 
+/// Choose the status to show after a settings write (Bug L01). The caller's
+/// success message is used only when the write succeeded; otherwise the
+/// dedicated save-failure status wins, even when the UI action itself worked.
+fn settings_save_status(saved: bool, success: String) -> String {
+    if saved {
+        success
+    } else {
+        STATUS_SETTINGS_SAVE_FAILED.to_string()
+    }
+}
+
 /// Status shown after undoing a trash operation. A zero restore count means
 /// nothing came back, so it is reported as a failure (and the caller keeps the
 /// undo entry) instead of claiming a successful "0 件" restore.
@@ -3205,8 +3216,10 @@ impl Explorer {
         self.settings.save()
     }
 
-    /// Load a tab's directory/history into the explorer.
-    fn load_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+    /// Load a tab's directory/history into the explorer. Returns whether the
+    /// accompanying settings write succeeded so callers that add a success
+    /// message can keep it from masking a save failure (Bug L01).
+    fn load_tab(&mut self, tab: Tab, cx: &mut Context<Self>) -> bool {
         self.clear_search();
         self.view = ViewSource::Directory;
         self.cwd = tab.cwd;
@@ -3220,8 +3233,12 @@ impl Explorer {
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
         self.persist_tabs();
-        let _ = self.save_settings();
+        let saved = self.save_settings();
+        if !saved {
+            self.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
+        }
         self.reload(cx);
+        saved
     }
 
     fn switch_tab(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -3271,8 +3288,11 @@ impl Explorer {
         self.sync_active_tab();
         self.tabs.new_tab(path.clone());
         let tab = self.tabs.active().clone();
-        self.load_tab(tab, cx);
-        self.status = format!("新しいタブで開きました: {}", display_path(&path));
+        let saved = self.load_tab(tab, cx);
+        self.status = settings_save_status(
+            saved,
+            format!("新しいタブで開きました: {}", display_path(&path)),
+        );
         cx.notify();
     }
 
@@ -3309,8 +3329,11 @@ impl Explorer {
         self.sync_active_tab();
         if let Some(cwd) = self.tabs.restore_last_closed() {
             let tab = self.tabs.active().clone();
-            self.load_tab(tab, cx);
-            self.status = format!("{STATUS_TAB_RESTORED}: {}", display_path(&cwd));
+            let saved = self.load_tab(tab, cx);
+            self.status = settings_save_status(
+                saved,
+                format!("{STATUS_TAB_RESTORED}: {}", display_path(&cwd)),
+            );
         } else {
             self.status = STATUS_TAB_RESTORE_EMPTY.to_string();
         }
@@ -3346,8 +3369,8 @@ impl Explorer {
         self.sync_active_tab();
         if self.tabs.move_active_left() {
             self.persist_tabs();
-            let _ = self.save_settings();
-            self.status = STATUS_TAB_MOVED_LEFT.to_string();
+            let saved = self.save_settings();
+            self.status = settings_save_status(saved, STATUS_TAB_MOVED_LEFT.to_string());
             cx.notify();
         }
     }
@@ -3356,8 +3379,8 @@ impl Explorer {
         self.sync_active_tab();
         if self.tabs.move_active_right() {
             self.persist_tabs();
-            let _ = self.save_settings();
-            self.status = STATUS_TAB_MOVED_RIGHT.to_string();
+            let saved = self.save_settings();
+            self.status = settings_save_status(saved, STATUS_TAB_MOVED_RIGHT.to_string());
             cx.notify();
         }
     }
@@ -3459,7 +3482,9 @@ impl Explorer {
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
         self.persist_tabs();
-        let _ = self.save_settings();
+        if !self.save_settings() {
+            self.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
+        }
         self.reload(cx);
     }
 
@@ -3629,7 +3654,9 @@ impl Explorer {
             return;
         }
         self.settings.view = mode;
-        let _ = self.save_settings();
+        if !self.save_settings() {
+            self.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
+        }
         cx.notify();
     }
 
@@ -4382,7 +4409,11 @@ impl Explorer {
                     self.window_bounds = Some(bounds);
                 }
                 self.persist_tabs();
-                let _ = self.save_settings();
+                // No status bar survives `quit`, so surface the failure in the
+                // log instead of silently dropping it (Bug L01).
+                if !self.save_settings() {
+                    tracing::error!("failed to save settings before quitting");
+                }
                 cx.quit();
             }
             GoBack => self.go_back(cx),
@@ -4407,7 +4438,7 @@ impl Explorer {
             return;
         }
         self.settings.show_hidden = !self.settings.show_hidden;
-        let _ = self.save_settings();
+        let saved = self.save_settings();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
         if self.view == ViewSource::Search {
             // The snapshot was captured with the old hidden setting, so a
@@ -4419,11 +4450,14 @@ impl Explorer {
         } else {
             self.rebuild_view(keep);
         }
-        self.status = if self.settings.show_hidden {
-            "隠しファイルを表示しています".to_string()
-        } else {
-            "隠しファイルを非表示にしました".to_string()
-        };
+        self.status = settings_save_status(
+            saved,
+            if self.settings.show_hidden {
+                "隠しファイルを表示しています".to_string()
+            } else {
+                "隠しファイルを非表示にしました".to_string()
+            },
+        );
         cx.notify();
     }
 
@@ -4494,7 +4528,7 @@ impl Explorer {
         }
         let order = self.settings.sort.order().toggled(key);
         self.settings.sort = SortSpec::from_order(order);
-        let _ = self.save_settings();
+        let saved = self.save_settings();
         let keep = self.selected_entry().map(|entry| entry.path.clone());
         if self.view == ViewSource::Search {
             // Keep the search filters intact; a directory `rebuild_view` here
@@ -4503,6 +4537,9 @@ impl Explorer {
             self.apply_search_filter(cx);
         } else {
             self.rebuild_view(keep);
+        }
+        if !saved {
+            self.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
         }
         cx.notify();
     }
@@ -5744,11 +5781,14 @@ impl Explorer {
         self.tabs.new_tab(parent.clone());
         let tab = self.tabs.active().clone();
         self.close_preview(cx);
-        self.load_tab(tab, cx);
+        let saved = self.load_tab(tab, cx);
         // `load_tab` clears pending selection; set it afterwards so the file
         // that was previewed is focused in the freshly opened tab.
         self.pending_select = Some(path);
-        self.status = format!("新しいタブで開きました: {}", display_path(&parent));
+        self.status = settings_save_status(
+            saved,
+            format!("新しいタブで開きました: {}", display_path(&parent)),
+        );
         cx.notify();
     }
 
@@ -7787,15 +7827,13 @@ impl Explorer {
         } else {
             self.settings.save_search(&name, &query)
         };
-        if stored {
-            let _ = self.save_settings();
-        }
+        let saved = if stored { self.save_settings() } else { true };
         self.status = if name.is_empty() {
             "保存する検索名を入力してください".to_string()
         } else if query.is_empty() {
             "検索語を入力してから保存してください".to_string()
         } else {
-            saved_search_save_status(&name, stored)
+            settings_save_status(saved, saved_search_save_status(&name, stored))
         };
         cx.notify();
     }
@@ -7821,11 +7859,9 @@ impl Explorer {
     /// Delete a saved search by name (F6-49).
     fn delete_saved_search(&mut self, name: &str, cx: &mut Context<Self>) {
         let removed = self.settings.remove_search(name);
-        if removed {
-            let _ = self.save_settings();
-        }
+        let saved = if removed { self.save_settings() } else { true };
         self.status = if removed {
-            format!("保存検索を削除しました: {name}")
+            settings_save_status(saved, format!("保存検索を削除しました: {name}"))
         } else {
             format!("保存検索が見つかりません: {name}")
         };
@@ -10480,8 +10516,8 @@ mod tests {
         labeled_display_name, middle_click_tab_dir, normalize_terminal_command, op_is_active,
         parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
         read_properties_snapshot, remove_keymap_override, saved_search_caption,
-        saved_search_save_status, search_filter_status, startup_dir_from, status_color,
-        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
+        saved_search_save_status, search_filter_status, settings_save_status, startup_dir_from,
+        status_color, summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
         terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
         transfer_log_level, transfer_skip_notice, trash_batch, trash_delete_status,
         trash_key_action, trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override,
@@ -11946,6 +11982,20 @@ mod tests {
             !reload,
             "an unrelated io error must keep the current listing"
         );
+    }
+
+    // L01: a discarded settings-write result must never be reported as a
+    // successful UI action. The pure selector is shared by every fixed path.
+    #[test]
+    fn settings_save_status_replaces_success_on_failed_write() {
+        let success = "ブックマークに追加しました".to_string();
+        assert_eq!(settings_save_status(true, success.clone()), success);
+        assert_eq!(
+            settings_save_status(false, success.clone()),
+            STATUS_SETTINGS_SAVE_FAILED
+        );
+        // The failure sentinel must actually look like an error in the bar.
+        assert_eq!(status_color(&settings_save_status(false, success)), C_RED);
     }
 
     // F6-49: the personalization wiring uses these pure helpers plus the real

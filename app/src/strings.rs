@@ -31,10 +31,10 @@
 //! - 日時・サイズの書式もロケール非依存（ローカルタイムの `YYYY-MM-DD HH:MM`
 //!   と 2 進単位）。相対時刻の単語は下の `AGE_*` に集約した。
 //!
-//! `LABEL_*` / `KIND_*` / `AGE_*` / `VALUE_UNKNOWN` は `main.rs` / `model.rs` に
-//! 直書きされている同義リテラルの正規定義である。F6-26 の書き込み範囲はこの
-//! ファイルのみのため呼び出し側の差し替えは別タスクだが、下の
-//! `formatting_words_match_call_sites` / `kind_words_match_call_sites` が乖離を検出する。
+//! `LABEL_*` / `KIND_*` / `AGE_*` / `VALUE_UNKNOWN` は `main.rs` / `model.rs` の
+//! 表示文言の正規定義である。`model::kind_label` / `human_datetime` / `human_age`
+//! はこれらの定数を参照し、下の `formatting_words_match_call_sites` /
+//! `kind_words_match_call_sites` が乖離を検出する。
 //!
 //! # エラー・ステータスメッセージの情報量と共存ルール (F6-36)
 //!
@@ -339,38 +339,27 @@ pub const STATUS_PRIORITY: &[&str] = &["エラー", "操作通知", "進捗", "�
 pub const OP_RESULT_PRIORITY: &[&str] = &["キャンセル", "一部失敗", "失敗のみ", "成功"];
 
 // ---------------------------------------------------------------------------
-// 実行時値と組み合わせる正規の単語（呼び出し側は未移行、下のテストで整合性を検査）
+// 実行時値と組み合わせる正規の単語（model.rs の整形関数から参照）
 // ---------------------------------------------------------------------------
 
-// 呼び出し側（main.rs / model.rs）への適用は F6-26 の書き込み範囲外のため別タスク。
-// 適用完了まで非テストビルドでは未使用となるので dead_code を明示的に許可し、
-// 下の整合性テストで値の乖離を検出する。
+// 呼び出し側（model.rs）への適用済み。単語を変更するときは下の整合性テストと
+// 実際の表示（`種類` 列・ステータスバーの相対時刻）を併せて確認する。
 /// Placeholder for unavailable metadata (`model::human_age` / `human_datetime`).
-#[allow(dead_code)]
 pub const VALUE_UNKNOWN: &str = "-";
 /// Canonical cancel label. Do not use the English `cancel` in prompt buttons.
 pub const LABEL_CANCEL: &str = "キャンセル";
 
-/// `種類` 列のラベル（現在は `model::kind_label` に直書き）。
-#[allow(dead_code)]
+/// `種類` 列のラベル（`model::kind_label` で使用）。
 pub const KIND_FOLDER: &str = "フォルダ";
-#[allow(dead_code)]
 pub const KIND_LINK: &str = "リンク";
-#[allow(dead_code)]
 pub const KIND_NONE: &str = "—";
 
-/// 相対時刻の単語（現在は `model::human_age` に直書き）。
-#[allow(dead_code)]
+/// 相対時刻の単語（`model::human_age` で使用）。
 pub const AGE_FUTURE: &str = "未来";
-#[allow(dead_code)]
 pub const AGE_JUST_NOW: &str = "たった今";
-#[allow(dead_code)]
 pub const AGE_MINUTES_SUFFIX: &str = "分前";
-#[allow(dead_code)]
 pub const AGE_HOURS_SUFFIX: &str = "時間前";
-#[allow(dead_code)]
 pub const AGE_DAYS_SUFFIX: &str = "日前";
-#[allow(dead_code)]
 pub const AGE_YEARS_SUFFIX: &str = "年前";
 
 #[cfg(test)]

@@ -30,6 +30,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use alphanumeric_sort::compare_str;
 use serde::{Deserialize, Serialize};
 
+use crate::strings::{
+    AGE_DAYS_SUFFIX, AGE_FUTURE, AGE_HOURS_SUFFIX, AGE_JUST_NOW, AGE_MINUTES_SUFFIX,
+    AGE_YEARS_SUFFIX, KIND_FOLDER, KIND_LINK, KIND_NONE, VALUE_UNKNOWN,
+};
+
 /// One entry of a directory listing.
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -411,14 +416,14 @@ pub(crate) fn extension_of(name: &str) -> String {
 /// Human-readable kind label for the list's "種類" column.
 pub fn kind_label(entry: &Entry) -> String {
     if entry.is_dir {
-        return "フォルダ".to_string();
+        return KIND_FOLDER.to_string();
     }
     if entry.is_symlink {
-        return "リンク".to_string();
+        return KIND_LINK.to_string();
     }
     let extension = extension_of(&entry.name_text);
     if extension.is_empty() {
-        "—".to_string()
+        KIND_NONE.to_string()
     } else {
         extension
     }
@@ -736,7 +741,7 @@ pub fn human_size(bytes: u64) -> String {
 /// Format a modification time in local time as `YYYY-MM-DD HH:MM`.
 pub fn human_datetime(time: Option<SystemTime>) -> String {
     let Some(time) = time else {
-        return "-".to_string();
+        return VALUE_UNKNOWN.to_string();
     };
     let datetime: chrono::DateTime<chrono::Local> = time.into();
     datetime.format("%Y-%m-%d %H:%M").to_string()
@@ -745,23 +750,23 @@ pub fn human_datetime(time: Option<SystemTime>) -> String {
 /// Relative age (`3分前`, `2時間前`, ...) used in the status bar.
 pub fn human_age(time: Option<SystemTime>) -> String {
     let Some(time) = time else {
-        return "-".to_string();
+        return VALUE_UNKNOWN.to_string();
     };
     let now = SystemTime::now();
     let Ok(elapsed) = now.duration_since(time) else {
-        return "未来".to_string();
+        return AGE_FUTURE.to_string();
     };
     let secs = elapsed.as_secs();
     if secs < 60 {
-        "たった今".to_string()
+        AGE_JUST_NOW.to_string()
     } else if secs < 3600 {
-        format!("{}分前", secs / 60)
+        format!("{}{}", secs / 60, AGE_MINUTES_SUFFIX)
     } else if secs < 86_400 {
-        format!("{}時間前", secs / 3600)
+        format!("{}{}", secs / 3600, AGE_HOURS_SUFFIX)
     } else if secs < 86_400 * 365 {
-        format!("{}日前", secs / 86_400)
+        format!("{}{}", secs / 86_400, AGE_DAYS_SUFFIX)
     } else {
-        format!("{}年前", secs / (86_400 * 365))
+        format!("{}{}", secs / (86_400 * 365), AGE_YEARS_SUFFIX)
     }
 }
 
