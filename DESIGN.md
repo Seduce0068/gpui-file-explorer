@@ -329,7 +329,7 @@ app/
         └── dialogs.rs          # 削除確認ラッパ・エラーダイアログ・名前変更（P1）
 ```
 
-- **POC の単一 `main.rs`（477 行）をそのまま拡張しない**。ロジックのテストと並行安全レビューのため、最初から上記分割で書く（`poc/src/main.rs` は API の実例として参照）。
+- **POC の単一 `main.rs`（472 行、テストモジュールは 413 行目から）をそのまま拡張しない**。ロジックのテストと並行安全レビューのため、最初から上記分割で書く（`poc/src/main.rs` は API の実例として参照）。
 - `ui/` は **model/fs に依存するが、その逆は禁止**。`icons.rs` は `model::Entry` を受け取り `IconName` を返す（model 側はアイコン型を知らない）。
 - 設定・アイコン・文字列のモジュールは UI から独立して単体テスト可能にする。
 
@@ -956,7 +956,7 @@ app/
 | 層 | 対象 | 方法 | P0 |
 |---|---|---|---|
 | 単体（純関数） | sort/filter/selection/history/settings/format/error 変換 | `cargo test`（GPUI 不要） | ✅ 必須 |
-| 結合（データ層） | `read_entries` の実 FS 挙動（一時ディレクトリ） | 一時 dir を作って `cargo test`（POC の 4 テストが雛形、[`poc/src/main.rs`](poc/src/main.rs) 420-477 行） | ✅ 必須 |
+| 結合（データ層） | `read_entries` の実 FS 挙動（一時ディレクトリ） | 一時 dir を作って `cargo test`（POC の 4 テストが雛形、[`poc/src/main.rs`](poc/src/main.rs) 413-472 行） | ✅ 必須 |
 | UI ヘッドレス | クリック/キー合成、状態遷移 | `gpui-kit` `test-support` + `#[gpui_kit::test]` / `TestAppContext` | ×（P2。feature 追加が必要） |
 | 実機 GUI スモーク | 起動・描画・操作・監視・ゴミ箱 | KWin D-Bus + XDG Portal スクショ（§10.3） | ✅ 必須 |
 | 性能 | 1k/10k 件の初回表示・スクロール・監視反映 | 手動 + `date`/スクショ + `/proc/<pid>/status` | △（1k のみ） |
