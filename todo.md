@@ -478,11 +478,11 @@ status: current
 
 ### 優先度: 高（ユーザー要望・設定/外観）
 
-- [ ] **UX-A** 統合設定画面（TabBar 5タブ: 外観/ファイル/ショートカット/ターミナル/個人化）を追加
+- [x] **UX-A** 統合設定画面（TabBar 5タブ: 外観/ファイル/ショートカット/ターミナル/個人化）を追加 — 対応: 436fe1d/3e4caaf/4a3b0df/1cdbc0c
   — 新規 `app/src/settings_ui.rs` + `main.rs` 配線
-- [ ] **UX-B** ファイルアイコンを Breeze のシステム多色アイコンに変更（`gpui_kit::img(&Path)`）
+- [x] **UX-B** ファイルアイコンを Breeze のシステム多色アイコンに変更（`gpui_kit::img(&Path)`） — 対応: 436fe1d/3e4caaf/4a3b0df/1cdbc0c
   — 新規 `app/src/system_icons.rs` + `icons.rs` + `main.rs` 描画
-- [ ] **UX-C** テーマ選択を Light / Dark / System の3値に拡張しライトテーマを実現
+- [x] **UX-C** テーマ選択を Light / Dark / System の3値に拡張しライトテーマを実現 — 対応: 436fe1d/3e4caaf/4a3b0df/1cdbc0c
   — `settings.rs` スキーマ + `main.rs` パレット192箇所
 
 ### 優先度: 低（調査タスク）
