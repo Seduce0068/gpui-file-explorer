@@ -17,8 +17,9 @@
 #
 # --skip-build reuses the existing release binary. To avoid shipping a stale
 # binary that still reports the same version, the script additionally rejects a
-# binary that is older than any of app/src, app/Cargo.toml or app/Cargo.lock
-# (i.e. files newer than the binary are detected with `find -newer`).
+# binary that is older than any of app/src, app/build.rs, app/native-libs/,
+# app/Cargo.toml or app/Cargo.lock (i.e. files newer than the binary are
+# detected with `find -newer`).
 set -euo pipefail
 
 usage() {
@@ -28,7 +29,7 @@ usage() {
 オプション:
   -o, --output-dir DIR  出力先（既定: packaging/linux/build）
       --skip-build      release バイナリを再ビルドせず既存のものを使う
-                        （app/src・Cargo.toml・Cargo.lock より古い場合は拒否し再ビルドを促す）
+                        （app/src・build.rs・native-libs/・Cargo.toml・Cargo.lock より古い場合は拒否し再ビルドを促す）
   -h, --help            このヘルプを表示
 
 root では実行できません（dpkg-deb --root-owner-group が所有権を設定します）。
@@ -127,11 +128,13 @@ esac
 
 # With --skip-build the binary is not rebuilt, so the version check above alone
 # cannot catch a stale binary from an earlier build of the same version. Detect
-# any source/Cargo file newer than the binary and refuse to package it.
+# any source/build/native-lib/Cargo file newer than the binary and refuse to
+# package it: build.rs links native-libs/, so both affect the linked binary.
 if [ "${skip_build}" -eq 1 ]; then
   # `-print -quit` stops at the first match; `|| true` keeps `set -e` from
   # aborting on a missing search path before our own error message is shown.
-  stale_source="$(find "${app_dir}/src" "${app_dir}/Cargo.toml" "${app_dir}/Cargo.lock" \
+  stale_source="$(find "${app_dir}/src" "${app_dir}/build.rs" "${app_dir}/native-libs" \
+    "${app_dir}/Cargo.toml" "${app_dir}/Cargo.lock" \
     -newer "${binary}" -print -quit || true)"
   if [ -n "${stale_source}" ]; then
     die "release バイナリがソースより古いです: ${stale_source}（--skip-build を外して再ビルドしてください）"

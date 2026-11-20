@@ -9064,6 +9064,7 @@ impl Explorer {
         }
 
         let back = icon_button(
+            &p,
             "nav-back",
             "戻る",
             IconName::ArrowLeft,
@@ -9074,6 +9075,7 @@ impl Explorer {
             }),
         );
         let forward = icon_button(
+            &p,
             "nav-forward",
             "進む",
             IconName::ArrowRight,
@@ -9084,6 +9086,7 @@ impl Explorer {
             }),
         );
         let up = icon_button(
+            &p,
             "nav-up",
             PARENT_FOLDER_LABEL,
             IconName::ArrowUp,
@@ -9094,6 +9097,7 @@ impl Explorer {
             }),
         );
         let refresh = icon_button(
+            &p,
             "refresh",
             "再読込",
             IconName::RefreshCw,
@@ -9104,6 +9108,7 @@ impl Explorer {
             }),
         );
         let undo_button = icon_button(
+            &p,
             "undo",
             "元に戻す",
             IconName::Undo2,
@@ -9114,6 +9119,7 @@ impl Explorer {
             }),
         );
         let redo_button = icon_button(
+            &p,
             "redo",
             "やり直す",
             IconName::Redo2,
@@ -9124,6 +9130,7 @@ impl Explorer {
             }),
         );
         let view_details = icon_button_active(
+            &p,
             "view-details",
             "詳細リスト",
             IconName::List,
@@ -9135,6 +9142,7 @@ impl Explorer {
             }),
         );
         let view_grid = icon_button_active(
+            &p,
             "view-grid",
             "アイコングリッド",
             IconName::LayoutGrid,
@@ -9146,6 +9154,7 @@ impl Explorer {
             }),
         );
         let new_folder = icon_button(
+            &p,
             "new-folder",
             "新規フォルダ",
             IconName::FolderPlus,
@@ -9161,6 +9170,7 @@ impl Explorer {
             IconName::Eye
         };
         let toggle_hidden = icon_button(
+            &p,
             "toggle-hidden",
             "隠しファイル切替",
             hidden_icon,
@@ -9171,6 +9181,7 @@ impl Explorer {
             }),
         );
         let help = icon_button(
+            &p,
             "help",
             "ヘルプ (F1)",
             IconName::CircleQuestionMark,
@@ -9437,14 +9448,26 @@ impl Explorer {
     }
 }
 
-/// Toolbar button: Lucide icon inside a hoverable square.
-/// Toolbar button that shows a persistent active state (e.g. the current
-/// list/grid layout).
+/// Icon tint for a toolbar button from the active palette.
 ///
-/// These two free helpers have no `Explorer` reference, so their few color
-/// constants stay Mocha-based; the component theme still styles the button
-/// itself, and the surrounding toolbar/sidebar follow the active palette.
+/// The toolbar buttons set an explicit `text_color`, which overrides any
+/// color inherited from the gpui-component theme. They must therefore be
+/// tinted from [`AppPalette`] directly: the old hardcoded Mocha constants
+/// left light-theme icons at ~1.2:1 against the light toolbar (C03).
+/// Pure so the theme mapping can be unit-tested without a GPU window.
+fn icon_button_text_color(palette: &AppPalette, enabled: bool) -> u32 {
+    if enabled {
+        palette.text
+    } else {
+        palette.dim
+    }
+}
+
+/// Toolbar button that shows a persistent active state (e.g. the current
+/// list/grid layout). Colors come from the active `palette`; the explicit
+/// `text_color`/`hover` overrides win over any inherited component theme.
 fn icon_button_active(
+    palette: &AppPalette,
     id: &'static str,
     label: &'static str,
     icon: IconName,
@@ -9452,6 +9475,8 @@ fn icon_button_active(
     active: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
+    let text = icon_button_text_color(palette, enabled);
+    let surface = palette.surface;
     div()
         .id(id)
         .aria_label(label)
@@ -9461,27 +9486,30 @@ fn icon_button_active(
         .w(px(28.0))
         .h(px(28.0))
         .rounded_md()
-        .when(active, |button| button.bg(rgb(C_SURFACE)))
-        .text_color(if enabled { rgb(C_TEXT) } else { rgb(C_DIM) })
+        .when(active, |button| button.bg(rgb(surface)))
+        .text_color(rgb(text))
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                // Free function without a palette reference; the component
-                // theme supplies the button's own colors in both modes.
-                .hover(|style| style.bg(rgb(C_SURFACE)))
+                .hover(|style| style.bg(rgb(surface)))
                 .on_click(on_click)
         })
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
         .child(Icon::new(icon))
 }
 
+/// Toolbar button: Lucide icon inside a hoverable square, tinted from the
+/// active `palette` (see [`icon_button_active`] for the rationale).
 fn icon_button(
+    palette: &AppPalette,
     id: &'static str,
     label: &'static str,
     icon: IconName,
     enabled: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
+    let text = icon_button_text_color(palette, enabled);
+    let surface = palette.surface;
     div()
         .id(id)
         .aria_label(label)
@@ -9491,13 +9519,11 @@ fn icon_button(
         .w(px(28.0))
         .h(px(28.0))
         .rounded_md()
-        .text_color(if enabled { rgb(C_TEXT) } else { rgb(C_DIM) })
+        .text_color(rgb(text))
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                // Free function without a palette reference; the component
-                // theme supplies the button's own colors in both modes.
-                .hover(|style| style.bg(rgb(C_SURFACE)))
+                .hover(|style| style.bg(rgb(surface)))
                 .on_click(on_click)
         })
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
@@ -9931,6 +9957,20 @@ impl Explorer {
         state.set_sort_choice(sort_choice);
         state.set_show_hidden(self.settings.show_hidden);
         state.observe_inputs(cx);
+        // `observe_inputs` only watches the search box. The text editors never
+        // emit `SetTerminal`/`SetKeymap`, so watch their `Change` events here to
+        // keep the dirty flag (and the footer text) honest.
+        for input in [state.terminal_input.clone(), state.keymap_input.clone()] {
+            let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    if let Some(state) = this.settings_ui.as_mut() {
+                        state.dirty = true;
+                    }
+                    cx.notify();
+                }
+            });
+            state.subscriptions.push(subscription);
+        }
         self.settings_ui = Some(state);
         cx.notify();
     }
@@ -10083,18 +10123,23 @@ impl SettingsUiHost for Explorer {
                 }
                 if let Some(message) = error {
                     if let Some(state) = self.settings_ui.as_mut() {
-                        state.error = Some(message);
+                        state.error = Some(message.clone());
                     }
+                    // The card paints `state.error` only on the Terminal tab,
+                    // so a Shortcuts-tab failure would be invisible. Mirror it
+                    // into the status bar and keep the dialog open for editing.
+                    self.status = message;
                     cx.notify();
                     return;
                 }
 
                 let command = normalize_terminal_command(&terminal_raw).unwrap_or_default();
                 if !self.settings.set_terminal_command(&command) {
+                    let message = "コマンドが長すぎるか、制御文字を含んでいます".to_string();
                     if let Some(state) = self.settings_ui.as_mut() {
-                        state.error =
-                            Some("コマンドが長すぎるか、制御文字を含んでいます".to_string());
+                        state.error = Some(message.clone());
                     }
+                    self.status = message;
                     cx.notify();
                     return;
                 }
@@ -10104,9 +10149,17 @@ impl SettingsUiHost for Explorer {
                     "system" => crate::settings::ThemeChoice::System,
                     _ => crate::settings::ThemeChoice::Dark,
                 };
-                // Keep the resolved companion field in sync. `Theme::change`
-                // stays with the theme integration; this only persists values.
-                self.settings.theme = crate::settings::resolve_theme(theme, self.settings.theme);
+                // Resolve against the appearance GPUI observes for this window,
+                // not the previously persisted mode, then push the result through
+                // the single entry point that keeps `settings.theme`, the palette
+                // and GPUI Component's Theme in sync.
+                let effective_theme = resolve_theme(theme, cx.window_appearance().into());
+                self.apply_theme_mode(effective_theme, cx);
+                if theme == ThemeChoice::System {
+                    // Match the Alt+Shift+T System path: let gpui-component read
+                    // the window appearance instead of pinning `Theme::change`.
+                    Theme::sync_system_appearance(None, cx);
+                }
                 self.settings.theme_choice = theme;
                 self.settings.view = if view_choice == "icons" {
                     ViewLayout::Icons
@@ -10120,10 +10173,10 @@ impl SettingsUiHost for Explorer {
                     "modified" => SortKey::Modified,
                     _ => SortKey::Name,
                 };
-                let mut order = self.settings.sort.order();
-                order.key = sort_key;
-                order.ascending = matches!(sort_key, SortKey::Name | SortKey::Kind);
-                self.settings.sort = SortSpec::from_order(order);
+                // The form only edits the key. Keep the persisted direction
+                // (and `dirs_first`) untouched instead of deriving a default
+                // from the chosen key.
+                self.settings.sort.key = sort_key;
                 self.settings.keymap = overrides;
                 self.keymap = KeyMap::from_settings(&self.settings);
 
@@ -10511,21 +10564,21 @@ mod tests {
         active_keymap_overrides, apply_debug_settings_overrides, bookmark_toggle_rejection,
         build_places, canonical_chord, chord_for_action, classify_cli, clear_dialog_error,
         clear_op_token, format_chord, format_selected, fuzzy_candidates, fuzzy_score,
-        grid_columns_for_width, help_overrides_line, install_op_token, internal_drop_paths,
-        join_status_notices, keymap_action_name, keymap_chord_reserved, kind_color,
-        labeled_display_name, middle_click_tab_dir, normalize_terminal_command, op_is_active,
-        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
+        grid_columns_for_width, help_overrides_line, icon_button_text_color, install_op_token,
+        internal_drop_paths, join_status_notices, keymap_action_name, keymap_chord_reserved,
+        kind_color, labeled_display_name, middle_click_tab_dir, normalize_terminal_command,
+        op_is_active, parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
         read_properties_snapshot, remove_keymap_override, saved_search_caption,
         saved_search_save_status, search_filter_status, settings_save_status, startup_dir_from,
         status_color, summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
         terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
         transfer_log_level, transfer_skip_notice, trash_batch, trash_delete_status,
         trash_key_action, trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override,
-        validate_cli_dir, version_label, visible_secondary_slots, CliAction,
+        validate_cli_dir, version_label, visible_secondary_slots, AppPalette, CliAction,
         DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
         KeyMap, KeymapInput, PropertiesErrorReaction, SecondarySlot, SortKey, TrashKeyAction,
-        C_GREEN, C_MUTED, C_RED, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX,
-        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
+        GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CHANGED,
         STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_PREFIX, STATUS_PARTIAL_FAILURE_SUFFIX,
         STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
@@ -10700,6 +10753,27 @@ mod tests {
         // Symlinks intentionally reuse the muted tint already applied to them
         // in the list and grid render paths, so they are excluded above.
         assert_eq!(kind_color(FileKind::Symlink), C_MUTED);
+    }
+
+    #[test]
+    fn toolbar_icon_tint_comes_from_the_active_palette() {
+        // C03: the toolbar buttons used to hardcode Mocha `C_TEXT`/`C_DIM`,
+        // so in the light theme the icons stayed dark-on-light and were
+        // nearly invisible. The tint must follow the active palette.
+        let dark = AppPalette::dark();
+        let light = AppPalette::light();
+
+        assert_eq!(icon_button_text_color(&dark, true), C_TEXT);
+        assert_eq!(icon_button_text_color(&dark, false), C_DIM);
+        assert_eq!(icon_button_text_color(&light, true), light.text);
+        assert_eq!(icon_button_text_color(&light, false), light.dim);
+
+        // The enabled light tint must differ from the old hardcoded Mocha one.
+        assert_ne!(light.text, C_TEXT);
+        assert_ne!(
+            icon_button_text_color(&light, true),
+            icon_button_text_color(&dark, true)
+        );
     }
 
     #[test]

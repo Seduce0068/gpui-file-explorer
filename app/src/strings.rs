@@ -143,7 +143,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Shift+F", "検索結果を名前で絞り込み"),
             ("Ctrl+I", "プロパティ"),
             ("Space / F3", "テキストプレビュー"),
-            ("Alt+Shift+T", "テーマをダーク / ライトで切替"),
+            ("Alt+Shift+T", "テーマをダーク / ライト / システムで切替"),
         ],
     ),
     (
@@ -321,7 +321,7 @@ pub const STATUS_REDO_EMPTY: &str = "やり直せる操作がありません";
 pub const STATUS_REDO_FAILED: &str = "やり直せません";
 pub const STATUS_RENAME_FAILED: &str = "変更できません";
 pub const STATUS_TARGET_MISSING: &str = "対象は既に存在しません";
-/// テーマ切替後の通知（値は ThemeMode::name(): `dark` / `light`）。
+/// テーマ切替後の通知（値は ThemeChoice の serde 名: `dark` / `light` / `system`）。
 pub const STATUS_THEME_CHANGED_PREFIX: &str = "テーマ: ";
 /// ゴミ箱操作の全件失敗と部分失敗（後者は `（{n} 件失敗: 「{name}」: {reason}）` の一部）。
 pub const STATUS_TRASH_ALL_FAILED: &str = "ゴミ箱へ移動できません";

@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 425 tests
+cargo test           # 426 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -42,9 +42,26 @@ cargo test           # 425 tests
 生のキー入力を記録する方式ではありません。手編集する場合はアプリを終了した
 状態で設定ファイルを編集してください。
 
+### 設定関連のキーバインド
+
+| キー | 動作 |
+| --- | --- |
+| `Ctrl+,` | 設定を開く（5 タブ。保存 / キャンセル。Alt+K / Alt+T の個別ダイアログを包含・補完） |
+| `Alt+K` | キーマップ設定ダイアログ（個別バインドの登録・解除） |
+| `Alt+T` | ターミナル起動コマンドの設定ダイアログ |
+
+設定画面は「外観 / ファイル / ショートカット / ターミナル / 個人化」の
+5 タブ構成で、「保存」で反映、「キャンセル」で破棄します。
+
 ```json
 { "version": 1, "keymap": [["open_preview", "ctrl+shift+p"]] }
 ```
+
+設定画面（「ショートカット」タブ）の入力欄は **`action=chord;`** 形式です。
+`;` 区切りで複数指定し（例: `open_preview=ctrl+shift+p;quit=ctrl+q;`）、
+保存時に入力欄の内容が上書き一覧を**すべて置き換え**ます。`unbind` 構文は
+なく、削除する場合は該当項目を入力欄から消して保存します。`Alt+K` の
+ダイアログは `action chord` / `unbind action` で 1 件ずつ操作します。
 
 - アクション名は `KeyAction` の snake_case 名（例: `open_preview` /
   `fuzzy_jump`）、コードは `ctrl` / `shift` / `alt` を `+` で連結した修飾キーと
@@ -77,7 +94,7 @@ cargo test           # 425 tests
 
 ## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-18 更新）
 
-- `cargo build` 警告 0 / `cargo test` **425 passed / 0 failed**（2026-11-21 時点。初回実機検証時は 36 件）
+- `cargo build` 警告 0 / `cargo test` **426 passed / 0 failed**（2026-11-21 時点。初回実機検証時は 36 件）
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
 - 起動中に外部からファイル作成 → 一覧が自動更新（14→15 件）
@@ -169,7 +186,7 @@ bash scripts/check.sh --app      # app/ のみ
 bash scripts/check.sh --poc      # poc/ のみ
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 425 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 426 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
 
 ## ソース・ライセンス
