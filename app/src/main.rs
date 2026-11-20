@@ -14,8 +14,13 @@ mod mounts;
 mod ops;
 mod preview;
 mod search;
+// `next_theme` is the legacy two-state cycle kept for settings-file
+// compatibility; the UI now cycles `ThemeChoice` via `next_theme_choice`.
+#[allow(dead_code)]
 mod settings;
+mod settings_ui;
 mod strings;
+mod system_icons;
 mod tabs;
 mod trash_view;
 mod undo;
@@ -36,7 +41,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Icon, Theme};
+use gpui_kit::component::{Icon, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -55,14 +60,18 @@ use crate::search::{
     ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
 };
 use crate::settings::{
-    next_theme, Settings, TabSession, ViewLayout, WindowBoundsState, MAX_CHORD_BYTES,
-    MAX_KEYMAP_OVERRIDES, MAX_TABS,
+    next_theme_choice, resolve_theme, Settings, TabSession, ThemeChoice, ViewLayout,
+    WindowBoundsState, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES, MAX_TABS,
 };
+use crate::system_icons::SystemIconResolver;
 use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
 use crate::watcher::{removed_paths, DirWatcher, FsEvent};
 
-// Catppuccin Mocha-ish palette.
+// Catppuccin Mocha values: kept as the dark defaults because pure unit tests
+// (and a few self-free helpers) still reference these constants. Rendered views
+// use `Explorer::palette`, which selects the Mocha or Latte set from the
+// effective theme.
 const C_BASE: u32 = 0x1e1e2e;
 const C_MANTLE: u32 = 0x181825;
 const C_SURFACE: u32 = 0x313244;
@@ -78,6 +87,116 @@ const C_RED: u32 = 0xf38ba8;
 const C_MAUVE: u32 = 0xcba6f7;
 const C_TEAL: u32 = 0x94e2d5;
 const C_LAVENDER: u32 = 0xb4befe;
+
+/// Every hand-drawn color in the explorer, for the active light/dark theme.
+///
+/// GPUI Component themes its own widgets, but the file explorer paints its
+/// list, sidebar, toolbar and dialogs directly. Keeping both Catppuccin
+/// flavors in one `Copy` value lets a theme change refresh every surface with
+/// a single field assignment (see [`Explorer::apply_theme_mode`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AppPalette {
+    base: u32,
+    mantle: u32,
+    surface: u32,
+    overlay: u32,
+    text: u32,
+    subtext: u32,
+    muted: u32,
+    dim: u32,
+    blue: u32,
+    green: u32,
+    yellow: u32,
+    red: u32,
+    mauve: u32,
+    teal: u32,
+    lavender: u32,
+    /// Keyboard-focus row tint (a darker/lighter step off `base`).
+    focus: u32,
+}
+
+impl AppPalette {
+    /// Catppuccin Mocha (the historical application palette).
+    const fn dark() -> Self {
+        Self {
+            base: C_BASE,
+            mantle: C_MANTLE,
+            surface: C_SURFACE,
+            overlay: C_OVERLAY,
+            text: C_TEXT,
+            subtext: C_SUBTEXT,
+            muted: C_MUTED,
+            dim: C_DIM,
+            blue: C_BLUE,
+            green: C_GREEN,
+            yellow: C_YELLOW,
+            red: C_RED,
+            mauve: C_MAUVE,
+            teal: C_TEAL,
+            lavender: C_LAVENDER,
+            focus: 0x252537,
+        }
+    }
+
+    /// Catppuccin Latte. `dim` maps to Latte `surface2`, the same rung Mocha
+    /// uses for its de-emphasized text.
+    const fn light() -> Self {
+        Self {
+            base: 0xeff1f5,
+            mantle: 0xe6e9ef,
+            surface: 0xccd0da,
+            overlay: 0xbcc0cc,
+            text: 0x4c4f69,
+            subtext: 0x5c5f77,
+            muted: 0x6c6f85,
+            dim: 0xacb0be,
+            blue: 0x1e66f5,
+            green: 0x40a02b,
+            yellow: 0xdf8e1d,
+            red: 0xd20f39,
+            mauve: 0x8839ef,
+            teal: 0x179299,
+            lavender: 0x7287fd,
+            focus: 0xdad9e9,
+        }
+    }
+
+    fn for_mode(mode: ThemeMode) -> Self {
+        if mode.is_dark() {
+            Self::dark()
+        } else {
+            Self::light()
+        }
+    }
+
+    /// Re-map the pure `status_color` classifier's Mocha constants onto the
+    /// active palette so warnings/errors stay legible on the light background.
+    fn status_color(&self, status: &str) -> u32 {
+        match status_color(status) {
+            C_YELLOW => self.yellow,
+            C_RED => self.red,
+            _ => self.green,
+        }
+    }
+
+    /// Icon tint for a file kind, from the active palette. The standalone
+    /// `kind_color` stays Mocha-based for its pure unit tests; this method is
+    /// what the rendered rows and cells use.
+    fn kind_color(&self, kind: FileKind) -> u32 {
+        match kind {
+            FileKind::Folder => self.blue,
+            FileKind::Symlink => self.muted,
+            FileKind::Image => self.green,
+            FileKind::Code => self.lavender,
+            FileKind::Archive => self.yellow,
+            FileKind::Pdf => self.red,
+            FileKind::Text => self.subtext,
+            FileKind::Audio => self.mauve,
+            FileKind::Video => self.teal,
+            FileKind::Unknown => self.muted,
+        }
+    }
+}
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(10);
 const SELF_OP_SUPPRESS: Duration = Duration::from_millis(1500);
@@ -179,6 +298,10 @@ fn search_view_key_reaches_keymap(
 }
 
 /// Icon colour per file kind (folders are blue, everything else is tinted).
+///
+/// Rendering now uses [`AppPalette::kind_color`]; this Mocha-only reference
+/// remains for the pure unit test that checks the kinds stay distinguishable.
+#[cfg(test)]
 fn kind_color(kind: FileKind) -> u32 {
     match kind {
         FileKind::Folder => C_BLUE,
@@ -638,6 +761,8 @@ enum KeyAction {
     EditTerminalCommand,
     /// Alt+K: edit keybinding overrides from the keymap dialog.
     EditKeymap,
+    /// Ctrl+,: open the full preferences overlay (theme, files, shortcuts, …).
+    OpenSettings,
     /// Alt+Shift+T: cycle the persisted component theme (dark / light).
     ToggleTheme,
     /// Ctrl+Shift+L: jump to the first sidebar place (Home). Sidebar rows are
@@ -863,9 +988,9 @@ impl KeyMap {
             CloseTab, Copy, Cut, DetailsView, EditKeymap, EditTerminalCommand, FocusSearchName,
             FuzzyJump, GoBack, GoForward, GoParent, IconsView, MoveDown, MoveTabLeft, MoveTabRight,
             MoveUp, NewFolder, NewTab, NextTab, OpenLocation, OpenPreview, OpenProperties,
-            OpenSearch, OpenSelected, OpenTerminal, PageDown, PageUp, Paste, PrevTab, Quit, Redo,
-            Reload, RestoreClosedTab, RestoreSelected, SelectAll, SelectFirst, SelectLast,
-            StartRename, ToggleBookmark, ToggleHidden, ToggleTheme, ToggleUndoHistory,
+            OpenSearch, OpenSelected, OpenSettings, OpenTerminal, PageDown, PageUp, Paste, PrevTab,
+            Quit, Redo, Reload, RestoreClosedTab, RestoreSelected, SelectAll, SelectFirst,
+            SelectLast, StartRename, ToggleBookmark, ToggleHidden, ToggleTheme, ToggleUndoHistory,
             TrashSelected, Undo,
         };
         let binding = |key: &str, ctrl, alt, shift, action| KeyBinding {
@@ -940,6 +1065,11 @@ impl KeyMap {
                 binding("enter", true, false, Some(false), RestoreSelected),
                 binding("q", true, false, None, Quit),
                 binding("p", true, false, Some(false), FuzzyJump),
+                // Ctrl+, opens the preferences overlay. `,` is unused by any
+                // other binding; `shift: Some(false)` keeps Ctrl+< unbound.
+                // `binding_matches` ignores `alt` for Ctrl bindings, so this
+                // deliberately has no Ctrl+Alt counterpart.
+                binding(",", true, false, Some(false), OpenSettings),
                 // Alt keys.
                 binding("left", false, true, None, GoBack),
                 binding("right", false, true, None, GoForward),
@@ -1922,11 +2052,18 @@ fn pending_rename_index(
 
 struct Explorer {
     settings: Settings,
+    /// Hand-drawn colors for the effective (resolved) theme.
+    palette: AppPalette,
+    /// Keeps the OS appearance observer alive; it only has an effect while
+    /// `settings.theme_choice == ThemeChoice::System`.
+    appearance_subscription: Option<Subscription>,
     cwd: PathBuf,
     /// Every entry read from the current directory.
     all_entries: Vec<Entry>,
     /// Filtered + sorted view rendered by `uniform_list`.
     entries: Vec<Entry>,
+    /// Cached resolver for full-colour freedesktop system icons (list/grid).
+    system_icon_resolver: SystemIconResolver,
     /// Focused row index (keyboard cursor / single-selection shortcut).
     selected: usize,
     /// Multi-selection keyed by path so it survives reloads and re-sorting.
@@ -2019,6 +2156,8 @@ struct Explorer {
     location: Option<LocationState>,
     /// Terminal-command settings dialog (Alt+T). `None` when closed.
     terminal_command_editor: Option<TerminalCommandState>,
+    /// Full preferences overlay (Ctrl+,). `None` when closed.
+    settings_ui: Option<SettingsUiState>,
     /// Keymap settings dialog (Alt+K). `None` when closed.
     keymap_editor: Option<KeymapEditorState>,
     /// Personalized key map (F6-51). Defaults to the shipped bindings.
@@ -2161,6 +2300,12 @@ impl Explorer {
     fn new(cx: &mut Context<Self>) -> Self {
         let debug = Self::debug_hooks_from_env();
         let mut settings = Settings::load();
+        // Resolve the persisted preference once, using the appearance GPUI
+        // observes for this window. `theme` stays the resolved mode so older
+        // readers of the legacy field see the effective value.
+        let effective_theme = resolve_theme(settings.theme_choice, cx.window_appearance().into());
+        settings.theme = effective_theme;
+        let palette = AppPalette::for_mode(effective_theme);
         // Any active debug hook must never write to the real settings file.
         // In release `debug` is `DebugHooks::default()`, so this remains false
         // and normal persistence behaviour is preserved.
@@ -2223,9 +2368,14 @@ impl Explorer {
         let keymap = KeyMap::from_settings(&settings);
         let mut this = Self {
             settings,
+            palette,
+            // The window-level subscription is installed in `open_window`,
+            // where a `&mut Window` is available (`Context` alone has none).
+            appearance_subscription: None,
             cwd: start_dir,
             all_entries: Vec::new(),
             entries: Vec::new(),
+            system_icon_resolver: SystemIconResolver::new(),
             selected: 0,
             selection: Selection::default(),
             implicit_selection: true,
@@ -2270,6 +2420,7 @@ impl Explorer {
             help_open: false,
             location: None,
             terminal_command_editor: None,
+            settings_ui: None,
             keymap_editor: None,
             keymap,
             fuzzy: None,
@@ -3216,15 +3367,16 @@ impl Explorer {
         if self.view != ViewSource::Directory {
             return None;
         }
+        let p = self.palette;
         let mut bar = div()
             .flex()
             .items_center()
             .gap_1()
             .px_3()
             .py_1()
-            .bg(rgb(C_BASE))
+            .bg(rgb(p.base))
             .border_b_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(p.surface))
             .overflow_hidden();
         for (index, tab) in self.tabs.tabs().iter().enumerate() {
             let active = index == self.tabs.active_index();
@@ -3243,9 +3395,9 @@ impl Explorer {
                 .rounded_md()
                 .text_sm()
                 .cursor_pointer()
-                .when(active, |item| item.bg(rgb(C_SURFACE)))
-                .text_color(if active { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
-                .hover(|style| style.bg(rgb(C_SURFACE)))
+                .when(active, |item| item.bg(rgb(p.surface)))
+                .text_color(if active { rgb(p.text) } else { rgb(p.subtext) })
+                .hover(|style| style.bg(rgb(p.surface)))
                 .tooltip(move |window, cx| Tooltip::new(full_path.clone()).build(window, cx))
                 .on_click(cx.listener(move |this, _event, window, cx| {
                     this.focus_handle.focus(window, cx);
@@ -3259,7 +3411,7 @@ impl Explorer {
                         .aria_label(close_aria)
                         .px_1()
                         .rounded_md()
-                        .hover(|style| style.bg(rgb(C_OVERLAY)))
+                        .hover(|style| style.bg(rgb(p.overlay)))
                         .child("×")
                         .on_click(cx.listener(|this, _event, window, cx| {
                             this.focus_handle.focus(window, cx);
@@ -3277,9 +3429,9 @@ impl Explorer {
                 .py_0p5()
                 .rounded_md()
                 .text_sm()
-                .text_color(rgb(C_SUBTEXT))
+                .text_color(rgb(p.subtext))
                 .cursor_pointer()
-                .hover(|style| style.bg(rgb(C_SURFACE)))
+                .hover(|style| style.bg(rgb(p.surface)))
                 .child("+")
                 .on_click(cx.listener(|this, _event, window, cx| {
                     this.focus_handle.focus(window, cx);
@@ -3681,6 +3833,7 @@ impl Explorer {
     /// Modal overlay for the terminal-command settings dialog (Alt+T).
     fn terminal_command_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
         let editor = self.terminal_command_editor.as_ref()?;
+        let p = self.palette;
         let backdrop = div()
             .absolute()
             .top_0()
@@ -3701,10 +3854,10 @@ impl Explorer {
         });
         let mut form = div()
             .w(px(480.0))
-            .bg(rgb(C_SURFACE))
+            .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
-            .border_color(rgb(C_OVERLAY))
+            .border_color(rgb(p.overlay))
             .shadow_lg()
             .p_5()
             .flex()
@@ -3719,12 +3872,12 @@ impl Explorer {
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(C_SUBTEXT))
+                    .text_color(rgb(p.subtext))
                     .child("F4 で開くターミナルの起動コマンド（空白で無効化）"),
             )
             .child(Input::new(&editor.input).w_full());
         if let Some(error) = &editor.error {
-            form = form.child(div().text_sm().text_color(rgb(C_RED)).child(error.clone()));
+            form = form.child(div().text_sm().text_color(rgb(p.red)).child(error.clone()));
         }
         form = form
             .child(
@@ -3746,7 +3899,7 @@ impl Explorer {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("Enter で確定 / Esc でキャンセル"),
             );
 
@@ -3867,6 +4020,7 @@ impl Explorer {
     /// Modal overlay for the keymap settings dialog (Alt+K).
     fn keymap_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
         let editor = self.keymap_editor.as_ref()?;
+        let p = self.palette;
         let backdrop = div()
             .absolute()
             .top_0()
@@ -3887,10 +4041,10 @@ impl Explorer {
         });
         let mut form = div()
             .w(px(480.0))
-            .bg(rgb(C_SURFACE))
+            .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
-            .border_color(rgb(C_OVERLAY))
+            .border_color(rgb(p.overlay))
             .shadow_lg()
             .p_5()
             .flex()
@@ -3905,12 +4059,12 @@ impl Explorer {
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(C_SUBTEXT))
+                    .text_color(rgb(p.subtext))
                     .child(KEYMAP_INPUT_HINT),
             )
             .child(Input::new(&editor.input).w_full());
         if let Some(error) = &editor.error {
-            form = form.child(div().text_sm().text_color(rgb(C_RED)).child(error.clone()));
+            form = form.child(div().text_sm().text_color(rgb(p.red)).child(error.clone()));
         }
         form = form
             .child(
@@ -3932,7 +4086,7 @@ impl Explorer {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("Enter で確定 / Esc でキャンセル"),
             );
 
@@ -3982,6 +4136,15 @@ impl Explorer {
             // Enter arrives as `InputEvent::PressEnter`.
             if key == "escape" {
                 self.close_keymap_settings(window, cx);
+            }
+            return;
+        }
+        if self.settings_ui.is_some() {
+            // The preferences card owns the keyboard; its inputs receive typing.
+            // Escape cancels and this guard sits before F1 so the help overlay
+            // can never be stacked on top of the settings dialog.
+            if key == "escape" {
+                self.on_settings_action(SettingsUiAction::Cancel, cx);
             }
             return;
         }
@@ -4228,6 +4391,7 @@ impl Explorer {
             OpenTerminal => self.open_terminal_for_selection(cx),
             EditTerminalCommand => self.open_terminal_command_settings(window, cx),
             EditKeymap => self.open_keymap_settings(window, cx),
+            OpenSettings => self.open_settings_ui(window, cx),
             None => {}
         }
     }
@@ -4263,20 +4427,59 @@ impl Explorer {
         cx.notify();
     }
 
-    /// Cycle the persisted component theme (Alt+Shift+T). gpui-component 0.9.1
-    /// exposes only `Dark` / `Light`, so there is no "system" mode to offer.
+    /// Apply an already-resolved mode to the component theme, the legacy
+    /// `settings.theme` field and the hand-drawn palette in one place. Every
+    /// theme entry point (startup, toggle, OS appearance change) goes through
+    /// here so none of the three can drift out of sync.
+    fn apply_theme_mode(&mut self, mode: ThemeMode, cx: &mut Context<Self>) {
+        self.settings.theme = mode;
+        self.palette = AppPalette::for_mode(mode);
+        Theme::change(mode, None, cx);
+        cx.notify();
+    }
+
+    /// Re-resolve the preference when the OS switches between light and dark.
+    /// The observer is always installed (see `open_window`) but this is a
+    /// no-op unless the persisted choice is `System`.
+    fn on_system_appearance_changed(&mut self, cx: &mut Context<Self>) {
+        if self.settings.theme_choice != ThemeChoice::System {
+            return;
+        }
+        let system: ThemeMode = cx.window_appearance().into();
+        let resolved = resolve_theme(self.settings.theme_choice, system);
+        if self.settings.theme == resolved {
+            return;
+        }
+        self.apply_theme_mode(resolved, cx);
+    }
+
+    /// Cycle the persisted preference (Alt+Shift+T): Dark → Light → System →
+    /// Dark. `Settings::theme` keeps the *resolved* mode for compatibility;
+    /// `theme_choice` is what the next toggle starts from.
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
-        let next = next_theme(self.settings.theme);
-        self.settings.theme = next;
-        Theme::change(next, None, cx);
+        let choice = next_theme_choice(self.settings.theme_choice);
+        self.settings.theme_choice = choice;
+        let system: ThemeMode = cx.window_appearance().into();
+        let resolved = resolve_theme(choice, system);
+        if choice == ThemeChoice::System {
+            // `None` makes gpui-component read the same window appearance we
+            // resolved above (documented in `Theme::sync_system_appearance`).
+            Theme::sync_system_appearance(None, cx);
+            self.settings.theme = resolved;
+            self.palette = AppPalette::for_mode(resolved);
+        } else {
+            self.apply_theme_mode(resolved, cx);
+        }
         let saved = self.save_settings();
         self.status = if !saved {
             STATUS_SETTINGS_SAVE_FAILED.to_string()
         } else {
-            format!(
-                "{STATUS_THEME_CHANGED_PREFIX}{}",
-                if next.is_dark() { "dark" } else { "light" }
-            )
+            let label = match choice {
+                ThemeChoice::Light => "light",
+                ThemeChoice::Dark => "dark",
+                ThemeChoice::System => "system",
+            };
+            format!("{STATUS_THEME_CHANGED_PREFIX}{label}")
         };
         cx.notify();
     }
@@ -4817,6 +5020,7 @@ impl Explorer {
         if !self.undo_history_open {
             return None;
         }
+        let p = self.palette;
         let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
             this.undo_history_open = false;
             cx.notify();
@@ -4837,10 +5041,10 @@ impl Explorer {
         let mut body = div()
             .id("undo-history")
             .w(px(720.0))
-            .bg(rgb(C_SURFACE))
+            .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
-            .border_color(rgb(C_OVERLAY))
+            .border_color(rgb(p.overlay))
             .shadow_lg()
             .p_5()
             .flex()
@@ -4858,12 +5062,12 @@ impl Explorer {
             body = body.child(
                 div()
                     .text_sm()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("元に戻せる操作はありません（名前変更とゴミ箱のみ記録します）"),
             );
         }
         if !undo_actions.is_empty() {
-            body = body.child(div().text_xs().text_color(rgb(C_MUTED)).child(format!(
+            body = body.child(div().text_xs().text_color(rgb(p.muted)).child(format!(
                 "元に戻せる操作（{} 件・新しい順）",
                 undo_actions.len()
             )));
@@ -4877,7 +5081,7 @@ impl Explorer {
                             div()
                                 .w(px(120.0))
                                 .text_sm()
-                                .text_color(rgb(C_TEXT))
+                                .text_color(rgb(p.text))
                                 .child(action.label()),
                         )
                         .child(
@@ -4886,14 +5090,14 @@ impl Explorer {
                                 .min_w_0()
                                 .truncate()
                                 .text_xs()
-                                .text_color(rgb(C_SUBTEXT))
+                                .text_color(rgb(p.subtext))
                                 .child(Self::undo_action_detail(action)),
                         ),
                 );
             }
         }
         if !redo_actions.is_empty() {
-            body = body.child(div().text_xs().text_color(rgb(C_MUTED)).child(format!(
+            body = body.child(div().text_xs().text_color(rgb(p.muted)).child(format!(
                 "やり直せる操作（{} 件・新しい順）",
                 redo_actions.len()
             )));
@@ -4907,7 +5111,7 @@ impl Explorer {
                             div()
                                 .w(px(120.0))
                                 .text_sm()
-                                .text_color(rgb(C_TEXT))
+                                .text_color(rgb(p.text))
                                 .child(action.label()),
                         )
                         .child(
@@ -4916,7 +5120,7 @@ impl Explorer {
                                 .min_w_0()
                                 .truncate()
                                 .text_xs()
-                                .text_color(rgb(C_SUBTEXT))
+                                .text_color(rgb(p.subtext))
                                 .child(Self::undo_action_detail(action)),
                         ),
                 );
@@ -4932,7 +5136,7 @@ impl Explorer {
         body = body.child(
             div()
                 .text_xs()
-                .text_color(rgb(C_MUTED))
+                .text_color(rgb(p.muted))
                 .child("Ctrl+Shift+U / Esc で閉じる（読み取り専用）"),
         );
         Some(
@@ -5551,6 +5755,7 @@ impl Explorer {
     /// Read-only preview overlay with a scrollable text area.
     fn preview_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
         let preview = self.preview.as_ref()?;
+        let p = self.palette;
         let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
             this.close_preview(cx);
         });
@@ -5593,10 +5798,10 @@ impl Explorer {
             .id("preview-dialog")
             .w(px(820.0))
             .max_h(px(620.0))
-            .bg(rgb(C_SURFACE))
+            .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
-            .border_color(rgb(C_OVERLAY))
+            .border_color(rgb(p.overlay))
             .shadow_lg()
             .p_5()
             .flex()
@@ -5619,9 +5824,9 @@ impl Explorer {
                         div()
                             .text_xs()
                             .text_color(if preview.error.is_some() {
-                                rgb(C_RED)
+                                rgb(p.red)
                             } else {
-                                rgb(C_MUTED)
+                                rgb(p.muted)
                             })
                             .child(meta),
                     ),
@@ -5634,7 +5839,7 @@ impl Explorer {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(rgb(C_BASE))
+                    .bg(rgb(p.base))
                     .rounded_md()
                     .p_3()
                     .child(
@@ -5652,12 +5857,12 @@ impl Explorer {
                     .id("preview-text")
                     .max_h(px(480.0))
                     .overflow_y_scroll()
-                    .bg(rgb(C_BASE))
+                    .bg(rgb(p.base))
                     .rounded_md()
                     .p_3()
                     .font_family("monospace")
                     .text_xs()
-                    .text_color(rgb(C_TEXT))
+                    .text_color(rgb(p.text))
                     .child(body_text),
             );
         }
@@ -5692,11 +5897,11 @@ impl Explorer {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(div().text_xs().text_color(rgb(C_MUTED)).child(counter))
+                        .child(div().text_xs().text_color(rgb(p.muted)).child(counter))
                         .child(Button::new("preview-close").label("閉じる").on_click(close)),
                 ),
         );
-        panel = panel.child(div().text_xs().text_color(rgb(C_MUTED)).child(
+        panel = panel.child(div().text_xs().text_color(rgb(p.muted)).child(
             "↑/↓ で前後のファイル、Ctrl+Enter で新タブ、Space / F3 / Esc で閉じる（読み取り専用）",
         ));
         Some(
@@ -5792,25 +5997,26 @@ impl Explorer {
     /// Path input bar shown while Ctrl+L is open.
     fn location_bar(&self) -> Option<Div> {
         let location = self.location.as_ref()?;
+        let p = self.palette;
         let mut bar = div()
             .flex()
             .items_center()
             .gap_2()
             .px_3()
             .py_1()
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(p.mantle))
             .border_b_1()
-            .border_color(rgb(C_SURFACE))
-            .child(div().text_sm().text_color(rgb(C_SUBTEXT)).child("パス:"))
+            .border_color(rgb(p.surface))
+            .child(div().text_sm().text_color(rgb(p.subtext)).child("パス:"))
             .child(div().flex_1().child(Input::new(&location.input)))
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("Enter で移動 / Esc で閉じる"),
             );
         if let Some(error) = &location.error {
-            bar = bar.child(div().text_xs().text_color(rgb(C_RED)).child(error.clone()));
+            bar = bar.child(div().text_xs().text_color(rgb(p.red)).child(error.clone()));
         }
         Some(bar)
     }
@@ -5952,6 +6158,7 @@ impl Explorer {
     /// cannot select a different result after the query changed.
     fn fuzzy_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
         let fuzzy = self.fuzzy.as_ref()?;
+        let p = self.palette;
         let close = cx.listener(|this, _: &ClickEvent, _window, cx| this.close_fuzzy(cx));
         let backdrop = div()
             .absolute()
@@ -5976,7 +6183,7 @@ impl Explorer {
                     .px_2()
                     .py_1()
                     .text_sm()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child(format!(
                         "{}（タブ・ブックマーク・最近・階層・このフォルダを検索）",
                         EMPTY_SEARCH.0
@@ -6002,9 +6209,9 @@ impl Explorer {
                     .py_1()
                     .rounded_md()
                     .bg(if selected {
-                        rgb(C_OVERLAY)
+                        rgb(p.overlay)
                     } else {
-                        rgb(C_MANTLE)
+                        rgb(p.mantle)
                     })
                     .on_click(click)
                     .child(
@@ -6012,9 +6219,9 @@ impl Explorer {
                             .w(px(96.0))
                             .text_xs()
                             .text_color(if selected {
-                                rgb(C_YELLOW)
+                                rgb(p.yellow)
                             } else {
-                                rgb(C_MUTED)
+                                rgb(p.muted)
                             })
                             .child(candidate.source.label()),
                     )
@@ -6024,7 +6231,7 @@ impl Explorer {
                             .min_w_0()
                             .truncate()
                             .text_sm()
-                            .text_color(rgb(C_TEXT))
+                            .text_color(rgb(p.text))
                             .child(candidate.label.clone()),
                     )
                     .child(
@@ -6032,7 +6239,7 @@ impl Explorer {
                             .max_w(px(300.0))
                             .truncate()
                             .text_xs()
-                            .text_color(rgb(C_SUBTEXT))
+                            .text_color(rgb(p.subtext))
                             .child(display_path(&candidate.path)),
                     ),
             );
@@ -6040,10 +6247,10 @@ impl Explorer {
         let body = div()
             .id("fuzzy-dialog")
             .w(px(760.0))
-            .bg(rgb(C_SURFACE))
+            .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
-            .border_color(rgb(C_OVERLAY))
+            .border_color(rgb(p.overlay))
             .shadow_lg()
             .p_5()
             .flex()
@@ -6065,7 +6272,7 @@ impl Explorer {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(C_MUTED))
+                            .text_color(rgb(p.muted))
                             .child("↑/↓ で選択 / Enter で移動 / Esc で閉じる"),
                     )
                     .child(Button::new("fuzzy-close").label("閉じる").on_click(close)),
@@ -6091,6 +6298,7 @@ impl Explorer {
         if !self.help_open {
             return None;
         }
+        let p = self.palette;
         let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
             this.help_open = false;
             cx.notify();
@@ -6116,7 +6324,7 @@ impl Explorer {
             .max_h(px(500.0))
             .overflow_y_scroll();
         for (section, shortcuts) in HELP_SECTIONS {
-            list = list.child(div().text_xs().text_color(rgb(C_MUTED)).child(*section));
+            list = list.child(div().text_xs().text_color(rgb(p.muted)).child(*section));
             for (key, description) in *shortcuts {
                 list = list.child(
                     div()
@@ -6127,14 +6335,14 @@ impl Explorer {
                             div()
                                 .w(px(230.0))
                                 .text_sm()
-                                .text_color(rgb(C_TEXT))
+                                .text_color(rgb(p.text))
                                 .child(*key),
                         )
                         .child(
                             div()
                                 .flex_1()
                                 .text_sm()
-                                .text_color(rgb(C_SUBTEXT))
+                                .text_color(rgb(p.subtext))
                                 .child(*description),
                         ),
                 );
@@ -6143,10 +6351,10 @@ impl Explorer {
         let overrides_line = help_overrides_line(&self.keymap);
         let mut body = div()
             .w(px(720.0))
-            .bg(rgb(C_SURFACE))
+            .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
-            .border_color(rgb(C_OVERLAY))
+            .border_color(rgb(p.overlay))
             .shadow_lg()
             .p_5()
             .flex()
@@ -6161,7 +6369,7 @@ impl Explorer {
         // Static HELP_SECTIONS cannot follow a user rebind. Surface the live
         // overrides above the table instead of rewriting every static row.
         if let Some(line) = overrides_line {
-            body = body.child(div().text_sm().text_color(rgb(C_YELLOW)).child(line));
+            body = body.child(div().text_sm().text_color(rgb(p.yellow)).child(line));
         }
         let body = body.child(list).child(
             div()
@@ -6171,7 +6379,7 @@ impl Explorer {
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(p.muted))
                         .child("F1 / Esc で閉じる（一覧はスクロールできます）"),
                 )
                 .child(Button::new("help-close").label("閉じる").on_click(close)),
@@ -6364,6 +6572,7 @@ impl Explorer {
     /// Read-only properties dialog.
     fn properties_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
         let props = self.properties.as_ref()?;
+        let p = self.palette;
         let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
             this.close_properties(cx);
         });
@@ -6388,7 +6597,7 @@ impl Explorer {
                     div()
                         .w(px(96.0))
                         .text_xs()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(p.muted))
                         .child(label),
                 )
                 .child(
@@ -6396,16 +6605,16 @@ impl Explorer {
                         .flex_1()
                         .min_w_0()
                         .text_sm()
-                        .text_color(rgb(C_TEXT))
+                        .text_color(rgb(p.text))
                         .child(value),
                 )
         };
         let mut form = div()
             .w(px(560.0))
-            .bg(rgb(C_SURFACE))
+            .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
-            .border_color(rgb(C_OVERLAY))
+            .border_color(rgb(p.overlay))
             .shadow_lg()
             .p_5()
             .flex()
@@ -6441,7 +6650,7 @@ impl Explorer {
                 .child(div().flex().justify_end().child(if props.size_loading {
                     div()
                         .text_xs()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(p.muted))
                         .child("サイズを計算中…（Esc で中止）")
                         .into_any_element()
                 } else {
@@ -6474,7 +6683,7 @@ impl Explorer {
         form = form.child(
             div()
                 .text_xs()
-                .text_color(rgb(C_MUTED))
+                .text_color(rgb(p.muted))
                 .child("Esc で閉じる（読み取り専用）"),
         );
         Some(
@@ -6681,6 +6890,7 @@ impl Explorer {
     /// Modal overlay for the rename dialog (backdrop + centered form).
     fn rename_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
         let rename = self.renaming.as_ref()?;
+        let p = self.palette;
         let backdrop = div()
             .absolute()
             .top_0()
@@ -6702,10 +6912,10 @@ impl Explorer {
 
         let mut form = div()
             .w(px(480.0))
-            .bg(rgb(C_SURFACE))
+            .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
-            .border_color(rgb(C_OVERLAY))
+            .border_color(rgb(p.overlay))
             .shadow_lg()
             .p_5()
             .flex()
@@ -6720,13 +6930,13 @@ impl Explorer {
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(C_SUBTEXT))
+                    .text_color(rgb(p.subtext))
                     .truncate()
                     .child(display_path(&rename.target)),
             )
             .child(Input::new(&rename.input).w_full());
         if let Some(error) = &rename.error {
-            form = form.child(div().text_sm().text_color(rgb(C_RED)).child(error.clone()));
+            form = form.child(div().text_sm().text_color(rgb(p.red)).child(error.clone()));
         }
         form = form.child(
             div()
@@ -6747,7 +6957,7 @@ impl Explorer {
         form = form.child(
             div()
                 .text_xs()
-                .text_color(rgb(C_MUTED))
+                .text_color(rgb(p.muted))
                 .child("Enter で確定 / Esc でキャンセル"),
         );
 
@@ -6768,6 +6978,7 @@ impl Explorer {
     /// Modal overlay for the bookmark-label editor (F6-49).
     fn label_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
         let editor = self.label_editor.as_ref()?;
+        let p = self.palette;
         let backdrop = div()
             .absolute()
             .top_0()
@@ -6795,10 +7006,10 @@ impl Explorer {
         };
         let form = div()
             .w(px(480.0))
-            .bg(rgb(C_SURFACE))
+            .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
-            .border_color(rgb(C_OVERLAY))
+            .border_color(rgb(p.overlay))
             .shadow_lg()
             .p_5()
             .flex()
@@ -6813,7 +7024,7 @@ impl Explorer {
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(C_SUBTEXT))
+                    .text_color(rgb(p.subtext))
                     .truncate()
                     .child(display_path(&editor.path)),
             )
@@ -6834,7 +7045,7 @@ impl Explorer {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("Enter で確定 / 空にして確定すると削除 / Esc でキャンセル"),
             );
         Some(
@@ -7390,6 +7601,7 @@ impl Explorer {
 
     fn search_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
         let input = self.search.input.as_ref()?;
+        let p = self.palette;
         let hint = if self.load.is_loading() {
             "検索中…"
         } else {
@@ -7406,9 +7618,9 @@ impl Explorer {
                     .rounded_md()
                     .text_xs()
                     .cursor_pointer()
-                    .when(active, |button| button.bg(rgb(C_SURFACE)))
-                    .text_color(if active { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
-                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .when(active, |button| button.bg(rgb(p.surface)))
+                    .text_color(if active { rgb(p.text) } else { rgb(p.subtext) })
+                    .hover(|style| style.bg(rgb(p.surface)))
                     .child(label)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         if this.search.mode == mode {
@@ -7437,9 +7649,9 @@ impl Explorer {
                     .rounded_md()
                     .text_xs()
                     .cursor_pointer()
-                    .when(active, |button| button.bg(rgb(C_SURFACE)))
-                    .text_color(if active { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
-                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .when(active, |button| button.bg(rgb(p.surface)))
+                    .text_color(if active { rgb(p.text) } else { rgb(p.subtext) })
+                    .hover(|style| style.bg(rgb(p.surface)))
                     .child(scope.label())
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         if this.search.scope == scope {
@@ -7465,9 +7677,9 @@ impl Explorer {
                     .rounded_md()
                     .text_xs()
                     .cursor_pointer()
-                    .when(active, |button| button.bg(rgb(C_SURFACE)))
-                    .text_color(if active { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
-                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .when(active, |button| button.bg(rgb(p.surface)))
+                    .text_color(if active { rgb(p.text) } else { rgb(p.subtext) })
+                    .hover(|style| style.bg(rgb(p.surface)))
                     .child(label)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.search.kind = kind;
@@ -7480,7 +7692,7 @@ impl Explorer {
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(div().text_xs().text_color(rgb(C_MUTED)).child("拡張子:"))
+                .child(div().text_xs().text_color(rgb(p.muted)).child("拡張子:"))
                 .child(div().w(px(110.0)).child(Input::new(ext)))
         });
         let name_input = self.search.name_filter.as_ref().map(|input| {
@@ -7488,7 +7700,7 @@ impl Explorer {
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(div().text_xs().text_color(rgb(C_MUTED)).child("名前:"))
+                .child(div().text_xs().text_color(rgb(p.muted)).child("名前:"))
                 .child(div().w(px(110.0)).child(Input::new(input)))
         });
         Some(
@@ -7498,17 +7710,17 @@ impl Explorer {
                 .gap_2()
                 .px_3()
                 .py_1()
-                .bg(rgb(C_MANTLE))
+                .bg(rgb(p.mantle))
                 .border_b_1()
-                .border_color(rgb(C_SURFACE))
-                .child(div().text_sm().text_color(rgb(C_SUBTEXT)).child("検索:"))
+                .border_color(rgb(p.surface))
+                .child(div().text_sm().text_color(rgb(p.subtext)).child("検索:"))
                 .child(div().flex_1().child(Input::new(input)))
                 .child(modes)
                 .child(scopes)
                 .children((self.search.mode == SearchMode::Name).then_some(kinds))
                 .children(extension_input)
                 .children(name_input)
-                .child(div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
+                .child(div().text_xs().text_color(rgb(p.muted)).child(hint)),
         )
     }
 
@@ -7518,19 +7730,20 @@ impl Explorer {
         if !input.read(cx).value().is_empty() || self.settings.recent_searches.is_empty() {
             return None;
         }
+        let p = self.palette;
         let mut row = div()
             .flex()
             .items_center()
             .gap_2()
             .px_3()
             .py_1()
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(p.mantle))
             .border_b_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(p.surface))
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("最近の検索:"),
             );
         for query in self.settings.recent_searches.iter().take(8) {
@@ -7541,11 +7754,11 @@ impl Explorer {
                     .px_2()
                     .py_0p5()
                     .rounded_md()
-                    .bg(rgb(C_BASE))
+                    .bg(rgb(p.base))
                     .text_xs()
-                    .text_color(rgb(C_SUBTEXT))
+                    .text_color(rgb(p.subtext))
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                    .hover(|style| style.bg(rgb(p.surface)).text_color(rgb(p.text)))
                     .child(value.clone())
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         if let Some(input) = this.search.input.clone() {
@@ -7625,16 +7838,17 @@ impl Explorer {
         // Both fields live only while the search bar is open.
         self.search.input.as_ref()?;
         let name_input = self.search.save_name.as_ref()?;
+        let p = self.palette;
         let mut row = div()
             .flex()
             .items_center()
             .gap_2()
             .px_3()
             .py_1()
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(p.mantle))
             .border_b_1()
-            .border_color(rgb(C_SURFACE))
-            .child(div().text_xs().text_color(rgb(C_MUTED)).child("保存検索:"))
+            .border_color(rgb(p.surface))
+            .child(div().text_xs().text_color(rgb(p.muted)).child("保存検索:"))
             .child(div().w(px(110.0)).child(Input::new(name_input)))
             .child(
                 Button::new("save-search")
@@ -7655,11 +7869,11 @@ impl Explorer {
                         .px_2()
                         .py_0p5()
                         .rounded_md()
-                        .bg(rgb(C_BASE))
+                        .bg(rgb(p.base))
                         .text_xs()
-                        .text_color(rgb(C_SUBTEXT))
+                        .text_color(rgb(p.subtext))
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                        .hover(|style| style.bg(rgb(p.surface)).text_color(rgb(p.text)))
                         .child(caption)
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.recall_saved_search(&recall_name, window, cx);
@@ -7673,9 +7887,9 @@ impl Explorer {
                         .py_0p5()
                         .rounded_md()
                         .text_xs()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(p.muted))
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(C_SURFACE)).text_color(rgb(C_RED)))
+                        .hover(|style| style.bg(rgb(p.surface)).text_color(rgb(p.red)))
                         .child("×")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
                             this.delete_saved_search(&delete_name, cx);
@@ -8006,6 +8220,7 @@ impl Explorer {
         } else {
             key.label()
         };
+        let p = self.palette;
         let base = div()
             .id(id)
             .aria_label(format!("{} で並び替え", label))
@@ -8014,8 +8229,8 @@ impl Explorer {
             .items_center()
             .px_2()
             .cursor_pointer()
-            .text_color(if active { rgb(C_TEXT) } else { rgb(C_MUTED) })
-            .hover(|style| style.text_color(rgb(C_TEXT)));
+            .text_color(if active { rgb(p.text) } else { rgb(p.muted) })
+            .hover(|style| style.text_color(rgb(p.text)));
         let base = match width {
             Some(width) => base.w(px(width)).text_right(),
             None => base.flex_1(),
@@ -8028,17 +8243,18 @@ impl Explorer {
     }
 
     fn sort_header(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
         div()
             .flex()
             .items_center()
             .gap_2()
             .px_3()
             .h(px(26.0))
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(p.mantle))
             .border_b_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(p.surface))
             .text_xs()
-            .text_color(rgb(C_MUTED))
+            .text_color(rgb(p.muted))
             .child(div().w(px(18.0)))
             .child(self.sort_header_cell(SortKey::Name, None, cx))
             .child(self.sort_header_cell(SortKey::Kind, Some(90.0), cx))
@@ -8054,10 +8270,11 @@ impl Explorer {
             self.all_entries.len(),
             self.entries.len(),
         )?;
+        let p = self.palette;
         let color = if self.load.error_message().is_some() {
-            C_RED
+            p.red
         } else {
-            C_MUTED
+            p.muted
         };
         Some(
             div()
@@ -8078,7 +8295,7 @@ impl Explorer {
                         .gap_1()
                         .child(div().text_sm().text_color(rgb(color)).child(message))
                         .children(
-                            hint.map(|hint| div().text_xs().text_color(rgb(C_MUTED)).child(hint)),
+                            hint.map(|hint| div().text_xs().text_color(rgb(p.muted)).child(hint)),
                         ),
                 ),
         )
@@ -8106,17 +8323,28 @@ impl Explorer {
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
+        let p = this.palette;
+        // `drag_over` closures borrow their color by reference; capture plain
+        // `u32` copies so they do not outlive the palette local.
+        let drag_blue = p.blue;
         let (icon, icon_color) = if this.view == ViewSource::Trash {
-            (IconName::Trash, C_MUTED)
+            (IconName::Trash, p.muted)
         } else {
             (
                 icon_for_entry(&entry),
                 if entry.is_symlink {
-                    C_MUTED
+                    p.muted
                 } else {
-                    kind_color(kind_for_entry(&entry))
+                    p.kind_color(kind_for_entry(&entry))
                 },
             )
+        };
+        // Resolve the full-colour system icon up front, before any render
+        // closure captures `this`. Trash rows keep the Lucide Trash icon.
+        let system_icon_path = if this.view == ViewSource::Trash {
+            None
+        } else {
+            this.system_icon_resolver.icon_path_for_entry(&entry, 16)
         };
 
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -8192,22 +8420,22 @@ impl Explorer {
                 .h(px(28.0))
                 .text_sm()
                 .bg(if selected {
-                    rgb(C_OVERLAY)
+                    rgb(p.overlay)
                 } else if focused {
-                    rgb(0x252537)
+                    rgb(p.focus)
                 } else {
-                    rgb(C_BASE)
+                    rgb(p.base)
                 })
                 // U-02/U-03: the keyboard cursor gets a distinct high-contrast
                 // left border. It is independent of `selected`, so the cursor
                 // stays visible inside a multi-selection and differs from hover.
-                .when(focused, |row| row.border_l_2().border_color(rgb(C_BLUE)))
+                .when(focused, |row| row.border_l_2().border_color(rgb(p.blue)))
                 .cursor_pointer()
                 .hover(|style| {
                     style.bg(if selected {
-                        rgb(C_OVERLAY)
+                        rgb(p.overlay)
                     } else {
-                        rgb(0x252537)
+                        rgb(p.focus)
                     })
                 })
                 .on_click(click)
@@ -8242,8 +8470,8 @@ impl Explorer {
                     ))
                     // Visualise a valid destination while either kind of drag
                     // hovers it, so the drop target is obvious before release.
-                    .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(rgb(C_BLUE)))
-                    .drag_over::<Vec<PathBuf>>(|style, _, _, _| style.bg(rgb(C_BLUE)))
+                    .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(rgb(drag_blue)))
+                    .drag_over::<Vec<PathBuf>>(move |style, _, _, _| style.bg(rgb(drag_blue)))
                 })
                 // `.context_menu` wraps the element in `ContextMenu`, which no
                 // longer exposes `tooltip`, so attach the tooltip first.
@@ -8255,11 +8483,21 @@ impl Explorer {
                 })
                 .context_menu(context_menu)
                 .child(
-                    div()
-                        .w(px(18.0))
-                        .flex()
-                        .justify_center()
-                        .child(Icon::new(icon).text_color(rgb(icon_color))),
+                    div().w(px(18.0)).flex().justify_center().child(
+                        match system_icon_path.as_deref() {
+                            Some(path) => gpui_kit::img(path)
+                                .size(px(18.0))
+                                .with_fallback(move || {
+                                    Icon::new(icon)
+                                        .text_color(rgb(icon_color))
+                                        .into_any_element()
+                                })
+                                .into_any_element(),
+                            None => Icon::new(icon)
+                                .text_color(rgb(icon_color))
+                                .into_any_element(),
+                        },
+                    ),
                 )
                 .child(
                     // `tooltip` needs an interactive (Stateful) element, hence
@@ -8278,7 +8516,7 @@ impl Explorer {
                         .w(px(90.0))
                         .text_xs()
                         .truncate()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(p.muted))
                         .child(if this.view == ViewSource::Trash {
                             "—".to_string()
                         } else {
@@ -8290,7 +8528,7 @@ impl Explorer {
                         .w(px(90.0))
                         .text_xs()
                         .text_right()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(p.muted))
                         .child(if entry.is_dir || this.view == ViewSource::Trash {
                             "-".to_string()
                         } else {
@@ -8302,7 +8540,7 @@ impl Explorer {
                         .w(px(150.0))
                         .text_xs()
                         .text_right()
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(p.muted))
                         .child(human_datetime(entry.modified)),
                 )
                 .into_any_element(),
@@ -8358,17 +8596,28 @@ impl Explorer {
         let selected = this.selection.contains(&entry.path);
         let focused = this.selected == index;
         let is_dir = entry.is_dir;
+        let p = this.palette;
+        // `drag_over` closures borrow their color by reference; capture plain
+        // `u32` copies so they do not outlive the palette local.
+        let drag_blue = p.blue;
         let (icon, icon_color) = if this.view == ViewSource::Trash {
-            (IconName::Trash, C_MUTED)
+            (IconName::Trash, p.muted)
         } else {
             (
                 icon_for_entry(&entry),
                 if entry.is_symlink {
-                    C_MUTED
+                    p.muted
                 } else {
-                    kind_color(kind_for_entry(&entry))
+                    p.kind_color(kind_for_entry(&entry))
                 },
             )
+        };
+        // Resolve the full-colour system icon up front, before any render
+        // closure captures `this`. Trash rows keep the Lucide Trash icon.
+        let system_icon_path = if this.view == ViewSource::Trash {
+            None
+        } else {
+            this.system_icon_resolver.icon_path_for_entry(&entry, 48)
         };
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_handle.focus(window, cx);
@@ -8435,21 +8684,21 @@ impl Explorer {
                 .justify_center()
                 .gap_1()
                 .bg(if selected {
-                    rgb(C_OVERLAY)
+                    rgb(p.overlay)
                 } else if focused {
-                    rgb(0x252537)
+                    rgb(p.focus)
                 } else {
-                    rgb(C_BASE)
+                    rgb(p.base)
                 })
                 // U-02/U-03: same focus indicator as the list row (independent
                 // of `selected` so it is visible inside a multi-selection).
-                .when(focused, |cell| cell.border_l_2().border_color(rgb(C_BLUE)))
+                .when(focused, |cell| cell.border_l_2().border_color(rgb(p.blue)))
                 .cursor_pointer()
                 .hover(|style| {
                     style.bg(if selected {
-                        rgb(C_OVERLAY)
+                        rgb(p.overlay)
                     } else {
-                        rgb(0x252537)
+                        rgb(p.focus)
                     })
                 })
                 .on_click(click)
@@ -8479,15 +8728,25 @@ impl Explorer {
                             this.drop_internal_into(paths.clone(), target.clone(), cx);
                         },
                     ))
-                    .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(rgb(C_BLUE)))
-                    .drag_over::<Vec<PathBuf>>(|style, _, _, _| style.bg(rgb(C_BLUE)))
+                    .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(rgb(drag_blue)))
+                    .drag_over::<Vec<PathBuf>>(move |style, _, _, _| style.bg(rgb(drag_blue)))
                 })
                 .context_menu(context_menu)
-                .child(
-                    div()
+                .child(match system_icon_path.as_deref() {
+                    Some(path) => gpui_kit::img(path)
+                        .size(px(48.0))
+                        .with_fallback(move || {
+                            div()
+                                .text_2xl()
+                                .child(Icon::new(icon).text_color(rgb(icon_color)))
+                                .into_any_element()
+                        })
+                        .into_any_element(),
+                    None => div()
                         .text_2xl()
-                        .child(Icon::new(icon).text_color(rgb(icon_color))),
-                )
+                        .child(Icon::new(icon).text_color(rgb(icon_color)))
+                        .into_any_element(),
+                })
                 .child(
                     div()
                         .w_full()
@@ -8501,21 +8760,22 @@ impl Explorer {
     }
 
     fn sidebar(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
         let sidebar = div()
             .w(px(SIDEBAR_WIDTH_PX))
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(p.mantle))
             .border_r_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(p.surface))
             .py_2()
             .child(
                 div()
                     .px_3()
                     .py_1()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("場所"),
             );
         // U-16: nine places plus bookmarks/recent/drives can exceed the window
@@ -8551,8 +8811,8 @@ impl Explorer {
                 .items_center()
                 .gap_2()
                 .text_sm()
-                .text_color(if existing { rgb(C_SUBTEXT) } else { rgb(C_DIM) })
-                .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                .text_color(if existing { rgb(p.subtext) } else { rgb(p.dim) })
+                .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
                 .when(!existing, |row| {
                     row.tooltip(move |window, cx| {
                         Tooltip::new("フォルダがありません（F5 で再確認）").build(window, cx)
@@ -8563,7 +8823,7 @@ impl Explorer {
             if is_trash {
                 row = row
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .hover(|style| style.bg(rgb(p.surface)))
                     .on_click(cx.listener(|this, _event, window, cx| {
                         this.focus_handle.focus(window, cx);
                         this.enter_trash(cx);
@@ -8571,7 +8831,7 @@ impl Explorer {
             } else if let Some(target) = place.path.clone().filter(|_| existing) {
                 row = row
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .hover(|style| style.bg(rgb(p.surface)))
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.focus_handle.focus(window, cx);
                         this.navigate_to(target.clone(), cx);
@@ -8585,7 +8845,7 @@ impl Explorer {
                     .px_3()
                     .py_1()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("ブックマーク"),
             );
             for (index, path) in self.bookmarks.iter().enumerate() {
@@ -8604,10 +8864,10 @@ impl Explorer {
                         .items_center()
                         .gap_2()
                         .text_sm()
-                        .text_color(rgb(C_SUBTEXT))
-                        .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                        .text_color(rgb(p.subtext))
+                        .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(C_SURFACE)))
+                        .hover(|style| style.bg(rgb(p.surface)))
                         .on_click(cx.listener(move |this, _event, window, cx| {
                             this.focus_handle.focus(window, cx);
                             this.navigate_to(target.clone(), cx);
@@ -8624,7 +8884,7 @@ impl Explorer {
                     .px_3()
                     .py_1()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("最近"),
             );
             for (index, path) in recent.iter().enumerate() {
@@ -8643,10 +8903,10 @@ impl Explorer {
                         .items_center()
                         .gap_2()
                         .text_sm()
-                        .text_color(rgb(C_SUBTEXT))
-                        .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                        .text_color(rgb(p.subtext))
+                        .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(C_SURFACE)))
+                        .hover(|style| style.bg(rgb(p.surface)))
                         .on_click(cx.listener(move |this, _event, window, cx| {
                             this.focus_handle.focus(window, cx);
                             this.navigate_to(target.clone(), cx);
@@ -8662,7 +8922,7 @@ impl Explorer {
                     .px_3()
                     .py_1()
                     .text_xs()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("ドライブ"),
             );
             for (index, mount) in self.mounts.iter().enumerate() {
@@ -8691,10 +8951,10 @@ impl Explorer {
                         .items_center()
                         .gap_2()
                         .text_sm()
-                        .text_color(rgb(C_SUBTEXT))
-                        .when(active, |row| row.bg(rgb(C_SURFACE)).text_color(rgb(C_TEXT)))
+                        .text_color(rgb(p.subtext))
+                        .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(C_SURFACE)))
+                        .hover(|style| style.bg(rgb(p.surface)))
                         .on_click(cx.listener(move |this, _event, window, cx| {
                             this.focus_handle.focus(window, cx);
                             this.navigate_to(target.clone(), cx);
@@ -8709,6 +8969,7 @@ impl Explorer {
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
         let mut breadcrumb = div()
             .flex()
             .items_center()
@@ -8740,7 +9001,7 @@ impl Explorer {
                         .id(("breadcrumb-sep", index))
                         .aria_label("階層の区切り")
                         .text_xs()
-                        .text_color(rgb(C_DIM))
+                        .text_color(rgb(p.dim))
                         .child("›"),
                 );
             }
@@ -8754,10 +9015,10 @@ impl Explorer {
                     .rounded_sm()
                     .text_sm()
                     .truncate()
-                    .text_color(if is_last { rgb(C_TEXT) } else { rgb(C_SUBTEXT) })
+                    .text_color(if is_last { rgb(p.text) } else { rgb(p.subtext) })
                     .when(is_last, |cell| cell.font_weight(FontWeight::SEMIBOLD))
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(C_SURFACE)))
+                    .hover(|style| style.bg(rgb(p.surface)))
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.focus_handle.focus(window, cx);
                         this.navigate_to(path.clone(), cx);
@@ -8890,9 +9151,9 @@ impl Explorer {
             .gap_1()
             .px_3()
             .py_1()
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(p.mantle))
             .border_b_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(p.surface))
             .child(back)
             .child(forward)
             .child(up)
@@ -8908,6 +9169,7 @@ impl Explorer {
     }
 
     fn status_bar(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
         let hidden_count = self.all_entries.len().saturating_sub(self.entries.len());
         // U-10: a long primary status eats the bar; the pure helper drops the
         // lowest-priority secondary slots first (STATUS_PRIORITY tail: 監視状態).
@@ -8951,16 +9213,16 @@ impl Explorer {
                 div()
                     .max_w(px(520.0))
                     .truncate()
-                    .text_color(rgb(C_SUBTEXT))
+                    .text_color(rgb(p.subtext))
                     .child(if self.view == ViewSource::Trash {
                         "ゴミ箱".to_string()
                     } else {
                         display_path(&self.cwd)
                     }),
             )
-            .child(div().text_color(rgb(C_DIM)).child("|"))
+            .child(div().text_color(rgb(p.dim)).child("|"))
             .child(format!("{} 件", self.entries.len()))
-            .child(div().text_color(rgb(C_MUTED)).child(selection_status_text(
+            .child(div().text_color(rgb(p.muted)).child(selection_status_text(
                 self.selection.len(),
                 selection_detail.as_deref(),
                 self.implicit_selection,
@@ -8973,12 +9235,12 @@ impl Explorer {
             .truncate()
             .child(if let Some(error) = self.load.error_message() {
                 div()
-                    .text_color(rgb(C_RED))
+                    .text_color(rgb(p.red))
                     .child(format!("{STATUS_ERROR_PREFIX}{error}"))
                     .into_any_element()
             } else if self.load.is_loading() {
                 div()
-                    .text_color(rgb(C_YELLOW))
+                    .text_color(rgb(p.yellow))
                     .child(LOADING)
                     .into_any_element()
             } else if !self.status.is_empty() {
@@ -8990,7 +9252,7 @@ impl Explorer {
                 div()
                     .min_w_0()
                     .truncate()
-                    .text_color(rgb(status_color(&self.status)))
+                    .text_color(rgb(self.palette.status_color(&self.status)))
                     .child(self.status.clone())
                     .into_any_element()
             } else {
@@ -9011,20 +9273,20 @@ impl Explorer {
                             .w(px(120.0))
                             .h(px(5.0))
                             .rounded_full()
-                            .bg(rgb(C_SURFACE))
+                            .bg(rgb(p.surface))
                             .flex()
                             .child(
                                 div()
                                     .h_full()
                                     .rounded_full()
-                                    .bg(rgb(C_BLUE))
+                                    .bg(rgb(p.blue))
                                     .w(px(120.0 * fraction as f32)),
                             ),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(C_MUTED))
+                            .text_color(rgb(p.muted))
                             .child(format!("{:.0}%", fraction * 100.0)),
                     )
                     .into_any_element()
@@ -9038,7 +9300,7 @@ impl Explorer {
                 {
                     // Search results were narrowed by the kind/extension filter.
                     div()
-                        .text_color(rgb(C_SUBTEXT))
+                        .text_color(rgb(p.subtext))
                         .child(format!("除外 {hidden_count} 件"))
                         .into_any_element()
                 } else if visible_slots.contains(&SecondarySlot::HiddenCount)
@@ -9046,7 +9308,7 @@ impl Explorer {
                     && !self.settings.show_hidden
                 {
                     div()
-                        .text_color(rgb(C_SUBTEXT))
+                        .text_color(rgb(p.subtext))
                         .child(format!("隠し {hidden_count} 件"))
                         .into_any_element()
                 } else {
@@ -9061,9 +9323,9 @@ impl Explorer {
                 } else {
                     div()
                         .id("undo-counter")
-                        .text_color(rgb(C_MUTED))
+                        .text_color(rgb(p.muted))
                         .cursor_pointer()
-                        .hover(|style| style.text_color(rgb(C_TEXT)))
+                        .hover(|style| style.text_color(rgb(p.text)))
                         .child(format!(
                             "元に戻す {} / やり直す {}",
                             self.undo.undo_len(),
@@ -9080,20 +9342,20 @@ impl Explorer {
                 div().into_any_element()
             } else if self.view == ViewSource::Trash {
                 div()
-                    .text_color(rgb(C_MUTED))
+                    .text_color(rgb(p.muted))
                     .child("ゴミ箱（自動更新なし）")
                     .into_any_element()
             } else if self.watcher.is_supported() {
                 if let Some(reason) = self.watcher.last_error() {
                     div()
-                        .text_color(rgb(C_YELLOW))
+                        .text_color(rgb(p.yellow))
                         .child(format!(
                             "{STATUS_WATCH_PREFIX}{STATUS_WATCH_PARTIAL}{reason}"
                         ))
                         .into_any_element()
                 } else {
                     div()
-                        .text_color(rgb(C_SUBTEXT))
+                        .text_color(rgb(p.subtext))
                         .child(format!(
                             "{STATUS_WATCH_PREFIX}{}{STATUS_WATCH_COUNT_SUFFIX}",
                             self.watcher.watched_paths().len()
@@ -9106,7 +9368,7 @@ impl Explorer {
                     .last_error()
                     .unwrap_or(STATUS_WATCH_INIT_FAILED);
                 div()
-                    .text_color(rgb(C_YELLOW))
+                    .text_color(rgb(p.yellow))
                     .child(format!(
                         "{STATUS_WATCH_PREFIX}{STATUS_WATCH_DISABLED}{reason}"
                     ))
@@ -9116,7 +9378,7 @@ impl Explorer {
             // Hidden before the watch slot when the primary status is long.
             .child(if visible_slots.contains(&SecondarySlot::Version) {
                 div()
-                    .text_color(rgb(C_SUBTEXT))
+                    .text_color(rgb(p.subtext))
                     .child(version_label())
                     .into_any_element()
             } else {
@@ -9129,11 +9391,11 @@ impl Explorer {
             .gap_3()
             .px_3()
             .h(px(26.0))
-            .bg(rgb(C_MANTLE))
+            .bg(rgb(p.mantle))
             .border_t_1()
-            .border_color(rgb(C_SURFACE))
+            .border_color(rgb(p.surface))
             .text_xs()
-            .text_color(rgb(C_MUTED))
+            .text_color(rgb(p.muted))
             .child(left)
             .child(right)
     }
@@ -9142,6 +9404,10 @@ impl Explorer {
 /// Toolbar button: Lucide icon inside a hoverable square.
 /// Toolbar button that shows a persistent active state (e.g. the current
 /// list/grid layout).
+///
+/// These two free helpers have no `Explorer` reference, so their few color
+/// constants stay Mocha-based; the component theme still styles the button
+/// itself, and the surrounding toolbar/sidebar follow the active palette.
 fn icon_button_active(
     id: &'static str,
     label: &'static str,
@@ -9164,6 +9430,8 @@ fn icon_button_active(
         .when(enabled, |button| {
             button
                 .cursor_pointer()
+                // Free function without a palette reference; the component
+                // theme supplies the button's own colors in both modes.
                 .hover(|style| style.bg(rgb(C_SURFACE)))
                 .on_click(on_click)
         })
@@ -9191,6 +9459,8 @@ fn icon_button(
         .when(enabled, |button| {
             button
                 .cursor_pointer()
+                // Free function without a palette reference; the component
+                // theme supplies the button's own colors in both modes.
                 .hover(|style| style.bg(rgb(C_SURFACE)))
                 .on_click(on_click)
         })
@@ -9472,6 +9742,7 @@ impl Render for Explorer {
         let fuzzy_dialog = self.fuzzy_dialog(cx);
         let terminal_command_dialog = self.terminal_command_dialog(cx);
         let keymap_dialog = self.keymap_dialog(cx);
+        let settings_dialog = self.settings_dialog(cx);
 
         let grid_mode = self.settings.view == ViewLayout::Icons;
         // Column headers only make sense in the details list.
@@ -9511,13 +9782,14 @@ impl Render for Explorer {
         .h_full()
         .track_scroll(&self.scroll_handle);
 
+        let p = self.palette;
         let mut list_area = div()
             .relative()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(C_BASE))
+            .bg(rgb(p.base))
             .child(list)
             .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
                 this.drop_external(paths.paths().to_vec(), cx);
@@ -9555,8 +9827,8 @@ impl Render for Explorer {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(C_BASE))
-            .text_color(rgb(C_TEXT))
+            .bg(rgb(p.base))
+            .text_color(rgb(p.text))
             .child(self.toolbar(cx))
             .children(tab_bar)
             .children(search_bar)
@@ -9574,6 +9846,268 @@ impl Render for Explorer {
             .children(fuzzy_dialog)
             .children(terminal_command_dialog)
             .children(keymap_dialog)
+            .children(settings_dialog)
+    }
+}
+
+// ---------------------------------------------------------- settings overlay
+
+use crate::settings_ui::{
+    render_settings_content, SettingsUiAction, SettingsUiHost, SettingsUiPalette, SettingsUiState,
+};
+
+impl Explorer {
+    /// Ctrl+,: build the preferences overlay from the persisted settings and
+    /// subscribe to its search box so typing re-renders the filtered rows.
+    fn open_settings_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_ui.is_some() {
+            return;
+        }
+        let keymap = self
+            .settings
+            .keymap
+            .iter()
+            .map(|(action, chord)| format!("{action}={chord};"))
+            .collect::<String>();
+        let mut state = SettingsUiState::with_initial_values(
+            window,
+            cx,
+            &self.settings.terminal_command,
+            &keymap,
+        );
+        let theme_choice = match self.settings.theme_choice {
+            crate::settings::ThemeChoice::Dark => "dark",
+            crate::settings::ThemeChoice::Light => "light",
+            crate::settings::ThemeChoice::System => "system",
+        };
+        state.set_theme_choice(theme_choice);
+        state.set_view_choice(if self.settings.view == ViewLayout::Icons {
+            "icons"
+        } else {
+            "details"
+        });
+        let sort_choice = match self.settings.sort.key {
+            SortKey::Name => "name",
+            SortKey::Kind => "kind",
+            SortKey::Size => "size",
+            SortKey::Modified => "modified",
+        };
+        state.set_sort_choice(sort_choice);
+        state.set_show_hidden(self.settings.show_hidden);
+        state.observe_inputs(cx);
+        self.settings_ui = Some(state);
+        cx.notify();
+    }
+
+    /// Full-screen dimming layer with the centered preferences card.
+    fn settings_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let state = self.settings_ui.as_ref()?;
+        // The effective (resolved) theme decides which palette the card uses.
+        let palette = if self.settings.theme.is_dark() {
+            SettingsUiPalette::dark()
+        } else {
+            SettingsUiPalette::light()
+        };
+        let theme_options = [
+            ("dark", "ダーク"),
+            ("light", "ライト"),
+            ("system", "システム"),
+        ];
+        let view_options = [("details", "一覧"), ("icons", "アイコン")];
+        let sort_options = [
+            ("name", SortKey::Name.label()),
+            ("kind", SortKey::Kind.label()),
+            ("size", SortKey::Size.label()),
+            ("modified", SortKey::Modified.label()),
+        ];
+        let content = render_settings_content::<Explorer>(
+            &palette,
+            state,
+            &theme_options,
+            &view_options,
+            &sort_options,
+            cx,
+        );
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.on_settings_action(SettingsUiAction::Cancel, cx);
+                }),
+            );
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(backdrop)
+                .child(content),
+        )
+    }
+}
+
+impl SettingsUiHost for Explorer {
+    fn on_settings_action(&mut self, action: SettingsUiAction, cx: &mut Context<Self>) {
+        match action {
+            SettingsUiAction::None => {}
+            SettingsUiAction::Tab(tab) => {
+                if let Some(state) = self.settings_ui.as_mut() {
+                    state.select_tab(tab);
+                    cx.notify();
+                }
+            }
+            SettingsUiAction::SetTheme(value) => {
+                if let Some(state) = self.settings_ui.as_mut() {
+                    state.set_theme_choice(value);
+                    state.dirty = true;
+                    cx.notify();
+                }
+            }
+            SettingsUiAction::SetView(value) => {
+                if let Some(state) = self.settings_ui.as_mut() {
+                    state.set_view_choice(value);
+                    state.dirty = true;
+                    cx.notify();
+                }
+            }
+            SettingsUiAction::SetSort(value) => {
+                if let Some(state) = self.settings_ui.as_mut() {
+                    state.set_sort_choice(value);
+                    state.dirty = true;
+                    cx.notify();
+                }
+            }
+            SettingsUiAction::ToggleHidden(value) => {
+                if let Some(state) = self.settings_ui.as_mut() {
+                    state.set_show_hidden(value);
+                    state.dirty = true;
+                    cx.notify();
+                }
+            }
+            // The GPUI text inputs own their value; only the dirty flag is ours.
+            SettingsUiAction::SetTerminal(_) | SettingsUiAction::SetKeymap(_) => {
+                if let Some(state) = self.settings_ui.as_mut() {
+                    state.dirty = true;
+                    cx.notify();
+                }
+            }
+            SettingsUiAction::Cancel => {
+                self.settings_ui = None;
+                self.focus_list_on_next_render = true;
+                cx.notify();
+            }
+            SettingsUiAction::Save => {
+                // Copy the form values out of the card before mutating settings.
+                let (terminal_raw, keymap_raw, theme_choice, view_choice, sort_choice, show_hidden) = {
+                    let Some(state) = self.settings_ui.as_ref() else {
+                        return;
+                    };
+                    (
+                        state.terminal_value(cx),
+                        state.keymap_value(cx),
+                        state.theme_choice.clone(),
+                        state.view_choice.clone(),
+                        state.sort_choice.clone(),
+                        state.show_hidden,
+                    )
+                };
+
+                // `action=chord;` entries go through the same validator as the
+                // Alt+K dialog, then through the same upsert with eviction.
+                let mut overrides: Vec<(String, String)> = Vec::new();
+                let mut error: Option<String> = None;
+                for entry in keymap_raw
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                {
+                    let normalized = entry.replacen('=', " ", 1);
+                    match parse_keymap_input(&normalized) {
+                        Some(KeymapInput::Bind { action, chord }) => {
+                            if !upsert_keymap_override(&mut overrides, &action, &chord) {
+                                error =
+                                    Some(format!("上書きは最大 {MAX_KEYMAP_OVERRIDES} 件までです"));
+                                break;
+                            }
+                        }
+                        _ => {
+                            error = Some(format!("無効なキーマップ指定: {entry}"));
+                            break;
+                        }
+                    }
+                }
+                if let Some(message) = error {
+                    if let Some(state) = self.settings_ui.as_mut() {
+                        state.error = Some(message);
+                    }
+                    cx.notify();
+                    return;
+                }
+
+                let command = normalize_terminal_command(&terminal_raw).unwrap_or_default();
+                if !self.settings.set_terminal_command(&command) {
+                    if let Some(state) = self.settings_ui.as_mut() {
+                        state.error =
+                            Some("コマンドが長すぎるか、制御文字を含んでいます".to_string());
+                    }
+                    cx.notify();
+                    return;
+                }
+
+                let theme = match theme_choice.as_str() {
+                    "light" => crate::settings::ThemeChoice::Light,
+                    "system" => crate::settings::ThemeChoice::System,
+                    _ => crate::settings::ThemeChoice::Dark,
+                };
+                // Keep the resolved companion field in sync. `Theme::change`
+                // stays with the theme integration; this only persists values.
+                self.settings.theme = crate::settings::resolve_theme(theme, self.settings.theme);
+                self.settings.theme_choice = theme;
+                self.settings.view = if view_choice == "icons" {
+                    ViewLayout::Icons
+                } else {
+                    ViewLayout::Details
+                };
+                self.settings.show_hidden = show_hidden;
+                let sort_key = match sort_choice.as_str() {
+                    "kind" => SortKey::Kind,
+                    "size" => SortKey::Size,
+                    "modified" => SortKey::Modified,
+                    _ => SortKey::Name,
+                };
+                let mut order = self.settings.sort.order();
+                order.key = sort_key;
+                order.ascending = matches!(sort_key, SortKey::Name | SortKey::Kind);
+                self.settings.sort = SortSpec::from_order(order);
+                self.settings.keymap = overrides;
+                self.keymap = KeyMap::from_settings(&self.settings);
+
+                let keep = self.selected_entry().map(|entry| entry.path.clone());
+                if self.view == ViewSource::Search {
+                    self.run_search(cx);
+                } else {
+                    self.rebuild_view(keep);
+                }
+                let saved = self.save_settings();
+                self.settings_ui = None;
+                self.focus_list_on_next_render = true;
+                self.status = if saved {
+                    "設定を保存しました".to_string()
+                } else {
+                    STATUS_SETTINGS_SAVE_FAILED.to_string()
+                };
+                cx.notify();
+            }
+        }
     }
 }
 
@@ -9846,10 +10380,14 @@ fn main() {
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     app.run(|cx: &mut App| {
         gpui_kit::init(cx);
-        // Load once at startup: the persisted theme styles context menus /
-        // prompts, and the same snapshot seeds the restored window frame.
-        let settings = Settings::load();
-        Theme::change(settings.theme, None, cx);
+        // Load once at startup: the persisted *choice* is resolved against the
+        // appearance GPUI observes right now, and the resolved mode styles
+        // context menus / prompts. The same snapshot seeds the window frame.
+        let mut settings = Settings::load();
+        let system_appearance: ThemeMode = cx.window_appearance().into();
+        let effective_theme = resolve_theme(settings.theme_choice, system_appearance);
+        settings.theme = effective_theme;
+        Theme::change(effective_theme, None, cx);
 
         cx.on_window_closed(|cx, _window_id| {
             if cx.windows().is_empty() {
@@ -9882,6 +10420,19 @@ fn main() {
 
         if let Err(error) = gpui_kit::open_window(options, cx, |window, cx| {
             let view = cx.new(Explorer::new);
+            // `Explorer::new` only receives a `Context`, which has no window,
+            // so the OS appearance observer is installed here (window level).
+            // It is inert unless the persisted choice is `System`; keeping the
+            // Subscription on the Explorer ties its lifetime to the view.
+            let appearance_view = view.downgrade();
+            let subscription = window.observe_window_appearance(move |_window, cx| {
+                let _ = appearance_view.update(cx, |this, cx| {
+                    this.on_system_appearance_changed(cx);
+                });
+            });
+            view.update(cx, |this, _cx| {
+                this.appearance_subscription = Some(subscription);
+            });
             let focus_handle = view.read(cx).focus_handle.clone();
             let explorer = view.downgrade();
             // The final frame must be captured here: `on_window_closed` runs
