@@ -11,6 +11,7 @@
 //!   "show_hidden": false,
 //!   "view": "details",
 //!   "theme": "dark",
+//!   "theme_choice": "dark",
 //!   "terminal_command": "konsole",
 //!   "recent_dirs": ["/tmp"],
 //!   "bookmarks": ["/home/koppe"],
@@ -54,7 +55,10 @@
 //! default so loading never fails, but [`Settings::load_from`] then marks the
 //! session read-only with a [`Settings::load_error`] reason. Saving is a no-op
 //! in that state, so the original string is never overwritten by the fallback
-//! (which a newer build may understand).
+//! (which a newer build may understand). The one deliberate exception is the
+//! theme: `"system"` is a recognized preference even though `ThemeMode` cannot
+//! represent it. It is persisted in [`ThemeChoice`] and resolved against the
+//! observed system appearance by the UI ([`resolve_theme`]).
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -225,15 +229,69 @@ fn take_unknown_persisted_enum() -> bool {
     UNKNOWN_ENUM_SEEN.with(|seen| seen.replace(false))
 }
 
-/// Deserialize a persisted theme, falling back to [`default_theme`] for any
-/// unknown name instead of rejecting the whole settings file.
+/// The user's persisted theme preference: follow the desktop (`System`) or
+/// force one of the two concrete `ThemeMode`s.
 ///
-/// `ThemeMode` comes from gpui-component and only has `light` / `dark`; a value
-/// written by a newer build (e.g. `"system"`) must not cause
-/// [`Settings::back_up_unusable`] to discard every other setting. This mirrors
-/// the `#[serde(other)]` fallback used for locally-defined enums without
-/// touching the external crate. The fallback also marks the load read-only via
-/// [`note_unknown_persisted_enum`], so the unknown string is never rewritten.
+/// `ThemeMode` (from gpui-component 0.9.1) only has `Light` and `Dark`, so the
+/// preference needs its own type. The resolved appearance stays in
+/// [`Settings::theme`] for backward compatibility; the UI derives it from this
+/// choice with [`resolve_theme`] once it has observed the window appearance.
+///
+/// `Dark` is the default (rather than `System`) because pre-`theme_choice`
+/// settings files carry their appearance in the `theme` key, historically
+/// `"dark"`. A missing `theme_choice` key is reconciled from that legacy key
+/// on load, so an old file that explicitly chose `"light"` keeps its choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    Light,
+    #[default]
+    Dark,
+    System,
+}
+
+/// Serde fallback for a missing `theme_choice` key. Kept as a named function
+/// so the field-level `#[serde(default = ...)]` is explicit and testable.
+fn default_theme_choice() -> ThemeChoice {
+    ThemeChoice::Dark
+}
+
+/// Deserialize the persisted theme preference.
+///
+/// All three known names (`light` / `dark` / `system`) are accepted; only a
+/// genuinely unknown string falls back to [`default_theme_choice`] and reports
+/// [`note_unknown_persisted_enum`], which makes the load read-only so the
+/// original value survives on disk.
+fn deserialize_theme_choice<'de, D>(deserializer: D) -> Result<ThemeChoice, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        "light" => ThemeChoice::Light,
+        "dark" => ThemeChoice::Dark,
+        "system" => ThemeChoice::System,
+        _ => {
+            note_unknown_persisted_enum();
+            default_theme_choice()
+        }
+    })
+}
+
+/// Deserialize the legacy resolved theme, falling back to [`default_theme`]
+/// for any unknown name instead of rejecting the whole settings file.
+///
+/// `ThemeMode` comes from gpui-component and only has `light` / `dark`. A
+/// value written by a newer build that is *not* a known theme choice (e.g.
+/// `"sepia"`) must not cause [`Settings::back_up_unusable`] to discard every
+/// other setting. This mirrors the `#[serde(other)]` fallback used for
+/// locally-defined enums without touching the external crate. The fallback
+/// also marks the load read-only via [`note_unknown_persisted_enum`], so the
+/// unknown string is never rewritten.
+///
+/// `"system"` is a **known** legacy value: it maps to the dark placeholder
+/// because `ThemeMode` has no system variant, and the actual preference is
+/// carried by [`ThemeChoice::System`]. It must not make the load read-only.
 fn deserialize_theme<'de, D>(deserializer: D) -> Result<ThemeMode, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -242,6 +300,7 @@ where
     Ok(match value.as_str() {
         "dark" => ThemeMode::Dark,
         "light" => ThemeMode::Light,
+        "system" => default_theme(),
         _ => {
             note_unknown_persisted_enum();
             default_theme()
@@ -259,15 +318,49 @@ fn legacy_schema_version() -> u32 {
     LEGACY_SCHEMA_VERSION
 }
 
-/// Pure dark/light cycle used by the `toggle_theme` action.
-///
-/// DESIGN.md §8.2 asks for `dark | light | system`, but gpui-component 0.9.1
-/// `ThemeMode` has only `Light` and `Dark` (no `System` variant), so "system"
-/// cannot be represented and is intentionally not offered; see `app/README.md`.
+/// Legacy two-state cycle on the *resolved* mode, kept so existing callers of
+/// `toggle_theme` keep working. New code should cycle the persisted preference
+/// with [`next_theme_choice`] and derive the effective mode with
+/// [`resolve_theme`]; this function cannot express `System` because
+/// gpui-component 0.9.1 `ThemeMode` has only `Light` and `Dark`.
 pub fn next_theme(current: ThemeMode) -> ThemeMode {
     match current {
         ThemeMode::Dark => ThemeMode::Light,
         ThemeMode::Light => ThemeMode::Dark,
+    }
+}
+
+/// Resolve the effective component theme for a persisted preference.
+///
+/// Pure: no GPUI/`App` access here. The caller passes the currently observed
+/// system appearance (obtained from GPUI's window-appearance APIs), which is
+/// used only for [`ThemeChoice::System`]. The two explicit choices ignore it.
+///
+/// Public UI-facing API: the appearance-observation wiring lands separately
+/// from this persistence change, so allow it to be unused until then (same
+/// pattern as the re-exported personalization constants above).
+#[allow(dead_code)]
+pub fn resolve_theme(choice: ThemeChoice, system: ThemeMode) -> ThemeMode {
+    match choice {
+        ThemeChoice::Light => ThemeMode::Light,
+        ThemeChoice::Dark => ThemeMode::Dark,
+        ThemeChoice::System => system,
+    }
+}
+
+/// Cycle the persisted theme preference: `Dark -> Light -> System -> Dark`.
+///
+/// Unlike [`next_theme`] this keeps `System` representable, so a UI toggle can
+/// offer all three options described in DESIGN.md §8.2.
+///
+/// Public UI-facing API; see the note on [`resolve_theme`] about the separate
+/// wiring of the new toggle/appearance UI.
+#[allow(dead_code)]
+pub fn next_theme_choice(current: ThemeChoice) -> ThemeChoice {
+    match current {
+        ThemeChoice::Dark => ThemeChoice::Light,
+        ThemeChoice::Light => ThemeChoice::System,
+        ThemeChoice::System => ThemeChoice::Dark,
     }
 }
 
@@ -529,13 +622,25 @@ pub struct Settings {
     /// (see the module docs), so saving cannot replace the original string.
     #[serde(deserialize_with = "deserialize_view_layout")]
     pub view: ViewLayout,
-    /// Component theme applied at startup and toggled at runtime. Added after
+    /// Legacy resolved component theme, kept for backward compatibility and
+    /// as the value handed to `Theme::change` by older callers. Added after
     /// v1: older files get `Dark` through the field-level serde default above.
-    /// Only `dark` / `light` are representable in gpui-component 0.9.1; an
-    /// unknown name (e.g. `"system"`) falls back to `Dark` and keeps the load
-    /// read-only so the original name is not rewritten on save.
+    /// `light` / `dark` are represented directly; `"system"` is accepted as a
+    /// valid legacy spelling and maps to the dark placeholder because
+    /// `ThemeMode` has no system variant (the preference lives in
+    /// `theme_choice`). Only a genuinely unknown name falls back to `Dark` and
+    /// keeps the load read-only so the original name is not rewritten on save.
     #[serde(default = "default_theme", deserialize_with = "deserialize_theme")]
     pub theme: ThemeMode,
+    /// Persisted theme preference. Added after the `theme` field: older files
+    /// have no `theme_choice` key, so they get `Dark` here and the loader
+    /// reconciles this value from the legacy `theme` key (including `system`).
+    /// An explicit `theme_choice` key always wins over the legacy one.
+    #[serde(
+        default = "default_theme_choice",
+        deserialize_with = "deserialize_theme_choice"
+    )]
+    pub theme_choice: ThemeChoice,
     /// Terminal emulator command launched with the selected directory as its
     /// working directory. Empty (or whitespace-only after validation) disables
     /// the action. Added after v1: a missing key loads as the portable empty
@@ -596,6 +701,7 @@ impl Default for Settings {
             show_hidden: false,
             view: ViewLayout::Details,
             theme: default_theme(),
+            theme_choice: default_theme_choice(),
             terminal_command: default_terminal_command(),
             keymap: Vec::new(),
             recent_dirs: Vec::new(),
@@ -994,6 +1100,27 @@ impl Settings {
             return Self::back_up_unusable(path, &backup);
         };
         let unknown_enum = take_unknown_persisted_enum();
+        // Backward compatibility: files written before `theme_choice` existed
+        // store the preference only in `theme`. Mirror that legacy key into the
+        // new field when the new key is absent, so an old file that explicitly
+        // chose "light" (or a newer build's "system") keeps its preference.
+        // An explicit `theme_choice` key always wins over the legacy one.
+        // This is done after deserialization because a field deserializer
+        // cannot see its sibling fields.
+        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) {
+            if raw.get("theme_choice").is_none() {
+                if let Some(legacy) = raw.get("theme").and_then(serde_json::Value::as_str) {
+                    settings.theme_choice = match legacy {
+                        "light" => ThemeChoice::Light,
+                        "dark" => ThemeChoice::Dark,
+                        "system" => ThemeChoice::System,
+                        // A genuinely unknown string was already reported by
+                        // `deserialize_theme`; keep its safe fallback choice.
+                        _ => settings.theme_choice,
+                    };
+                }
+            }
+        }
         let loaded_version = settings.version;
         settings.migrate(loaded_version);
         settings.validate();
@@ -1043,6 +1170,17 @@ impl Settings {
     /// unusable paths, de-duplicate and bound every list, clamp `active_tab`
     /// and drop a `last_dir` that no longer exists.
     pub fn validate(&mut self) {
+        // Keep the legacy resolved field consistent with the persisted
+        // preference for the two modes gpui-component can represent, so a
+        // file that only carries `theme_choice` still loads with a usable
+        // `theme`. `System` has no `ThemeMode` variant: the UI resolves it
+        // against the observed appearance via `resolve_theme` at runtime.
+        match self.theme_choice {
+            ThemeChoice::Light => self.theme = ThemeMode::Light,
+            ThemeChoice::Dark => self.theme = ThemeMode::Dark,
+            ThemeChoice::System => {}
+        }
+
         if let Some(dir) = &self.last_dir {
             if !sane_path(dir) || !dir.is_dir() {
                 self.last_dir = None;
@@ -1392,8 +1530,8 @@ mod tests {
     // Explicit imports only: the crate root glob re-exports GPUI's `test`
     // proc-macro which would shadow the built-in `#[test]`.
     use super::{
-        next_theme, Settings, ViewLayout, APP_DIR, LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES,
-        SCHEMA_VERSION,
+        next_theme, next_theme_choice, resolve_theme, Settings, ThemeChoice, ViewLayout, APP_DIR,
+        LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES, SCHEMA_VERSION,
     };
     use crate::model::{SortDir, SortKey, SortSpec};
     use gpui_kit::component::ThemeMode;
@@ -1415,6 +1553,7 @@ mod tests {
         assert!(!settings.show_hidden);
         assert_eq!(settings.view, ViewLayout::Details);
         assert_eq!(settings.theme, ThemeMode::Dark);
+        assert_eq!(settings.theme_choice, ThemeChoice::Dark);
         assert!(settings.last_dir.is_none());
     }
 
@@ -1439,11 +1578,14 @@ mod tests {
     fn theme_defaults_to_dark_even_in_older_settings_files() {
         let loaded = Settings::load_from(&scratch("theme-default-missing.json"));
         // No file exists yet at this path, so the field-level serde default
-        // (not `ThemeMode`'s own Light default) must supply dark.
+        // (not `ThemeMode`'s own Light default) must supply dark. The same
+        // default applies to the new preference field.
         assert_eq!(loaded.theme, ThemeMode::Dark);
+        assert_eq!(loaded.theme_choice, ThemeChoice::Dark);
 
         let parsed: Settings = serde_json::from_str(r#"{"version":1,"view":"icons"}"#).unwrap();
         assert_eq!(parsed.theme, ThemeMode::Dark);
+        assert_eq!(parsed.theme_choice, ThemeChoice::Dark);
         let explicit: Settings = serde_json::from_str(r#"{"version":1,"theme":"light"}"#).unwrap();
         assert_eq!(explicit.theme, ThemeMode::Light);
     }
@@ -1457,6 +1599,101 @@ mod tests {
             ThemeMode::Dark,
             "cycle must return to the starting mode"
         );
+    }
+
+    #[test]
+    fn resolve_theme_maps_choice_and_system_appearance() {
+        // Explicit choices ignore the observed system appearance.
+        assert_eq!(
+            resolve_theme(ThemeChoice::Light, ThemeMode::Dark),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            resolve_theme(ThemeChoice::Dark, ThemeMode::Light),
+            ThemeMode::Dark
+        );
+        // Only `System` follows it.
+        assert_eq!(
+            resolve_theme(ThemeChoice::System, ThemeMode::Light),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            resolve_theme(ThemeChoice::System, ThemeMode::Dark),
+            ThemeMode::Dark
+        );
+    }
+
+    #[test]
+    fn next_theme_choice_cycles_through_all_three_options() {
+        assert_eq!(next_theme_choice(ThemeChoice::Dark), ThemeChoice::Light);
+        assert_eq!(next_theme_choice(ThemeChoice::Light), ThemeChoice::System);
+        assert_eq!(next_theme_choice(ThemeChoice::System), ThemeChoice::Dark);
+        let mut choice = ThemeChoice::Dark;
+        for _ in 0..3 {
+            choice = next_theme_choice(choice);
+        }
+        assert_eq!(choice, ThemeChoice::Dark, "cycle must return to the start");
+    }
+
+    #[test]
+    fn legacy_theme_key_reconciles_theme_choice_on_load() {
+        // Old files never contain `theme_choice`; each legacy spelling must
+        // produce the corresponding preference without making the load
+        // read-only. This is the core backward-compatibility guarantee.
+        for (tag, raw, expected) in [
+            ("dark", r#"{"version":1,"theme":"dark"}"#, ThemeChoice::Dark),
+            (
+                "light",
+                r#"{"version":1,"theme":"light"}"#,
+                ThemeChoice::Light,
+            ),
+            (
+                "system",
+                r#"{"version":1,"theme":"system"}"#,
+                ThemeChoice::System,
+            ),
+        ] {
+            let path = scratch(&format!("legacy-theme-{tag}.json"));
+            let _ = fs::remove_file(&path);
+            fs::write(&path, raw).unwrap();
+            let loaded = Settings::load_from(&path);
+            assert!(!loaded.read_only, "{raw} must load without read-only");
+            assert!(loaded.load_error.is_none(), "{raw}");
+            assert_eq!(loaded.theme_choice, expected, "{raw}");
+            fs::remove_file(&path).unwrap();
+        }
+    }
+
+    #[test]
+    fn explicit_theme_choice_wins_over_legacy_theme_key() {
+        let path = scratch("theme-choice-precedence.json");
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            r#"{"version":1,"theme":"light","theme_choice":"system"}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(!loaded.read_only);
+        assert_eq!(loaded.theme_choice, ThemeChoice::System);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn theme_choice_system_roundtrips_through_json() {
+        let path = scratch("theme-choice-roundtrip.json");
+        let _ = fs::remove_file(&path);
+        let settings = Settings {
+            theme_choice: ThemeChoice::System,
+            ..Settings::default()
+        };
+        settings.save_to(&path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"theme_choice\": \"system\""), "{text}");
+        let loaded = Settings::load_from(&path);
+        assert!(!loaded.read_only);
+        assert_eq!(loaded.theme_choice, ThemeChoice::System);
+        fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -1664,6 +1901,8 @@ mod tests {
             "\"dirs_first\": true",
             "\"show_hidden\": false",
             "\"view\": \"details\"",
+            "\"theme\": \"dark\"",
+            "\"theme_choice\": \"dark\"",
         ] {
             assert!(text.contains(needle), "missing {needle} in:\n{text}");
         }
@@ -2194,9 +2433,9 @@ mod search_history_tests {
 #[cfg(test)]
 mod schema_validation_tests {
     use super::{
-        schema_status, BookmarkLabel, SavedSearch, SchemaStatus, Settings, TabSession, ViewLayout,
-        WindowSession, MAX_BOOKMARKS, MAX_BOOKMARK_LABELS, MAX_HISTORY_ENTRIES, MAX_PATH_BYTES,
-        MAX_QUERY_BYTES, MAX_RECENT_DIRS, MAX_RECENT_SEARCHES, MAX_SAVED_SEARCHES,
+        schema_status, BookmarkLabel, SavedSearch, SchemaStatus, Settings, TabSession, ThemeChoice,
+        ViewLayout, WindowSession, MAX_BOOKMARKS, MAX_BOOKMARK_LABELS, MAX_HISTORY_ENTRIES,
+        MAX_PATH_BYTES, MAX_QUERY_BYTES, MAX_RECENT_DIRS, MAX_RECENT_SEARCHES, MAX_SAVED_SEARCHES,
         MAX_SETTINGS_BYTES, MAX_TABS, MAX_WINDOW_SESSIONS, SCHEMA_VERSION,
     };
     use crate::model::{SortDir, SortKey, SortSpec};
@@ -2735,8 +2974,8 @@ mod schema_validation_tests {
     }
 
     #[test]
-    fn unknown_theme_falls_back_and_keeps_the_file_read_only() {
-        let (dir, path) = setup("unknown-theme");
+    fn system_theme_is_accepted_without_read_only() {
+        let (dir, path) = setup("system-theme");
         fs::write(
             &path,
             serde_json::json!({
@@ -2752,17 +2991,73 @@ mod schema_validation_tests {
         .unwrap();
 
         let loaded = Settings::load_from(&path);
-        assert!(
-            loaded.read_only,
-            "unknown theme must keep the load read-only"
-        );
-        assert!(loaded.load_error.is_some());
+        assert!(!loaded.read_only, "\"system\" is a valid theme choice");
+        assert!(loaded.load_error.is_none());
         assert!(path.exists());
+        assert_eq!(loaded.theme_choice, ThemeChoice::System);
+        // ThemeMode cannot express "system"; the UI resolves the effective
+        // mode with resolve_theme() from the observed window appearance.
         assert_eq!(loaded.theme, ThemeMode::Dark);
         assert!(loaded.show_hidden);
         assert_eq!(loaded.view, ViewLayout::Icons);
         assert_eq!(loaded.sort.key, SortKey::Size);
         assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_theme_string_falls_back_and_keeps_the_file_read_only() {
+        let (dir, path) = setup("unknown-theme-string");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "theme": "sepia",
+                "show_hidden": true,
+                "view": "icons",
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let loaded = Settings::load_from(&path);
+        assert!(
+            loaded.read_only,
+            "a genuinely unknown theme must keep the load read-only"
+        );
+        assert!(loaded.load_error.is_some());
+        assert!(path.exists());
+        assert_eq!(loaded.theme, ThemeMode::Dark);
+        assert_eq!(loaded.theme_choice, ThemeChoice::Dark);
+        assert!(loaded.show_hidden);
+        assert_eq!(loaded.view, ViewLayout::Icons);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_theme_choice_string_falls_back_and_keeps_the_file_read_only() {
+        let (dir, path) = setup("unknown-theme-choice");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "theme_choice": "highcontrast",
+                "show_hidden": true,
+                "view": "icons",
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let loaded = Settings::load_from(&path);
+        assert!(
+            loaded.read_only,
+            "an unknown preference must keep the load read-only"
+        );
+        assert!(loaded.load_error.is_some());
+        assert_eq!(loaded.theme_choice, ThemeChoice::Dark);
+        assert!(loaded.show_hidden);
+        assert_eq!(loaded.view, ViewLayout::Icons);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2796,6 +3091,11 @@ mod schema_validation_tests {
         // Fallbacks apply in memory so the app can still start.
         assert_eq!(loaded.view, ViewLayout::Details);
         assert_eq!(loaded.theme, ThemeMode::Dark);
+        assert_eq!(
+            loaded.theme_choice,
+            ThemeChoice::System,
+            "\"system\" is known, but the other unknown enums still force read-only"
+        );
         assert_eq!(loaded.sort.key, SortKey::Name);
         assert_eq!(loaded.sort.dir, SortDir::Asc);
         assert_eq!(
