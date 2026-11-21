@@ -680,6 +680,20 @@ status: current
 - [x] **I06** 未保存破棄通知に復帰導線なし（strings 通知規約違反） — 対応: loop7-core
   — strings.rs:316
 
+### 優先度: 中（ループ R6・confirmed）
+
+- [ ] **J01** load_tab/navigate_with_mode が settings_write_status を迂回
+  — main.rs:3404,3667
+- [ ] **J02** status_message_constants_are_nonempty が定数を網羅していない
+  — strings.rs:617
+- [ ] **J03** DESIGN §10.1 のテスト数 450 が実 461 と乖離 — DESIGN.md:996
+- [ ] **J04** settings_focus_order の Personalize/Alt+T が未テスト — settings_ui.rs:1164
+- [ ] **J05** next_settings_focus の未知 current+後方が未テスト — settings_ui.rs:510
+- [ ] **J06** 破棄通知の Ctrl+, が既定キーマップで未固定 — main.rs:1204
+- [ ] **J07** F1 ヘルプに Tab/Shift+Tab 巡回が未記載 — strings.rs:165
+- [ ] **J08** 未保存案内文言が2通りに分かれ未集約 — settings_ui.rs:793,939
+- [ ] **J09** review-report の「DESIGN 履歴 v0.1」が解消済みで陳腐化 — review-report.md:636
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
