@@ -602,15 +602,18 @@ const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力し�
 /// existing Alt+S row. Kept as constants so the visible hint can be regression
 /// tested without a GPUI window. F1 is blocked while the settings dialog owns
 /// the keyboard, so each row still names its own key inline even though the
-/// same t/v/h keys are also listed in `strings::HELP_SECTIONS` (N04).
+/// same t/v/h keys are also listed in `strings::HELP_SECTIONS` (N04). The
+/// shared typing-guard suffix (W07) is mirrored by the Alt+S F1 help row and
+/// README; `typing_guard_note_is_synced_across_row_hints_help_and_readme`
+/// keeps all three in step.
 const APPEARANCE_THEME_DESCRIPTION: &str =
-    "アプリ全体の明るさを切り替えます（t でキーボードから切替）";
+    "アプリ全体の明るさを切り替えます（t でキーボードから切替）（検索欄等の入力中は無効）";
 const APPEARANCE_VIEW_DESCRIPTION: &str =
-    "詳細一覧またはアイコン一覧を選択します（v でキーボードから切替）";
+    "詳細一覧またはアイコン一覧を選択します（v でキーボードから切替）（検索欄等の入力中は無効）";
 const FILES_HIDDEN_DESCRIPTION: &str =
-    "名前が . で始まるファイルとフォルダを一覧に含めます（h でキーボードから切替）";
+    "名前が . で始まるファイルとフォルダを一覧に含めます（h でキーボードから切替）（検索欄等の入力中は無効）";
 const FILES_SORT_DESCRIPTION: &str =
-    "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）";
+    "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）（検索欄等の入力中は無効）";
 
 /// Rows of the "主な既定のショートカット" list, kept as one constant so the
 /// Shortcuts tab, F1 help (`strings::HELP_SECTIONS`) and README cannot drift
@@ -1927,6 +1930,67 @@ mod tests {
     }
 
     #[test]
+    fn typing_guard_note_is_synced_across_row_hints_help_and_readme() {
+        // W07: Alt+S / t / v / h are ignored while a settings text input owns
+        // the keystroke. F1 is blocked inside the dialog, so the four inline
+        // row hints, the Alt+S help row and README must all say so.
+        const NOTE: &str = "（検索欄等の入力中は無効）";
+        for description in [
+            APPEARANCE_THEME_DESCRIPTION,
+            APPEARANCE_VIEW_DESCRIPTION,
+            FILES_HIDDEN_DESCRIPTION,
+            FILES_SORT_DESCRIPTION,
+        ] {
+            assert!(
+                description.contains(NOTE),
+                "row description must explain the typing guard: {description}"
+            );
+        }
+        let sort_help = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "設定ダイアログの並び順")
+            .map(|(_, text)| text)
+            .expect("Alt+S help row exists");
+        assert!(
+            sort_help.contains(NOTE),
+            "Alt+S F1 help must explain the typing guard: {sort_help}"
+        );
+        let sort_line = include_str!("../README.md")
+            .lines()
+            .find(|line| line.contains("設定ダイアログの並び順"))
+            .expect("README must document the settings sort key");
+        assert!(
+            sort_line.contains(NOTE),
+            "README Alt+S row must explain the typing guard: {sort_line}"
+        );
+    }
+
+    #[test]
+    fn f1_help_notes_directory_view_only_keys() {
+        // W09: F1 help lists directory-only chords without repeating the
+        // constraint on each row, so the その他 section carries one short
+        // common note. It is a prose row (no chord), hence HELP_KEY_EXCEPTIONS.
+        const NOTE: &str = "一部のキーはディレクトリ表示でのみ有効です";
+        const KEY: &str = "ディレクトリ表示";
+        let other = crate::strings::HELP_SECTIONS
+            .iter()
+            .find(|(title, _)| *title == "その他")
+            .expect("その他 section exists");
+        assert!(
+            other
+                .1
+                .iter()
+                .any(|(key, text)| *key == KEY && text.contains(NOTE)),
+            "その他 must explain the directory-view constraint"
+        );
+        assert!(
+            HELP_KEY_EXCEPTIONS.contains(&KEY),
+            "the prose note must be exempt from the chord mirror"
+        );
+    }
+
+    #[test]
     fn settings_row_shortcut_maps_bare_keys_per_tab() {
         // M08: RadioGroup/Switch rows have no Tab stop and the settings guard
         // swallows the global chords, so each row gets a bare letter scoped to
@@ -2096,6 +2160,7 @@ mod tests {
         "設定ダイアログの並び順",
         "設定ダイアログの行ショートカット",
         "設定ダイアログの操作",
+        "ディレクトリ表示",
         "AGPL-3.0-or-later",
     ];
 

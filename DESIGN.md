@@ -913,9 +913,17 @@ pub fn confirm_and_trash(
 
 ### 8.4 i18n 方針
 
-- P0: **日本語 UI**。ユーザー向け文言はすべて `strings.rs` の `pub const` / 関数に集約（例: `pub const EMPTY_DIR: &str = "このフォルダは空です";`）。リテラルの散在禁止。
+- P0: **日本語 UI**。ユーザー向け文言は `strings.rs` の `pub const` / 関数に
+  集約する方針（例: `pub const EMPTY_DIRECTORY: (&str, &str)`、
+  2 要素タプルで見出しと本文を保持）。リテラルの散在禁止は設計目標。
+  **as-built（2026-11-21 現在）**: ヘルプ・空状態・固定ステータス文言は
+  `strings.rs` に集約済みだが、値埋め込みの `format!` 文言は呼び出し側に残り、
+  集約は部分対応（段階的 i18n）。「すべて集約・リテラル散在禁止」は未達の
+  設計目標である点に注意（[`app/README.md`](app/README.md) の「日本語文言」行、
+  `review-report.md` の Low / Info 要約を参照）。
 - 文言規約: 「フォルダ/ファイル」を使う（「ディレクトリ」はエラー詳細のみ）。敬体は「です/ます」、ボタンは体言止め（「ゴミ箱へ移動」「キャンセル」）。
-- P2: `rust-i18n` 等でキー化（`strings::EMPTY_DIR` → `t!("empty_dir")`）。**キー名は P0 から i18n 前提の snake_case**（例: `error_permission_denied`）。
+- P2: `rust-i18n` 等でキー化（`strings::EMPTY_DIRECTORY` → `t!("empty_directory")`）。
+  **キー名は P0 から i18n 前提の snake_case**（例: `error_permission_denied`）。
 - 日時表示は相対（`3 分前`）を基本、詳細列は `YYYY-MM-DD HH:MM`（ローカルタイム）。現行試作は `chrono` 0.4 を追加してローカル時刻を整形している（P0 は許容。依存を減らすなら `std::time` + 自前変換でも可）。⚠ 相対表示の日本語化は純関数（`format.rs` 相当）で単体テスト。
 
 ---

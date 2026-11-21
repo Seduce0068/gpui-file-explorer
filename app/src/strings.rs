@@ -176,7 +176,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "設定ダイアログの並び順",
-                "ファイルタブで Alt+S により「既定の並び順」を切替",
+                "ファイルタブで Alt+S により「既定の並び順」を切替（検索欄等の入力中は無効）",
             ),
             (
                 "設定ダイアログの行ショートカット",
@@ -194,6 +194,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ),
             ("Esc", "キャンセル / ダイアログを閉じる"),
             ("Ctrl+Q", "終了"),
+            (
+                "ディレクトリ表示",
+                "一部のキーはディレクトリ表示でのみ有効です",
+            ),
         ],
     ),
     (
@@ -343,6 +347,12 @@ pub const STATUS_RENAME_NO_PARENT: &str = "親ディレクトリがありませ�
 /// F2 リネームで同名の宛先が既にあるときの拒否接頭辞（T03）。
 /// 動的な `{path}` が後続するため接頭辞自体を共有する。
 pub const STATUS_RENAME_EXISTS_PREFIX: &str = "既に存在します: ";
+/// ゴミ箱ビューでターミナルを開こうとしたときの拒否接頭辞（W01）。
+/// `STATUS_CANNOT_OPEN_SUFFIX` と連結して完全な通知を組み立てる。
+pub const STATUS_TRASH_NO_TERMINAL_PREFIX: &str = "ゴミ箱ではターミナルを";
+/// プレビュー中のファイルの親ディレクトリが解決できないときの拒否接頭辞（W01）。
+/// 同じく `STATUS_CANNOT_OPEN_SUFFIX` と連結して使用する。
+pub const STATUS_FILE_NO_NEW_TAB_PREFIX: &str = "このファイルは新しいタブで";
 
 // ---------------------------------------------------------------------------
 // 操作完了サマリ
@@ -437,6 +447,9 @@ pub const STATUS_SETTINGS_SAVE_TOO_LARGE: &str =
 pub const STATUS_SETTINGS_SAVE_LOCKED: &str =
     "設定を保存できませんでした（別の gpui-file-explorer が設定を編集中です。少し待ってから再試行してください）";
 pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
+/// 読み取り専用通知に添える回復導線（W08）。読み込み失敗の理由を連結した後ろに
+/// 置き、設定を確認する操作を案内する。
+pub const STATUS_SETTINGS_READ_ONLY_HINT: &str = "（Ctrl+, で設定を確認）";
 /// Esc / 背景クリックで未保存の設定変更を破棄したときの通知（H03）。
 /// フッターの「保存せず閉じる」ボタンと違い、これらの操作は事前の警告がない。
 /// 情報量ルール (F6-36) の「復帰導線」に従い、設定を開き直す操作を併記する（I06）。
@@ -491,6 +504,9 @@ pub const STATUS_SEARCH_EMPTY_QUERY: &str = "検索語が空です";
 /// 検索を開かずに名前フィルタへフォーカスしようとしたときの案内（P03）。
 /// 「先に … してください」は拒否なので warning として色分けする。
 pub const STATUS_SEARCH_NOT_OPEN: &str = "先に Ctrl+F で検索を開いてください";
+/// 検索ビューを開いた直後に表示する入力案内（W02）。開く操作と入力待ちの
+/// 案内を一箇所で管理し、main.rs へのインライン再追加を防ぐ。
+pub const STATUS_SEARCH_PROMPT: &str = "検索語を入力して Enter（Esc で閉じる）";
 
 /// OS がプロパティのメタデータ読み取りを拒否したときの通知（R02）。
 /// 以前は main.rs ローカルだったが、色分類表と一元化するためここへ移動した。
@@ -972,6 +988,8 @@ mod tests {
             STATUS_BOOKMARK_NOT_PERSISTABLE,
             STATUS_RENAME_NO_PARENT,
             STATUS_RENAME_EXISTS_PREFIX,
+            STATUS_TRASH_NO_TERMINAL_PREFIX,
+            STATUS_FILE_NO_NEW_TAB_PREFIX,
             STATUS_TRASH_LOADING,
             STATUS_FOLDER_CREATING,
             STATUS_TARGET_GONE,
@@ -1008,6 +1026,7 @@ mod tests {
             STATUS_SETTINGS_SAVE_TOO_LARGE,
             STATUS_SETTINGS_SAVE_LOCKED,
             STATUS_SETTINGS_READ_ONLY,
+            STATUS_SETTINGS_READ_ONLY_HINT,
             STATUS_SETTINGS_DISCARDED,
             STATUS_SETTINGS_UNSAVED_HINT,
             STATUS_TAB_RESTORED,
@@ -1033,6 +1052,7 @@ mod tests {
             STATUS_RESTORE_EMPTY,
             STATUS_SEARCH_EMPTY_QUERY,
             STATUS_SEARCH_NOT_OPEN,
+            STATUS_SEARCH_PROMPT,
             STATUS_THEME_CHANGED_PREFIX,
             // R02〜R05: strings.rs へ集約した拒否・失敗文言。
             STATUS_ACCESS_DENIED,
@@ -1096,6 +1116,9 @@ mod tests {
             ("STATUS_TARGET_MISSING", STATUS_TARGET_MISSING, "error"),
             ("STATUS_DROP_NOT_FOUND", STATUS_DROP_NOT_FOUND, "error"),
             ("STATUS_NOT_DIRECTORY", STATUS_NOT_DIRECTORY, "error"),
+            // W06: 再スキャン失敗も concrete failure（main.rs の
+            // STATUS_ERROR_MARKERS に登録済み）なので error(red) と明記する。
+            ("STATUS_RESCAN_FAILED", STATUS_RESCAN_FAILED, "error"),
             (
                 "STATUS_SETTINGS_SAVE_FAILED",
                 STATUS_SETTINGS_SAVE_FAILED,
@@ -1227,7 +1250,14 @@ mod tests {
             ),
             // P03: 検索を開く前の操作を求める案内も拒否なので warning。
             ("STATUS_SEARCH_NOT_OPEN", STATUS_SEARCH_NOT_OPEN, "warning"),
+            // W10: 「キャンセルしています…」は操作の進行中を示す一時通知で、
+            // 拒否でも失敗でもない。完了通知 STATUS_CANCELLED は warning だが、
+            // 進行中は成功 green のままとする（下の検証で例外として明示）。
+            ("STATUS_CANCELLING", STATUS_CANCELLING, "success"),
         ];
+        // W10: success 分類を許可するのは一時的な進行中通知だけ。意図なき
+        // green 回帰を防ぐため、拒否語チェックの対象外もこの一覧で固定する。
+        const TRANSIENT_IN_PROGRESS: &[&str] = &["STATUS_CANCELLING"];
         // L06 / N02 / N03 / N08 / N09 の指摘で main.rs 側への登録が必要な定数名
         // （重複・脱落を防止）。全て warning として分類されなければならない。
         const PENDING_WARNING_MARKERS: &[&str] = &[
@@ -1264,22 +1294,35 @@ mod tests {
                 "{name} is not declared in strings.rs"
             );
             assert!(!message.is_empty(), "{name} must not be empty");
+            if TRANSIENT_IN_PROGRESS.contains(name) {
+                // W10: 一時進行通知は「しています…」で終わることを固定し、
+                // 拒否語の検証から除外する。
+                assert!(
+                    message.contains("しています"),
+                    "{name} must be an in-progress notice: {message}"
+                );
+            } else {
+                assert!(
+                    message.contains("ません")
+                        || message.contains("のみ")
+                        || message.contains("未対応")
+                        // N09: 空入力の拒否（「検索語が空です」）。
+                        || message.contains("空です")
+                        // N08: 上限拒否の接頭辞（「タブは最大 {n} 個までです」）。
+                        || message.contains("最大")
+                        // P03: 事前操作を求める案内（「先に Ctrl+F で … してください」）。
+                        || message.contains("ください")
+                        // R02: OS による拒否（「アクセスが拒否されました」）。
+                        || message.contains("拒否されました")
+                        // W06: 具体的な失敗（「再スキャンに失敗しました」）。
+                        || message.contains("失敗しました"),
+                    "{name} is not refusal-worded: {message}"
+                );
+            }
             assert!(
-                message.contains("ません")
-                    || message.contains("のみ")
-                    || message.contains("未対応")
-                    // N09: 空入力の拒否（「検索語が空です」）。
-                    || message.contains("空です")
-                    // N08: 上限拒否の接頭辞（「タブは最大 {n} 個までです」）。
-                    || message.contains("最大")
-                    // P03: 事前操作を求める案内（「先に Ctrl+F で … してください」）。
-                    || message.contains("ください")
-                    // R02: OS による拒否（「アクセスが拒否されました」）。
-                    || message.contains("拒否されました"),
-                "{name} is not refusal-worded: {message}"
-            );
-            assert!(
-                *class == "warning" || *class == "error",
+                *class == "warning"
+                    || *class == "error"
+                    || (*class == "success" && TRANSIENT_IN_PROGRESS.contains(name)),
                 "{name} has unknown class: {class}"
             );
         }
@@ -1727,5 +1770,54 @@ mod tests {
         assert!(STATUS_RESCAN_FAILED.starts_with("再スキャンに失敗しました"));
         assert!(STATUS_RESCAN_FAILED.contains("（F5 で再読込）"));
         assert!(STATUS_RESCAN_FAILED.ends_with('）'));
+    }
+
+    #[test]
+    fn terminal_and_new_tab_refusals_share_the_cannot_open_suffix() {
+        // W01: ゴミ箱でのターミナル拒否と、親ディレクトリが解決できない
+        // 新タブ拒否の前半を定数化し、「開けません」接尾を共有する。
+        assert_eq!(STATUS_TRASH_NO_TERMINAL_PREFIX, "ゴミ箱ではターミナルを");
+        assert_eq!(STATUS_FILE_NO_NEW_TAB_PREFIX, "このファイルは新しいタブで");
+        let trash = format!("{STATUS_TRASH_NO_TERMINAL_PREFIX}{STATUS_CANNOT_OPEN_SUFFIX}");
+        let new_tab = format!("{STATUS_FILE_NO_NEW_TAB_PREFIX}{STATUS_CANNOT_OPEN_SUFFIX}");
+        assert_eq!(trash, "ゴミ箱ではターミナルを開けません");
+        assert_eq!(new_tab, "このファイルは新しいタブで開けません");
+        // 回帰防止: main.rs にインライン字面が戻っていないことを確認する。
+        let source = include_str!("main.rs");
+        for literal in [
+            STATUS_TRASH_NO_TERMINAL_PREFIX,
+            STATUS_FILE_NO_NEW_TAB_PREFIX,
+        ] {
+            assert!(
+                !source.contains(literal),
+                "inline refusal prefix: {literal}"
+            );
+        }
+        assert!(source.contains("STATUS_TRASH_NO_TERMINAL_PREFIX"));
+        assert!(source.contains("STATUS_FILE_NO_NEW_TAB_PREFIX"));
+    }
+
+    #[test]
+    fn search_prompt_has_one_canonical_wording() {
+        // W02: 検索ビューを開いた直後の案内は定数一箇所で定義する。
+        assert_eq!(
+            STATUS_SEARCH_PROMPT,
+            "検索語を入力して Enter（Esc で閉じる）"
+        );
+        let source = include_str!("main.rs");
+        assert!(
+            !source.contains(STATUS_SEARCH_PROMPT),
+            "search prompt must not be inlined in main.rs"
+        );
+        assert!(source.contains("STATUS_SEARCH_PROMPT"));
+    }
+
+    #[test]
+    fn read_only_hint_names_the_settings_shortcut() {
+        // W08: 読み取り専用の理由を表示するとき、設定を確認する導線を
+        // 括弧で添える。呼び出し側の書式は main.rs のテストで固定する。
+        assert_eq!(STATUS_SETTINGS_READ_ONLY_HINT, "（Ctrl+, で設定を確認）");
+        assert!(STATUS_SETTINGS_READ_ONLY_HINT.contains("Ctrl+,"));
+        assert!(STATUS_SETTINGS_READ_ONLY_HINT.ends_with('）'));
     }
 }

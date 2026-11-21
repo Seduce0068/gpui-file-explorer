@@ -640,6 +640,19 @@ fn startup_save_failure_status(settings: &Settings) -> String {
         .unwrap_or_else(|| STATUS_SETTINGS_SAVE_FAILED.to_string())
 }
 
+/// Read-only notice shared by startup and every skipped write (W08). When a
+/// corrupt/unsupported settings file was rejected, `load_error` holds the
+/// concrete reason; showing only the generic notice hides why the file is
+/// read-only and what the user can do about it (F6-36: 理由 + 復帰導線).
+fn settings_read_only_status(settings: &Settings) -> String {
+    match settings.load_error.as_deref() {
+        Some(reason) if !reason.is_empty() => {
+            format!("{STATUS_SETTINGS_READ_ONLY}: {reason}{STATUS_SETTINGS_READ_ONLY_HINT}")
+        }
+        _ => STATUS_SETTINGS_READ_ONLY.to_string(),
+    }
+}
+
 /// Status shown after a settings write, accounting for skipped writes (F04).
 /// `save()` returns `true` for read-only / ephemeral sessions even though no
 /// file was written, so those sessions must get the dedicated read-only notice
@@ -661,7 +674,7 @@ fn settings_write_status(
         return success;
     }
     if settings.write_was_skipped() {
-        STATUS_SETTINGS_READ_ONLY.to_string()
+        settings_read_only_status(settings)
     } else if !saved {
         // U03: prefer the concrete reason recorded by `save_with_reason`.
         settings_save_error_status(settings.last_save_error.get())
@@ -1901,31 +1914,32 @@ use crate::strings::{
     STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
     STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
     STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-    STATUS_ERROR_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
-    STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX,
-    STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX,
-    STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
-    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
-    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
-    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
-    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PLACE_GONE_HINT,
-    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
-    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_EXISTS_PREFIX,
-    STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT, STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY,
-    STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SAME_DIRECTORY_NO_MOVE,
-    STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
+    STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED,
+    STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
+    STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX,
+    STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
+    STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
+    STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
+    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
+    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
+    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
+    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
+    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT,
+    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
+    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
-    STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
-    STATUS_SETTINGS_SAVE_FAILED, STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE,
-    STATUS_SKIPPED_PREFIX, STATUS_SKIPPED_SUFFIX, STATUS_SPECIAL_FILE_NO_COPY,
-    STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
-    STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
-    STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT,
-    STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED,
-    STATUS_TRASH_LOADING, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
-    STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
-    STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
+    STATUS_SEARCH_PROMPT, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
+    STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_SAVE_FAILED,
+    STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SKIPPED_PREFIX,
+    STATUS_SKIPPED_SUFFIX, STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW,
+    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED,
+    STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
+    STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
+    STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
+    STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
     STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
     STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
     STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
@@ -2926,8 +2940,9 @@ impl Explorer {
             // reason instead of a generic "check the file" notice.
             startup_notices.push(startup_save_failure_status(&this.settings));
         }
-        if let Some(reason) = this.settings.load_error.as_deref() {
-            startup_notices.push(format!("{STATUS_SETTINGS_READ_ONLY}: {reason}"));
+        if this.settings.load_error.is_some() {
+            // W08: 起動時と書き込み時で同じ理由・復帰導線付きの通知を使う。
+            startup_notices.push(settings_read_only_status(&this.settings));
         }
         if let Some(rejected) = rejected_cli_dir {
             startup_notices.push(format!(
@@ -4295,7 +4310,7 @@ impl Explorer {
     /// listing is empty. Trash rows have no filesystem directory to reuse.
     fn open_terminal_for_selection(&mut self, cx: &mut Context<Self>) {
         if self.view == ViewSource::Trash {
-            self.status = format!("ゴミ箱ではターミナルを{STATUS_CANNOT_OPEN_SUFFIX}");
+            self.status = format!("{STATUS_TRASH_NO_TERMINAL_PREFIX}{STATUS_CANNOT_OPEN_SUFFIX}");
             cx.notify();
             return;
         }
@@ -6450,7 +6465,7 @@ impl Explorer {
             return;
         };
         let Some(parent) = preview::preview_parent(&path).map(Path::to_path_buf) else {
-            self.status = format!("このファイルは新しいタブで{STATUS_CANNOT_OPEN_SUFFIX}");
+            self.status = format!("{STATUS_FILE_NO_NEW_TAB_PREFIX}{STATUS_CANNOT_OPEN_SUFFIX}");
             cx.notify();
             return;
         };
@@ -8086,7 +8101,7 @@ impl Explorer {
         self.view = ViewSource::Search;
         self.selection.clear();
         self.selected = 0;
-        self.status = "検索語を入力して Enter（Esc で閉じる）".to_string();
+        self.status = STATUS_SEARCH_PROMPT.to_string();
         self.update_watcher();
         cx.notify();
     }
@@ -11381,8 +11396,8 @@ mod tests {
         parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
         read_properties_snapshot, remove_keymap_override, saved_search_caption,
         saved_search_save_status, search_filter_status, set_view_status, settings_discard_status,
-        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
-        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        settings_read_only_status, settings_row_key_is_bare, settings_save_error_status,
+        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
         settings_validation_status, settings_write_needs_rollback, settings_write_status,
         startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
         terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
@@ -11398,26 +11413,27 @@ mod tests {
         STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
         STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
         STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-        STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER,
-        STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY,
-        STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
-        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
-        STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
-        STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
-        STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
-        STATUS_OP_FAILED_SUFFIX, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
-        STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
-        STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESTORE_EMPTY,
-        STATUS_RESTORE_FAILED, STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY,
-        STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE,
-        STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
+        STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
+        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+        STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
+        STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
+        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_INVALID_PREFIX,
+        STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY,
+        STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
+        STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX,
+        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PREVIEW_ONLY_DIRECTORY,
+        STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED,
+        STATUS_REDO_NO_TARGET, STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED,
+        STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
+        STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
+        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_SAVE_FAILED,
         STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SPECIAL_FILE_NO_COPY,
         STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
         STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_INVALID,
         STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
-        STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED,
-        STATUS_UNDO_MISSING_SUFFIX, STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
-        THEME_LABEL_SYSTEM,
+        STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_TERMINAL_PREFIX,
+        STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WARNING_MARKERS,
+        THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11435,6 +11451,9 @@ mod tests {
         let cases = [
             (wrapped_error.as_str(), C_RED),
             (STATUS_SETTINGS_SAVE_FAILED, C_RED),
+            // W06: 再スキャン失敗は ERROR_MARKERS 登録済みで red（表示は正しいが
+            // 回帰表に欠けていたため、ここで明示的に固定する）。
+            (STATUS_RESCAN_FAILED, C_RED),
             (STATUS_RESTORE_FAILED, C_RED),
             (STATUS_REDO_FAILED, C_RED),
             (STATUS_ACCESS_DENIED, C_RED),
@@ -11485,6 +11504,10 @@ mod tests {
             (STATUS_SEARCH_NOT_OPEN, C_YELLOW),
             // Q03: 「できません」を含むが具体的な拒否通知なので warning(amber)。
             (STATUS_BOOKMARK_NOT_PERSISTABLE, C_YELLOW),
+            // W10: 「キャンセルしています…」は進行中の一時通知で拒否ではない。
+            // 完了通知 STATUS_CANCELLED（黄色）と意図的に色を分け、成功 green
+            // のままとする。strings.rs の分類表と同じ判断をここでも固定する。
+            (STATUS_CANCELLING, C_GREEN),
             (STATUS_CHANGED, C_GREEN),
             // Q02: 同一フォルダへの操作は拒否ではなく不要な操作を行わない
             // 情報通知なので、従来どおり成功 green のまま。
@@ -11535,12 +11558,16 @@ mod tests {
             format!("ターミナルを{STATUS_CANNOT_OPEN_SUFFIX}{STATUS_TERMINAL_DISABLED_HINT}")
         );
         assert_eq!(status_color(&disabled), C_YELLOW, "{disabled}");
+        // W01: 2 箇所の拒否接頭辞も strings.rs の定数から組み立てる。
         for status in [
-            format!("ゴミ箱ではターミナルを{STATUS_CANNOT_OPEN_SUFFIX}"),
-            format!("このファイルは新しいタブで{STATUS_CANNOT_OPEN_SUFFIX}"),
+            format!("{STATUS_TRASH_NO_TERMINAL_PREFIX}{STATUS_CANNOT_OPEN_SUFFIX}"),
+            format!("{STATUS_FILE_NO_NEW_TAB_PREFIX}{STATUS_CANNOT_OPEN_SUFFIX}"),
         ] {
             assert_eq!(status_color(&status), C_YELLOW, "{status}");
         }
+        // W10: 一時進行通知は警告・エラーのどちらのマーカーにも登録しない。
+        assert!(!STATUS_WARNING_MARKERS.contains(&STATUS_CANCELLING));
+        assert!(!STATUS_ERROR_MARKERS.contains(&STATUS_CANCELLING));
         // N02 のマーカー追加で、明示的なエラー接頭辞付き起動エラーが
         // amber に落ちないこと（接頭辞優先）も同時に検証する。
         let cli_error = format!("{STATUS_ERROR_PREFIX}{STATUS_INVALID_CLI_DIR}");
@@ -13491,6 +13518,45 @@ mod tests {
                 STATUS_SETTINGS_READ_ONLY,
                 "skipped writes take precedence over saved=false"
             );
+        }
+    }
+
+    // W08: 読み取り専用の理由が settings.load_error に残っているのに表示が
+    // 「設定を読み取り専用で開きました」だけだと、なぜ書けないのか分からない。
+    // 起動時（V01）と同じ書式で理由と回復導線を併記する。
+    #[test]
+    fn settings_write_status_reports_read_only_reason_and_recovery_hint() {
+        let reason = "設定ファイルが壊れています";
+        let settings = Settings {
+            read_only: true,
+            load_error: Some(reason.to_string()),
+            ..Settings::default()
+        };
+        assert!(settings.write_was_skipped());
+        let status = settings_write_status(
+            &settings,
+            true,
+            true,
+            "ブックマークに追加しました".to_string(),
+        );
+        assert_eq!(
+            status,
+            format!("{STATUS_SETTINGS_READ_ONLY}: {reason}{STATUS_SETTINGS_READ_ONLY_HINT}")
+        );
+        assert!(status.contains(reason), "{status}");
+        assert!(status.contains(STATUS_SETTINGS_READ_ONLY_HINT), "{status}");
+        assert!(!status.contains("ブックマークに追加しました"), "{status}");
+        assert_eq!(status_color(&status), C_YELLOW, "{status}");
+        // 起動時の通知と書き込み時の通知は同じヘルパーから組み立てる。
+        assert_eq!(settings_read_only_status(&settings), status);
+
+        // 理由が空／未設定なら汎用通知に戻し、空の ": " を出さない。
+        for load_error in [Some(String::new()), None] {
+            let plain = Settings {
+                load_error,
+                ..settings.clone()
+            };
+            assert_eq!(settings_read_only_status(&plain), STATUS_SETTINGS_READ_ONLY);
         }
     }
 
