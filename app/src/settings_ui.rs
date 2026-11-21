@@ -315,6 +315,62 @@ fn matches_query(query: &str, keywords: &[&str]) -> bool {
         .any(|candidate| candidate.to_lowercase().contains(&needle))
 }
 
+// Search keyword sets, one per visible row. They are shared by the per-row
+// filter in `render_settings_content` and by `tabs_matching_query`, so a row and
+// the cross-tab hint derived from it can never drift apart.
+const APPEARANCE_THEME_KEYWORDS: &[&str] = &[
+    "テーマ",
+    "theme",
+    "ダーク",
+    "ライト",
+    "システム",
+    "配色",
+    "外観",
+];
+const APPEARANCE_VIEW_KEYWORDS: &[&str] =
+    &["レイアウト", "view", "一覧", "アイコン", "表示", "外観"];
+const FILES_HIDDEN_KEYWORDS: &[&str] = &["隠しファイル", "hidden", "ファイル", "ドットファイル"];
+const FILES_SORT_KEYWORDS: &[&str] = &["並び", "sort", "ファイル", "順序"];
+const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
+    "ショートカット",
+    "キー",
+    "keymap",
+    "キーバインド",
+    "割り当て",
+];
+const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &["既定", "default", "ショートカット", "キー"];
+const TERMINAL_COMMAND_KEYWORDS: &[&str] = &["ターミナル", "terminal", "コマンド", "起動"];
+const PERSONALIZE_PALETTE_KEYWORDS: &[&str] = &["個人化", "パレット", "色", "カラー", "theme"];
+const PERSONALIZE_INFO_KEYWORDS: &[&str] = &["個人化", "情報", "about", "設定", "バージョン"];
+
+/// Every searchable keyword group of a tab, in visible row order.
+fn tab_keyword_groups(tab: SettingsTab) -> &'static [&'static [&'static str]] {
+    match tab {
+        SettingsTab::Appearance => &[APPEARANCE_THEME_KEYWORDS, APPEARANCE_VIEW_KEYWORDS],
+        SettingsTab::Files => &[FILES_HIDDEN_KEYWORDS, FILES_SORT_KEYWORDS],
+        SettingsTab::Shortcuts => &[SHORTCUTS_KEYMAP_KEYWORDS, SHORTCUTS_DEFAULTS_KEYWORDS],
+        SettingsTab::Terminal => &[TERMINAL_COMMAND_KEYWORDS],
+        SettingsTab::Personalize => &[PERSONALIZE_PALETTE_KEYWORDS, PERSONALIZE_INFO_KEYWORDS],
+    }
+}
+
+/// Tabs that contain at least one row matching `query`, in display order.
+///
+/// Pure and independent of any GPUI state, so the overlay can offer a hint when
+/// the active tab has no matches. Like [`matches_query`], an empty (or
+/// whitespace-only) query matches every tab because every row is visible.
+pub fn tabs_matching_query(query: &str) -> Vec<SettingsTab> {
+    SettingsTab::ALL
+        .iter()
+        .copied()
+        .filter(|tab| {
+            tab_keyword_groups(*tab)
+                .iter()
+                .any(|keywords| matches_query(query, keywords))
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Small building blocks
 // ---------------------------------------------------------------------------
@@ -465,45 +521,21 @@ pub fn render_settings_content<V: SettingsUiHost>(
             this.on_settings_action(SettingsUiAction::ToggleHidden(*checked), cx);
         }));
 
-    let show_appearance_theme = matches_query(
-        query,
-        &[
-            "テーマ",
-            "theme",
-            "ダーク",
-            "ライト",
-            "システム",
-            "配色",
-            "外観",
-        ],
-    );
-    let show_appearance_view = matches_query(
-        query,
-        &["レイアウト", "view", "一覧", "アイコン", "表示", "外観"],
-    );
-    let show_files_hidden = matches_query(
-        query,
-        &["隠しファイル", "hidden", "ファイル", "ドットファイル"],
-    );
-    let show_files_sort = matches_query(query, &["並び", "sort", "ファイル", "順序"]);
-    let show_shortcuts_keymap = matches_query(
-        query,
-        &[
-            "ショートカット",
-            "キー",
-            "keymap",
-            "キーバインド",
-            "割り当て",
-        ],
-    );
-    let show_shortcuts_defaults =
-        matches_query(query, &["既定", "default", "ショートカット", "キー"]);
-    let show_terminal_command =
-        matches_query(query, &["ターミナル", "terminal", "コマンド", "起動"]);
-    let show_personalize_palette =
-        matches_query(query, &["個人化", "パレット", "色", "カラー", "theme"]);
-    let show_personalize_info =
-        matches_query(query, &["個人化", "情報", "about", "設定", "バージョン"]);
+    let show_appearance_theme = matches_query(query, APPEARANCE_THEME_KEYWORDS);
+    let show_appearance_view = matches_query(query, APPEARANCE_VIEW_KEYWORDS);
+    let show_files_hidden = matches_query(query, FILES_HIDDEN_KEYWORDS);
+    let show_files_sort = matches_query(query, FILES_SORT_KEYWORDS);
+    let show_shortcuts_keymap = matches_query(query, SHORTCUTS_KEYMAP_KEYWORDS);
+    let show_shortcuts_defaults = matches_query(query, SHORTCUTS_DEFAULTS_KEYWORDS);
+    let show_terminal_command = matches_query(query, TERMINAL_COMMAND_KEYWORDS);
+    let show_personalize_palette = matches_query(query, PERSONALIZE_PALETTE_KEYWORDS);
+    let show_personalize_info = matches_query(query, PERSONALIZE_INFO_KEYWORDS);
+
+    // With a non-empty query, a tab with no matching rows would otherwise
+    // render as a blank column. Work out which tabs do match so we can point
+    // the user at them instead.
+    let matching_tabs = tabs_matching_query(query);
+    let current_tab_has_matches = matching_tabs.contains(&state.tab);
 
     let body = match state.tab {
         SettingsTab::Appearance => {
@@ -674,6 +706,30 @@ pub fn render_settings_content<V: SettingsUiHost>(
         }
     };
 
+    // Replace the blank column with a hint that names the tabs holding matches.
+    let body = if !query.is_empty() && !current_tab_has_matches {
+        let message = if matching_tabs.is_empty() {
+            "該当する設定がありません".to_string()
+        } else {
+            let labels: Vec<&'static str> = matching_tabs.iter().map(|tab| tab.label()).collect();
+            format!(
+                "該当する設定がありません。{} タブに一致があります",
+                labels.join("、")
+            )
+        };
+        div()
+            .w_full()
+            .py_6()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_sm()
+            .text_color(rgb(palette.subtext))
+            .child(message)
+    } else {
+        body
+    };
+
     let header = div()
         .w_full()
         .flex()
@@ -774,7 +830,10 @@ pub fn render_settings_content<V: SettingsUiHost>(
 mod tests {
     // Explicit imports only: the module-level `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in through `use super::*`.
-    use super::{matches_query, selected_index, SettingsTab, SettingsUiAction, SettingsUiPalette};
+    use super::{
+        matches_query, selected_index, tabs_matching_query, SettingsTab, SettingsUiAction,
+        SettingsUiPalette,
+    };
 
     #[test]
     fn tab_labels_are_stable_and_localized() {
@@ -849,5 +908,35 @@ mod tests {
         let action = SettingsUiAction::Tab(SettingsTab::Terminal);
         assert_eq!(action, SettingsUiAction::Tab(SettingsTab::Terminal));
         assert_ne!(action, SettingsUiAction::Cancel);
+    }
+
+    #[test]
+    fn tabs_matching_query_finds_a_keyword_only_in_another_tab() {
+        // "ターミナル" is exclusive to the Terminal tab, so a user searching it
+        // while on Appearance must be told where the match lives.
+        assert_eq!(
+            tabs_matching_query("ターミナル"),
+            vec![SettingsTab::Terminal]
+        );
+        // Case-insensitive English keywords behave the same way.
+        assert_eq!(tabs_matching_query("TERMINAL"), vec![SettingsTab::Terminal]);
+        // One keyword can span several tabs: "theme" is on both Appearance and
+        // Personalize, and the result keeps display order.
+        assert_eq!(
+            tabs_matching_query("theme"),
+            vec![SettingsTab::Appearance, SettingsTab::Personalize]
+        );
+    }
+
+    #[test]
+    fn tabs_matching_query_is_empty_when_no_tab_matches() {
+        assert!(tabs_matching_query("zzzz-存在しない設定").is_empty());
+    }
+
+    #[test]
+    fn tabs_matching_query_returns_every_tab_for_an_empty_query() {
+        // Mirrors `matches_query`: an empty query makes every row visible.
+        assert_eq!(tabs_matching_query(""), SettingsTab::ALL.to_vec());
+        assert_eq!(tabs_matching_query("   "), SettingsTab::ALL.to_vec());
     }
 }

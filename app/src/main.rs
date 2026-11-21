@@ -514,6 +514,14 @@ fn settings_save_status(saved: bool, success: String) -> String {
     }
 }
 
+/// Pure rollback decision shared by the two write paths that preview settings
+/// in memory before persisting them (the settings overlay Save and
+/// `toggle_theme`). A failed write leaves disk at the old values, so the
+/// previewed in-memory values must be discarded to keep both in sync (D13).
+fn settings_write_needs_rollback(saved: bool) -> bool {
+    !saved
+}
+
 /// Status shown after undoing a trash operation. A zero restore count means
 /// nothing came back, so it is reported as a failure (and the caller keeps the
 /// undo entry) instead of claiming a successful "0 件" restore.
@@ -4505,6 +4513,25 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Undo an in-memory settings preview after a failed disk write (D13).
+    /// `snapshot` is the full `Settings` captured before any field was changed,
+    /// so restoring it also covers `theme`, `theme_choice`, `view`,
+    /// `show_hidden`, `sort`, `keymap` and `terminal_command`. The derived
+    /// palette / icon resolver / GPUI theme are restored through the same
+    /// `apply_theme_mode` entry point every theme change uses.
+    fn rollback_settings(&mut self, snapshot: Settings, cx: &mut Context<Self>) {
+        let previous_mode = snapshot.theme;
+        let was_system = snapshot.theme_choice == ThemeChoice::System;
+        self.settings = snapshot;
+        self.keymap = KeyMap::from_settings(&self.settings);
+        self.apply_theme_mode(previous_mode, cx);
+        if was_system {
+            // The preview may have pinned the component theme with
+            // `Theme::change`; a System preference must keep following the OS.
+            Theme::sync_system_appearance(None, cx);
+        }
+    }
+
     /// Re-resolve the preference when the OS switches between light and dark.
     /// The observer is always installed (see `open_window`) but this is a
     /// no-op unless the persisted choice is `System`.
@@ -4524,6 +4551,9 @@ impl Explorer {
     /// Dark. `Settings::theme` keeps the *resolved* mode for compatibility;
     /// `theme_choice` is what the next toggle starts from.
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
+        // Snapshot before previewing: if the write fails, disk still holds the
+        // old preference and the live UI must be put back to match it (D13).
+        let snapshot = self.settings.clone();
         let choice = next_theme_choice(self.settings.theme_choice);
         self.settings.theme_choice = choice;
         let system: ThemeMode = cx.window_appearance().into();
@@ -4540,6 +4570,9 @@ impl Explorer {
             self.apply_theme_mode(resolved, cx);
         }
         let saved = self.save_settings();
+        if settings_write_needs_rollback(saved) {
+            self.rollback_settings(snapshot, cx);
+        }
         self.status = if !saved {
             STATUS_SETTINGS_SAVE_FAILED.to_string()
         } else {
@@ -10135,6 +10168,10 @@ impl SettingsUiHost for Explorer {
                 cx.notify();
             }
             SettingsUiAction::Save => {
+                // Snapshot before any preview mutation. A failed write leaves
+                // disk at the old values, so the UI must be put back to match
+                // what the next launch will load (D13).
+                let snapshot = self.settings.clone();
                 // Copy the form values out of the card before mutating settings.
                 let (terminal_raw, keymap_raw, theme_choice, view_choice, sort_choice, show_hidden) = {
                     let Some(state) = self.settings_ui.as_ref() else {
@@ -10238,13 +10275,20 @@ impl SettingsUiHost for Explorer {
                 self.settings.keymap = overrides;
                 self.keymap = KeyMap::from_settings(&self.settings);
 
-                let keep = self.selected_entry().map(|entry| entry.path.clone());
-                if self.view == ViewSource::Search {
-                    self.run_search(cx);
-                } else {
-                    self.rebuild_view(keep);
-                }
+                // Persist before refreshing the list: on failure the rollback
+                // must also leave the visible entries untouched, otherwise the
+                // list would keep the previewed show_hidden/sort values (D13).
                 let saved = self.save_settings();
+                if settings_write_needs_rollback(saved) {
+                    self.rollback_settings(snapshot, cx);
+                } else {
+                    let keep = self.selected_entry().map(|entry| entry.path.clone());
+                    if self.view == ViewSource::Search {
+                        self.run_search(cx);
+                    } else {
+                        self.rebuild_view(keep);
+                    }
+                }
                 self.settings_ui = None;
                 self.focus_list_on_next_render = true;
                 self.status = if saved {
@@ -10628,8 +10672,8 @@ mod tests {
         normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
         pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
         saved_search_caption, saved_search_save_status, search_filter_status, settings_save_status,
-        startup_dir_from, status_color, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
+        settings_write_needs_rollback, startup_dir_from, status_color, summarize_op, tab_label,
+        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, transfer_log_level, transfer_skip_notice,
         trash_batch, trash_delete_status, trash_key_action, trash_redo_cancelled_status,
         trash_undo_status, upsert_keymap_override, validate_cli_dir, version_label,
@@ -12209,6 +12253,14 @@ mod tests {
         );
         // The failure sentinel must actually look like an error in the bar.
         assert_eq!(status_color(&settings_save_status(false, success)), C_RED);
+    }
+
+    // D13: both preview-then-write paths must discard their in-memory changes
+    // exactly when the disk write fails; a successful write keeps the preview.
+    #[test]
+    fn failed_settings_write_triggers_rollback() {
+        assert!(settings_write_needs_rollback(false));
+        assert!(!settings_write_needs_rollback(true));
     }
 
     // F6-49: the personalization wiring uses these pure helpers plus the real
