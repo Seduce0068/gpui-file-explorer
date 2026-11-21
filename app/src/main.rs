@@ -262,8 +262,10 @@ fn search_view_key_allowed(key: &str, ctrl: bool, alt: bool) -> bool {
 
 /// The actions the Search-view allowlist above is meant to reach. Checking the
 /// resolved action (not just the shipped keystroke) means a rebind of one of
-/// them still fires while browsing results (finding 4). Destructive actions
-/// such as trash/restore stay blocked because they are not in this set.
+/// them still fires while browsing results (finding 4). OpenSettings belongs
+/// here too: Ctrl+, must open preferences even while browsing results (L04).
+/// Destructive actions such as trash/restore stay blocked because they are not
+/// in this set.
 fn search_view_action_allowed(action: KeyAction) -> bool {
     matches!(
         action,
@@ -275,6 +277,7 @@ fn search_view_action_allowed(action: KeyAction) -> bool {
             | KeyAction::SelectLast
             | KeyAction::OpenSelected
             | KeyAction::OpenTerminal
+            | KeyAction::OpenSettings
             | KeyAction::Copy
             | KeyAction::Quit
     )
@@ -337,6 +340,15 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_TRASH_NO_PURGE,
     STATUS_TRASH_NO_HIDDEN,
     STATUS_TRASH_NO_SORT,
+    // Refusal / empty-target notices are warnings, never success (L06).
+    STATUS_TABS_ONLY_DIRECTORY,
+    STATUS_BOOKMARKS_ONLY_DIRECTORY,
+    STATUS_LAST_TAB,
+    STATUS_DROP_ONLY_DIRECTORY,
+    STATUS_DROP_EMPTY,
+    STATUS_TAB_RESTORE_EMPTY,
+    STATUS_UNDO_EMPTY,
+    STATUS_REDO_EMPTY,
 ];
 
 /// Sentinels rendered in red: wrapped errors and the concrete
@@ -1002,7 +1014,13 @@ fn parse_keymap_input(input: &str) -> Option<KeymapInput> {
         return None;
     }
     // `none` is a serde name but not a bindable action (no table row has it).
+    // Reserved actions are rejected as well: moving or unbinding OpenSettings
+    // would evict the shipped Ctrl+, and make the static recovery hint false
+    // (L01). The check covers both the bind and the unbind form.
     let parse_action = |name: &str| -> Option<String> {
+        if crate::settings::is_reserved_action(name) {
+            return None;
+        }
         let value = serde_json::Value::String(name.to_string());
         let action = serde_json::from_value::<KeyAction>(value).ok()?;
         (action != KeyAction::None).then(|| name.to_string())
@@ -1272,10 +1290,14 @@ impl KeyMap {
 
     /// Give `action` a new keystroke, evicting any other binding that would
     /// claim the same keystroke. Returns `false` for an action that is not in
-    /// the table or for a reserved dialog key. `from_settings` applies saved
-    /// overrides through this method; a future settings panel can do the same.
+    /// the table, for a reserved dialog key, or for a reserved action: moving
+    /// OpenSettings would evict the shipped Ctrl+, that the F1 help and
+    /// `STATUS_SETTINGS_DISCARDED` advertise (L01). `from_settings` applies
+    /// saved overrides through this method; a future settings panel can do the
+    /// same.
     fn rebind(&mut self, action: KeyAction, key: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
-        if crate::settings::is_reserved_chord(key)
+        if action == KeyAction::OpenSettings
+            || crate::settings::is_reserved_chord(key)
             || !self.bindings.iter().any(|b| b.action == action)
         {
             return false;
@@ -11047,15 +11069,16 @@ mod tests {
         PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, ViewLayout,
         C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
         GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
-        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CHANGED,
-        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_NOT_FOUND, STATUS_ERROR_MARKERS,
-        STATUS_ERROR_PREFIX, STATUS_NOT_DIRECTORY, STATUS_NO_SELECTION,
-        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_FAILED,
-        STATUS_REDO_NO_TARGET, STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE,
-        STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
-        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX,
-        STATUS_TRASH_NO_COPY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
-        THEME_LABEL_SYSTEM,
+        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+        STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+        STATUS_DROP_ONLY_DIRECTORY, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_LAST_TAB,
+        STATUS_NOT_DIRECTORY, STATUS_NO_SELECTION, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
+        STATUS_PRIORITY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
+        STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
+        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
+        STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
+        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY,
+        STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11094,6 +11117,15 @@ mod tests {
             (STATUS_TRASH_NO_COPY, C_YELLOW),
             // NO_* notices must win over the *_FAILED phrase they contain.
             (STATUS_REDO_NO_TARGET, C_YELLOW),
+            // L06: refusal / empty-target notices are warnings, not success.
+            (STATUS_TABS_ONLY_DIRECTORY, C_YELLOW),
+            (STATUS_BOOKMARKS_ONLY_DIRECTORY, C_YELLOW),
+            (STATUS_LAST_TAB, C_YELLOW),
+            (STATUS_DROP_ONLY_DIRECTORY, C_YELLOW),
+            (STATUS_DROP_EMPTY, C_YELLOW),
+            (STATUS_TAB_RESTORE_EMPTY, C_YELLOW),
+            (STATUS_UNDO_EMPTY, C_YELLOW),
+            (STATUS_REDO_EMPTY, C_YELLOW),
             (STATUS_CHANGED, C_GREEN),
             ("3 件をコピーしました", C_GREEN),
             ("", C_GREEN),
@@ -11203,6 +11235,15 @@ mod tests {
             (STATUS_CANCELLED, dark.yellow, light.yellow),
             (STATUS_SETTINGS_READ_ONLY, dark.yellow, light.yellow),
             (STATUS_NO_SELECTION, dark.yellow, light.yellow),
+            // L06: refusal / empty-target notices use the warning color.
+            (STATUS_TABS_ONLY_DIRECTORY, dark.yellow, light.yellow),
+            (STATUS_BOOKMARKS_ONLY_DIRECTORY, dark.yellow, light.yellow),
+            (STATUS_LAST_TAB, dark.yellow, light.yellow),
+            (STATUS_DROP_ONLY_DIRECTORY, dark.yellow, light.yellow),
+            (STATUS_DROP_EMPTY, dark.yellow, light.yellow),
+            (STATUS_TAB_RESTORE_EMPTY, dark.yellow, light.yellow),
+            (STATUS_UNDO_EMPTY, dark.yellow, light.yellow),
+            (STATUS_REDO_EMPTY, dark.yellow, light.yellow),
             (STATUS_TRASH_NO_COPY, dark.yellow, light.yellow),
             (STATUS_ERROR_PREFIX, dark.red, light.red),
             (STATUS_SETTINGS_SAVE_FAILED, dark.red, light.red),
@@ -12571,6 +12612,31 @@ mod tests {
     }
 
     #[test]
+    fn search_view_forwards_ctrl_comma_to_open_settings() {
+        use super::{search_view_key_allowed, search_view_key_reaches_keymap};
+
+        // L04: while browsing results, Ctrl+, must reach the normal keymap so
+        // the preferences overlay can be opened without leaving the Search view.
+        let keymap = KeyMap::default_keymap();
+        assert!(!search_view_key_allowed(",", true, false));
+        assert_eq!(
+            keymap.resolve(",", true, false, false),
+            KeyAction::OpenSettings
+        );
+        assert!(search_view_key_reaches_keymap(
+            &keymap, ",", true, false, false
+        ));
+        // Unshifted comma and Ctrl+Shift+, stay harmless no-ops, as in the
+        // normal view.
+        assert!(!search_view_key_reaches_keymap(
+            &keymap, ",", false, false, false
+        ));
+        assert!(!search_view_key_reaches_keymap(
+            &keymap, ",", true, true, false
+        ));
+    }
+
+    #[test]
     fn search_filter_status_keeps_freshness_warning() {
         let summary = "検索: 「rs」 3 件".to_string();
 
@@ -13524,6 +13590,41 @@ mod tests {
     }
 
     #[test]
+    fn rebind_and_from_settings_cannot_move_open_settings() {
+        // L01: a live rebind must not evict the shipped Ctrl+, binding that the
+        // static F1 help and STATUS_SETTINGS_DISCARDED recovery hint advertise.
+        let mut keymap = KeyMap::default_keymap();
+        assert!(!keymap.rebind(KeyAction::OpenSettings, "o", true, false, false));
+        assert!(!keymap.rebind(KeyAction::OpenSettings, "o", true, true, false));
+        assert_eq!(
+            keymap
+                .bindings
+                .iter()
+                .filter(|b| b.action == KeyAction::OpenSettings)
+                .count(),
+            1
+        );
+        assert_eq!(
+            keymap.resolve(",", true, false, false),
+            KeyAction::OpenSettings
+        );
+        assert_eq!(keymap.resolve("o", true, false, false), KeyAction::None);
+
+        // Defense in depth: a persisted override injected without going through
+        // Settings::validate is ignored by from_settings for the same reason.
+        let settings = Settings {
+            keymap: vec![("open_settings".to_string(), "ctrl+o".to_string())],
+            ..Settings::default()
+        };
+        let restored = KeyMap::from_settings(&settings);
+        assert_eq!(
+            restored.resolve(",", true, false, false),
+            KeyAction::OpenSettings
+        );
+        assert_eq!(restored.resolve("o", true, false, false), KeyAction::None);
+    }
+
+    #[test]
     fn default_keymap_has_no_ambiguous_duplicate_keystrokes() {
         let keymap = KeyMap::default_keymap();
         let mut seen = std::collections::HashSet::new();
@@ -13633,6 +13734,17 @@ mod tests {
             parse_chord(" alt + t "),
             Some(("t".to_string(), false, None, true))
         );
+        // L02: internal whitespace is trimmed per token, so the parser sees the
+        // same key as the reserved-chord validator must.
+        assert_eq!(
+            parse_chord("ctrl + shift + p"),
+            Some(("p".to_string(), true, Some(true), false))
+        );
+        assert_eq!(
+            parse_chord(" ctrl + , "),
+            Some((",".to_string(), true, None, false))
+        );
+        assert!(keymap_chord_reserved("ctrl + ,"));
         // A missing key, an empty token, or a modifier after the key is invalid.
         for bad in ["", "ctrl+", "+ctrl+p", "ctrl++p", "p+ctrl", "ctrl+shift+"] {
             assert_eq!(parse_chord(bad), None, "accepted {bad:?}");
@@ -13818,6 +13930,24 @@ mod tests {
             let input = format!("open_preview {chord}");
             assert_eq!(parse_keymap_input(&input), None, "accepted {input:?}");
         }
+    }
+
+    #[test]
+    fn parse_keymap_input_rejects_reserved_open_settings_action() {
+        // L01: the keymap dialog (and the Settings overlay, which shares this
+        // parser) must not be able to move or unbind Ctrl+,. Both forms are
+        // rejected before any persisted override is touched.
+        for input in [
+            "open_settings ctrl+o",
+            "open_settings shift+ctrl+o",
+            "unbind open_settings",
+            "  unbind   open_settings \n",
+        ] {
+            assert_eq!(parse_keymap_input(input), None, "accepted {input:?}");
+        }
+        // Other actions still parse, and the reservation is action-specific.
+        assert!(parse_keymap_input("open_preview ctrl+o").is_some());
+        assert!(parse_keymap_input("unbind open_preview").is_some());
     }
 
     #[test]

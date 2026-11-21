@@ -451,6 +451,48 @@ mod tests {
     }
 
     #[test]
+    fn empty_paths_after_filtering_fall_back_to_rescan() {
+        use notify_debouncer_full::notify::event::{
+            CreateKind, DataChange, Event, EventKind, ModifyKind, RemoveKind, RenameMode,
+        };
+        use notify_debouncer_full::DebouncedEvent;
+        use std::time::Instant;
+
+        let debounced = |kind: EventKind, paths: Vec<PathBuf>| DebouncedEvent {
+            event: Event {
+                kind,
+                paths,
+                attrs: Default::default(),
+            },
+            time: Instant::now(),
+        };
+
+        // Both a genuinely empty path list and a list holding only an empty
+        // PathBuf are filtered out before the kind is matched (L10).
+        for paths in [Vec::new(), vec![PathBuf::new()]] {
+            let cases = [
+                ("create", EventKind::Create(CreateKind::Any)),
+                ("remove", EventKind::Remove(RemoveKind::Any)),
+                (
+                    "rename-both",
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                ),
+                (
+                    "modify-data",
+                    EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                ),
+            ];
+            for (label, kind) in cases {
+                assert_eq!(
+                    normalize_events(&Ok(vec![debounced(kind, paths.clone())])),
+                    vec![FsEvent::Rescan],
+                    "{label} with no usable paths must normalize to Rescan"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rewatching_same_set_is_a_noop() {
         let dir = scratch("same");
         let _ = fs::remove_dir_all(&dir);

@@ -344,7 +344,7 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 - **「cargo audit の allowlist がリポジトリ外にありローカルと
   不一致」→ 却下**: 実実行で exit 0・「8 allowed warnings found」。
   リポジトリ内に ignore 設定は無く、cargo-audit 0.22.2 の
-  既定挙動。README:133 の記述は正確。
+  既定挙動。README の「CI の検証範囲」節（cargo audit 実行の記載）と一致。
 - **symlink の `metadata()` フォローによる情報漏洩
   （security の Medium）→ Medium に格下げ**:
   `model.rs:39-41` のコメント通り、symlink ディレクトリを
