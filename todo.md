@@ -752,6 +752,26 @@ status: current
 - [x] **L13** review-report 却下根拠の README:133 が現行と不一致 — 対応: loop10-tests
   — review-report.md:344
 
+### 優先度: 高（ループ R9・confirmed）
+
+- [ ] **M01** ゴミ箱 Undo の部分復元通知が成功色（緑） — main.rs:632
+- [ ] **M02** settings.rs の keymap 重複排除が chord 未正規化 — settings.rs:1331
+- [ ] **M03** sane_keymap_entry が重複修飾子を受理 — settings.rs:417
+
+### 優先度: 中（ループ R9）
+
+- [ ] **M04** 設定ダイアログ keymap ヒントに open_settings 予約の説明欠落 — settings_ui.rs:455
+- [ ] **M05** keymap unbind no-op 通知が警告色から漏れる — main.rs:561
+- [ ] **M06** 「見つかりません」系の動的拒否通知が緑 — main.rs:8244,5091
+- [ ] **M07** README の CI/検証範囲が check.sh・ci.yml より古い — README.md:172
+- [ ] **M08** 設定のテーマ/ビュー/隠しファイル行がキーボード不可 — settings_ui.rs:534
+- [ ] **M09** 設定検索が画面表示文言を索引せず0件になる — settings_ui.rs:357
+- [ ] **M10** preview.rs step_preview_index 前方ラップ未テスト — preview.rs:241
+- [ ] **M11** png_dimensions の IHDR 不一致ガード未テスト — preview.rs:30
+- [ ] **M12** error.rs with_cause no-op 分岐未テスト — error.rs:177
+- [ ] **M13** grid_columns の非有限幅ガード未テスト — model.rs:303
+- [ ] **M14** 設定検索0件状態に復帰導線なし — settings_ui.rs:508
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
