@@ -856,6 +856,33 @@ status: current
 - [x] **Q13** reorder_breeze_themes 片方欠落が無テスト — system_icons.rs:399 — 対応: loop14-tests
 - [x] **Q14** LOAD_ERROR_HINT が README 空状態一覧になし — app/README.md:351 — 対応: loop14-ux
 
+### 優先度: 中（ループ R13・confirmed）
+
+- [ ] **R01** F1 通知が別アクションに奪われた既定 chord を未報告
+  — main.rs:1441
+- [ ] **R02** STATUS_ACCESS_DENIED が main.rs ローカルで分類表から漏れ
+  — main.rs:414
+- [ ] **R03** terminal_failed_status の起動拒否がインラインリテラル
+  — main.rs:889
+- [ ] **R04** saved_search_save_status の上限拒否がインラインリテラル
+  — main.rs:565
+- [ ] **R05** ラベル設定拒否文言が strings.rs 正規定義から漏れ
+  — main.rs:3196
+- [ ] **R06** Alt+K ヒントに open_settings の unbind 不可が未記載
+  — strings.rs:213
+- [ ] **R07** 設定検索のキー名検索が UI/F1 に未案内
+  — settings_ui.rs:222
+
+### 優先度: 低（ループ R13）
+
+- [ ] **R08** settings_ui.rs コメントが F1 ヘルプを未実装と誤記
+  — settings_ui.rs:532
+- [ ] **R09** 起動エラー色テストが STATUS_INVALID_CLI_DIR を迂回
+  — main.rs:11349
+- [ ] **R10** 設定行説明の「フォルダー」表記ゆれ — settings_ui.rs:541
+- [ ] **R11** F1 ヘルプの Esc が未保存破棄を反映していない — strings.rs:167
+- [ ] **R12** 既定ショートカット一覧に Alt+Shift+T 欠落 — settings_ui.rs:545
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
