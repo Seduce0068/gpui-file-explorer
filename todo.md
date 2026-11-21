@@ -833,6 +833,29 @@ status: current
 - [x] **P13** sniff_image_format の 1024 バイト走査上限が未テスト — 対応: loop13-tests
   — preview.rs:95
 
+### 優先度: 中（ループ R12・confirmed）
+
+- [ ] **Q01** F1 通知が空になった既定キーを検出しない（P07 不完全）
+  — main.rs:1419
+- [ ] **Q02** P08 拒否定数が色分類規約テストに未登録 — strings.rs:294
+- [ ] **Q03** STATUS_BOOKMARK_NOT_PERSISTABLE が main.rs ローカルのまま
+  — main.rs:406
+- [ ] **Q04** 516 tests の内訳説明が旧 P0 期のまま — app/README.md:27
+- [ ] **Q05** 設定フッター凡例が逆方向キーを省略 — settings_ui.rs:395
+- [ ] **Q06** README に設定内 F1 塞がれと凡例代替が未説明 — app/README.md:115
+- [ ] **Q07** EMPTY_TRASH に復帰導線なし・LOAD_ERROR_HINT 未検証
+  — strings.rs:221
+- [ ] **Q08** バージョン検索キーワードが表示内容と不一致 — settings_ui.rs:588
+
+### 優先度: 低（ループ R12）
+
+- [ ] **Q09** search_contents の max_depth 分岐が無テスト — search.rs:393
+- [ ] **Q10** FuzzySource::label() の 5 分岐が無テスト — main.rs:1477
+- [ ] **Q11** step_preview_index の delta=0 が無テスト — preview.rs:236
+- [ ] **Q12** sniff_image_format の PNM 境界が無テスト — preview.rs:94
+- [ ] **Q13** reorder_breeze_themes 片方欠落が無テスト — system_icons.rs:399
+- [ ] **Q14** LOAD_ERROR_HINT が README 空状態一覧になし — app/README.md:351
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
