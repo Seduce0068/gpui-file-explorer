@@ -480,6 +480,16 @@ mod tests {
     }
 
     #[test]
+    fn name_variants_cover_reverse_rust_alias() {
+        let variants = icon_name_variants("text-x-rust");
+        assert_eq!(variants.first().map(String::as_str), Some("text-x-rust"));
+        assert!(
+            variants.iter().any(|v| v == "text-rust"),
+            "the x-prefixed Rust name must fall back to text-rust: {variants:?}"
+        );
+    }
+
+    #[test]
     fn size_candidates_prefer_exact_then_larger_then_smaller() {
         let dirs = size_dir_candidates(32);
         assert_eq!(dirs.first().map(String::as_str), Some("32"));
@@ -488,6 +498,13 @@ mod tests {
         let smaller_pos = dirs.iter().position(|d| d == "24").unwrap();
         assert!(larger_pos < smaller_pos, "larger sizes must be tried first");
         assert_eq!(dirs.last().map(String::as_str), Some("scalable"));
+    }
+
+    #[test]
+    fn zero_and_one_sizes_produce_identical_size_dirs() {
+        // Both arguments go through `size.max(1)`, so they must expand to the
+        // exact same preference ladder.
+        assert_eq!(size_dir_candidates(0), size_dir_candidates(1));
     }
 
     #[test]
@@ -613,6 +630,27 @@ mod tests {
         assert_eq!(resolver.cache.len(), 1, "repeat lookup must hit the cache");
         assert!(resolver.icon_path_for_name(missing, 24).is_none());
         assert_eq!(resolver.cache.len(), 2, "size is part of the cache key");
+    }
+
+    #[test]
+    fn zero_size_shares_cache_key_with_one() {
+        use std::path::PathBuf;
+
+        let mut resolver = SystemIconResolver::new();
+        let name = "text-rust";
+        let sentinel = PathBuf::from("/nonexistent-sentinel/icon.svg");
+        // `icon_path_for_name` normalizes the size with `max(1)` before
+        // building the `(name, size)` key, so 0 and 1 must be interchangeable.
+        resolver
+            .cache
+            .insert((name.to_string(), 1), Some(sentinel.clone()));
+        assert_eq!(resolver.icon_path_for_name(name, 0), Some(sentinel.clone()));
+        assert_eq!(resolver.icon_path_for_name(name, 1), Some(sentinel));
+        assert_eq!(
+            resolver.cache.len(),
+            1,
+            "sizes 0 and 1 must resolve to the same cache key"
+        );
     }
 
     #[test]
