@@ -802,6 +802,36 @@ status: current
 - [x] **N16** settings.rs canonical_chord_key のフォールバック3分岐が無テスト — 対応: loop12-core
 - [x] **N17** preview.rs 不正 UTF-8 ヘッダ / search.rs search_roots の分岐が無テスト — 対応: loop12-docs
 
+### 優先度: 中（ループ R11・confirmed）
+
+- [ ] **P01** settings_row_key_is_bare が function 修飾子を見落とす
+  — main.rs:1820
+- [ ] **P02** F1 が preview/location ガードより前に処理されヘルプが重なる
+  — main.rs:4603
+- [ ] **P03** 検索名フィルタ未オープン時の拒否案内が緑 — main.rs:7791
+- [ ] **P04** 内容検索の行読み取り中キャンセル分岐が未テスト — search.rs:311
+- [ ] **P05** 検索0件ヒントに名前フィルタ(Ctrl+Shift+F)導線なし
+  — strings.rs:233
+- [ ] **P06** STATUS_SETTINGS_UNSAVED_HINT コメントが K13 実装と矛盾
+  — strings.rs:361
+
+### 優先度: 低（ループ R11）
+
+- [ ] **P07** F1 上書き通知が evict された既定バインドを表示しない
+  — main.rs:1414
+- [ ] **P08** 移動/プレビュー/特殊ファイルの拒否文言が定数化漏れ
+  — main.rs:5190,6099,5493
+- [ ] **P09** DESIGN 変更履歴 11-21 行が 507 同期ほかを記録していない
+  — DESIGN.md:1213
+- [ ] **P10** 設定ダイアログ内にキーボード凡例なし（F1 は塞がれる）
+  — settings_ui.rs:1165
+- [ ] **P11** create_unique_folder の 100 回枯渇エラーが未テスト
+  — model.rs:813
+- [ ] **P12** normalize_events Both 単一パス/ SafeWatcher init_error=None が無テスト
+  — watcher.rs:64,110
+- [ ] **P13** sniff_image_format の 1024 バイト走査上限が未テスト
+  — preview.rs:95
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
