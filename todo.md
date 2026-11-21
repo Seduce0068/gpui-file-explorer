@@ -698,6 +698,29 @@ status: current
 - [x] **J09** review-report の「DESIGN 履歴 v0.1」が解消済みで陳腐化
   review-report.md:636 — 対応: loop8-docs
 
+### 優先度: 高（ループ R7・confirmed）
+
+- [ ] **K01** Ctrl+, が keymap override で evict され案内が壊れる
+  — main.rs:1265 / settings.rs:381
+- [ ] **K02** confirm_keymap の unbind no-op が拒否理由をマスク
+  — main.rs:4222-4240
+- [ ] **K03** STATUS_NO_SELECTION が警告色から漏れる — main.rs:324
+
+### 優先度: 中（ループ R7）
+
+- [ ] **K04** keymap ヒントが unbind 非対応と案内するが実装は受理
+  — settings_ui.rs:429
+- [ ] **K05** 進行中ステータスが STATUS_OP_IN_PROGRESS_SUFFIX を迂回
+  — main.rs:5597,5732,7104
+- [ ] **K06** DESIGN §10.1 クロスリファレンスが 461 のまま — DESIGN.md:997
+- [ ] **K07** 設定検索の他タブ一致ヒントにジャンプ手段なし — settings_ui.rs:860
+- [ ] **K08** ラジオ/スイッチが Tab 巡回から除外されキーボード不可 — settings_ui.rs:491
+- [ ] **K09** preview.rs 画像判定の未テスト分岐（webp/gif/MM TIFF 等）
+- [ ] **K10** error.rs BoxedCause::clone が無テスト
+- [ ] **K11** mounts.rs unescape_mount_field の不正オクタル分岐が無テスト
+- [ ] **K12** system_icons.rs image-x- 生成分岐が無テスト
+- [ ] **K13** Terminal タブで未保存ヒントが重複表示 — settings_ui.rs:790,936
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
