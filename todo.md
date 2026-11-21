@@ -883,6 +883,30 @@ status: current
 - [x] **R11** F1 ヘルプの Esc が未保存破棄を反映していない — strings.rs:167 — 対応: loop15-ux
 - [x] **R12** 既定ショートカット一覧に Alt+Shift+T 欠落 — settings_ui.rs:545 — 対応: loop15-ux
 
+### 優先度: 中（ループ R14・confirmed）
+
+- [ ] **S01** 保存検索の入力必須エラーがインライン拒否リテラル
+  — main.rs:8374
+- [ ] **S02** review-report 総評の「132 件のヘッドレス テスト」が現在形・誤分類
+  — review-report.md:21
+- [ ] **S03** read_image_preview の後段サイズガード未到達＋誤コメント
+  — preview.rs:134,472
+- [ ] **S04** acquire_save_lock の古いロック回収/タイムアウト分岐が無テスト
+  — settings.rs:1464
+- [ ] **S05** 既定ショートカット一覧に Ctrl+Shift+F 欠落
+  — settings_ui.rs:554
+
+### 優先度: 低（ループ R14）
+
+- [ ] **S06** 永続 keymap eviction が Ctrl の alt don't-care と不一致
+  — main.rs:1141
+- [ ] **S07** ターミナル無効化の理由・復帰導線がインライン
+  — main.rs:880
+- [ ] **S08** ops.rs 固定テスト数「50 件」が動的方針と不統一
+  — app/README.md:293 / DESIGN.md:366
+- [ ] **S09** README キーバインド表に F4 行なし — app/README.md:92
+- [ ] **S10** 設定 About にライセンス/ソース導線なし — settings_ui.rs:1161
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
