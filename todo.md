@@ -1134,6 +1134,31 @@ status: current
 - [x] **AB14** 昇順/降順キーワードが設定行に存在しない — 対応: loop25-ux
   — settings_ui.rs:474
 
+### 優先度: 高（ループ R24・confirmed）
+
+- [ ] **AC01** Search の Rescan/Renamed が RESCAN_FAILED を上書き（実バグ）
+  — main.rs:3685
+- [ ] **AC02** Search の Ctrl+Shift+C が allowlist をすり抜け（実バグ）
+  — main.rs:293
+- [ ] **AC03** Search で RESCAN_FAILED の F5 ヒントが届かない（実バグ）
+  — main.rs:293 / strings.rs:533
+
+### 優先度: 中（ループ R24）
+
+- [ ] **AC04** WATCH_PARTIAL/DISABLED が status_color 回帰表に未登録
+  — main.rs:11588
+- [ ] **AC05** display_name_for の best 維持分岐が未テスト — main.rs:604
+- [ ] **AC06** 設定検索が Files タブの見出し/ラベルを検索できない
+  — settings_ui.rs:1292
+- [ ] **AC07** 読込失敗ヒントが Trash/Search で無効な Ctrl+L を案内
+  — strings.rs:355
+- [ ] **AC08** キーマップ不正通知に入力形式の案内なし — strings.rs:562
+
+### 優先度: 低（ループ R24）
+
+- [ ] **AC09** F1 の Tab 移動行が全タブに入力欄があるかのように案内
+  — strings.rs:271
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
