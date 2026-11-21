@@ -1418,7 +1418,7 @@ fn chord_for_action(keymap: &KeyMap, action: KeyAction) -> Option<String> {
 /// F1 help truthful after an Alt+K rebind.
 fn active_keymap_overrides(keymap: &KeyMap) -> Vec<(String, String)> {
     let defaults = KeyMap::default_keymap();
-    keymap
+    let mut overrides: Vec<(String, String)> = keymap
         .bindings
         .iter()
         .filter(|binding| !defaults.bindings.contains(*binding))
@@ -1426,7 +1426,23 @@ fn active_keymap_overrides(keymap: &KeyMap) -> Vec<(String, String)> {
             chord_for_action(keymap, binding.action)
                 .map(|chord| (keymap_action_name(binding.action), chord))
         })
-        .collect()
+        .collect();
+    // P07: a rebind can evict a shipped default binding entirely (e.g. binding
+    // `copy` to ctrl+p removes the default ctrl+c). Report those actions as
+    // unassigned so F1 help stays truthful about what users can actually press.
+    let seen: Vec<KeyAction> = keymap
+        .bindings
+        .iter()
+        .map(|binding| binding.action)
+        .collect();
+    for default in &defaults.bindings {
+        if !seen.contains(&default.action) {
+            overrides.push((keymap_action_name(default.action), "未割り当て".to_string()));
+        }
+    }
+    overrides.sort();
+    overrides.dedup();
+    overrides
 }
 
 /// One-line F1 notice listing live overrides. `None` for the shipped default
@@ -11889,6 +11905,25 @@ mod tests {
             total >= 20,
             "expected a useful number of shortcuts, got {total}"
         );
+    }
+
+    #[test]
+    fn help_reports_evicted_default_bindings_as_unassigned() {
+        // A custom keymap that drops the shipped single f4 binding for
+        // open_terminal must make F1 help stop claiming F4 works (P07).
+        // Model the evicted state directly — rebind's shift-wildcard matching
+        // does not always evict a `shift: None` default.
+        let mut keymap = KeyMap::default_keymap();
+        keymap
+            .bindings
+            .retain(|b| b.action != KeyAction::OpenTerminal);
+        let overrides = active_keymap_overrides(&keymap);
+        assert!(
+            overrides.contains(&("open_terminal".to_string(), "未割り当て".to_string())),
+            "evicted default must be reported: {overrides:?}"
+        );
+        let line = help_overrides_line(&keymap).expect("override notice");
+        assert!(line.contains("open_terminal → 未割り当て"), "{line}");
     }
 
     #[test]
