@@ -1507,6 +1507,36 @@ mod tests {
         let error = create_unique_folder(&missing).expect_err("missing parent must fail");
         assert!(error.contains("no-such-parent"), "unexpected: {error}");
     }
+
+    #[test]
+    fn create_unique_folder_exhausts_retries_when_no_name_is_free() {
+        let dir = scratch_dir("create-folder-exhaust");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // `unique_child_name` keeps returning the next *free* name until its
+        // `counter > 10_000` guard, so filling only 100 names would let the very
+        // first retry create "新しいフォルダ (101)" and succeed. Occupy the whole
+        // guarded range: the guard then returns the already-taken
+        // "新しいフォルダ (10000)" on every attempt, so all 100 retries hit
+        // `AlreadyExists` and the exhaustion branch is reached.
+        fs::create_dir(dir.join("新しいフォルダ")).unwrap();
+        for n in 2..=10_000u32 {
+            fs::create_dir(dir.join(format!("新しいフォルダ ({n})"))).unwrap();
+        }
+
+        let error = create_unique_folder(&dir).expect_err("no free name must remain");
+        assert!(
+            error.contains("一意なフォルダ名を作成できません"),
+            "unexpected exhaustion message: {error}"
+        );
+        assert!(
+            error.contains(&dir.display().to_string()),
+            "error should name the directory: {error}"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 #[cfg(test)]

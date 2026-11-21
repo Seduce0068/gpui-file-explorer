@@ -365,6 +365,8 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_MAX_TABS_PREFIX,
     STATUS_RESTORE_EMPTY,
     STATUS_SEARCH_EMPTY_QUERY,
+    // P03: 検索を開く前の案内は操作拒否なので amber（放置すると green になる）。
+    STATUS_SEARCH_NOT_OPEN,
 ];
 
 /// Sentinels rendered in red: wrapped errors and the concrete
@@ -1701,7 +1703,7 @@ use crate::strings::{
     STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
     STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
     STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-    STATUS_ERROR_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING,
+    STATUS_ERROR_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
     STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
     STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
     STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
@@ -1710,13 +1712,14 @@ use crate::strings::{
     STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
     STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED,
     STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
-    STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE,
-    STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
-    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED,
-    STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
-    STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
-    STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE,
-    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
+    STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
+    STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY,
+    STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
+    STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
+    STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED,
+    STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
     STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
     STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
     STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
@@ -1814,11 +1817,16 @@ fn settings_sort_next(choice: &str) -> &'static str {
 /// Whether a keystroke is bare, so a settings row shortcut may claim it (N01).
 /// `settings_row_shortcut` only sees the trimmed `key` string and documents
 /// that modified chords are intentionally not recognised; the host must add
-/// this guard or Ctrl+T / Alt+T / Shift+T would also change the theme and
-/// clobber global shortcuts. Kept pure so every modifier combination is
-/// regression-testable without a GPUI window (the raw host event is not).
+/// this guard or Ctrl+T / Alt+T / Shift+T / Fn+T would also change the theme and
+/// clobber global shortcuts. All five `Modifiers` fields are checked, including
+/// `function`. Kept pure so every modifier combination is regression-testable
+/// without a GPUI window (the raw host event is not).
 fn settings_row_key_is_bare(modifiers: &Modifiers) -> bool {
-    !modifiers.control && !modifiers.alt && !modifiers.shift && !modifiers.platform
+    !modifiers.control
+        && !modifiers.alt
+        && !modifiers.shift
+        && !modifiers.platform
+        && !modifiers.function
 }
 
 /// Inline rename dialog state. Dropping it closes the dialog and drops the
@@ -4600,17 +4608,14 @@ impl Explorer {
             }
             return;
         }
-        if key == "f1" {
-            self.help_open = !self.help_open;
-            cx.notify();
-            return;
-        }
         if self.help_open {
             // Keyboard scrolling is intentionally skipped here: the overlay
             // body is a plain `.overflow_y_scroll()` div and gpui-pre 0.3.12
             // `ScrollHandle` exposes no `scroll_by`, so PageUp/PageDown/
             // Home/End have no scroll action to reach. Mouse wheel works.
-            if key == "escape" {
+            // P02: F1 also closes help here, so the key keeps toggling in both
+            // directions after the open-toggle moved below the modal guards.
+            if key == "escape" || key == "f1" {
                 self.help_open = false;
                 cx.notify();
             }
@@ -4648,6 +4653,17 @@ impl Explorer {
             if key == "escape" {
                 self.close_properties(cx);
             }
+            return;
+        }
+        // P02: F1 opens help only after every modal dialog has had a chance to
+        // consume the key. This toggle used to sit above these guards, so F1 in
+        // a dialog stacked help underneath it and the next Escape closed help
+        // instead of the dialog (two Escapes needed). Settings and the fuzzy
+        // overlay return even earlier; the help guard above handles F1 when
+        // help is already open, keeping the toggle symmetric.
+        if key == "f1" {
+            self.help_open = !self.help_open;
+            cx.notify();
             return;
         }
         if self.view == ViewSource::Search {
@@ -5187,7 +5203,7 @@ impl Explorer {
         }
         if paths.is_empty() {
             self.status = if same_dir > 0 {
-                "同じフォルダのため移動しません".to_string()
+                STATUS_SAME_DIRECTORY_NO_MOVE.to_string()
             } else {
                 STATUS_NO_CLIPBOARD.to_string()
             };
@@ -5490,7 +5506,7 @@ impl Explorer {
             } else if missing > 0 {
                 STATUS_DROP_NOT_FOUND.to_string()
             } else if special > 0 {
-                "特殊ファイルのためコピーできません".to_string()
+                STATUS_SPECIAL_FILE_NO_COPY.to_string()
             } else {
                 STATUS_DROP_EMPTY.to_string()
             };
@@ -6096,12 +6112,12 @@ impl Explorer {
             return;
         };
         if entry.is_dir {
-            self.status = "フォルダはプレビューできません".to_string();
+            self.status = STATUS_FOLDER_NO_PREVIEW.to_string();
             cx.notify();
             return;
         }
         if entry.is_symlink {
-            self.status = "シンボリックリンクはプレビューできません".to_string();
+            self.status = STATUS_SYMLINK_NO_PREVIEW.to_string();
             cx.notify();
             return;
         }
@@ -7788,7 +7804,7 @@ impl Explorer {
             focus.focus(window, cx);
             cx.notify();
         } else {
-            self.status = "先に Ctrl+F で検索を開いてください".to_string();
+            self.status = STATUS_SEARCH_NOT_OPEN.to_string();
             cx.notify();
         }
     }
@@ -11170,12 +11186,12 @@ mod tests {
         STATUS_NO_SELECTION, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
         STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
         STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESTORE_EMPTY,
-        STATUS_RESTORE_FAILED, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_ONLY_DIRECTORY,
-        STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
-        STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
-        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX,
-        STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK,
-        THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_RESTORE_FAILED, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
+        STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
+        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
+        STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
+        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY,
+        STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11235,6 +11251,8 @@ mod tests {
             (STATUS_MAX_TABS_PREFIX, C_YELLOW),
             (STATUS_RESTORE_EMPTY, C_YELLOW),
             (STATUS_SEARCH_EMPTY_QUERY, C_YELLOW),
+            // P03: 検索未オープンの案内も拒否通知として amber。
+            (STATUS_SEARCH_NOT_OPEN, C_YELLOW),
             (STATUS_CHANGED, C_GREEN),
             ("3 件をコピーしました", C_GREEN),
             ("", C_GREEN),
@@ -11404,6 +11422,7 @@ mod tests {
             (STATUS_MAX_TABS_PREFIX, dark.yellow, light.yellow),
             (STATUS_RESTORE_EMPTY, dark.yellow, light.yellow),
             (STATUS_SEARCH_EMPTY_QUERY, dark.yellow, light.yellow),
+            (STATUS_SEARCH_NOT_OPEN, dark.yellow, light.yellow),
             (STATUS_ERROR_PREFIX, dark.red, light.red),
             (STATUS_SETTINGS_SAVE_FAILED, dark.red, light.red),
             (STATUS_ACCESS_DENIED, dark.red, light.red),
@@ -11820,6 +11839,36 @@ mod tests {
             pending_rename_index(false, false, true, &entries, &PathBuf::from("/work/gone")),
             None
         );
+    }
+
+    // P02: there is no headless GPUI window to press F1 in, so verify the guard
+    // order in the compiled source (same technique as the rollback call-site
+    // test). The toggle must run after every modal that used to let help stack
+    // underneath it; needles are split so this test's own text cannot match.
+    #[test]
+    fn f1_help_toggle_runs_after_modal_guards() {
+        let source = include_str!("main.rs");
+        let toggle = source
+            .find(concat!("self", ".help_open = !", "self", ".help_open"))
+            .expect("F1 help toggle missing");
+        let guards = [
+            concat!("if self.fuzzy.is_some() {", "\n            match key {"),
+            concat!("if self.help_open {", "\n            // Keyboard scrolling"),
+            concat!(
+                "if self.location.is_some() {",
+                "\n            if key == \"escape\" {"
+            ),
+            "if self.undo_history_open {",
+            "if self.preview.is_some() {",
+            "if self.properties.is_some() {",
+        ];
+        for guard in guards {
+            let pos = source.find(guard).expect("modal guard missing");
+            assert!(
+                pos < toggle,
+                "{guard} must consume F1 before the help toggle opens help"
+            );
+        }
     }
 
     #[test]
@@ -13199,6 +13248,10 @@ mod tests {
             },
             Modifiers {
                 platform: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                function: true,
                 ..Modifiers::default()
             },
             Modifiers {

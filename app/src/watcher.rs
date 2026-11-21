@@ -351,6 +351,73 @@ mod tests {
     }
 
     #[test]
+    fn safe_watcher_without_init_error_uses_default_message() {
+        use notify_debouncer_full::notify::{RecursiveMode, Watcher};
+
+        use super::SafeWatcher;
+
+        let dir = scratch("safe-watcher-default");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // `new` always stores a cause on failure, so a missing reason is only
+        // reachable by direct construction; `init_failure` must still fall back
+        // to a meaningful message on every delegating method.
+        let mut watcher = SafeWatcher {
+            inner: None,
+            init_error: None,
+        };
+
+        let err = watcher
+            .watch(&dir, RecursiveMode::NonRecursive)
+            .expect_err("watch must fail without an inner watcher");
+        assert!(
+            err.to_string().contains("OS watcher initialization failed"),
+            "default init failure message missing: {err}"
+        );
+
+        let err = watcher
+            .unwatch(&dir)
+            .expect_err("unwatch must fail without an inner watcher");
+        assert!(
+            err.to_string().contains("OS watcher initialization failed"),
+            "default init failure message missing: {err}"
+        );
+
+        let err = watcher
+            .configure(Default::default())
+            .expect_err("configure must fail without an inner watcher");
+        assert!(
+            err.to_string().contains("OS watcher initialization failed"),
+            "default init failure message missing: {err}"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rename_both_with_single_path_falls_back_to_rescan() {
+        use notify_debouncer_full::notify::event::{Event, EventKind, ModifyKind, RenameMode};
+        use notify_debouncer_full::DebouncedEvent;
+        use std::time::Instant;
+
+        // `RenameMode::Both` needs two paths (from + to). With only one usable
+        // path no rename pair can be formed, so the safe full-reload signal wins.
+        let debounced = DebouncedEvent {
+            event: Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                paths: vec![PathBuf::from("/tmp/only-one.txt")],
+                attrs: Default::default(),
+            },
+            time: Instant::now(),
+        };
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced])),
+            vec![FsEvent::Rescan]
+        );
+    }
+
+    #[test]
     fn normalizes_rename_events() {
         use notify_debouncer_full::notify::event::{Event, EventKind, ModifyKind, RenameMode};
         use notify_debouncer_full::DebouncedEvent;

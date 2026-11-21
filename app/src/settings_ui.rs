@@ -387,6 +387,15 @@ fn footer_status_text(dirty: bool) -> &'static str {
     }
 }
 
+/// Always-visible key legend of the settings dialog footer (P10).
+///
+/// F1 is deliberately blocked inside the dialog, so the keys users would look
+/// up in the help overlay have to be shown here. Kept to one compact line to
+/// fit the 760px card next to the save/cancel buttons.
+fn settings_footer_legend() -> &'static str {
+    "Enter 保存 / Esc 閉じる / Tab 移動 / Ctrl+Tab タブ / Alt+数字 直接移動"
+}
+
 // Search keyword sets, one per visible row. They are shared by the per-row
 // filter in `render_settings_content` and by `tabs_matching_query`, so a row and
 // the cross-tab hint derived from it can never drift apart.
@@ -1243,7 +1252,18 @@ pub fn render_settings_content<V: SettingsUiHost>(
                 .child(error.clone()),
         );
     }
-    let footer = footer.child(actions);
+    // P10: F1 is intentionally swallowed while the dialog owns the keyboard,
+    // so the footer always carries its own compact key legend (no search
+    // filter or unsaved-state dependency).
+    let footer = footer
+        .child(
+            div()
+                .w_full()
+                .text_xs()
+                .text_color(rgb(palette.muted))
+                .child(settings_footer_legend()),
+        )
+        .child(actions);
 
     div()
         .id("settings-card-scroll")
@@ -1277,12 +1297,12 @@ mod tests {
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
         cancel_label, footer_status_text, matches_query, next_settings_focus, no_match_hint,
-        selected_index, settings_focus_order, settings_hidden_next, settings_row_is_visible,
-        settings_row_shortcut, settings_theme_next, settings_view_next, tabs_matching_query,
-        SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
-        APPEARANCE_THEME_DESCRIPTION, APPEARANCE_VIEW_DESCRIPTION, FILES_HIDDEN_DESCRIPTION,
-        FILES_SORT_DESCRIPTION, SETTINGS_KEYMAP_INPUT_HINT, SHORTCUTS_DEFAULTS_KEYWORDS,
-        SHORTCUTS_DEFAULT_LINES,
+        selected_index, settings_focus_order, settings_footer_legend, settings_hidden_next,
+        settings_row_is_visible, settings_row_shortcut, settings_theme_next, settings_view_next,
+        tabs_matching_query, SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction,
+        SettingsUiPalette, APPEARANCE_THEME_DESCRIPTION, APPEARANCE_VIEW_DESCRIPTION,
+        FILES_HIDDEN_DESCRIPTION, FILES_SORT_DESCRIPTION, SETTINGS_KEYMAP_INPUT_HINT,
+        SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
     };
 
     #[test]
@@ -1433,6 +1453,31 @@ mod tests {
         );
         assert_eq!(footer_status_text(true), "未保存の変更があります");
         assert_ne!(footer_status_text(true), footer_status_text(false));
+    }
+
+    #[test]
+    fn settings_footer_legend_lists_dialog_keys_without_f1() {
+        // P10: F1 is blocked while the dialog owns the keyboard. The footer
+        // legend must therefore name the keys that would otherwise be looked
+        // up in the F1 overlay, and stay short enough for the card width.
+        let legend = settings_footer_legend();
+        for token in [
+            "Enter 保存",
+            "Esc 閉じる",
+            "Tab 移動",
+            "Ctrl+Tab タブ",
+            "Alt+数字 直接移動",
+        ] {
+            assert!(legend.contains(token), "legend: {legend}");
+        }
+        assert!(
+            !legend.contains("F1"),
+            "F1 is blocked in the dialog: {legend}"
+        );
+        assert!(
+            legend.chars().count() < 64,
+            "legend must stay compact: {legend}"
+        );
     }
 
     #[test]

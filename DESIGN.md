@@ -1005,7 +1005,7 @@ app/
 | 性能 | 1k/10k 件の初回表示・スクロール・監視反映 | 手動 + `date`/スクショ + `/proc/<pid>/status` | △（1k のみ） |
 
 **as-built スナップショット（2026-11-21 実行、現在値は README / 実行結果を参照）**:
-単体テストは `cargo test --all-targets --locked` が 507 passed / 0 failed（app）。
+単体テストは `cargo test --all-targets --locked` が 515 passed / 0 failed（app）。
 数値は 2026-11-21 実行の as-built スナップショット（README.md / app/README.md の cargo test 欄と一致）。
 実機 GUI は KWin D-Bus + XDG Portal で起動・描画・監視・ゴミ箱を確認済み。
 `DISPLAY=:1 WAYLAND_DISPLAY=wayland-0` + spectacle + kdotool でスクショ取得可だが、
@@ -1210,6 +1210,13 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 |---|---|---|
 | 0.1 | 2026-11-11 | 初版（P0 契約、§4/§5/§10.4 が実装対象） |
 | 0.1-as-built | 2026-11-17 | 実装完了に伴う差分を記録。P1 機能（安全な操作エンジン / 検索 / タブ / ゴミ箱 / プレビュー / undo 他）を実装。`strings.rs` 追加、`tracing` 構造化ログ導入、設定の読み取り専用モード（退避失敗・未知スキーマ）追加。設計との逸脱と保留項目の詳細は `app/README.md` の「設計（DESIGN.md）からの差分」と `review-report.md` を参照。 |
-| 0.1-as-built | 2026-11-21 | OS アイコン（Breeze）実装済みを反映（§2/§7/§8.3/ADR-009） |
+| 0.1-as-built | 2026-11-21 | OS アイコン（Breeze）と as-built 差分を反映 |
+
+2026-11-21 の as-built 差分の内訳（OS アイコンは §2/§7/§8.3/ADR-009 を参照）。
+内容検索（`search::search_contents`）とタブ（`tabs.rs`）の実装済み化
+（§1.2/§4.1）、サイドバー幅は 190px 固定（§3.1）、テーマは Catppuccin
+Mocha / Latte の `AppPalette` / `SettingsUiPalette` に集約（§8.2）、
+単体テスト 515 passed / 0 failed（§10.1 の as-built スナップショット =
+README の 2026-11-21 更新値と同期）。
 
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
