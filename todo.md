@@ -579,6 +579,25 @@ status: current
 - [x] **E13** 設定UI文言が strings.rs 正規定数を迂回（LABEL_CANCEL 等） — 対応: loop3-error
   — settings_ui.rs:792 / main.rs:10294
 
+### 優先度: 高（ループ R2・confirmed）
+
+- [ ] **F01** 設定検証エラーがステータスバーで緑（成功色）表示 — main.rs:10257
+- [ ] **F02** 設定ダイアログに Enter 保存のキーボード経路なし — settings_ui.rs:272
+- [ ] **F03** 設定再オープン時に保留フォーカス復元が検索欄から焦点を奪う — main.rs:9818
+- [ ] **F04** read_only が設定画面以外の書き込みパスで成功通知になる — main.rs:509
+
+### 優先度: 中（ループ R2）
+
+- [ ] **F05** set_sort 保存失敗時に並び順がロールバックされない — main.rs:4628
+- [ ] **F06** サイドバー幅が DESIGN/review-report で 200/214px のまま — DESIGN.md:152, review-report.md:774
+- [ ] **F07** README CI run が古い（43734 vs 44063）— README.md:175
+- [ ] **F08** Windows cargo check 警告数が README 0 / review-report 2 で矛盾 — README.md:139
+- [ ] **F09** 初回実機検証 36 件は一次記録 35 件と矛盾 — README.md:97
+- [ ] **F10** DESIGN §8.2 配色契約が独自パレット実装と乖離 — DESIGN.md:869
+- [ ] **F11** 古いコメント群（共通フッタ/ロールバック2経路） — main.rs:517,10254
+- [ ] **F12** set_prefer_dark の早期リターン/非入れ替え分岐が無テスト — system_icons.rs:198,398
+- [ ] **F13** bookmark_label_is_settable の上限ちょうどが無テスト — main.rs:566
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
