@@ -954,6 +954,33 @@ status: current
 
 - [x] **U09** undo_action_detail の4分岐が無テスト — main.rs:5769 — 対応: loop18-status
 
+### 優先度: 中（ループ R17・confirmed）
+
+- [ ] **V01** 起動時設定保存失敗が具体的理由を表示しない — main.rs:2904
+- [ ] **V02** Alt+K ヒントが予約キー「,」を説明していない — strings.rs:213
+- [ ] **V03** ターミナル入力拒否文言が二重インライン — main.rs:4344,10898
+- [ ] **V04** キーマップ拒否・上限文言が散在（上限は二重定義）
+  — main.rs:4514,4530,10866,10876
+- [ ] **V05** save_with_reason のエラー種別写像が無テスト — settings.rs:1503
+- [ ] **V06** settings_write_status の理由優先分岐が無テスト — main.rs:651
+- [ ] **V07** 設定検索が永続キー名(terminal_command等)を検索できない
+  — settings_ui.rs:672
+
+### 優先度: 低（ループ R17）
+
+- [ ] **V08** 古い allow(dead_code)/コメントが理由判別配線後も残存
+  — strings.rs:404,main.rs:620
+- [ ] **V09** History::max_back と MAX_HISTORY_ENTRIES の一致が無検証
+  — history.rs:8
+- [ ] **V10** ステータスバー無い保存経路が理由をログに残さない
+  — main.rs:5033
+- [ ] **V11** review-report の DESIGN 行番号参照が drift — review-report.md:649
+- [ ] **V12** 「README に現在値」案内が動的件数化後も空参照
+  — review-report.md:26
+- [ ] **V13** 隠しファイル空状態の Ctrl+H がゴミ箱で無効
+  — main.rs:1871
+- [ ] **V14** STATUS_RESCAN_FAILED に復帰導線なし — strings.rs:380
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
