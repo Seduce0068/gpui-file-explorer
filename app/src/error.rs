@@ -350,4 +350,32 @@ mod tests {
         assert_eq!(cloned.message_ja(), not_found.message_ja());
         assert_eq!(cloned.message_ja(), "見つかりません: /tmp/gone");
     }
+
+    #[test]
+    fn with_cause_is_noop_for_already_caused_variants() {
+        // FsCause already carries its source; a second with_cause must keep the
+        // original cause (the `other => other` arm), not replace it.
+        let io = std::io::Error::new(ErrorKind::NotFound, "original fs cause");
+        let fs_cause = AppError::from_io(PathBuf::from("/tmp/x"), &io);
+        let before = fs_cause.source().map(ToString::to_string);
+        let after = fs_cause
+            .with_cause(BoxedCause::text("replacement"))
+            .source()
+            .map(ToString::to_string);
+        assert_eq!(after, before);
+        assert_eq!(after, Some("original fs cause".to_string()));
+
+        // The same no-op guarantee holds for a NotFoundCause operation error.
+        let not_found = AppError::NotFoundCause(
+            PathBuf::from("/tmp/gone"),
+            BoxedCause::text("original detail"),
+        );
+        let before = not_found.source().map(ToString::to_string);
+        let after = not_found
+            .with_cause(BoxedCause::text("replacement"))
+            .source()
+            .map(ToString::to_string);
+        assert_eq!(after, before);
+        assert_eq!(after, Some("original detail".to_string()));
+    }
 }

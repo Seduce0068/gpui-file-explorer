@@ -390,6 +390,9 @@ fn footer_status_text(dirty: bool) -> &'static str {
 // Search keyword sets, one per visible row. They are shared by the per-row
 // filter in `render_settings_content` and by `tabs_matching_query`, so a row and
 // the cross-tab hint derived from it can never drift apart.
+// M09: each array also carries the words actually rendered in that row's
+// caption, description and section title — users search what they can see, not
+// the internal option value. Keep the lists in sync with the row markup below.
 const APPEARANCE_THEME_KEYWORDS: &[&str] = &[
     "テーマ",
     "theme",
@@ -398,11 +401,46 @@ const APPEARANCE_THEME_KEYWORDS: &[&str] = &[
     "システム",
     "配色",
     "外観",
+    // "アプリ全体の明るさを切り替えます"
+    "明るさ",
+    "切り替え",
 ];
-const APPEARANCE_VIEW_KEYWORDS: &[&str] =
-    &["レイアウト", "view", "一覧", "アイコン", "表示", "外観"];
-const FILES_HIDDEN_KEYWORDS: &[&str] = &["隠しファイル", "hidden", "ファイル", "ドットファイル"];
-const FILES_SORT_KEYWORDS: &[&str] = &["並び", "sort", "ファイル", "順序", "Alt+S"];
+const APPEARANCE_VIEW_KEYWORDS: &[&str] = &[
+    "レイアウト",
+    "view",
+    "一覧",
+    "アイコン",
+    "表示",
+    "外観",
+    // "既定のビュー" / "詳細一覧またはアイコン一覧を選択します"
+    "ビュー",
+    "既定のビュー",
+    "詳細一覧",
+    "選択",
+];
+const FILES_HIDDEN_KEYWORDS: &[&str] = &[
+    "隠しファイル",
+    "hidden",
+    "ファイル",
+    "ドットファイル",
+    // "名前が . で始まるファイルとフォルダーを一覧に含めます"
+    "ドット",
+    "フォルダー",
+    "一覧",
+];
+const FILES_SORT_KEYWORDS: &[&str] = &[
+    "並び",
+    "sort",
+    "ファイル",
+    "順序",
+    "Alt+S",
+    // "既定の並び順" / "…基準となる項目（Alt+S でキーボードから切替）"
+    "並び順",
+    "既定",
+    "キーボード",
+    "切替",
+    "基準",
+];
 const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "ショートカット",
     "キー",
@@ -418,6 +456,13 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     // The no-match hint names these direct-jump chords; searching that wording
     // must land on the Shortcuts page too (L03).
     "Alt+数字",
+    // Visible hint + section title ("キーボードショートカット", "操作=キー",
+    // "unbind アクション名", "置き換わります", "入力します").
+    "キーボード",
+    "操作",
+    "入力",
+    "unbind",
+    "置き換え",
 ];
 const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "既定",
@@ -445,6 +490,16 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "Ctrl+Shift+C",
     "Ctrl+Tab",
     "Ctrl+Shift+Tab",
+    // "主な既定のショートカット" and the rendered default list. The display
+    // form "Alt+1〜5" is searchable verbatim in addition to each digit (M09).
+    "主な",
+    "タブ",
+    "直接移動",
+    "Alt+1〜5",
+    "ヘルプ",
+    "キー一覧",
+    "場所",
+    "設定を開く",
 ];
 
 /// Shortcuts-tab keymap hint. Unlike the Alt+K dialog this field replaces the
@@ -452,7 +507,10 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
 /// the user is typing (H04). Per-entry `unbind アクション名` is accepted here
 /// too (the Save handler parses it through `parse_keymap_input`), so the hint
 /// must not send users to Alt+K for something this field can do itself (K04).
-const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。";
+/// M04: like `strings::KEYMAP_INPUT_HINT`, it also names `open_settings` as a
+/// reserved action — `Ctrl+,` is fixed and cannot be rebound (or unbound)
+/// from either editor, so promising otherwise here would mislead the user.
+const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。";
 /// Rows of the "主な既定のショートカット" list, kept as one constant so the
 /// Shortcuts tab, F1 help (`strings::HELP_SECTIONS`) and README cannot drift
 /// apart. The chord names are also searchable via `SHORTCUTS_DEFAULTS_KEYWORDS`
@@ -467,9 +525,45 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "Alt+1〜5 … 設定ダイアログのタブへ直接移動",
     "Alt+S … ファイルタブの並び順を切替",
 ];
-const TERMINAL_COMMAND_KEYWORDS: &[&str] = &["ターミナル", "terminal", "コマンド", "起動"];
-const PERSONALIZE_PALETTE_KEYWORDS: &[&str] = &["個人化", "パレット", "色", "カラー", "theme"];
-const PERSONALIZE_INFO_KEYWORDS: &[&str] = &["個人化", "情報", "about", "設定", "バージョン"];
+const TERMINAL_COMMAND_KEYWORDS: &[&str] = &[
+    "ターミナル",
+    "terminal",
+    "コマンド",
+    "起動",
+    // "選択中のフォルダーを作業ディレクトリとして起動するコマンド（空欄で無効化）"
+    "作業ディレクトリ",
+    "無効化",
+    "フォルダー",
+    "選択",
+    "空欄",
+];
+const PERSONALIZE_PALETTE_KEYWORDS: &[&str] = &[
+    "個人化",
+    "パレット",
+    "色",
+    "カラー",
+    "theme",
+    // "カラーパレット" / "アクセント / 成功 / エラー"
+    "カラーパレット",
+    "アクセント",
+    "成功",
+    "エラー",
+];
+const PERSONALIZE_INFO_KEYWORDS: &[&str] = &[
+    "個人化",
+    "情報",
+    "about",
+    "設定",
+    "バージョン",
+    // "このアプリについて" and the read-only info lines.
+    "このアプリ",
+    "アプリ",
+    "GPUI",
+    "ファイルマネージャー",
+    "settings.json",
+    "保存",
+    "配色",
+];
 
 /// Every searchable keyword group of a tab, in visible row order.
 fn tab_keyword_groups(tab: SettingsTab) -> &'static [&'static [&'static str]] {
@@ -507,7 +601,9 @@ pub fn tabs_matching_query(query: &str) -> Vec<SettingsTab> {
 /// to the reported page instead of a generic "Alt+数字" (K07/L05).
 pub fn no_match_hint(matching_tabs: &[SettingsTab]) -> String {
     if matching_tabs.is_empty() {
-        "該当する設定がありません".to_string()
+        // M14: a dead end must still offer a way out. With zero hits there is
+        // no tab to jump to, so name the two recovery routes that always work.
+        "該当する設定がありません。検索欄を空にするか Esc で閉じてください".to_string()
     } else {
         let labels: Vec<String> = matching_tabs
             .iter()
@@ -518,6 +614,124 @@ pub fn no_match_hint(matching_tabs: &[SettingsTab]) -> String {
             labels.join("、")
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// Row shortcuts for controls without a Tab stop (M08)
+// ---------------------------------------------------------------------------
+
+/// Current values needed to turn a row shortcut into a concrete action.
+///
+/// `SettingsUiAction` deliberately has no "cycle" variant: adding one would
+/// break the exhaustive `match` in `main.rs`'s `on_settings_action`, which is
+/// outside this module's scope. The existing `SetTheme` / `SetView` /
+/// `ToggleHidden` actions are already wired to the dirty-flag and Save path, so
+/// the helper resolves the next value here instead. The caller can fill this
+/// struct straight from its `SettingsUiState` fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingsRowValues<'a> {
+    /// Current theme choice (`dark` / `light` / `system`).
+    pub theme: &'a str,
+    /// Current view choice (`details` / `icons`).
+    pub view: &'a str,
+    /// Current "show hidden files" switch state.
+    pub hidden: bool,
+}
+
+/// Map a bare letter pressed on a settings page to the row it controls.
+///
+/// The settings card's key guard in `main.rs` swallows global shortcuts, and
+/// gpui-component 0.9.1 excludes `RadioGroup` / `Switch` from the Tab focus
+/// cycle, so three rows are otherwise keyboard-inaccessible while the dialog
+/// is open. This mapping is deliberately pure: it takes only the page, the key
+/// and the current values, and returns an *existing* action for the host to
+/// pass to `SettingsUiHost::on_settings_action`.
+///
+/// Keys are chosen to be free in the settings guard (only Tab, Enter, Escape,
+/// Alt+1..5 and Alt+S are claimed there) and are scoped per page so the same
+/// letter never controls two different rows:
+///
+/// | Page | Key | Row | Returned action |
+/// |---|---|---|---|
+/// | 外観 (`Appearance`) | `t` | 配色 (テーマ) | [`SettingsUiAction::SetTheme`] with [`settings_theme_next`] |
+/// | 外観 (`Appearance`) | `v` | 既定のビュー | [`SettingsUiAction::SetView`] with [`settings_view_next`] |
+/// | ファイル (`Files`) | `h` | 隠しファイルを表示 | [`SettingsUiAction::ToggleHidden`] with [`settings_hidden_next`] |
+///
+/// Host requirements when wiring this in `main.rs`:
+/// 1. Ignore the key while a text input owns focus (search / keymap / terminal)
+///    — otherwise typing the letter would also change the setting.
+/// 2. Only act when [`settings_row_is_visible`] says the row survives the
+///    header search filter.
+/// 3. Pass the action straight to `on_settings_action`; no new handler needed.
+///
+/// Key matching is case-insensitive and trimmed; modified chords such as
+/// `"alt+t"` are intentionally *not* recognised, leaving Alt+S and Alt+1..5
+/// exclusively to the existing tab/sort handlers.
+pub fn settings_row_shortcut(
+    tab: SettingsTab,
+    key: &str,
+    current: SettingsRowValues<'_>,
+) -> Option<SettingsUiAction> {
+    settings_row_keywords(tab, key)?;
+    let key = key.trim().to_lowercase();
+    match (tab, key.as_str()) {
+        (SettingsTab::Appearance, "t") => Some(SettingsUiAction::SetTheme(
+            settings_theme_next(current.theme).to_string(),
+        )),
+        (SettingsTab::Appearance, "v") => Some(SettingsUiAction::SetView(
+            settings_view_next(current.view).to_string(),
+        )),
+        (SettingsTab::Files, "h") => Some(SettingsUiAction::ToggleHidden(settings_hidden_next(
+            current.hidden,
+        ))),
+        _ => None,
+    }
+}
+
+/// Keyword group of the row addressed by `key` on `tab`, if any. Shared with
+/// [`settings_row_is_visible`] so the shortcut and the rendered filter cannot
+/// drift apart.
+fn settings_row_keywords(tab: SettingsTab, key: &str) -> Option<&'static [&'static str]> {
+    match (tab, key.trim().to_lowercase().as_str()) {
+        (SettingsTab::Appearance, "t") => Some(APPEARANCE_THEME_KEYWORDS),
+        (SettingsTab::Appearance, "v") => Some(APPEARANCE_VIEW_KEYWORDS),
+        (SettingsTab::Files, "h") => Some(FILES_HIDDEN_KEYWORDS),
+        _ => None,
+    }
+}
+
+/// Whether the row addressed by `key` on `tab` is rendered under the current
+/// header search filter. The host should require this before acting on a row
+/// shortcut, so typing `t` cannot silently change a row hidden by the filter.
+/// Unknown keys are never visible.
+pub fn settings_row_is_visible(tab: SettingsTab, key: &str, query: &str) -> bool {
+    settings_row_keywords(tab, key).is_some_and(|keywords| matches_query(query, keywords))
+}
+
+/// Next theme value for the 外観 `t` shortcut, matching the global Alt+Shift+T
+/// order (Dark → Light → System → Dark). Unknown/empty values start at `dark`,
+/// the same fallback as `Settings::theme_choice` deserialization.
+pub fn settings_theme_next(choice: &str) -> &'static str {
+    match choice {
+        "dark" => "light",
+        "light" => "system",
+        _ => "dark",
+    }
+}
+
+/// Next view value for the 外観 `v` shortcut, matching the `details` / `icons`
+/// persisted values. Unknown/empty values start at `details`, the explorer's
+/// default layout.
+pub fn settings_view_next(choice: &str) -> &'static str {
+    match choice {
+        "details" => "icons",
+        _ => "details",
+    }
+}
+
+/// Next switch value for the ファイル `h` shortcut.
+pub fn settings_hidden_next(current: bool) -> bool {
+    !current
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,9 +1255,10 @@ mod tests {
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
         cancel_label, footer_status_text, matches_query, next_settings_focus, no_match_hint,
-        selected_index, settings_focus_order, tabs_matching_query, SettingsFocusTarget,
-        SettingsTab, SettingsUiAction, SettingsUiPalette, SETTINGS_KEYMAP_INPUT_HINT,
-        SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
+        selected_index, settings_focus_order, settings_hidden_next, settings_row_is_visible,
+        settings_row_shortcut, settings_theme_next, settings_view_next, tabs_matching_query,
+        SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
+        SETTINGS_KEYMAP_INPUT_HINT, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
     };
 
     #[test]
@@ -1172,9 +1387,15 @@ mod tests {
             );
             assert!(!hint.contains("Alt+数字"), "generic hint: {hint}");
         }
-        // With no hits at all there is no page to jump to.
+        // With no hits at all there is no page to jump to, so M14 requires a
+        // recovery route instead: clear the query or close the dialog.
         let none = no_match_hint(&[]);
-        assert_eq!(none, "該当する設定がありません");
+        assert_eq!(
+            none,
+            "該当する設定がありません。検索欄を空にするか Esc で閉じてください"
+        );
+        assert!(none.contains("検索欄を空にする"));
+        assert!(none.contains("Esc で閉じてください"));
         assert!(!none.contains("Alt+"));
     }
 
@@ -1202,6 +1423,14 @@ mod tests {
             SETTINGS_KEYMAP_INPUT_HINT.contains("この欄でも `unbind アクション名` で解除できます")
         );
         assert!(!SETTINGS_KEYMAP_INPUT_HINT.contains("Alt+K の unbind を使用してください"));
+        // M04: the reserved-action notice from `strings::KEYMAP_INPUT_HINT`
+        // must be present here too, including the fact that unbind cannot
+        // release Ctrl+, — otherwise this editor promises something the save
+        // handler will reject.
+        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("open_settings は Ctrl+, 固定で変更できません"));
+        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("unbind も不可"));
+        assert!(SETTINGS_KEYMAP_INPUT_HINT
+            .contains("open_settings は Ctrl+, 固定で変更できません（unbind も不可）"));
     }
 
     #[test]
@@ -1252,6 +1481,159 @@ mod tests {
             tabs_matching_query("alt+s"),
             vec![SettingsTab::Files, SettingsTab::Shortcuts]
         );
+    }
+
+    #[test]
+    fn tabs_matching_query_finds_visible_caption_and_description_words() {
+        // M09: searching the wording actually rendered on a row must reveal
+        // that row's tab. Each word below is copied from the row markup in
+        // `render_settings_content`, not from an internal option value.
+        let cases: &[(&str, SettingsTab)] = &[
+            ("明るさ", SettingsTab::Appearance),
+            ("詳細一覧", SettingsTab::Appearance),
+            ("アイコン", SettingsTab::Appearance),
+            ("既定のビュー", SettingsTab::Appearance),
+            ("ドット", SettingsTab::Files),
+            ("作業ディレクトリ", SettingsTab::Terminal),
+            ("無効化", SettingsTab::Terminal),
+            ("unbind", SettingsTab::Shortcuts),
+            ("直接移動", SettingsTab::Shortcuts),
+            ("カラーパレット", SettingsTab::Personalize),
+            ("settings.json", SettingsTab::Personalize),
+        ];
+        for (query, expected) in cases {
+            assert_eq!(
+                tabs_matching_query(query),
+                vec![*expected],
+                "visible wording {query} must surface {expected:?}"
+            );
+            assert_eq!(
+                tabs_matching_query(&query.to_lowercase()),
+                vec![*expected],
+                "lowercase wording {query} must surface {expected:?}"
+            );
+        }
+        // The display form shown in the default list is searchable verbatim,
+        // alongside each individual Alt+digit chord (L03/M09).
+        assert_eq!(
+            tabs_matching_query("Alt+1〜5"),
+            vec![SettingsTab::Shortcuts]
+        );
+    }
+
+    #[test]
+    fn settings_row_shortcut_maps_bare_keys_per_tab() {
+        // M08: RadioGroup/Switch rows have no Tab stop and the settings guard
+        // swallows the global chords, so each row gets a bare letter scoped to
+        // its own page. The helper reuses the ordinary actions already handled
+        // by `main.rs`, so no new match arm is required there.
+        let current = SettingsRowValues {
+            theme: "dark",
+            view: "details",
+            hidden: false,
+        };
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Appearance, "t", current),
+            Some(SettingsUiAction::SetTheme("light".to_string()))
+        );
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Appearance, "v", current),
+            Some(SettingsUiAction::SetView("icons".to_string()))
+        );
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Files, "h", current),
+            Some(SettingsUiAction::ToggleHidden(true))
+        );
+        // Upper-case and surrounding whitespace behave like the lower-case key.
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Appearance, " T ", current),
+            Some(SettingsUiAction::SetTheme("light".to_string()))
+        );
+
+        // The returned value follows the current state, not a fixed default.
+        let other = SettingsRowValues {
+            theme: "system",
+            view: "icons",
+            hidden: true,
+        };
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Appearance, "t", other),
+            Some(SettingsUiAction::SetTheme("dark".to_string()))
+        );
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Appearance, "v", other),
+            Some(SettingsUiAction::SetView("details".to_string()))
+        );
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Files, "h", other),
+            Some(SettingsUiAction::ToggleHidden(false))
+        );
+    }
+
+    #[test]
+    fn settings_row_shortcut_ignores_other_pages_and_modified_chords() {
+        let current = SettingsRowValues {
+            theme: "dark",
+            view: "details",
+            hidden: false,
+        };
+        for (tab, key) in [
+            (SettingsTab::Appearance, "h"),
+            (SettingsTab::Files, "t"),
+            (SettingsTab::Files, "v"),
+            (SettingsTab::Shortcuts, "t"),
+            (SettingsTab::Terminal, "h"),
+            (SettingsTab::Personalize, "h"),
+            // Alt+1..5 and Alt+S belong to the existing tab/sort handlers.
+            (SettingsTab::Appearance, "alt+t"),
+            (SettingsTab::Files, "alt+h"),
+            (SettingsTab::Appearance, "1"),
+            (SettingsTab::Files, "s"),
+            (SettingsTab::Appearance, ""),
+            (SettingsTab::Appearance, "tt"),
+        ] {
+            assert_eq!(
+                settings_row_shortcut(tab, key, current),
+                None,
+                "{tab:?} + {key:?} must not claim a shortcut"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_row_is_visible_tracks_the_search_filter() {
+        // An empty query renders every row; a filter that misses the row's
+        // keyword group hides it, and the host must ignore the shortcut then.
+        assert!(settings_row_is_visible(SettingsTab::Appearance, "t", ""));
+        assert!(settings_row_is_visible(SettingsTab::Appearance, "v", "  "));
+        assert!(settings_row_is_visible(SettingsTab::Files, "h", "隠し"));
+        assert!(!settings_row_is_visible(
+            SettingsTab::Appearance,
+            "t",
+            "隠し"
+        ));
+        assert!(!settings_row_is_visible(SettingsTab::Files, "h", "テーマ"));
+        assert!(!settings_row_is_visible(SettingsTab::Appearance, "s", ""));
+        assert!(!settings_row_is_visible(SettingsTab::Files, "T", ""));
+    }
+
+    #[test]
+    fn settings_next_value_helpers_cycle_and_wrap() {
+        // These helpers keep the value resolution pure so the row shortcut can
+        // return the existing SetTheme/SetView/ToggleHidden actions directly.
+        assert_eq!(settings_theme_next("dark"), "light");
+        assert_eq!(settings_theme_next("light"), "system");
+        assert_eq!(settings_theme_next("system"), "dark");
+        assert_eq!(settings_theme_next(""), "dark");
+        assert_eq!(settings_theme_next("unknown"), "dark");
+
+        assert_eq!(settings_view_next("details"), "icons");
+        assert_eq!(settings_view_next("icons"), "details");
+        assert_eq!(settings_view_next(""), "details");
+        assert_eq!(settings_view_next("unknown"), "details");
+
+        assert!(settings_hidden_next(false));
+        assert!(!settings_hidden_next(true));
     }
 
     #[test]

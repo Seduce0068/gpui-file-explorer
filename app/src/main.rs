@@ -344,6 +344,8 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_TABS_ONLY_DIRECTORY,
     STATUS_BOOKMARKS_ONLY_DIRECTORY,
     STATUS_LAST_TAB,
+    // M05: no-op unbind refuses an operation, so it is amber, never success.
+    STATUS_KEYMAP_NO_UNBIND_PREFIX,
     STATUS_DROP_ONLY_DIRECTORY,
     STATUS_DROP_EMPTY,
     STATUS_TAB_RESTORE_EMPTY,
@@ -376,6 +378,10 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     STATUS_TARGET_MISSING,
     STATUS_DROP_NOT_FOUND,
     STATUS_NOT_DIRECTORY,
+    // M06: both suffixes carry a runtime value (`{name}` / `{n}`), so the
+    // fixed part itself is the marker; otherwise these refusals read as success.
+    STATUS_NOT_FOUND_SUFFIX,
+    STATUS_MISSING_COUNT_SUFFIX,
 ];
 
 /// Status shown when a bookmark toggle targets a path serde cannot persist
@@ -562,7 +568,7 @@ fn keymap_unbind_caption(removed: bool, action: &str) -> String {
     if removed {
         format!("キーマップを解除しました: {action}")
     } else {
-        format!("解除する設定はありません: {action}")
+        format!("{STATUS_KEYMAP_NO_UNBIND_PREFIX}{action}")
     }
 }
 
@@ -635,7 +641,10 @@ fn trash_undo_status(label: &str, restored: usize, missing: usize) -> String {
     } else if missing == 0 {
         format!("{label}を元に戻しました（{restored} 件）")
     } else {
-        format!("{label}を元に戻しました（{restored} 件、{missing} 件はゴミ箱にありません）")
+        // M01: 一部の復元失敗は成功ではなく一部失敗として色判定される必要がある。
+        // `STATUS_PARTIAL_FAILURE_SUFFIX` の "しました" を動詞の活用にそのまま
+        // 使うため、直前に "元に戻" を置く（"元に戻しました（一部失敗: …"）。
+        format!("{label}を元に戻{STATUS_PARTIAL_FAILURE_SUFFIX}{restored} 件、{missing} 件はゴミ箱にありません）")
     }
 }
 
@@ -1661,8 +1670,9 @@ use crate::strings::{
     STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
     STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
     STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
-    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_MISSING_COUNT_SUFFIX,
-    STATUS_NOT_DIRECTORY, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
+    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
+    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
+    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
     STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
     STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PRIORITY,
     STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED,
@@ -4488,6 +4498,36 @@ impl Explorer {
                         return;
                     }
                 }
+            }
+            // M08: single-letter shortcuts for settings rows that are outside
+            // the Tab focus cycle (theme / view / hidden). Skipped while a
+            // text input owns focus so typing is never swallowed.
+            let row_shortcut = self.settings_ui.as_ref().and_then(|state| {
+                let typing = [
+                    Some(&state.search_input),
+                    Some(&state.keymap_input),
+                    Some(&state.terminal_input),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
+                if typing {
+                    return None;
+                }
+                let query = state.search_input.read(cx).value().to_string();
+                if !settings_row_is_visible(state.tab, key, &query) {
+                    return None;
+                }
+                let values = SettingsRowValues {
+                    theme: &state.theme_choice,
+                    view: &state.view_choice,
+                    hidden: state.show_hidden,
+                };
+                settings_row_shortcut(state.tab, key, values)
+            });
+            if let Some(action) = row_shortcut {
+                self.on_settings_action(action, cx);
+                return;
             }
             match key {
                 "escape" => self.dismiss_settings_ui(cx),
@@ -8241,7 +8281,7 @@ impl Explorer {
             .saved_search(name)
             .map(|search| search.query.clone())
         else {
-            self.status = format!("保存検索が見つかりません: {name}");
+            self.status = format!("保存検索{STATUS_NOT_FOUND_SUFFIX}: {name}");
             cx.notify();
             return;
         };
@@ -8263,7 +8303,7 @@ impl Explorer {
                 format!("保存検索を削除しました: {name}"),
             )
         } else {
-            format!("保存検索が見つかりません: {name}")
+            format!("保存検索{STATUS_NOT_FOUND_SUFFIX}: {name}")
         };
         cx.notify();
     }
@@ -10319,8 +10359,8 @@ impl Render for Explorer {
 // ---------------------------------------------------------- settings overlay
 
 use crate::settings_ui::{
-    render_settings_content, SettingsTab, SettingsUiAction, SettingsUiHost, SettingsUiPalette,
-    SettingsUiState,
+    render_settings_content, settings_row_is_visible, settings_row_shortcut, SettingsRowValues,
+    SettingsTab, SettingsUiAction, SettingsUiHost, SettingsUiPalette, SettingsUiState,
 };
 
 impl Explorer {
@@ -11071,14 +11111,16 @@ mod tests {
         GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
         STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-        STATUS_DROP_ONLY_DIRECTORY, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_LAST_TAB,
-        STATUS_NOT_DIRECTORY, STATUS_NO_SELECTION, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
-        STATUS_PRIORITY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
-        STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
-        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
-        STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
-        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY,
-        STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_DROP_ONLY_DIRECTORY, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
+        STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB, STATUS_MISSING_COUNT_SUFFIX,
+        STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
+        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_EMPTY,
+        STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE,
+        STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
+        STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
+        STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY,
+        STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
+        THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11162,6 +11204,27 @@ mod tests {
                 "composed status for {marker:?} must be red"
             );
         }
+    }
+
+    #[test]
+    fn dynamic_refusal_statuses_are_not_green() {
+        // M05: 「解除する設定はありません」は操作拒否なので warning(amber)。
+        let noop = keymap_unbind_caption(false, "open_preview");
+        assert!(noop.contains(STATUS_KEYMAP_NO_UNBIND_PREFIX), "{noop}");
+        assert_eq!(status_color(&noop), C_YELLOW, "no-op unbind: {noop}");
+        // 実際に解除できた場合の成功通知は従来どおり green。
+        let removed = keymap_unbind_caption(true, "open_preview");
+        assert_eq!(
+            status_color(&removed),
+            C_GREEN,
+            "successful unbind: {removed}"
+        );
+
+        // M06: 動的な名前・件数を含む拒否も concrete failure として error(red)。
+        let missing_search = format!("保存検索{STATUS_NOT_FOUND_SUFFIX}: ghost");
+        assert_eq!(status_color(&missing_search), C_RED, "{missing_search}");
+        let missing_count = format!("3{STATUS_MISSING_COUNT_SUFFIX}");
+        assert_eq!(status_color(&missing_count), C_RED, "{missing_count}");
     }
 
     #[test]
@@ -13129,6 +13192,11 @@ mod tests {
             partial.contains("1 件") && partial.contains("1 件はゴミ箱にありません"),
             "{partial}"
         );
+        // M01: 一部の復元失敗は成功 green ではなく error(red) に分類される。
+        assert!(partial.contains(STATUS_PARTIAL_FAILURE_SUFFIX), "{partial}");
+        assert_eq!(status_color(&partial), C_RED, "partial restore: {partial}");
+        // 全件成功は従来どおり green のまま。
+        assert_eq!(status_color(&ok), C_GREEN, "full restore: {ok}");
     }
 
     #[test]
