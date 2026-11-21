@@ -539,13 +539,13 @@ status: current
   — DESIGN.md:98,875,1086
 - [x] **D08** 設定画面の keymap が unbind 構文を扱えない — 対応: loop2-core
   — main.rs:10107-10118
-- [ ] **D09** 設定検索が現在タブのみで0件案内なし
+- [x] **D09** 設定検索が現在タブのみで0件案内なし — 対応: loop2-search
   — settings_ui.rs:468-506
 - [x] **D10** AppPalette の status_color / kind_color に直接テストなし — 対応: loop2-docs
   — main.rs:169-195
 - [x] **D11** DESIGN 行数クレームが再ドリフト（1,138 vs 1,157） — README.md:83 — 対応: loop2-docs
 - [x] **D12** アーキテクチャ表が settings_ui/system_icons を欠落 — app/README.md:364 — 対応: loop2-docs
-- [ ] **D13** 保存失敗時にメモリ上の設定・テーマがロールバックされない — main.rs:10186
+- [x] **D13** 保存失敗時にメモリ上の設定・テーマがロールバックされない — main.rs:10186 — 対応: loop2-rollback
 
 ### 優先度: 低（調査タスク）
 
