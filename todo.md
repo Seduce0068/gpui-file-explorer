@@ -547,6 +547,38 @@ status: current
 - [x] **D12** アーキテクチャ表が settings_ui/system_icons を欠落 — app/README.md:364 — 対応: loop2-docs
 - [x] **D13** 保存失敗時にメモリ上の設定・テーマがロールバックされない — main.rs:10186 — 対応: loop2-rollback
 
+### 優先度: 高（ループ R1・confirmed）
+
+- [ ] **E01** 設定カード Shortcuts タブに検証エラーが表示されない
+  — settings_ui.rs:591-618 / error は Terminal タブのみ
+- [ ] **E02** Alt+K 保存失敗時に keymap がロールバックされない
+  — main.rs:4044-4074
+- [ ] **E03** Alt+T 保存失敗時に terminal_command がロールバックされない
+  — main.rs:3873-3887
+- [ ] **E04** ウィンドウクローズ時の保存失敗が完全に無視される
+  — main.rs:10641-10644 / Ctrl+Q はログ出力済み
+
+### 優先度: 中（ループ R1）
+
+- [ ] **E05** toggle_bookmark_path が非UTF-8事前拒否を通らない
+  — main.rs:2836-2850
+- [ ] **E06** DESIGN §2 テーマ行が2値・ダーク固定のまま
+  — DESIGN.md:108
+- [ ] **E07** review-report の「todo.md 参照」が空振り / 167 tests 断言
+  — review-report.md:30,86,606,659
+- [ ] **E08** DESIGN as-built 差分表の見出し日付が初版のまま
+  — DESIGN.md:336
+- [ ] **E09** bookmark_label_is_settable が sane_path 条件を反映せず偽陽性
+  — main.rs:565-571 / settings.rs:882
+- [ ] **E10** read_only セッションで「設定を保存しました」と誤表示
+  — settings.rs:1346 / main.rs:10294
+- [ ] **E11** 設定画面のテーマ案内が「自動更新」で実際は保存時
+  — settings_ui.rs:700-703
+- [ ] **E12** 未保存編集のキャンセル/Esc/背景クリックに確認なし
+  — main.rs:10165 / settings_ui.rs:785
+- [ ] **E13** 設定UI文言が strings.rs 正規定数を迂回（LABEL_CANCEL 等）
+  — settings_ui.rs:792 / main.rs:10294
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
