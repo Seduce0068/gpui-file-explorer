@@ -518,6 +518,35 @@ status: current
 - [x] **C09** Ctrl+, が両 README のキーバインド表に未掲載 — README.md / app/README.md — 対応: loop-docs
 - [x] **C10** 設定画面のキーマップ構文 `action=chord;` が無説明 — settings_ui.rs:192 — 対応: loop-docs
 
+### 優先度: 高（ループ再開 R1・confirmed）
+
+- [ ] **D01** 設定オーバーレイが入力へフォーカスせずキーボード操作が届かない
+  — main.rs:9931-9972 / DESIGN.md:258 規約違反
+- [ ] **D02** 設定画面の検証エラーが入力修正後も消えない
+  — main.rs:9960-9969 / 他ダイアログは clear_dialog_error 済み
+- [ ] **D03** chord にセミコロンを含むと設定画面の往復で Save が永久失敗
+  — main.rs:9925,10101 / parse_chord がセミコロンを許容
+
+### 優先度: 中（ループ再開 R1）
+
+- [ ] **D04** ラベル設定失敗時に自動追加したブックマークだけが残る
+  — main.rs:2860-2874
+- [ ] **D05** Breeze ダーク用アイコンがテーマと連動せずライト用が優先される
+  — system_icons.rs:157-161
+- [ ] **D06** app/README が Breeze 実装を反映せず「Lucide のみ」と記載
+  — app/README.md:358,551
+- [ ] **D07** DESIGN のアイコン戦略が P2 未実装のまま as-built と矛盾
+  — DESIGN.md:98,875,1086
+- [ ] **D08** 設定画面の keymap が unbind 構文を扱えない
+  — main.rs:10107-10118
+- [ ] **D09** 設定検索が現在タブのみで0件案内なし
+  — settings_ui.rs:468-506
+- [ ] **D10** AppPalette の status_color / kind_color に直接テストなし
+  — main.rs:169-195
+- [ ] **D11** DESIGN 行数クレームが再ドリフト（1,138 vs 1,157） — README.md:83
+- [ ] **D12** アーキテクチャ表が settings_ui/system_icons を欠落 — app/README.md:364
+- [ ] **D13** 保存失敗時にメモリ上の設定・テーマがロールバックされない — main.rs:10186
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
