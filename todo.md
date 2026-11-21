@@ -827,7 +827,8 @@ status: current
   — settings_ui.rs:1165
 - [x] **P11** create_unique_folder の 100 回枯渇エラーが未テスト — 対応: loop13-tests
   — model.rs:813
-- [x] **P12** normalize_events Both 単一パス/ SafeWatcher init_error=None が無テスト — 対応: loop13-tests
+- [x] **P12** normalize_events Both 単一パス/ SafeWatcher init_error=None が無テスト
+  — 対応: loop13-tests
   — watcher.rs:64,110
 - [x] **P13** sniff_image_format の 1024 バイト走査上限が未テスト — 対応: loop13-tests
   — preview.rs:95
