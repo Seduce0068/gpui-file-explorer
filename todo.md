@@ -1006,6 +1006,28 @@ status: current
 - [x] **W11** DESIGN §8.4「すべて集約・散在禁止」が as-built と未同期 — 対応: loop20-docs
   — DESIGN.md:916
 
+### 優先度: 中（ループ R19・confirmed）
+
+- [ ] **X01** save 失敗理由定数が error マーカー未登録 — main.rs:377
+- [ ] **X02** 未保存破棄通知が成功緑（データ損失通知） — main.rs:11645
+- [ ] **X03** ラベル未設定拒否が main.rs インライン — main.rs:808
+- [ ] **X04** ゴミ箱読込失敗が main.rs インライン — main.rs:817
+- [ ] **X05** ops.rs validate_file_name の Windows 分岐が無テスト
+- [ ] **X06** ops.rs with_cleanup_failure の NotFound 分岐が無テスト
+
+### 優先度: 低（ループ R19）
+
+- [ ] **X07** typing ガード注記が Alt+S 一覧行に未同期 — settings_ui.rs:682
+- [ ] **X08** Undo「が存在しません」が main.rs ローカル — main.rs:832
+- [ ] **X09** CLI 起動ディレクトリ拒否が main.rs ローカル — main.rs:11026
+- [ ] **X10** review-report の DESIGN 行番号が drift — review-report.md:651
+- [ ] **X11** error.rs fs_message 空 OS メッセージ分岐が無テスト
+- [ ] **X12** system_icons push_unique_path 重複分岐が無テスト
+- [ ] **X13** 入力ガード注記が3通りに分岐 — strings.rs:183 / README:154
+- [ ] **X14** Personalize キーワード「情報」「about」が表示されず
+  — settings_ui.rs:713
+- [ ] **X15** README キー表と F1 の自動同期テストなし
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
