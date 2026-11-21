@@ -725,6 +725,33 @@ status: current
 
 - [x] **K14** unescape_mount_field がマルチバイト文字で panic — 対応: 親（bytes スライスに修正、回帰テスト追加）
 
+### 優先度: 高（ループ R8・confirmed）
+
+- [ ] **L01** open_settings 自身を rebind すると Ctrl+, が消え案内が矛盾
+  — main.rs:1004 / settings.rs:396
+- [ ] **L02** is_reserved_chord が内部空白入り chord をすり抜ける
+  — settings.rs:384
+- [ ] **L03** 設定検索が Alt+S / Alt+1〜5 にマッチしない
+  — settings_ui.rs:406
+
+### 優先度: 中（ループ R8）
+
+- [ ] **L04** Search ビューで Ctrl+, が keymap に到達しない
+  — main.rs:267
+- [ ] **L05** 他タブ一致ヒントが Alt+数字の具体的番号を案内しない
+  — settings_ui.rs:481
+- [ ] **L06** 対象なし系ステータスが成功色のまま — main.rs:325
+- [ ] **L07** 既定ショートカット一覧に Ctrl+, / Alt+数字 / Alt+S 未掲載
+  — settings_ui.rs:793
+- [ ] **L08** generic_icon_for_kind の 5 分岐が未テスト — system_icons.rs:294
+- [ ] **L09** text-x- 二重プレフィックスガード未テスト — system_icons.rs:336
+- [ ] **L10** normalize_events の空 paths→Rescan 分岐が未テスト — watcher.rs:56
+- [ ] **L11** human_size の T/P 単位分岐が未テスト — model.rs:726
+- [ ] **L12** DESIGN 471 件の Root Proof が存在しない README:463 を参照
+  — DESIGN.md:997
+- [ ] **L13** review-report 却下根拠の README:133 が現行と不一致
+  — review-report.md:344
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
