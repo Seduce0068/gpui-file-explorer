@@ -1005,7 +1005,7 @@ app/
 | 性能 | 1k/10k 件の初回表示・スクロール・監視反映 | 手動 + `date`/スクショ + `/proc/<pid>/status` | △（1k のみ） |
 
 **as-built スナップショット（2026-11-21 実行、現在値は README / 実行結果を参照）**:
-単体テストは `cargo test --all-targets --locked` が 515 passed / 0 failed（app）。
+単体テストは `cargo test --all-targets --locked` が 516 passed / 0 failed（app）。
 数値は 2026-11-21 実行の as-built スナップショット（README.md / app/README.md の cargo test 欄と一致）。
 実機 GUI は KWin D-Bus + XDG Portal で起動・描画・監視・ゴミ箱を確認済み。
 `DISPLAY=:1 WAYLAND_DISPLAY=wayland-0` + spectacle + kdotool でスクショ取得可だが、
@@ -1216,7 +1216,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 内容検索（`search::search_contents`）とタブ（`tabs.rs`）の実装済み化
 （§1.2/§4.1）、サイドバー幅は 190px 固定（§3.1）、テーマは Catppuccin
 Mocha / Latte の `AppPalette` / `SettingsUiPalette` に集約（§8.2）、
-単体テスト 515 passed / 0 failed（§10.1 の as-built スナップショット =
+単体テスト 516 passed / 0 failed（§10.1 の as-built スナップショット =
 README の 2026-11-21 更新値と同期）。
 
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
