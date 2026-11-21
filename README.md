@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 482 tests
+cargo test           # 494 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -94,7 +94,7 @@ cargo test           # 482 tests
 
 ## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-21 更新）
 
-- `cargo build` 警告 0 / `cargo test` **482 passed / 0 failed**
+- `cargo build` 警告 0 / `cargo test` **494 passed / 0 failed**
   （2026-11-21 時点。初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
@@ -167,12 +167,21 @@ bash packaging/linux/build-deb.sh --skip-build
 （gpui 系 Apache-2.0、Lucide ISC、notify CC0-1.0 ほか）。詳細は
 [NOTICE.md](NOTICE.md) と [app/NOTICE.md](app/NOTICE.md) を参照してください。
 
-## CI の検証範囲（2026-11-16 追記）
+## CI の検証範囲（2026-11-21 更新）
 
-`.github/workflows/ci.yml` は `Seduce0068/workflows/.github/workflows/rust-gates.yml@v1` に委譲し、
-`app/` で fmt → check → test → clippy → `cargo audit` を実行する。
-`poc/` はルート `Cargo.toml` を持たない別プロジェクトのため共有ワークフローの対象外だったので、
-`extra_gates` で `poc/` の fmt / check(`--locked`) / test(`--locked`) / clippy(`-D warnings`) を追加した。
+`.github/workflows/ci.yml` は
+`Seduce0068/workflows/.github/workflows/rust-gates.yml@v1` に委譲し、`app/` で
+fmt → check → test → clippy → `cargo audit` を実行する。
+`poc/` はルート `Cargo.toml` を持たない別プロジェクトのため共有ワークフローの
+対象外だったので、`extra_gates` で `poc/` の fmt / check(`--locked`) /
+test(`--locked`) / clippy(`-D warnings`) と、`app/` の release check/test
+（`#[cfg(not(debug_assertions))]` 分岐の検証）を追加した。
+
+サプライチェーン監査は別ジョブ `supply-chain` で実行する（共有ワークフローに
+`cargo deny` / `cargo vet` の入力が無いため）。`app/` には `cargo deny check`
+（全チェック）、`poc/` には `cargo deny check advisories bans sources`
+（licenses は Cargo.toml に license が無いため除外）を実行し、`cargo vet check`
+は `app/supply-chain/config.toml` が存在する場合のみ実行する。
 
 - 検証（Runtime Proof）: 追加ゲートを含む CI が **success**
   （run 43734742786、12分22秒）— 2026-11-16 時点のスナップショット。
@@ -180,26 +189,37 @@ bash packaging/linux/build-deb.sh --skip-build
   `19b5f1d` に対する CI run 44063705679 が **success**
   （8m17s、2026-11-17T19:27+09:00 完了）。
   [review-report.md](review-report.md) の承認記録に記載。
-- ローカルでも同一コマンド列の再現を確認（`app/` を cwd に `bash -e` で実行、poc 4 tests pass）。
+- ローカルでも同一コマンド列の再現を確認（`app/` を cwd に `bash -e` で実行、
+  poc 4 tests pass）。
 
 ### ローカル検証ループ
 
-CI と同じ範囲を手元で回すスクリプトを用意しています。
+CI と同じ範囲を手元で回すスクリプトを用意しています。既定では release 検証も
+実行します。
 
 ```bash
-bash scripts/check.sh            # app + poc の fmt/check/test/clippy + cargo audit
-bash scripts/check.sh --fast     # cargo audit を省略（RustSec DB が引けない環境向け）
-bash scripts/check.sh --app      # app/ のみ
-bash scripts/check.sh --poc      # poc/ のみ
+bash scripts/check.sh              # app + poc: fmt/check/test/clippy +
+                                   # app の release check/test +
+                                   # cargo audit / deny / vet
+bash scripts/check.sh --fast       # audit と vet を省略。deny は advisories を
+                                   # 省きオフラインで licenses/bans/sources のみ。
+                                   # --no-release も暗示（release 検証を省略）。
+bash scripts/check.sh --no-release # app の release check/test のみ省略。
+bash scripts/check.sh --strict     # 監査ツール未導入時に失敗（既定は SKIPPED）。
+bash scripts/check.sh --app        # app/ のみ（release 検証を含む）。
+bash scripts/check.sh --poc        # poc/ のみ。
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 482 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（clippy 警告 0 /
+  `cargo audit` は既知 8 件の allowed warnings のみ）。テスト数の現在値は
+  `cargo test` 結果を参照（固定値を記載すると drift するため）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
 
 ### OFFLINE / headless 検証
 
-headless 環境では `scripts/check.sh --fast` で cargo audit を省略可能。
-GUI 検証は `DISPLAY=:1 WAYLAND_DISPLAY=wayland-0` + spectacle + kdotool で
+headless 環境では `scripts/check.sh --fast` で cargo audit / vet と deny の
+advisories（RustSec DB 依存）を省略可能。GUI 検証は
+`DISPLAY=:1 WAYLAND_DISPLAY=wayland-0` + spectacle + kdotool で
 スクリーンショット取得可（実キー入力は KWin ポータル制約で未検証）。
 
 ## ソース・ライセンス

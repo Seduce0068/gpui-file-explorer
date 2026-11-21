@@ -407,6 +407,61 @@ pub fn is_reserved_chord(chord: &str) -> bool {
     key == "f1" || key == "escape" || key == ","
 }
 
+/// Cheap syntax gate for a persisted chord: split on `+`, reject empty tokens
+/// and any repeated token (e.g. `ctrl+ctrl+p`, `ctrl++p`, `ctrl+p+p`). Full key
+/// names stay the runtime parser's job; this only catches typos that would
+/// otherwise be persisted even though the keymap dialog rejects them (M03).
+fn chord_tokens_sane(chord: &str) -> bool {
+    let mut seen = HashSet::new();
+    for token in chord.split('+') {
+        let token = token.trim().to_ascii_lowercase();
+        if token.is_empty() || !seen.insert(token) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Canonicalize a persisted chord only for duplicate detection in [`Settings::validate`].
+/// Modifiers are emitted in the same order as `main.rs::format_chord`
+/// (`ctrl`, `alt`, `shift`) and the key is lowercased, so `ctrl+shift+p` and
+/// `shift+ctrl+p` share one dedupe key. Unparseable chords fall back to the
+/// trimmed lowercase string. Kept local because `main.rs` depends on this
+/// module, not the other way around (M02).
+fn canonical_chord_key(chord: &str) -> String {
+    let lowered = chord.trim().to_ascii_lowercase();
+    let (mut ctrl, mut alt, mut shift) = (false, false, false);
+    let mut key = None;
+    for token in lowered.split('+') {
+        let token = token.trim();
+        if token.is_empty() {
+            return lowered;
+        }
+        match token {
+            "ctrl" if key.is_none() => ctrl = true,
+            "alt" if key.is_none() => alt = true,
+            "shift" if key.is_none() => shift = true,
+            _ if key.is_none() => key = Some(token),
+            _ => return lowered,
+        }
+    }
+    let Some(key) = key else {
+        return lowered;
+    };
+    let mut canonical = String::new();
+    if ctrl {
+        canonical.push_str("ctrl+");
+    }
+    if alt {
+        canonical.push_str("alt+");
+    }
+    if shift {
+        canonical.push_str("shift+");
+    }
+    canonical.push_str(key);
+    canonical
+}
+
 /// Normalize one persisted `(action_name, chord)` pair. Both sides are trimmed
 /// and bounded, and entries that would take away a way out of a dialog or the
 /// Ctrl+, settings shortcut are rejected: a chord mentioning a reserved key
@@ -420,7 +475,12 @@ fn sane_keymap_entry(action: &str, chord: &str) -> Option<(String, String)> {
     let sane = |value: &str| {
         !value.is_empty() && value.len() <= MAX_CHORD_BYTES && !value.chars().any(char::is_control)
     };
-    if !sane(action) || !sane(chord) || is_reserved_action(action) || is_reserved_chord(chord) {
+    if !sane(action)
+        || !sane(chord)
+        || !chord_tokens_sane(chord)
+        || is_reserved_action(action)
+        || is_reserved_chord(chord)
+    {
         return None;
     }
     Some((action.to_string(), chord.to_string()))
@@ -1322,7 +1382,8 @@ impl Settings {
 
         // Keymap overrides get the same harden-on-load treatment: trim both
         // sides, drop unusable/reserved entries, cap the count and keep only
-        // the first override per action AND per chord. Two actions bound to
+        // the first override per action AND per chord (compared canonically,
+        // so equivalent modifier spellings collapse). Two actions bound to
         // the same chord would make key resolution depend on iteration order,
         // so a later entry with a duplicate chord is dropped. Unknown action
         // names are kept; the application ignores them when building the map.
@@ -1336,10 +1397,13 @@ impl Settings {
             let Some((action, chord)) = sane_keymap_entry(&action, &chord) else {
                 continue;
             };
-            // Reserve the chord first: a duplicate chord must not reserve the
-            // action, otherwise a later (valid) rebind of that action to a
-            // different chord would be dropped.
-            if !seen_chords.insert(chord.clone()) {
+            // Dedupe by canonical spelling: `parse_chord` treats modifier order
+            // and case as irrelevant, so `ctrl+shift+p` and `shift+ctrl+p` are
+            // the same keystroke (M02). Reserve the chord first: a duplicate
+            // chord must not reserve the action, otherwise a later (valid)
+            // rebind of that action to a different chord would be dropped.
+            let chord_key = canonical_chord_key(&chord);
+            if !seen_chords.insert(chord_key.clone()) {
                 continue;
             }
             if seen_actions.insert(action.clone()) {
@@ -1347,7 +1411,7 @@ impl Settings {
             } else {
                 // The chord was reserved speculatively but the action is
                 // already bound, so release it for a later entry.
-                seen_chords.remove(&chord);
+                seen_chords.remove(&chord_key);
             }
         }
         self.keymap = keymap;
@@ -3997,6 +4061,69 @@ mod keymap_settings_tests {
                 ("b".to_string(), "ctrl+o".to_string()),
             ],
             "a duplicate chord must not reserve its action for later entries"
+        );
+    }
+
+    #[test]
+    fn keymap_validation_deduplicates_equivalent_chord_spellings() {
+        // M02: parse_chord は修飾子順と大小文字を無視するため、
+        // "ctrl+shift+p" / "shift+ctrl+p" / "CTRL+SHIFT+P" は同じキー。
+        let mut settings = Settings {
+            keymap: vec![
+                ("first".to_string(), "ctrl+shift+p".to_string()),
+                ("second".to_string(), "shift+ctrl+p".to_string()),
+                ("third".to_string(), "CTRL+SHIFT+P".to_string()),
+                ("other".to_string(), "alt+shift+k".to_string()),
+                ("other_canonical".to_string(), "shift+alt+K".to_string()),
+            ],
+            ..Settings::default()
+        };
+        settings.validate();
+        assert_eq!(
+            settings.keymap,
+            vec![
+                ("first".to_string(), "ctrl+shift+p".to_string()),
+                ("other".to_string(), "alt+shift+k".to_string()),
+            ],
+            "equivalent chord spellings must collapse to the first entry"
+        );
+    }
+
+    #[test]
+    fn sane_keymap_entry_rejects_malformed_chord_tokens() {
+        // M03: ダイアログが拒否するタイポを永続化しない。キー名そのものの
+        // 検証は parse_chord に任せ、空トークンと重複トークンだけを弾く。
+        for chord in [
+            "ctrl+ctrl+p",
+            "ctrl++p",
+            "ctrl+p+p",
+            "SHIFT+shift+p",
+            "+ctrl+p",
+        ] {
+            assert!(
+                sane_keymap_entry("some_action", chord).is_none(),
+                "malformed chord must be rejected: {chord}"
+            );
+        }
+        for chord in ["ctrl+p", "f4", "alt+shift+k", "ctrl + p"] {
+            assert!(
+                sane_keymap_entry("some_action", chord).is_some(),
+                "valid chord must be kept: {chord}"
+            );
+        }
+
+        let mut settings = Settings {
+            keymap: vec![
+                ("good".to_string(), "ctrl+p".to_string()),
+                ("dup".to_string(), "ctrl+ctrl+p".to_string()),
+                ("empty".to_string(), "ctrl++p".to_string()),
+            ],
+            ..Settings::default()
+        };
+        settings.validate();
+        assert_eq!(
+            settings.keymap,
+            vec![("good".to_string(), "ctrl+p".to_string())]
         );
     }
 

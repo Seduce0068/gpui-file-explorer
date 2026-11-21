@@ -976,7 +976,16 @@ app/
 | serde / serde_json | MIT OR Apache-2.0 | 表示 | crates.io メタデータ |
 | dirs 7（試作は 6 可） | MIT OR Apache-2.0（⚠ 未確認） | 表示 | fs-notes §12 |
 
-- CI/リリース前に `cargo deny check licenses`（allow: AGPL-3.0-or-later, Apache-2.0, MIT, ISC, CC0-1.0, Unlicense, BSD-3-Clause, Unicode-3.0 / deny: GPL-2.0, GPL-3.0-only, SSPL）と `cargo audit` を実行（[`RESEARCH.md`](RESEARCH.md) §11.2）。P0 では `cargo tree` で直接依存のライセンス確認を README に記録（⚠ 自動化は P1）。
+- CI/リリース前に `cargo deny check licenses`（allow: AGPL-3.0-or-later,
+  Apache-2.0, MIT, ISC, CC0-1.0, Unlicense, BSD-3-Clause, Unicode-3.0 /
+  deny: GPL-2.0, GPL-3.0-only, SSPL）と `cargo audit` を実行
+  （[`RESEARCH.md`](RESEARCH.md) §11.2）。P0 では `cargo tree` で直接依存の
+  ライセンス確認を README に記録した。**自動化は as-built で完了済み**:
+  `.github/workflows/ci.yml` の `supply-chain` ジョブが `cargo deny check`
+  （`app/` は全チェック、`poc/` は advisories/bans/sources）と
+  `cargo vet check`（store 存在時のみ）を実行し、`gates` ジョブが
+  `cargo audit` を実行する。ローカルは `scripts/check.sh`（`--no-release` /
+  `--strict` 対応）で再現可（[`README.md`](README.md)「CI の検証範囲」）。
 
 ---
 
@@ -993,7 +1002,7 @@ app/
 | 性能 | 1k/10k 件の初回表示・スクロール・監視反映 | 手動 + `date`/スクショ + `/proc/<pid>/status` | △（1k のみ） |
 
 **as-built スナップショット（2026-11-21 実行、現在値は README / 実行結果を参照）**:
-単体テストは `cargo test --all-targets --locked` が 482 passed / 0 failed（app）。
+単体テストは `cargo test --all-targets --locked` が 494 passed / 0 failed（app）。
 数値は 2026-11-21 実行の as-built スナップショット（README.md / app/README.md の cargo test 欄と一致）。
 実機 GUI は KWin D-Bus + XDG Portal で起動・描画・監視・ゴミ箱を確認済み。
 `DISPLAY=:1 WAYLAND_DISPLAY=wayland-0` + spectacle + kdotool でスクショ取得可だが、

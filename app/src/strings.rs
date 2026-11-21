@@ -327,6 +327,9 @@ pub const STATUS_WATCH_COUNT_SUFFIX: &str = " ディレクトリ";
 /// OS 連携の成功 notification。戻り値を確認せずに出す現状の文言（r4-error-01）。
 pub const STATUS_OPENED_DEFAULT_SUFFIX: &str = "を既定のアプリで開きました";
 pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: ";
+/// キーマップの `unbind` で解除するオーバーライドがなかったときの通知接頭辞。
+/// 動的な `{action}` を連結するため、接頭辞自体を色判定のマーカーとして登録する。
+pub const STATUS_KEYMAP_NO_UNBIND_PREFIX: &str = "解除する設定はありません: ";
 /// 設定の失敗／退避（読み込み失敗と情報量を揃える）。
 pub const STATUS_SETTINGS_SAVE_FAILED: &str =
     "設定を保存できませんでした（権限や空き容量を確認して再試行してください）";
@@ -348,6 +351,9 @@ pub const ERR_FOLDER_CREATE: &str = "フォルダを作成できません";
 /// パスコピー／件数付き通知の接尾。
 pub const STATUS_PATH_COPIED: &str = "パスをコピーしました";
 pub const STATUS_MISSING_COUNT_SUFFIX: &str = " 件は既に存在しません";
+/// 名前で指定した対象が見つからないときの共通接尾（保存検索の呼び出し／削除）。
+/// 動的な `{name}` が後続するため、接尾自体を色判定のマーカーとして登録する。
+pub const STATUS_NOT_FOUND_SUFFIX: &str = "が見つかりません";
 /// Undo / Redo の「対象なし」と失敗。
 pub const STATUS_UNDO_EMPTY: &str = "元に戻せる操作がありません";
 pub const STATUS_UNDO_EXISTS_SUFFIX: &str = " が既に存在します";
@@ -699,6 +705,7 @@ mod tests {
             STATUS_WATCH_COUNT_SUFFIX,
             STATUS_OPENED_DEFAULT_SUFFIX,
             STATUS_REVEALED_PREFIX,
+            STATUS_KEYMAP_NO_UNBIND_PREFIX,
             STATUS_SETTINGS_SAVE_FAILED,
             STATUS_SETTINGS_READ_ONLY,
             STATUS_SETTINGS_DISCARDED,
@@ -709,6 +716,7 @@ mod tests {
             ERR_FOLDER_CREATE,
             STATUS_PATH_COPIED,
             STATUS_MISSING_COUNT_SUFFIX,
+            STATUS_NOT_FOUND_SUFFIX,
             STATUS_UNDO_EMPTY,
             STATUS_UNDO_EXISTS_SUFFIX,
             STATUS_REDO_EMPTY,
@@ -751,6 +759,11 @@ mod tests {
             ("STATUS_TRASH_NO_PURGE", STATUS_TRASH_NO_PURGE, "warning"),
             ("STATUS_TRASH_NO_HIDDEN", STATUS_TRASH_NO_HIDDEN, "warning"),
             ("STATUS_TRASH_NO_SORT", STATUS_TRASH_NO_SORT, "warning"),
+            (
+                "STATUS_KEYMAP_NO_UNBIND_PREFIX",
+                STATUS_KEYMAP_NO_UNBIND_PREFIX,
+                "warning",
+            ),
             // 既に error markers に登録済みの concrete failure。
             ("STATUS_UNDO_FAILED", STATUS_UNDO_FAILED, "error"),
             ("STATUS_REDO_FAILED", STATUS_REDO_FAILED, "error"),
@@ -766,6 +779,13 @@ mod tests {
             ),
             ("STATUS_TRASH_ALL_FAILED", STATUS_TRASH_ALL_FAILED, "error"),
             ("STATUS_RESTORE_FAILED", STATUS_RESTORE_FAILED, "error"),
+            // 動的な値を連結する接尾も、単体で concrete failure として分類する。
+            (
+                "STATUS_MISSING_COUNT_SUFFIX",
+                STATUS_MISSING_COUNT_SUFFIX,
+                "error",
+            ),
+            ("STATUS_NOT_FOUND_SUFFIX", STATUS_NOT_FOUND_SUFFIX, "error"),
             // L06: 未登録のため green で表示される定数。main.rs の
             // STATUS_WARNING_MARKERS に追加すべき正規一覧（下の配列と同期）。
             (
@@ -928,5 +948,18 @@ mod tests {
         assert!(STATUS_OP_FAILED_SUFFIX.starts_with("できません"));
         // 進行中と完了は別フェーズで、同じ文言に潰してはならない。
         assert_ne!(STATUS_CANCELLED, STATUS_CANCELLING);
+    }
+
+    #[test]
+    fn dynamic_refusal_markers_have_canonical_wording() {
+        // M05/M06: 動的な値を連結する拒否 notification は接頭辞・接尾自体を
+        // main.rs の色判定マーカーとして登録するため、文言の揺れをここで固定する。
+        assert_eq!(STATUS_KEYMAP_NO_UNBIND_PREFIX, "解除する設定はありません: ");
+        assert_eq!(STATUS_NOT_FOUND_SUFFIX, "が見つかりません");
+        assert_eq!(STATUS_MISSING_COUNT_SUFFIX, " 件は既に存在しません");
+        assert!(format!("{STATUS_KEYMAP_NO_UNBIND_PREFIX}open_preview")
+            .contains(STATUS_KEYMAP_NO_UNBIND_PREFIX));
+        assert!(format!("保存検索{STATUS_NOT_FOUND_SUFFIX}: foo").contains(STATUS_NOT_FOUND_SUFFIX));
+        assert!(format!("3{STATUS_MISSING_COUNT_SUFFIX}").contains(STATUS_MISSING_COUNT_SUFFIX));
     }
 }

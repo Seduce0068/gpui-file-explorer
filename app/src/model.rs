@@ -1647,6 +1647,10 @@ mod grid_tests {
         assert_eq!(grid_columns(1000.0, 100.0), 10);
         assert_eq!(grid_columns(-5.0, 100.0), 1);
         assert_eq!(grid_columns(1000.0, 0.0), 1);
+        // Non-finite widths must not produce a bogus (or panicking) column count.
+        assert_eq!(grid_columns(f32::NAN, 100.0), 1);
+        assert_eq!(grid_columns(f32::INFINITY, 100.0), 1);
+        assert_eq!(grid_columns(f32::NEG_INFINITY, 100.0), 1);
     }
 
     #[test]

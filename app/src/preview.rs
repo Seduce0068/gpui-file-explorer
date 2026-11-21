@@ -284,7 +284,10 @@ pub fn preview_key_action(key: &str, control: bool) -> PreviewKeyAction {
 
 #[cfg(test)]
 mod image_tests {
-    use super::{image_format_for_name, read_image_preview, sniff_image_format, MAX_IMAGE_BYTES};
+    use super::{
+        image_format_for_name, png_dimensions, read_image_preview, sniff_image_format,
+        MAX_IMAGE_BYTES,
+    };
     use gpui_kit::ImageFormat;
     use std::fs;
     use std::path::PathBuf;
@@ -438,6 +441,22 @@ mod image_tests {
         let error = read_image_preview(&path, ImageFormat::Png, 1024).unwrap_err();
         assert!(error.contains("ピクセル数が大きすぎます"), "{error}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn png_dimensions_ignores_non_ihdr_chunks() {
+        // A 24-byte PNG-shaped buffer whose 12..16 is not "IHDR": the guard
+        // must return None instead of misreading a neighbouring chunk.
+        let mut wrong_chunk = PNG_HEADER.to_vec();
+        wrong_chunk.extend_from_slice(&13u32.to_be_bytes()); // chunk length
+        wrong_chunk.extend_from_slice(b"IDAT"); // not IHDR
+        wrong_chunk.extend_from_slice(&10u32.to_be_bytes()); // fake width
+        wrong_chunk.extend_from_slice(&10u32.to_be_bytes()); // fake height
+        assert_eq!(wrong_chunk.len(), 24);
+        assert_eq!(png_dimensions(&wrong_chunk), None);
+
+        // A too-short buffer is likewise refused without panicking.
+        assert_eq!(png_dimensions(&wrong_chunk[..23]), None);
     }
 
     #[test]
@@ -610,6 +629,17 @@ mod workflow_tests {
         let entries = vec![entry("dir", true, false), entry("link", false, true)];
         assert_eq!(step_preview_index(&entries, Some(0), 1), None);
         assert_eq!(step_preview_index(&[], None, -1), None);
+    }
+
+    #[test]
+    fn preview_navigation_forward_wraps_to_first_from_unpreviewable_tail() {
+        // The only previewable row ends before the last entry (a trailing
+        // symlink). Focusing that tail row and stepping forward must fall back
+        // to the first previewable row (the delta >= 0 branch at the edge).
+        let entries = vec![entry("a.txt", false, false), entry("link", false, true)];
+        assert_eq!(step_preview_index(&entries, Some(1), 1), Some(0));
+        // A stale index past the listing wraps the same way.
+        assert_eq!(step_preview_index(&entries, Some(9), 1), Some(0));
     }
 
     #[test]
