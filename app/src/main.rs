@@ -670,14 +670,15 @@ fn settings_write_needs_rollback(saved: bool) -> bool {
 /// undo entry) instead of claiming a successful "0 件" restore.
 fn trash_undo_status(label: &str, restored: usize, missing: usize) -> String {
     if restored == 0 {
-        format!("{STATUS_RESTORE_FAILED}（ゴミ箱に項目がありません）")
+        // T08: 理由フラグメントは strings.rs の定数を共有する。
+        format!("{STATUS_RESTORE_FAILED}（項目が{STATUS_TRASH_MISSING_REASON}）")
     } else if missing == 0 {
         format!("{label}を元に戻しました（{restored} 件）")
     } else {
         // M01: 一部の復元失敗は成功ではなく一部失敗として色判定される必要がある。
         // `STATUS_PARTIAL_FAILURE_SUFFIX` の "しました" を動詞の活用にそのまま
         // 使うため、直前に "元に戻" を置く（"元に戻しました（一部失敗: …"）。
-        format!("{label}を元に戻{STATUS_PARTIAL_FAILURE_SUFFIX}{restored} 件、{missing} 件はゴミ箱にありません）")
+        format!("{label}を元に戻{STATUS_PARTIAL_FAILURE_SUFFIX}{restored} 件、{missing} 件は{STATUS_TRASH_MISSING_REASON}）")
     }
 }
 
@@ -807,12 +808,22 @@ macro_rules! transfer_event {
 /// `run_transfer` replaces `status` immediately with its "…中…" message, so a
 /// caller that pre-filters missing/special entries must hand its notice through
 /// the transfer instead of assigning it to `status` beforehand.
-fn transfer_skip_notice(parts: &[String]) -> String {
+///
+/// T02: every caller hands `(reason, count)` pairs instead of a hand-written
+/// sentence, so the wording lives only in `strings.rs`
+/// (`STATUS_SKIPPED_PREFIX` / `STATUS_SKIPPED_SUFFIX`). This keeps the paste,
+/// move and external-drop paths in sync instead of drifting into three
+/// different inline spellings.
+fn transfer_skip_notice(parts: &[(&str, usize)]) -> String {
     if parts.is_empty() {
-        String::new()
-    } else {
-        format!("（{}）", parts.join(" / "))
+        return String::new();
     }
+    let body = parts
+        .iter()
+        .map(|(reason, count)| format!("{reason} {count}"))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    format!("{STATUS_SKIPPED_PREFIX}{body}{STATUS_SKIPPED_SUFFIX}")
 }
 
 // ------------------------------------------------------------- F6-50 terminal
@@ -1769,10 +1780,7 @@ fn empty_state_message(
                 Some(EMPTY_FILTERED.1.to_string()),
             )
         } else {
-            (
-                format!("隠しファイル {all_entries} 件を非表示にしています（Ctrl+H で表示）"),
-                None,
-            )
+            (crate::strings::empty_hidden_only(all_entries), None)
         });
     }
     None
@@ -1792,23 +1800,26 @@ use crate::strings::{
     STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
     STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
     STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
-    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
-    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED,
+    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
+    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
+    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT,
     STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
     STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
     STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
-    STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW,
-    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED,
-    STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
-    STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
-    STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
+    STATUS_SETTINGS_SAVE_FAILED, STATUS_SKIPPED_PREFIX, STATUS_SKIPPED_SUFFIX,
+    STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY,
+    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY,
+    STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT,
+    STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED,
+    STATUS_TRASH_LOADING, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
     STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
     STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
-    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_WATCH_COUNT_SUFFIX,
-    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
-    THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
+    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
+    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
+    THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -2584,8 +2595,9 @@ fn apply_debug_settings_overrides(
 /// cannot be persisted and the caller must return before touching
 /// `toggle_bookmark` (and its `debug_assert_eq!`); `None` means toggle normally.
 ///
-/// Kept separate from the GPUI method so the non-UTF-8 rejection is
-/// regression-testable without a running window.
+/// Kept separate from the GPUI method so every unpersistable-path rejection
+/// (empty / NUL / non-UTF-8 / oversized) is regression-testable without a
+/// running window (T04).
 fn bookmark_toggle_rejection(path: &Path) -> Option<String> {
     if Settings::can_persist_path(path) {
         None
@@ -5300,7 +5312,7 @@ impl Explorer {
         let skip_notice = if missing.is_empty() {
             String::new()
         } else {
-            transfer_skip_notice(&[format!("存在しない項目 {} 件をスキップ", missing.len())])
+            transfer_skip_notice(&[("存在しない項目", missing.len())])
         };
         self.run_transfer(cwd.clone(), paths, cut, skip_notice, cx);
     }
@@ -5599,12 +5611,12 @@ impl Explorer {
             cx.notify();
             return;
         }
-        let mut notices = Vec::new();
+        let mut notices: Vec<(&str, usize)> = Vec::new();
         if missing > 0 {
-            notices.push(format!("{missing} 件は存在しないためスキップ"));
+            notices.push(("存在しない項目", missing));
         }
         if special > 0 {
-            notices.push(format!("特殊ファイル {special} 件をスキップ"));
+            notices.push(("特殊ファイル", special));
         }
         // Pass the notices to `run_transfer`: assigning `status` here would be
         // overwritten by its immediate "コピー中…" update, and the skip reasons
@@ -5663,7 +5675,7 @@ impl Explorer {
                 div()
                     .text_sm()
                     .text_color(rgb(p.muted))
-                    .child("元に戻せる操作はありません（名前変更とゴミ箱のみ記録します）"),
+                    .child(format!("{STATUS_UNDO_EMPTY}{STATUS_UNDO_HISTORY_HINT}")),
             );
         }
         if !undo_actions.is_empty() {
@@ -7372,12 +7384,15 @@ impl Explorer {
             return;
         }
         let Some(parent) = target.parent().map(|parent| parent.to_path_buf()) else {
-            self.set_rename_error("親ディレクトリがありません", cx);
+            self.set_rename_error(STATUS_RENAME_NO_PARENT, cx);
             return;
         };
         let destination = parent.join(&value);
         if destination.exists() {
-            self.set_rename_error(&format!("既に存在します: {}", destination.display()), cx);
+            self.set_rename_error(
+                &format!("{STATUS_RENAME_EXISTS_PREFIX}{}", destination.display()),
+                cx,
+            );
             return;
         }
 
@@ -9444,7 +9459,7 @@ impl Explorer {
                 .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
                 .when(!existing, |row| {
                     row.tooltip(move |window, cx| {
-                        Tooltip::new("フォルダがありません（F5 で再確認）").build(window, cx)
+                        Tooltip::new(STATUS_PLACE_GONE_HINT).build(window, cx)
                     })
                 })
                 .child(Icon::new(place.icon))
@@ -11279,9 +11294,9 @@ mod tests {
         STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY,
         STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
         STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT,
-        STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY,
-        STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
-        THEME_LABEL_SYSTEM,
+        STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_MISSING_REASON,
+        STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK,
+        THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11857,15 +11872,15 @@ mod tests {
 
     #[test]
     fn transfer_skip_notice_preserves_drop_reasons() {
+        // T02: paste / move / drop now share one wording template, so only the
+        // reason label changes while the "N 件をスキップ" suffix stays common.
         assert_eq!(transfer_skip_notice(&[]), "");
-        let notice = transfer_skip_notice(&[
-            "2 件は存在しないためスキップ".to_string(),
-            "特殊ファイル 1 件をスキップ".to_string(),
-        ]);
         assert_eq!(
-            notice,
-            "（2 件は存在しないためスキップ / 特殊ファイル 1 件をスキップ）"
+            transfer_skip_notice(&[("存在しない項目", 3)]),
+            "（存在しない項目 3 件をスキップ）"
         );
+        let notice = transfer_skip_notice(&[("存在しない項目", 2), ("特殊ファイル", 1)]);
+        assert_eq!(notice, "（存在しない項目 2 / 特殊ファイル 1 件をスキップ）");
     }
 
     #[test]
@@ -13138,6 +13153,11 @@ mod tests {
         // and UTF-8. Every violation must be rejected before the toggle touches
         // bookmarks, not just the non-UTF-8 case (G14).
         let rejected = Some(STATUS_BOOKMARK_NOT_PERSISTABLE.to_string());
+        // T04: the reason must stay generic — it is shown for all four
+        // violations, not only for non-UTF-8 paths.
+        let reason = rejected.as_ref().expect("a rejection reason");
+        assert!(!reason.contains("非UTF-8"), "{reason}");
+        assert!(reason.contains("保存できない形式"), "{reason}");
         assert_eq!(bookmark_toggle_rejection(&PathBuf::new()), rejected);
         assert_eq!(
             bookmark_toggle_rejection(&PathBuf::from("tmp\0dir")),
@@ -13551,7 +13571,7 @@ mod tests {
         let empty = trash_undo_status("ゴミ箱", 0, 0);
         assert_eq!(
             empty,
-            format!("{STATUS_RESTORE_FAILED}（ゴミ箱に項目がありません）")
+            format!("{STATUS_RESTORE_FAILED}（項目が{STATUS_TRASH_MISSING_REASON}）")
         );
         assert!(
             !empty.contains("元に戻しました"),
@@ -13562,9 +13582,13 @@ mod tests {
         assert!(ok.contains("元に戻しました"), "{ok}");
         let partial = trash_undo_status("ゴミ箱", 1, 1);
         assert!(
-            partial.contains("1 件") && partial.contains("1 件はゴミ箱にありません"),
+            partial.contains("1 件")
+                && partial.contains(&format!("1 件は{STATUS_TRASH_MISSING_REASON}")),
             "{partial}"
         );
+        // T08: both failure branches share one reason fragment from strings.rs.
+        assert!(empty.contains(STATUS_TRASH_MISSING_REASON), "{empty}");
+        assert!(partial.contains(STATUS_TRASH_MISSING_REASON), "{partial}");
         // M01: 一部の復元失敗は成功 green ではなく error(red) に分類される。
         assert!(partial.contains(STATUS_PARTIAL_FAILURE_SUFFIX), "{partial}");
         assert_eq!(status_color(&partial), C_RED, "partial restore: {partial}");
@@ -14534,6 +14558,47 @@ mod tests {
     }
 
     #[test]
+    fn validated_settings_load_one_owner_for_ctrl_alt_variant() {
+        // T01 / S06 load-time path: `Settings::validate` must collapse the two
+        // spellings before `KeyMap::from_settings` sees them. Otherwise the
+        // file claims two owners while `rebind`'s `binding_matches` eviction
+        // keeps only the later one at runtime.
+        let mut settings = Settings {
+            keymap: vec![
+                ("fuzzy_jump".to_string(), "ctrl+p".to_string()),
+                ("open_preview".to_string(), "ctrl+alt+p".to_string()),
+            ],
+            ..Settings::default()
+        };
+        settings.validate();
+        assert_eq!(
+            settings.keymap,
+            vec![("fuzzy_jump".to_string(), "ctrl+p".to_string())],
+            "the Alt variant must be dropped while loading settings"
+        );
+        let keymap = KeyMap::from_settings(&settings);
+        for alt in [false, true] {
+            assert_eq!(
+                keymap.resolve("p", true, false, alt),
+                KeyAction::FuzzyJump,
+                "alt={alt}: the surviving entry must own both spellings"
+            );
+        }
+    }
+
+    #[test]
+    fn chords_collide_falls_back_to_the_canonical_form_for_bad_spellings() {
+        // T11: an unparseable spelling has no modifier semantics, so the
+        // fallback compares canonical (trimmed, lowercased) forms. Keep the
+        // comparison symmetric and make sure a valid chord never collides
+        // with an unrelated fallback.
+        assert!(chords_collide(" CTRL+ ", "ctrl+"));
+        assert!(chords_collide("ctrl+", " CTRL+ "));
+        assert!(!chords_collide("ctrl+p", "p+ctrl"));
+        assert!(!chords_collide("p+ctrl", "ctrl+p"));
+    }
+
+    #[test]
     fn canonical_chord_normalizes_modifier_order_and_upsert_evicts_across_spellings() {
         // Already-canonical persisted spellings must stay byte-identical.
         assert_eq!(canonical_chord("ctrl+shift+p"), "ctrl+shift+p");
@@ -14572,6 +14637,19 @@ mod tests {
             overrides,
             vec![("other".to_string(), "ctrl+shift+p".to_string())]
         );
+    }
+
+    #[test]
+    fn unparseable_chords_use_the_trimmed_lowercased_fallback() {
+        // `parse_chord` は空トークン（末尾の `+`）とキー後の修飾子を拒否する。
+        // その場合 `canonical_chord` は trim + 小文字化した入力を正規形とする。
+        assert_eq!(canonical_chord("ctrl+"), "ctrl+");
+        assert_eq!(canonical_chord(" p+ctrl "), "p+ctrl");
+
+        // 両方が unparseable なら正規形の一致で衝突と判定される。
+        assert!(chords_collide("ctrl+", "ctrl+"));
+        // 片方だけ unparseable なら、もう片方の正規形と一致しない限り衝突しない。
+        assert!(!chords_collide("ctrl+", "ctrl+p"));
     }
 
     // N06: the Alt+K success notice, the persisted override and the F1 help
