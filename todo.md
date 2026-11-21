@@ -1085,6 +1085,25 @@ status: current
 
 - [x] **Z14** 再スキャン成功時に STATUS_RESCAN_FAILED がクリアされない — 対応: 親（clear_rescan_failure_status）
 
+### 優先度: 中（ループ R22・confirmed）
+
+- [ ] **AA01** F5/変更なし reconcile 成功で再スキャン失敗がクリアされない
+  — main.rs:3044,3585
+- [ ] **AA02** app/README ホットプラグ「未対応」が実装と矛盾
+  — app/README.md:630
+- [ ] **AA03** 保存検索・ブックマークラベルが4文書に未反映
+  — app/README.md:143
+- [ ] **AA04** search_view_action_allowed の9分岐が未テスト
+  — main.rs:293
+- [ ] **AA05** 設定検索キーマップ例（open_preview 等）が検索不能
+  — settings_ui.rs:616
+
+### 優先度: 低（ループ R22）
+
+- [ ] **AA06** 監視更新件数 14→15 vs 12→13 が別 runs と未明示
+  — README.md:108 / app/README.md:473
+- [ ] **AA07** record_trashed_paths の非UTF-8分岐が未テスト — main.rs:2548
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
