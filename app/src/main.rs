@@ -324,7 +324,9 @@ fn kind_color(kind: FileKind) -> u32 {
 /// `STATUS_NO_SELECTION` is an operation refusal, not a success, so it belongs
 /// here too (K03). Checked **before** the error markers because several
 /// `STATUS_*FAILED` strings (e.g. "変更できません") are substrings of a longer
-/// `STATUS_*NO_*` notice; the specific notice wins.
+/// `STATUS_*NO_*` notice; the specific notice wins. An explicit
+/// `STATUS_ERROR_PREFIX` still takes priority in [`status_color`], so wrapped
+/// errors that happen to contain a refusal suffix stay red.
 const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_SEARCH_STALE,
     STATUS_CANCELLED,
@@ -351,6 +353,18 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_TAB_RESTORE_EMPTY,
     STATUS_UNDO_EMPTY,
     STATUS_REDO_EMPTY,
+    // N02: 「開けません」は「できません」を含まないため、登録しないと green になる。
+    STATUS_CANNOT_OPEN_SUFFIX,
+    // N03: ディレクトリ表示以外での機能拒否（肯定形だが拒否通知）。
+    STATUS_PREVIEW_ONLY_DIRECTORY,
+    STATUS_LOCATION_ONLY_DIRECTORY,
+    STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
+    STATUS_PROPERTIES_ONLY_DIRECTORY,
+    STATUS_SEARCH_ONLY_DIRECTORY,
+    // N08 / N09: 件数上限・空の復元対象・空の検索語も操作拒否なので amber。
+    STATUS_MAX_TABS_PREFIX,
+    STATUS_RESTORE_EMPTY,
+    STATUS_SEARCH_EMPTY_QUERY,
 ];
 
 /// Sentinels rendered in red: wrapped errors and the concrete
@@ -393,11 +407,18 @@ const STATUS_BOOKMARK_NOT_PERSISTABLE: &str = "このパスはブックマーク
 /// Local to `main.rs` for the same reason as [`STATUS_BOOKMARK_NOT_PERSISTABLE`].
 const STATUS_ACCESS_DENIED: &str = "アクセスが拒否されました";
 
-/// Pure colour decision for the primary status text (U-01). Errors are red,
-/// stale/cancelled/`NO_*` warnings are amber, everything else stays success
-/// green. `contains` also covers composed messages such as
-/// "…しました（一部失敗: …）".
+/// Pure colour decision for the primary status text (U-01). An explicit
+/// `STATUS_ERROR_PREFIX` is always red, stale/cancelled/`NO_*` warnings are
+/// amber, other errors are red, and everything else stays success green.
+/// `contains` also covers composed messages such as "…しました（一部失敗: …）".
 fn status_color(status: &str) -> u32 {
+    // Warning markers are normally checked first so a specific refusal beats a
+    // generic `*_FAILED` phrase. 「開けません」(N02), however, also occurs in the
+    // wrapped startup error "エラー: 起動ディレクトリを開けませんでした"; the
+    // explicit prefix must win there or that error would turn amber.
+    if status.contains(STATUS_ERROR_PREFIX) {
+        return C_RED;
+    }
     if STATUS_WARNING_MARKERS.iter().any(|m| status.contains(m)) {
         C_YELLOW
     } else if STATUS_ERROR_MARKERS.iter().any(|m| status.contains(m)) {
@@ -560,6 +581,16 @@ fn settings_validation_status(message: &str) -> String {
 /// A clean form needs no notice; only a dirty one loses work (H03).
 fn settings_discard_status(dirty: bool) -> Option<&'static str> {
     dirty.then_some(STATUS_SETTINGS_DISCARDED)
+}
+
+/// Caption for the keymap dialog's `bind` command. Kept pure so the chord in
+/// the success notice can be regression-tested against the canonical form that
+/// `upsert_keymap_override` persists and F1 help displays (N06).
+fn keymap_bind_caption(action: &str, chord: &str) -> String {
+    format!(
+        "キーマップを設定しました: {action} → {}",
+        canonical_chord(chord)
+    )
 }
 
 /// Caption for the keymap dialog's `unbind` command. Kept pure so the no-op
@@ -835,7 +866,7 @@ fn normalize_terminal_command(raw: &str) -> Option<String> {
 
 /// Status shown when the configured terminal command is missing or unusable.
 fn terminal_disabled_status() -> String {
-    "ターミナルを開けません: 起動コマンドが未設定です（設定の terminal_command を確認）".to_string()
+    format!("ターミナルを{STATUS_CANNOT_OPEN_SUFFIX}: 起動コマンドが未設定です（設定の terminal_command を確認）")
 }
 
 /// Status shown after a successful launch (command plus target directory).
@@ -1668,15 +1699,18 @@ use crate::strings::{
     FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT,
     OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
     STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
-    STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
-    STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
-    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
-    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
-    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
-    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
-    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PRIORITY,
+    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+    STATUS_ERROR_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING,
+    STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
+    STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
+    STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
+    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
+    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
+    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
     STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED,
-    STATUS_RESCAN_FAILED, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SEARCH_STALE,
+    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
+    STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE,
     STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
     STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED,
     STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
@@ -1775,6 +1809,16 @@ fn settings_sort_next(choice: &str) -> &'static str {
         Some(index) => ORDER[(index + 1) % ORDER.len()],
         None => ORDER[0],
     }
+}
+
+/// Whether a keystroke is bare, so a settings row shortcut may claim it (N01).
+/// `settings_row_shortcut` only sees the trimmed `key` string and documents
+/// that modified chords are intentionally not recognised; the host must add
+/// this guard or Ctrl+T / Alt+T / Shift+T would also change the theme and
+/// clobber global shortcuts. Kept pure so every modifier combination is
+/// regression-testable without a GPUI window (the raw host event is not).
+fn settings_row_key_is_bare(modifiers: &Modifiers) -> bool {
+    !modifiers.control && !modifiers.alt && !modifiers.shift && !modifiers.platform
 }
 
 /// Inline rename dialog state. Dropping it closes the dialog and drops the
@@ -3497,7 +3541,7 @@ impl Explorer {
             return;
         }
         if self.tabs.len() >= MAX_TABS {
-            self.status = format!("タブは最大 {MAX_TABS} 個までです");
+            self.status = format!("{STATUS_MAX_TABS_PREFIX}{MAX_TABS} 個までです");
             cx.notify();
             return;
         }
@@ -3520,7 +3564,7 @@ impl Explorer {
             return;
         }
         if self.tabs.len() >= MAX_TABS {
-            self.status = format!("タブは最大 {MAX_TABS} 個までです");
+            self.status = format!("{STATUS_MAX_TABS_PREFIX}{MAX_TABS} 個までです");
             cx.notify();
             return;
         }
@@ -4030,7 +4074,7 @@ impl Explorer {
     /// listing is empty. Trash rows have no filesystem directory to reuse.
     fn open_terminal_for_selection(&mut self, cx: &mut Context<Self>) {
         if self.view == ViewSource::Trash {
-            self.status = "ゴミ箱ではターミナルを開けません".to_string();
+            self.status = format!("ゴミ箱ではターミナルを{STATUS_CANNOT_OPEN_SUFFIX}");
             cx.notify();
             return;
         }
@@ -4289,10 +4333,7 @@ impl Explorer {
                     );
                     return;
                 }
-                (
-                    format!("キーマップを設定しました: {action} → {chord}"),
-                    true,
-                )
+                (keymap_bind_caption(&action, &chord), true)
             }
             KeymapInput::Unbind { action } => {
                 let removed = remove_keymap_override(&mut self.settings.keymap, &action);
@@ -4464,6 +4505,20 @@ impl Explorer {
                 self.cycle_settings_tab(delta, cx);
                 return;
             }
+            // N05: compute input focus once, ahead of Alt+S and the row
+            // shortcuts, so neither can fire while a settings text input owns
+            // the keystroke. Tab / Escape / Enter below keep their original
+            // handling and deliberately ignore this flag.
+            let typing = self.settings_ui.as_ref().is_some_and(|state| {
+                [
+                    Some(&state.search_input),
+                    Some(&state.keymap_input),
+                    Some(&state.terminal_input),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+            });
             // I05: bare Tab / Shift+Tab cycles focus through the visible
             // controls (search box, the active tab's text editor when present,
             // then the Cancel/Save buttons). Ctrl+Tab above still switches pages.
@@ -4483,8 +4538,9 @@ impl Explorer {
                     return;
                 }
                 // K08: RadioGroup/Switch are not in the Tab focus cycle, so
-                // the Files-tab sort order gets its own direct chord.
-                if key == "s" {
+                // the Files-tab sort order gets its own direct chord. N05:
+                // a focused text input keeps its `s` instead of sorting.
+                if key == "s" && !typing {
                     let next_sort = self
                         .settings_ui
                         .as_ref()
@@ -4501,30 +4557,25 @@ impl Explorer {
             }
             // M08: single-letter shortcuts for settings rows that are outside
             // the Tab focus cycle (theme / view / hidden). Skipped while a
-            // text input owns focus so typing is never swallowed.
-            let row_shortcut = self.settings_ui.as_ref().and_then(|state| {
-                let typing = [
-                    Some(&state.search_input),
-                    Some(&state.keymap_input),
-                    Some(&state.terminal_input),
-                ]
-                .into_iter()
-                .flatten()
-                .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
-                if typing {
-                    return None;
-                }
-                let query = state.search_input.read(cx).value().to_string();
-                if !settings_row_is_visible(state.tab, key, &query) {
-                    return None;
-                }
-                let values = SettingsRowValues {
-                    theme: &state.theme_choice,
-                    view: &state.view_choice,
-                    hidden: state.show_hidden,
-                };
-                settings_row_shortcut(state.tab, key, values)
-            });
+            // text input owns focus, and only for a bare chord: the helper
+            // contract rejects modified chords so global shortcuts survive (N01).
+            let bare = settings_row_key_is_bare(modifiers);
+            let row_shortcut = if bare && !typing {
+                self.settings_ui.as_ref().and_then(|state| {
+                    let query = state.search_input.read(cx).value().to_string();
+                    if !settings_row_is_visible(state.tab, key, &query) {
+                        return None;
+                    }
+                    let values = SettingsRowValues {
+                        theme: &state.theme_choice,
+                        view: &state.view_choice,
+                        hidden: state.show_hidden,
+                    };
+                    settings_row_shortcut(state.tab, key, values)
+                })
+            } else {
+                None
+            };
             if let Some(action) = row_shortcut {
                 self.on_settings_action(action, cx);
                 return;
@@ -6037,7 +6088,7 @@ impl Explorer {
 
     fn open_preview_selected(&mut self, cx: &mut Context<Self>) {
         if self.view != ViewSource::Directory {
-            self.status = "プレビューはディレクトリ表示でのみ使えます".to_string();
+            self.status = STATUS_PREVIEW_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
@@ -6178,7 +6229,7 @@ impl Explorer {
             return;
         };
         let Some(parent) = preview::preview_parent(&path).map(Path::to_path_buf) else {
-            self.status = "このファイルは新しいタブで開けません".to_string();
+            self.status = format!("このファイルは新しいタブで{STATUS_CANNOT_OPEN_SUFFIX}");
             cx.notify();
             return;
         };
@@ -6375,7 +6426,7 @@ impl Explorer {
     /// Open the Ctrl+L location bar with the current path prefilled.
     fn open_location(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.view != ViewSource::Directory {
-            self.status = "パス入力はディレクトリ表示でのみ使えます".to_string();
+            self.status = STATUS_LOCATION_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
@@ -6479,7 +6530,7 @@ impl Explorer {
     /// No filesystem walk happens here; only confirming a candidate navigates.
     fn open_fuzzy_jump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.view != ViewSource::Directory {
-            self.status = format!("{FUZZY_JUMP_LABEL}はディレクトリ表示でのみ使えます");
+            self.status = STATUS_FUZZY_JUMP_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
@@ -6945,7 +6996,7 @@ impl Explorer {
 
     fn open_selected_properties(&mut self, cx: &mut Context<Self>) {
         if self.view != ViewSource::Directory {
-            self.status = "プロパティはディレクトリ表示でのみ表示できます".to_string();
+            self.status = STATUS_PROPERTIES_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
@@ -7752,7 +7803,7 @@ impl Explorer {
             return;
         }
         if self.view != ViewSource::Directory {
-            self.status = "検索はディレクトリ表示でのみ使えます".to_string();
+            self.status = STATUS_SEARCH_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
@@ -7839,7 +7890,7 @@ impl Explorer {
         };
         let query = input.read(cx).value().trim().to_string();
         if query.is_empty() {
-            self.status = "検索語が空です".to_string();
+            self.status = STATUS_SEARCH_EMPTY_QUERY.to_string();
             cx.notify();
             return;
         }
@@ -8392,7 +8443,7 @@ impl Explorer {
         }
         let items = trash_view::items_for_paths(&self.trash_items, &paths);
         if items.is_empty() {
-            self.status = "復元対象がありません".to_string();
+            self.status = STATUS_RESTORE_EMPTY.to_string();
             cx.notify();
             return;
         }
@@ -11092,35 +11143,39 @@ mod tests {
         clear_dialog_error, clear_op_token, format_chord, format_selected, fuzzy_candidates,
         fuzzy_score, grid_columns_for_width, help_overrides_line, icon_button_text_color,
         install_op_token, internal_drop_paths, join_status_notices, keymap_action_name,
-        keymap_chord_reserved, keymap_unbind_caption, kind_color, labeled_display_name,
-        middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
-        parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
-        remove_keymap_override, saved_search_caption, saved_search_save_status,
-        search_filter_status, set_view_status, settings_discard_status, settings_save_status,
-        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
-        settings_validation_status, settings_write_needs_rollback, settings_write_status,
-        startup_dir_from, status_color, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
-        transfer_skip_notice, trash_batch, trash_delete_status, trash_key_action,
-        trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override, validate_cli_dir,
-        version_label, visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides,
-        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
-        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, ViewLayout,
-        C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
-        GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        keymap_bind_caption, keymap_chord_reserved, keymap_unbind_caption, kind_color,
+        labeled_display_name, middle_click_tab_dir, normalize_terminal_command, op_is_active,
+        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
+        read_properties_snapshot, remove_keymap_override, saved_search_caption,
+        saved_search_save_status, search_filter_status, set_view_status, settings_discard_status,
+        settings_row_key_is_bare, settings_save_status, settings_sort_next,
+        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
+        settings_write_needs_rollback, settings_write_status, startup_dir_from, status_color,
+        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
+        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
+        theme_choice_label, transfer_log_level, transfer_skip_notice, trash_batch,
+        trash_delete_status, trash_key_action, trash_redo_cancelled_status, trash_undo_status,
+        upsert_keymap_override, validate_cli_dir, version_label, visible_secondary_slots,
+        AppPalette, CliAction, DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource,
+        KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction,
+        SecondarySlot, SettingsTab, SortKey, TrashKeyAction, ViewLayout, C_BLUE, C_DIM, C_GREEN,
+        C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX,
+        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-        STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-        STATUS_DROP_ONLY_DIRECTORY, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
-        STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB, STATUS_MISSING_COUNT_SUFFIX,
-        STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
-        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_EMPTY,
-        STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE,
-        STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
-        STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
-        STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY,
-        STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
-        THEME_LABEL_SYSTEM,
+        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
+        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_ERROR_MARKERS,
+        STATUS_ERROR_PREFIX, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_NO_UNBIND_PREFIX,
+        STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
+        STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
+        STATUS_NO_SELECTION, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
+        STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
+        STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESTORE_EMPTY,
+        STATUS_RESTORE_FAILED, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_ONLY_DIRECTORY,
+        STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
+        STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
+        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX,
+        STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK,
+        THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11168,6 +11223,18 @@ mod tests {
             (STATUS_TAB_RESTORE_EMPTY, C_YELLOW),
             (STATUS_UNDO_EMPTY, C_YELLOW),
             (STATUS_REDO_EMPTY, C_YELLOW),
+            // N02: 「開けません」は「できません」を含まない拒否接尾。
+            (STATUS_CANNOT_OPEN_SUFFIX, C_YELLOW),
+            // N03: ディレクトリ表示でのみ使える機能の拒否（肯定形だが amber）。
+            (STATUS_PREVIEW_ONLY_DIRECTORY, C_YELLOW),
+            (STATUS_LOCATION_ONLY_DIRECTORY, C_YELLOW),
+            (STATUS_FUZZY_JUMP_ONLY_DIRECTORY, C_YELLOW),
+            (STATUS_PROPERTIES_ONLY_DIRECTORY, C_YELLOW),
+            (STATUS_SEARCH_ONLY_DIRECTORY, C_YELLOW),
+            // N08 / N09: 上限・空対象・空検索語の拒否。
+            (STATUS_MAX_TABS_PREFIX, C_YELLOW),
+            (STATUS_RESTORE_EMPTY, C_YELLOW),
+            (STATUS_SEARCH_EMPTY_QUERY, C_YELLOW),
             (STATUS_CHANGED, C_GREEN),
             ("3 件をコピーしました", C_GREEN),
             ("", C_GREEN),
@@ -11204,6 +11271,20 @@ mod tests {
                 "composed status for {marker:?} must be red"
             );
         }
+        // N02: 実際の 3 箇所の呼び出し文も warning になることを確認する。
+        let disabled = terminal_disabled_status();
+        assert!(disabled.contains(STATUS_CANNOT_OPEN_SUFFIX), "{disabled}");
+        assert_eq!(status_color(&disabled), C_YELLOW, "{disabled}");
+        for status in [
+            format!("ゴミ箱ではターミナルを{STATUS_CANNOT_OPEN_SUFFIX}"),
+            format!("このファイルは新しいタブで{STATUS_CANNOT_OPEN_SUFFIX}"),
+        ] {
+            assert_eq!(status_color(&status), C_YELLOW, "{status}");
+        }
+        // N02 のマーカー追加で、明示的なエラー接頭辞付き起動エラーが
+        // amber に落ちないこと（接頭辞優先）も同時に検証する。
+        let cli_error = format!("{STATUS_ERROR_PREFIX}起動ディレクトリを開けませんでした");
+        assert_eq!(status_color(&cli_error), C_RED, "{cli_error}");
     }
 
     #[test]
@@ -11225,6 +11306,11 @@ mod tests {
         assert_eq!(status_color(&missing_search), C_RED, "{missing_search}");
         let missing_count = format!("3{STATUS_MISSING_COUNT_SUFFIX}");
         assert_eq!(status_color(&missing_count), C_RED, "{missing_count}");
+
+        // N08: 動的な上限値を含む「タブは最大 {n} 個までです」もwarning(amber)。
+        let max_tabs = format!("{STATUS_MAX_TABS_PREFIX}8 個までです");
+        assert!(max_tabs.contains(STATUS_MAX_TABS_PREFIX), "{max_tabs}");
+        assert_eq!(status_color(&max_tabs), C_YELLOW, "{max_tabs}");
     }
 
     #[test]
@@ -11308,6 +11394,16 @@ mod tests {
             (STATUS_UNDO_EMPTY, dark.yellow, light.yellow),
             (STATUS_REDO_EMPTY, dark.yellow, light.yellow),
             (STATUS_TRASH_NO_COPY, dark.yellow, light.yellow),
+            // N02 / N03 / N08 / N09: 新規の拒否通知もテーマ色へマップされる。
+            (STATUS_CANNOT_OPEN_SUFFIX, dark.yellow, light.yellow),
+            (STATUS_PREVIEW_ONLY_DIRECTORY, dark.yellow, light.yellow),
+            (STATUS_LOCATION_ONLY_DIRECTORY, dark.yellow, light.yellow),
+            (STATUS_FUZZY_JUMP_ONLY_DIRECTORY, dark.yellow, light.yellow),
+            (STATUS_PROPERTIES_ONLY_DIRECTORY, dark.yellow, light.yellow),
+            (STATUS_SEARCH_ONLY_DIRECTORY, dark.yellow, light.yellow),
+            (STATUS_MAX_TABS_PREFIX, dark.yellow, light.yellow),
+            (STATUS_RESTORE_EMPTY, dark.yellow, light.yellow),
+            (STATUS_SEARCH_EMPTY_QUERY, dark.yellow, light.yellow),
             (STATUS_ERROR_PREFIX, dark.red, light.red),
             (STATUS_SETTINGS_SAVE_FAILED, dark.red, light.red),
             (STATUS_ACCESS_DENIED, dark.red, light.red),
@@ -13082,6 +13178,47 @@ mod tests {
         assert_eq!(settings_sort_next("unknown"), "name");
     }
 
+    // N01: `settings_row_shortcut` only inspects the key string, so the host
+    // must reject modified chords before calling it. Otherwise Ctrl+T / Alt+T /
+    // Shift+T would change the theme and swallow the global shortcut.
+    #[test]
+    fn settings_row_shortcut_requires_bare_modifiers() {
+        assert!(settings_row_key_is_bare(&Modifiers::default()));
+        for modified in [
+            Modifiers {
+                control: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                control: true,
+                shift: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                alt: true,
+                platform: true,
+                ..Modifiers::default()
+            },
+        ] {
+            assert!(
+                !settings_row_key_is_bare(&modified),
+                "modified chord must not claim a settings row: {modified:?}"
+            );
+        }
+    }
+
     // D13: every preview-then-write path must discard its in-memory changes
     // exactly when the disk write fails; a successful (or skipped) write keeps
     // the preview for the current session.
@@ -14114,6 +14251,39 @@ mod tests {
         assert_eq!(
             overrides,
             vec![("other".to_string(), "ctrl+shift+p".to_string())]
+        );
+    }
+
+    // N06: the Alt+K success notice, the persisted override and the F1 help
+    // line must all show the same canonical chord, whatever spelling was typed.
+    #[test]
+    fn keymap_bind_caption_uses_the_canonical_chord() {
+        let notice = keymap_bind_caption("open_preview", "shift+ctrl+p");
+        assert_eq!(
+            notice,
+            "キーマップを設定しました: open_preview → ctrl+shift+p"
+        );
+
+        let mut overrides = Vec::new();
+        assert!(upsert_keymap_override(
+            &mut overrides,
+            "open_preview",
+            "shift+ctrl+p"
+        ));
+        assert_eq!(overrides[0].1, "ctrl+shift+p");
+        assert!(
+            notice.ends_with(overrides[0].1.as_str()),
+            "notice must match the stored chord: {notice}"
+        );
+
+        // Already-canonical and bare chords are unchanged.
+        assert_eq!(
+            keymap_bind_caption("open_preview", "ctrl+shift+p"),
+            "キーマップを設定しました: open_preview → ctrl+shift+p"
+        );
+        assert_eq!(
+            keymap_bind_caption("reload", "f5"),
+            "キーマップを設定しました: reload → f5"
         );
     }
 

@@ -1022,6 +1022,19 @@ mod scope_tests {
     }
 
     #[test]
+    fn search_roots_current_scope_keeps_a_missing_cwd_without_a_fallback() {
+        // A non-existent cwd is filtered out like any other candidate, but the
+        // Current scope must still search the path the user is standing in and
+        // must not report it as a fallback to elsewhere.
+        let dir = scratch("current-missing");
+        let missing = dir.join("gone");
+        let resolved = search_roots(SearchScope::Current, &missing, &[], &[]);
+        assert_eq!(resolved.roots, vec![missing]);
+        assert!(!resolved.fell_back_to_cwd);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn merge_search_results_dedupes_by_path_and_caps() {
         let p1 = PathBuf::from("/tmp/a");
         let p2 = PathBuf::from("/tmp/b");

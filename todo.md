@@ -781,26 +781,26 @@ status: current
 
 ### 優先度: 高（ループ R10・confirmed）
 
-- [ ] **N01** t/v/h 行ショートカットが修飾キー付きでも発火 — main.rs:4502
-- [ ] **N02** 「開けません」系拒否がエラーマーカー未登録で緑 — main.rs:838,4033
-- [ ] **N03** 「ディレクトリ表示でのみ」系5文言が定数化・分類漏れ — main.rs:6040
+- [x] **N01** t/v/h 行ショートカットが修飾キー付きでも発火 — main.rs:4502 — 対応: loop12-core
+- [x] **N02** 「開けません」系拒否がエラーマーカー未登録で緑 — main.rs:838,4033 — 対応: loop12-status
+- [x] **N03** 「ディレクトリ表示でのみ」系5文言が定数化・分類漏れ — main.rs:6040 — 対応: loop12-status
 
 ### 優先度: 中（ループ R10）
 
-- [ ] **N04** t/v/h が F1 ヘルプと設定行に未案内 — strings.rs:160
-- [ ] **N05** Alt+S に入力欄フォーカスガードなし — main.rs:4485
-- [ ] **N06** Alt+K 成功通知が正規化前 chord を表示 — main.rs:4293
-- [ ] **N07** 検索キーワード「表示」欠落 — settings_ui.rs:421
-- [ ] **N08** 空対象・上限超過の動的拒否が緑 — main.rs:8393,3500
-- [ ] **N09** 検索語が空の拒否が緑 — main.rs:7840
-- [ ] **N10** README の unbind 説明が app/README と矛盾 — README.md:62
-- [ ] **N11** DESIGN 未実装「のみ」が他ドキュメントと矛盾 — DESIGN.md:123
-- [ ] **N12** 予約キー説明に open_settings / Ctrl+, 欠落 — README.md:71
-- [ ] **N13** DESIGN §11 性能「未計測」が実測記録と矛盾 — DESIGN.md:1176
-- [ ] **N14** README 空フォルダ例が現行文言と乖離 — app/README.md:351
-- [ ] **N15** ops.rs verify_entry の symlink/種別/キャンセル分岐が無テスト
-- [ ] **N16** settings.rs canonical_chord_key のフォールバック3分岐が無テスト
-- [ ] **N17** preview.rs 不正 UTF-8 ヘッダ / search.rs search_roots の分岐が無テスト
+- [x] **N04** t/v/h が F1 ヘルプと設定行に未案内 — strings.rs:160 — 対応: loop12-docs
+- [x] **N05** Alt+S に入力欄フォーカスガードなし — main.rs:4485 — 対応: loop12-core
+- [x] **N06** Alt+K 成功通知が正規化前 chord を表示 — main.rs:4293 — 対応: loop12-core
+- [x] **N07** 検索キーワード「表示」欠落 — settings_ui.rs:421 — 対応: loop12-docs
+- [x] **N08** 空対象・上限超過の動的拒否が緑 — main.rs:8393,3500 — 対応: loop12-status
+- [x] **N09** 検索語が空の拒否が緑 — main.rs:7840 — 対応: loop12-status
+- [x] **N10** README の unbind 説明が app/README と矛盾 — README.md:62 — 対応: loop12-docs
+- [x] **N11** DESIGN 未実装「のみ」が他ドキュメントと矛盾 — DESIGN.md:123 — 対応: loop12-docs
+- [x] **N12** 予約キー説明に open_settings / Ctrl+, 欠落 — README.md:71 — 対応: loop12-docs
+- [x] **N13** DESIGN §11 性能「未計測」が実測記録と矛盾 — DESIGN.md:1176 — 対応: loop12-docs
+- [x] **N14** README 空フォルダ例が現行文言と乖離 — app/README.md:351 — 対応: loop12-docs
+- [x] **N15** ops.rs verify_entry の symlink/種別/キャンセル分岐が無テスト — 対応: loop12-docs
+- [x] **N16** settings.rs canonical_chord_key のフォールバック3分岐が無テスト — 対応: loop12-core
+- [x] **N17** preview.rs 不正 UTF-8 ヘッダ / search.rs search_roots の分岐が無テスト — 対応: loop12-docs
 
 ### 優先度: 低（調査タスク）
 
