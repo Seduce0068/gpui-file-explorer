@@ -907,6 +907,31 @@ status: current
 - [x] **S09** README キーバインド表に F4 行なし — app/README.md:92 — 対応: loop16-ux
 - [x] **S10** 設定 About にライセンス/ソース導線なし — settings_ui.rs:1161 — 対応: loop16-ux
 
+### 優先度: 中（ループ R15・confirmed）
+
+- [ ] **T01** settings.rs validate が Ctrl alt don't-care に未追従（S06 ロード時）
+  — settings.rs:431
+- [ ] **T02** スキップ通知文言が STATUS_SKIPPED_* を迂回し揺れている
+  — main.rs:5303,5604
+- [ ] **T03** 名前変更ダイアログの拒否リテラル未定数化 — main.rs:7375
+- [ ] **T04** ブックマーク拒否が原因を「非UTF-8」と誤表示 — strings.rs:308
+- [ ] **T05** ops.rs 件数の grep 計上が review-report 訂正と矛盾
+  — app/README.md:294 / DESIGN.md:366
+- [ ] **T06** ショートカット一覧が F1/README と乖離 — settings_ui.rs:557
+- [ ] **T07** 設定検索キーワードが表示されないキー名を広告
+  — settings_ui.rs:485
+
+### 優先度: 低（ループ R15）
+
+- [ ] **T08** trash_undo_status の失敗理由がインライン断片 — main.rs:673
+- [ ] **T09** 履歴空状態/パスツールチップの拒否文言残存 — main.rs:5666
+- [ ] **T10** strings.rs 色分類表に STATUS_PATH_GONE 未登録
+  — strings.rs:914
+- [ ] **T11** chords_collide / canonical_chord の解析不能フォールバック未テスト
+  — main.rs:1139,1117
+- [ ] **T12** History::restore の forward truncation 分岐未テスト — history.rs:80
+- [ ] **T13** 隠しファイルのみ空状態が復帰キーテスト対象外 — main.rs:1773
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
