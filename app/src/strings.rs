@@ -115,6 +115,26 @@ pub const SETTINGS_TAB_JUMP_KEYS: &str = settings_tab_jump_keys!();
 /// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
 const _: () = assert!(SETTINGS_TAB_JUMP_KEYS.len() == settings_tab_jump_keys!().len());
 
+/// 零命中ヒントの「Esc で閉じる」案内に添える未保存変更の破棄警告（AB12）。
+///
+/// 設定を編集してから検索して零命中になった場合、案内どおり Esc を押すと
+/// 未保存変更が失われる。F1 ヘルプ・零命中ヒント・app/README の3箇所で
+/// 同じ文言を使うための唯一の定義。`concat!` は定数識別子を受け付けない
+/// ので、静的文字列へ埋め込む場合は `unsaved_changes_discard_note!()` を使う
+/// （入力ガード注記と同じ方式）。
+macro_rules! unsaved_changes_discard_note {
+    () => {
+        "（未保存変更があると破棄されます）"
+    };
+}
+pub(crate) use unsaved_changes_discard_note;
+
+/// 未保存変更の破棄警告の正規表記（AB12）。F1 / 零命中ヒント / README の同期判定に使う。
+pub const UNSAVED_CHANGES_DISCARD_NOTE: &str = unsaved_changes_discard_note!();
+
+/// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
+const _: () = assert!(UNSAVED_CHANGES_DISCARD_NOTE.len() == unsaved_changes_discard_note!().len());
+
 /// 予約キーを列挙した正規の案内文（Z07）。
 ///
 /// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
@@ -215,7 +235,9 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "設定ダイアログ",
                 concat!(
                     "Enter で保存 / Esc でキャンセル（未保存変更時は破棄され通知されます）/ 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。",
-                    "一致がゼロなら検索欄を空にするか Esc で閉じる。",
+                    "一致がゼロなら検索欄を空にするか Esc で閉じる",
+                    unsaved_changes_discard_note!(),
+                    "。",
                     "他タブに一致すると Alt+数字で移動（",
                     settings_tab_jump_keys!(),
                     "）。F1 はダイアログ内で無効なので、下部のキー凡例に必要なキーを表示"
@@ -381,7 +403,8 @@ pub const STATUS_TRASH_NO_CUT: &str = "ゴミ箱ビューでは切り取りで�
 pub const STATUS_TRASH_NO_PASTE: &str = "ゴミ箱ビューでは貼り付けできません";
 pub const STATUS_TRASH_NO_RENAME: &str = "ゴミ箱ビューでは名前を変更できません";
 pub const STATUS_TRASH_NO_PURGE: &str = "ゴミ箱内の完全削除は未対応です";
-pub const STATUS_TRASH_NO_HIDDEN: &str = "ゴミ箱ビューでは隠しファイルの切替はできません";
+pub const STATUS_TRASH_NO_HIDDEN: &str =
+    "ゴミ箱ビューでは隠しファイルの切替はできません（ゴミ箱を出てから Ctrl+H）";
 pub const STATUS_TRASH_NO_SORT: &str = "ゴミ箱ビューでは並び替えはできません";
 pub const STATUS_CANCELLING: &str = "キャンセルしています…";
 /// コピー / 切り取り / ゴミ箱移動で選択項目がないときの共通通知。
@@ -515,6 +538,9 @@ pub const STATUS_WATCH_DISABLED: &str = "無効 — ";
 pub const STATUS_WATCH_INIT_FAILED: &str = "監視の初期化に失敗しました";
 /// 監視ディレクトリ数の接尾（`{count}` に続く）。
 pub const STATUS_WATCH_COUNT_SUFFIX: &str = " ディレクトリ";
+/// Trash view の監視スロットに表示する案内（AB08）。
+/// ゴミ箱は自動更新されないため、main.rs の inline 文言を定数へ集約する。
+pub const STATUS_TRASH_NO_AUTO_REFRESH: &str = "ゴミ箱（自動更新なし）";
 
 /// OS 連携の成功 notification。戻り値を確認せずに出す現状の文言（r4-error-01）。
 pub const STATUS_OPENED_DEFAULT_SUFFIX: &str = "を既定のアプリで開きました";
@@ -683,7 +709,7 @@ pub const STATUS_BOOKMARK_LABEL_REASON_LIMIT: &str =
 /// ターミナルが無効な理由と復帰導線（S07）。`STATUS_CANNOT_OPEN_SUFFIX` と
 /// 連結して `terminal_disabled_status()` の文言を組み立てる。
 pub const STATUS_TERMINAL_DISABLED_HINT: &str =
-    ": 起動コマンドが未設定です（設定の terminal_command を確認）";
+    ": 起動コマンドが未設定です（Ctrl+, で設定を開き terminal_command を確認）";
 
 /// 表示層の優先順位（高い順）。狭いステータスバーでは後ろから省略する。
 /// 実行時のスロットではなく、競合時に参照する規約データ（r5-render-09）。
@@ -1001,6 +1027,28 @@ mod tests {
     }
 
     #[test]
+    fn trash_no_hidden_hint_matches_the_empty_state_exit_route() {
+        // AB11: ゴミ箱ビューで Ctrl+H が拒否される通知にも、空状態
+        // (EMPTY_HIDDEN_ONLY_TRASH) と同じ「ゴミ箱を出て … Ctrl+H」の復帰導線を
+        // 載せる。片方だけに導線があると漂移するので両方を同期検証する。
+        assert_eq!(
+            STATUS_TRASH_NO_HIDDEN,
+            "ゴミ箱ビューでは隠しファイルの切替はできません（ゴミ箱を出てから Ctrl+H）"
+        );
+        for token in ["ゴミ箱を出て", "Ctrl+H"] {
+            assert!(
+                STATUS_TRASH_NO_HIDDEN.contains(token),
+                "trash refusal hint: {STATUS_TRASH_NO_HIDDEN}"
+            );
+            assert!(
+                EMPTY_HIDDEN_ONLY_TRASH.contains(token),
+                "trash empty-state hint: {EMPTY_HIDDEN_ONLY_TRASH}"
+            );
+        }
+        assert!(STATUS_TRASH_NO_HIDDEN.ends_with('）'));
+    }
+
+    #[test]
     fn canonical_words_are_not_english() {
         for word in [
             LABEL_CANCEL,
@@ -1147,6 +1195,8 @@ mod tests {
             STATUS_SKIPPED_SUFFIX,
             STATUS_SKIP_REASON_MISSING,
             STATUS_SKIP_REASON_SPECIAL,
+            // AB03: 混在ケースで使う同フォルダの理由も在庫に登録する。
+            STATUS_SKIP_REASON_SAME_DIRECTORY,
             STATUS_CANCELLED,
             STATUS_CANCEL_HINT,
             STATUS_INVALID_CLI_DIR,
@@ -1158,6 +1208,7 @@ mod tests {
             STATUS_WATCH_DISABLED,
             STATUS_WATCH_INIT_FAILED,
             STATUS_WATCH_COUNT_SUFFIX,
+            STATUS_TRASH_NO_AUTO_REFRESH,
             STATUS_OPENED_DEFAULT_SUFFIX,
             STATUS_REVEALED_PREFIX,
             STATUS_KEYMAP_NO_UNBIND_PREFIX,
@@ -1437,6 +1488,12 @@ mod tests {
                 STATUS_WATCH_INIT_FAILED,
                 "warning",
             ),
+            // AB07: 一部無効 / 無効 も監視状態の warning 表示。Y08 と同じく
+            // self.status を通らず secondary slot が直接 p.yellow で描画する
+            // ため、マーカー自体は表示経路に乗らないが、分類の一貫性のため
+            // warning として登録する（main.rs のマーカー表にも追加済み）。
+            ("STATUS_WATCH_PARTIAL", STATUS_WATCH_PARTIAL, "warning"),
+            ("STATUS_WATCH_DISABLED", STATUS_WATCH_DISABLED, "warning"),
             // W10: 「キャンセルしています…」は操作の進行中を示す一時通知で、
             // 拒否でも失敗でもない。完了通知 STATUS_CANCELLED は warning だが、
             // 進行中は成功 green のままとする（下の検証で例外として明示）。
@@ -1512,7 +1569,9 @@ mod tests {
                         // R02: OS による拒否（「アクセスが拒否されました」）。
                         || message.contains("拒否されました")
                         // W06: 具体的な失敗（「再スキャンに失敗しました」）。
-                        || message.contains("失敗しました"),
+                        || message.contains("失敗しました")
+                        // AB07: 監視の一部無効 / 無効（secondary slot 直接描画）。
+                        || message.contains("無効"),
                     "{name} is not refusal-worded: {message}"
                 );
             }
@@ -1930,13 +1989,18 @@ mod tests {
     #[test]
     fn terminal_disabled_hint_keeps_canonical_wording() {
         // S07: 理由と復帰導線を定数化し、「開けません」接尾と連結する。
+        // AB10: STATUS_SETTINGS_READ_ONLY_HINT / DISCARDED と同じく Ctrl+, の
+        // 復帰導線を明示し、未設定のままで終わらせない。
         assert_eq!(
             STATUS_TERMINAL_DISABLED_HINT,
-            ": 起動コマンドが未設定です（設定の terminal_command を確認）"
+            ": 起動コマンドが未設定です（Ctrl+, で設定を開き terminal_command を確認）"
         );
+        assert!(STATUS_TERMINAL_DISABLED_HINT.contains("Ctrl+,"));
+        assert!(STATUS_TERMINAL_DISABLED_HINT.contains("設定を開き"));
+        assert!(STATUS_TERMINAL_DISABLED_HINT.contains("terminal_command を確認"));
         assert_eq!(
             format!("ターミナルを{STATUS_CANNOT_OPEN_SUFFIX}{STATUS_TERMINAL_DISABLED_HINT}"),
-            "ターミナルを開けません: 起動コマンドが未設定です（設定の terminal_command を確認）"
+            "ターミナルを開けません: 起動コマンドが未設定です（Ctrl+, で設定を開き terminal_command を確認）"
         );
         // 回帰防止: main.rs に理由・復帰導線の字面が戻っていないことを確認する。
         let source = include_str!("main.rs");

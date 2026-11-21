@@ -1106,32 +1106,32 @@ status: current
 
 ### 優先度: 中（ループ R23・confirmed）
 
-- [ ] **AB01** Alt+再割当が Search ビューのキー許可をバイパス（実バグ）
+- [x] **AB01** Alt+再割当が Search ビューのキー許可をバイパス（実バグ） — 対応: loop25-core（実バグ修正）
   — main.rs:329
-- [ ] **AB02** Search の watch 削除が RESCAN_FAILED 保持を破る
+- [x] **AB02** Search の watch 削除が RESCAN_FAILED 保持を破る — 対応: loop25-core
   — main.rs:3695
-- [ ] **AB03** STATUS_SKIP_REASON_SAME_DIRECTORY が非空インベントリ未登録
+- [x] **AB03** STATUS_SKIP_REASON_SAME_DIRECTORY が非空インベントリ未登録 — 対応: loop25-core
   — strings.rs:1148
-- [ ] **AB04** review-report verified が 2026-11-22 追記より前
+- [x] **AB04** review-report verified が 2026-11-22 追記より前 — 対応: loop25-docs
   — review-report.md:13
-- [ ] **AB05** DESIGN 変更履歴に 2026-11-22 追記未反映
+- [x] **AB05** DESIGN 変更履歴に 2026-11-22 追記未反映 — 対応: loop25-docs
   — DESIGN.md:1220
 
 ### 優先度: 低（ループ R23）
 
-- [ ] **AB06** ゴミ箱 F5 成功が RESCAN_FAILED をクリアしない — main.rs:3124
-- [ ] **AB07** STATUS_WATCH_PARTIAL/DISABLED が分類表から漏れ
+- [x] **AB06** ゴミ箱 F5 成功が RESCAN_FAILED をクリアしない — main.rs:3124 — 対応: loop25-core
+- [x] **AB07** STATUS_WATCH_PARTIAL/DISABLED が分類表から漏れ — 対応: loop25-core
   — strings.rs:513
-- [ ] **AB08** 監視スロット「ゴミ箱（自動更新なし）」がインライン
+- [x] **AB08** 監視スロット「ゴミ箱（自動更新なし）」がインライン — 対応: loop25-core
   — main.rs:10231
-- [ ] **AB09** README 未実装列挙が他文書と不一致 — README.md:145
-- [ ] **AB10** ターミナル無効通知に Ctrl+, 導線なし — strings.rs:685
-- [ ] **AB11** ゴミ箱 Ctrl+H 拒否に「出る」導線なし — strings.rs:384
-- [ ] **AB12** 検索0件の Esc 推奨が未保存破棄リスクを警告せず
+- [x] **AB09** README 未実装列挙が他文書と不一致 — README.md:145 — 対応: loop25-docs
+- [x] **AB10** ターミナル無効通知に Ctrl+, 導線なし — strings.rs:685 — 対応: loop25-core
+- [x] **AB11** ゴミ箱 Ctrl+H 拒否に「出る」導線なし — strings.rs:384 — 対応: loop25-core
+- [x] **AB12** 検索0件の Esc 推奨が未保存破棄リスクを警告せず — 対応: loop25-ux
   — settings_ui.rs:806
-- [ ] **AB13** 色検索が表示専用パレット行へ案内される
+- [x] **AB13** 色検索が表示専用パレット行へ案内される — 対応: loop25-ux
   — settings_ui.rs:740
-- [ ] **AB14** 昇順/降順キーワードが設定行に存在しない
+- [x] **AB14** 昇順/降順キーワードが設定行に存在しない — 対応: loop25-ux
   — settings_ui.rs:474
 
 ### 優先度: 低（調査タスク）

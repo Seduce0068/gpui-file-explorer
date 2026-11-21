@@ -421,6 +421,11 @@ const APPEARANCE_THEME_KEYWORDS: &[&str] = &[
     "ライト",
     "システム",
     "配色",
+    // AB13: 「色 / カラー」は個人化のカラーパレット（表示専用）にも一致するが、
+    // 実際に変更できるのはこの外観タブのテーマ行。検索が編集可能な行へも届く
+    // ように、ここにも明示的に追加する。
+    "色",
+    "カラー",
     "外観",
     // "アプリ全体の明るさを切り替えます（t でキーボードから切替）"
     "明るさ",
@@ -650,8 +655,18 @@ const FILES_HIDDEN_DESCRIPTION: &str = concat!(
 );
 const FILES_SORT_DESCRIPTION: &str = concat!(
     "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）",
-    crate::strings::settings_input_guard_note!()
+    crate::strings::settings_input_guard_note!(),
+    // AB14: 「昇順 / 降順」はダイアログ内の切替ではなく一覧ヘッダのクリック
+    // で切り替わる。検索語がこの行に一致したとき、見た目にも根拠を示す。
+    "。昇順/降順は一覧のヘッダクリックで切替"
 );
+
+/// 表示専用のカラーパレット行に添える、編集可能なテーマ行への案内（AB13）。
+///
+/// パレットの見本は読み取り専用なので、「色 / カラー」で検索したユーザーが
+/// 変更先を見失わないように外観タブを明示する。純粋な文字列なのでテストから
+/// も参照でき、レンダリングと文言が乖離しない。
+const PERSONALIZE_PALETTE_CHANGE_HINT: &str = "配色は外観タブのテーマ設定で変更できます";
 
 /// Rows of the "主な既定のショートカット" list, kept as one constant so the
 /// Shortcuts tab, F1 help (`strings::HELP_SECTIONS`) and README cannot drift
@@ -805,9 +820,14 @@ pub fn tabs_matching_query(query: &str) -> Vec<SettingsTab> {
 /// to the reported page instead of a generic "Alt+数字" (K07/L05).
 pub fn no_match_hint(matching_tabs: &[SettingsTab]) -> String {
     if matching_tabs.is_empty() {
-        // M14: a dead end must still offer a way out. With zero hits there is
-        // no tab to jump to, so name the two recovery routes that always work.
-        "該当する設定がありません。検索欄を空にするか Esc で閉じてください".to_string()
+        // M14/AB12: a dead end must still offer a way out. With zero hits there
+        // is no tab to jump to, so name the two recovery routes that always
+        // work — and warn that Esc discards unsaved edits.
+        concat!(
+            "該当する設定がありません。検索欄を空にするか Esc で閉じてください",
+            crate::strings::unsaved_changes_discard_note!()
+        )
+        .to_string()
     } else {
         let labels: Vec<String> = matching_tabs
             .iter()
@@ -1361,7 +1381,10 @@ pub fn render_settings_content<V: SettingsUiHost>(
                                     .text_color(rgb(palette.subtext))
                                     .child("アクセント / 成功 / エラー"),
                             ),
-                    );
+                    )
+                    // AB13: the swatches are display-only; point at the row
+                    // that actually changes the accent colors.
+                    .child(info_line(palette, PERSONALIZE_PALETTE_CHANGE_HINT));
             }
             if show_personalize_info {
                 column = column
@@ -1523,9 +1546,9 @@ mod tests {
         SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
         APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS, APPEARANCE_VIEW_DESCRIPTION,
         FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS, FILES_SORT_DESCRIPTION,
-        PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_KEYWORDS, SETTINGS_KEYMAP_INPUT_HINT,
-        SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
-        TERMINAL_COMMAND_KEYWORDS,
+        PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS,
+        SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
+        SHORTCUTS_DEFAULT_LINES, TERMINAL_COMMAND_KEYWORDS,
     };
     use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
@@ -1688,14 +1711,16 @@ mod tests {
             assert!(!hint.contains("Alt+数字"), "generic hint: {hint}");
         }
         // With no hits at all there is no page to jump to, so M14 requires a
-        // recovery route instead: clear the query or close the dialog.
+        // recovery route instead: clear the query or close the dialog. AB12:
+        // the Esc route also discards unsaved edits, so the hint says so.
         let none = no_match_hint(&[]);
         assert_eq!(
             none,
-            "該当する設定がありません。検索欄を空にするか Esc で閉じてください"
+            "該当する設定がありません。検索欄を空にするか Esc で閉じてください（未保存変更があると破棄されます）"
         );
         assert!(none.contains("検索欄を空にする"));
         assert!(none.contains("Esc で閉じてください"));
+        assert!(none.contains("（未保存変更があると破棄されます）"));
         assert!(!none.contains("Alt+"));
     }
 
@@ -1802,6 +1827,24 @@ mod tests {
         assert!(
             app_readme.contains("検索欄を空にするか `Esc` で閉じるよう案内します"),
             "app README must document the same zero-hit recovery"
+        );
+        // AB12/R11: Esc discards unsaved edits, so a zero-hit search that
+        // follows the hint can lose work. The very same warning must appear in
+        // the live hint, the F1 dialog row and the app README; pin the exact
+        // wording in all three places so none can drift away silently.
+        const DISCARD_NOTE: &str = "（未保存変更があると破棄されます）";
+        let zero_hit = no_match_hint(&[]);
+        assert!(
+            zero_hit.contains(DISCARD_NOTE),
+            "zero-hit hint must warn about discarding unsaved edits: {zero_hit}"
+        );
+        assert!(
+            dialog.contains(DISCARD_NOTE),
+            "F1 dialog help must warn about discarding unsaved edits: {dialog}"
+        );
+        assert!(
+            app_readme.contains(DISCARD_NOTE),
+            "app README must warn about discarding unsaved edits"
         );
     }
 
@@ -2086,6 +2129,42 @@ mod tests {
             tabs_matching_query("Alt+1〜5"),
             vec![SettingsTab::Shortcuts]
         );
+        // AB14: the 昇順/降順 keywords above come from the README's header-click
+        // behaviour, not from a toggle in this dialog. The sort row must say so
+        // in its description, otherwise the search points at an invisible match.
+        assert!(
+            FILES_SORT_DESCRIPTION.contains("昇順/降順は一覧のヘッダクリックで切替"),
+            "sort row must explain the header-click direction toggle: {FILES_SORT_DESCRIPTION}"
+        );
+    }
+
+    #[test]
+    fn searching_color_words_offers_the_editable_appearance_row() {
+        // AB13: 「色 / カラー」 matched only the display-only Personalize
+        // palette, so the hint led users away from the editable theme radios.
+        // Both queries must now surface the Appearance tab as well.
+        for query in ["色", "カラー"] {
+            assert!(
+                APPEARANCE_THEME_KEYWORDS.contains(&query),
+                "editable theme row must advertise {query}"
+            );
+            let matched = tabs_matching_query(query);
+            assert!(
+                matched.contains(&SettingsTab::Appearance),
+                "query {query} must surface the editable Appearance row: {matched:?}"
+            );
+            assert_eq!(
+                matched,
+                vec![SettingsTab::Appearance, SettingsTab::Personalize],
+                "query {query} must keep both tabs in display order"
+            );
+        }
+        // The read-only palette also tells the user where the change is made.
+        assert!(
+            PERSONALIZE_PALETTE_CHANGE_HINT.contains("外観タブ")
+                && PERSONALIZE_PALETTE_CHANGE_HINT.contains("テーマ設定で変更"),
+            "palette must point at the editable theme row: {PERSONALIZE_PALETTE_CHANGE_HINT}"
+        );
     }
 
     #[test]
@@ -2151,6 +2230,7 @@ mod tests {
             SettingsTab::Personalize.label(),
             "カラーパレット",
             "アクセント / 成功 / エラー",
+            PERSONALIZE_PALETTE_CHANGE_HINT,
             "このアプリについて",
         ]
         .join("\n");

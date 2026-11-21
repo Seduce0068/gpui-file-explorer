@@ -333,6 +333,13 @@ fn search_view_key_reaches_keymap(
     shift: bool,
     alt: bool,
 ) -> bool {
+    // AB01: the keymap-rebind path must not resurrect Alt chords that the
+    // allowlist deliberately rejects. Reject Alt before consulting the keymap;
+    // otherwise rebinding an allowed action (e.g. Copy) to ctrl+alt+y makes the
+    // keymap side return that action and Alt keys leak through in Search view.
+    if alt {
+        return false;
+    }
     search_view_key_allowed(key, ctrl, alt)
         || search_view_action_allowed(keymap.resolve(key, ctrl, shift, alt))
 }
@@ -416,6 +423,11 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
     // Y08: 監視の初期化失敗は secondary slot が直接 p.yellow で描画するが、
     // 分類表との一貫性のため warning マーカーにも登録する。
     STATUS_WATCH_INIT_FAILED,
+    // AB07: 一部無効 / 無効 も secondary slot が直接 p.yellow で描画する。
+    // self.status を通らないためマーカー自体は表示経路に乗らないが、Y08 と
+    // 同じく分類表との一貫性のため warning に登録する。
+    STATUS_WATCH_PARTIAL,
+    STATUS_WATCH_DISABLED,
 ];
 
 /// Sentinels rendered in red: wrapped errors and the concrete
@@ -1999,13 +2011,14 @@ use crate::strings::{
     STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
     STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
     STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
-    STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY,
-    STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
-    STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_NO_TERMINAL_PREFIX,
-    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
-    STATUS_UNDO_HISTORY_HINT, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX,
-    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
-    THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+    STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_AUTO_REFRESH,
+    STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE,
+    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
+    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
+    STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED,
+    STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK,
+    THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -3137,6 +3150,10 @@ impl Explorer {
                     Ok(items) => {
                         this.trash_items = items;
                         this.apply_trash_loaded();
+                        // AB06: Trash の F5 再読込も成功読み込みなので、保持中の
+                        // RESCAN_FAILED を解除する。ヘルパーは RESCAN_FAILED
+                        // 以外のステータスを変更しない。
+                        clear_rescan_failure_after_successful_read(&mut this.status);
                     }
                     Err(error) => {
                         this.trash_items.clear();
@@ -3692,8 +3709,14 @@ impl Explorer {
                         // `apply_search_filter` already preserves a stale
                         // warning; do not bury it under a plain "changed"
                         // status when a removed entry pruned the snapshot.
-                        this.status =
-                            search_filter_status(&this.status, STATUS_CHANGED.to_string());
+                        // AB02: search_filter_status only preserves
+                        // STATUS_SEARCH_STALE, so compose the rescan-failure
+                        // guard first. The reconciled status becomes the
+                        // summary passed to search_filter_status: a held
+                        // RESCAN_FAILED then survives unchanged, while a stale
+                        // warning still prefixes the reconciled summary.
+                        let reconciled = reconcile_aware_status(&this.status, STATUS_CHANGED);
+                        this.status = search_filter_status(&this.status, reconciled);
                         cx.notify();
                         return;
                     }
@@ -10226,9 +10249,10 @@ impl Explorer {
             .child(if !visible_slots.contains(&SecondarySlot::Watch) {
                 div().into_any_element()
             } else if self.view == ViewSource::Trash {
+                // AB08: route the Trash watch-slot caption through strings.rs.
                 div()
                     .text_color(rgb(p.muted))
-                    .child("ゴミ箱（自動更新なし）")
+                    .child(STATUS_TRASH_NO_AUTO_REFRESH)
                     .into_any_element()
             } else if self.watcher.is_supported() {
                 if let Some(reason) = self.watcher.last_error() {
@@ -13671,6 +13695,22 @@ mod tests {
         assert!(!search_view_key_reaches_keymap(
             &rejected, "y", false, false, false
         ));
+
+        // AB01: an Alt chord stays blocked even when an allowed action is
+        // rebound to it. The keymap side alone would return `Copy` for the
+        // ctrl+alt chord, so `reaches_keymap` must reject Alt before consulting
+        // the keymap (matching the "Alt variants keep their prior blocked
+        // behaviour" contract).
+        let mut alt_rebound = KeyMap::default_keymap();
+        assert!(alt_rebound.rebind(KeyAction::Copy, "y", true, false, true));
+        assert_eq!(alt_rebound.resolve("y", true, false, true), KeyAction::Copy);
+        assert!(!search_view_key_reaches_keymap(
+            &alt_rebound,
+            "y",
+            true,
+            false,
+            true
+        ));
     }
 
     #[test]
@@ -13715,6 +13755,28 @@ mod tests {
             search_filter_status("検索中…「rs」", summary.clone()),
             summary
         );
+    }
+
+    #[test]
+    fn search_view_removed_status_keeps_rescan_failure_and_stale_warning() {
+        // AB02: the Search-view removed-entry watch site must compose
+        // `reconcile_aware_status` with `search_filter_status` in that order:
+        // the reconciled status becomes the summary, so a held RESCAN_FAILED
+        // survives and a SEARCH_STALE warning still prefixes the summary (the
+        // same expression the production watch site now uses).
+        let compose = |current: &str| {
+            let reconciled = reconcile_aware_status(current, STATUS_CHANGED);
+            search_filter_status(current, reconciled)
+        };
+
+        assert_eq!(compose(STATUS_RESCAN_FAILED), STATUS_RESCAN_FAILED);
+
+        let stale = compose(STATUS_SEARCH_STALE);
+        assert!(stale.starts_with(STATUS_SEARCH_STALE));
+        assert!(stale.contains(STATUS_CHANGED));
+        assert_eq!(stale.matches(STATUS_SEARCH_STALE).count(), 1);
+
+        assert_eq!(compose("検索中…「rs」"), STATUS_CHANGED);
     }
 
     #[test]

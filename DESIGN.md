@@ -24,7 +24,7 @@
 - Windows Explorer / Dolphin の完全互換（権限編集・拡張メニュー・アーカイブ・クラウド・ネットワークブラウズ）。
 - **完全削除（permanent delete）**。P0/MVP では UI に出さない（§6）。
 - 検索インデックス、サムネイル生成、PDF/動画プレビュー、Dock、プラグイン機構。
-  **as-built（2026-11-21 現在）**: 内容検索（`search::search_contents`）とタブ
+  **as-built（2026-11-22 現在）**: 内容検索（`search::search_contents`）とタブ
   （`tabs.rs`）は P1 で実装済みのため非目的から外した。当初予定との差分は
   §4.1 の as-built 差分表を参照。
 - macOS App Store 配布（AGPL と衝突、[`RESEARCH.md`](RESEARCH.md) §11.1.1）。
@@ -114,7 +114,7 @@
 1〜2 日で通すため」+「IME/入力と衝突解決は独立した設計課題で、中途半端に
 入れると危険」（RESEARCH §12 Phase1）。
 
-**as-built（2026-11-21 現在）**: 名前変更・コピー/移動・複数選択・検索（名前/内容）
+**as-built（2026-11-22 現在）**: 名前変更・コピー/移動・複数選択・検索（名前/内容）
 ・OS アイコン・タブ・パス入力・テーマ切替（ダーク/ライト/システム）は実装済み
 （§4.1 の as-built 差分表を参照）。テーマは `theme_choice` に永続化し、
 `Alt+Shift+T` で Dark → Light → System を循環、選択が `system` のときは
@@ -156,7 +156,7 @@ OS の外観を監視して実効テーマを追従する。設定オーバー�
 ```
 
 - 幅 1100×高 700 を初期値（`WindowOptions::window_bounds`、POC の起動実績に準拠）。
-- **as-built（2026-11-21 現在）**: サイドバー幅は
+- **as-built（2026-11-22 現在）**: サイドバー幅は
   `SIDEBAR_WIDTH_PX = 190.0`（`app/src/main.rs`）に固定。設計当初の 200px
   表記は実装と異なるため 190px へ更新し、グリッド列計算も同一定数を参照する。
 - 下部ステータスは **左: 件数 / 中央: 選択・エラー・読込状態 / 右: 監視状態・バージョン**。
@@ -364,7 +364,7 @@ fe-dev が並行実装中の `app/src/` は、時間優先で次の**フラッ�
 | `icons.rs`（FileKind + IconName） | `icons.rs`（同じ役割） | 一致 |
 | `settings.rs`（atomic save） | `settings.rs` | 一致 |
 | （P1 先行）`ops.rs` に copy/move/rename エンジンを追加（ユニットテストは当初見積もり 11 件、件数は `cargo test` の実行結果を参照）＋ `Ctrl+C/X/V`・右クリックメニュー・F2 リネームダイアログへ接続済み（貼り付けは常に Rename、Esc でキャンセル、リネーム失敗時は原名維持） | `fs/ops.rs`（§6 の安全則） | 上書き禁止・symlink 非追跡・`.partial` 経由の原子的コピー・EXDEV フォールバック・キャンセル・64 KiB 単位のバイト進捗通知を実装。複数選択（`model::Selection`、パスキー）とバッチ操作（コピー/切り取り/ゴミ箱、件数付き確認）、ゴミ箱ビュー（`trash_view.rs`、一覧・復元のみで完全削除なし）、視覚的進捗バー（`ops::total_bytes` の事前計算 + ステータスバー表示）、アイコングリッド表示（`uniform_list` の行チャンク方式、`settings.view` に永続化）、再帰検索（`search.rs`、symlink非追跡・上限付き・キャンセル対応）、ボリューム一覧（`mounts.rs`、Linux /proc/mounts 解析）、タブ（`tabs.rs`、タブごとの cwd/履歴・切替/close/循環）、最近使った場所（`Settings::recent_dirs`、最大10件）、ドラッグ&ドロップ（`ExternalPaths` 受信→Renameコピー、フォルダ行へのドロップ先指定、`ExternalDragPayload` でOSへドラッグアウト）、検索結果の後段フィルタ（`search::filter_results`、種別・拡張子）、内容検索（`search::search_contents`、1MiB上限・バイナリ除外・symlink非読取・行番号）、ブックマーク（`Settings::bookmarks`、Ctrl+D・最大50件）、プロパティ表示（`PropsState`、読み取り専用・`model::permissions_string`）、空状態/ローディング表示（`empty_state_message`）、キーボードヘルプ（`HELP_SECTIONS`、F1）、タブ構成の永続化（`Settings::tabs`/`active_tab`、`Tabs::from_paths`）、ディレクトリサイズ計算（`ops::dir_stats`、symlink非追跡・キャンセル対応）、種類ソートと「種類」列（`SortKey::Kind`、`model::kind_label`）、タブの並べ替え（`Tabs::move_active_left/right`）、検索履歴（`Settings::recent_searches`、最大10件・チップ表示）、パス直接入力（`model::resolve_location_input`、Ctrl+L）、テキスト/画像プレビュー（`preview.rs`、テキスト256KiB上限・画像8MiB上限・バイナリ/symlink拒否・`sniff_image_format` による内容優先判定）、アンドゥ（`undo.rs`、名前変更とゴミ箱のみ・ゴミ箱は ID 指定で復元・最大20件）にも対応。OS ファイルクリップボードは GPUI 側未実装のため保留（`notes/os-file-clipboard-notes.md`）。`#![forbid(unsafe_code)]` を app 本体/build.rs に適用。最終的に `fs/ops.rs` へ移動 |
-| 保存検索 / ブックマークラベル（F6-38/F6-49） | 設計時は未定義 | **as-built**: 検索バーと右クリックに配線済み |
+| 保存検索 / ラベル（F6-38/F6-49） | 設計時は未定義 | as-built(11-22): 検索バー/右クリックに配線 |
 
 - **差分の記録義務**: 上表に無い逸脱が生じた場合は [`app/README.md`](app/README.md) の「設計からの差分」に追記し、本設計書の改版（v0.2）で反映する。
 
@@ -881,7 +881,7 @@ pub fn confirm_and_trash(
 
 ### 8.2 テーマ方針
 
-- **as-built（2026-11-21 現在）**: 一覧・サイドバー・ツールバー・ダイアログは
+- **as-built（2026-11-22 現在）**: 一覧・サイドバー・ツールバー・ダイアログは
   `app/src/main.rs` の `AppPalette`（Catppuccin Mocha / Latte のカラーテーブル）
   から直接色を取得する。`Explorer::palette` が実効テーマ（ダーク／ライト）に
   応じて `AppPalette::dark()` / `light()` を選択し、テーマ切替時は
@@ -902,7 +902,7 @@ pub fn confirm_and_trash(
 
 ### 8.3 アイコン方針
 
-- **as-built（2026-11-21 現在）**: ファイル種別アイコンは **Breeze の freedesktop アイコンテーマ**を優先し、
+- **as-built（2026-11-22 現在）**: ファイル種別アイコンは **Breeze の freedesktop アイコンテーマ**を優先し、
   `system_icons.rs` が `(icon name, size)` 単位でパスをキャッシュして `img(&Path)` で描画する。
   テーマに無い項目や Windows/macOS では **gpui-kit 同梱アイコン（Lucide 1,818 種 + 独自、ISC）**へ
   フォールバックする。`icons.rs` に拡張子 → `IconName` の静的表:
@@ -917,7 +917,7 @@ pub fn confirm_and_trash(
 - P0: **日本語 UI**。ユーザー向け文言は `strings.rs` の `pub const` / 関数に
   集約する方針（例: `pub const EMPTY_DIRECTORY: (&str, &str)`、
   2 要素タプルで見出しと本文を保持）。リテラルの散在禁止は設計目標。
-  **as-built（2026-11-21 現在）**: ヘルプ・空状態・固定ステータス文言は
+  **as-built（2026-11-22 現在）**: ヘルプ・空状態・固定ステータス文言は
   `strings.rs` に集約済みだが、値埋め込みの `format!` 文言は呼び出し側に残り、
   集約は部分対応（段階的 i18n）。「すべて集約・リテラル散在禁止」は未達の
   設計目標である点に注意（[`app/README.md`](app/README.md) の「日本語文言」行、
@@ -1222,6 +1222,12 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | 0.1 | 2026-11-11 | 初版（P0 契約、§4/§5/§10.4 が実装対象） |
 | 0.1-as-built | 2026-11-17 | 実装完了に伴う差分を記録。P1 機能（安全な操作エンジン / 検索 / タブ / ゴミ箱 / プレビュー / undo 他）を実装。`strings.rs` 追加、`tracing` 構造化ログ導入、設定の読み取り専用モード（退避失敗・未知スキーマ）追加。設計との逸脱と保留項目の詳細は `app/README.md` の「設計（DESIGN.md）からの差分」と `review-report.md` を参照。 |
 | 0.1-as-built | 2026-11-21 | OS アイコン（Breeze）と as-built 差分を反映 |
+| 0.1-as-built | 2026-11-22 | 保存検索 / ブックマークラベルの as-built 反映、Z14 / AA01 修正、日付統一 |
+
+2026-11-22 の as-built 差分の内訳。保存検索 / ブックマークラベルは §4.1
+の差分表と [app/README.md](app/README.md) の「再帰検索」を参照。
+再スキャン失敗ステータスは、成功時にクリアされない問題（Z14）と
+F5 / 変更なし reconcile 成功時にクリアされない問題（AA01）を修正済み。
 
 2026-11-21 の as-built 差分の内訳（OS アイコンは §2/§7/§8.3/ADR-009 を参照）。
 内容検索（`search::search_contents`）とタブ（`tabs.rs`）の実装済み化
