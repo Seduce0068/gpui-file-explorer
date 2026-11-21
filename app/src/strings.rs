@@ -171,6 +171,14 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "Ctrl+Tab / Ctrl+Shift+Tab で次 / 前のタブへ移動",
             ),
             (
+                "設定ダイアログのタブ（直接）",
+                "Alt+1〜5 で外観 / ファイル / ショートカット / ターミナル / 個人化へ直接移動",
+            ),
+            (
+                "設定ダイアログの並び順",
+                "ファイルタブで Alt+S により「既定の並び順」を切替",
+            ),
+            (
                 "設定ダイアログの操作",
                 "Tab / Shift+Tab で検索欄 → 入力欄 → キャンセル / 保存へフォーカス移動（循環）",
             ),
@@ -299,6 +307,10 @@ pub const STATUS_SKIPPED_SUFFIX: &str = " 件をスキップ）";
 pub const STATUS_CANCELLED: &str = "キャンセルしました";
 /// 進行中通知の接尾（`{verb}` に続く）。
 pub const STATUS_OP_IN_PROGRESS_SUFFIX: &str = "中…（Esc でキャンセル）";
+/// キャンセル可能な操作中に表示する括弧内の案内（K05）。
+/// `STATUS_OP_RUNNING` / `STATUS_OP_IN_PROGRESS_SUFFIX` と、main.rs の
+/// 「…しています」系ステータスが同じ文言を共有するための唯一の定義。
+pub const STATUS_CANCEL_HINT: &str = "（Esc でキャンセル）";
 
 /// 再スキャン失敗。後続の `STATUS_CHANGED` で上書きしない（R6-A-04）。
 pub const STATUS_RESCAN_FAILED: &str = "再スキャンに失敗しました";
@@ -504,6 +516,12 @@ mod tests {
         let tabs = find("設定ダイアログのタブ").expect("settings tab keys must be in F1 help");
         assert!(tabs.contains("Ctrl+Tab"), "{tabs}");
         assert!(tabs.contains("Ctrl+Shift+Tab"), "{tabs}");
+        let direct_tabs = find("設定ダイアログのタブ（直接）")
+            .expect("Alt+digit settings tab keys must be in F1 help");
+        assert!(direct_tabs.contains("Alt+1〜5"), "{direct_tabs}");
+        let sort =
+            find("設定ダイアログの並び順").expect("Alt+S settings sort key must be in F1 help");
+        assert!(sort.contains("Alt+S"), "{sort}");
         let focus = find("設定ダイアログの操作")
             .expect("settings dialog focus-cycling keys must be in F1 help");
         assert!(focus.contains("Tab / Shift+Tab"), "{focus}");
@@ -667,6 +685,7 @@ mod tests {
             STATUS_SKIPPED_PREFIX,
             STATUS_SKIPPED_SUFFIX,
             STATUS_CANCELLED,
+            STATUS_CANCEL_HINT,
             STATUS_NO_SELECTION,
             STATUS_OP_IN_PROGRESS_SUFFIX,
             STATUS_RESCAN_FAILED,
@@ -727,6 +746,34 @@ mod tests {
         );
         assert!(STATUS_SETTINGS_UNSAVED_HINT.contains("「保存」"));
         assert!(STATUS_SETTINGS_UNSAVED_HINT.ends_with('。'));
+    }
+
+    #[test]
+    fn cancel_hint_is_shared_by_all_in_progress_statuses() {
+        // K05: one canonical parenthesized hint for every cancellable progress
+        // status, instead of five hand-copied literals drifting apart.
+        assert_eq!(STATUS_CANCEL_HINT, "（Esc でキャンセル）");
+        assert!(STATUS_OP_RUNNING.ends_with(STATUS_CANCEL_HINT));
+        assert!(STATUS_OP_IN_PROGRESS_SUFFIX.ends_with(STATUS_CANCEL_HINT));
+
+        // The undo/redo/rename "…しています" statuses in main.rs must build on
+        // that constant, not repeat the literal inline.
+        let source = include_str!("main.rs");
+        for (phrase, expected_sites) in [
+            ("元に戻しています", 2),
+            ("やり直しています", 2),
+            ("名前を変更しています", 1),
+        ] {
+            let sites: Vec<&str> = source
+                .lines()
+                .filter(|line| line.contains(phrase) && line.contains("self.status"))
+                .collect();
+            assert_eq!(sites.len(), expected_sites, "sites for {phrase}");
+            for line in sites {
+                assert!(line.contains("STATUS_CANCEL_HINT"), "not shared: {line}");
+                assert!(!line.contains("Esc でキャンセル"), "inline hint: {line}");
+            }
+        }
     }
 
     #[test]

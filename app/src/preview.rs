@@ -310,6 +310,18 @@ mod image_tests {
         assert_eq!(image_format_for_name("a.JpG"), Some(ImageFormat::Jpeg));
         assert_eq!(image_format_for_name("a.svg"), Some(ImageFormat::Svg));
         assert_eq!(image_format_for_name("a.tiff"), Some(ImageFormat::Tiff));
+        assert_eq!(image_format_for_name("a.webp"), Some(ImageFormat::Webp));
+        assert_eq!(image_format_for_name("a.WEBP"), Some(ImageFormat::Webp));
+        assert_eq!(image_format_for_name("a.gif"), Some(ImageFormat::Gif));
+        assert_eq!(image_format_for_name("a.GIF"), Some(ImageFormat::Gif));
+        assert_eq!(image_format_for_name("a.bmp"), Some(ImageFormat::Bmp));
+        assert_eq!(image_format_for_name("a.BMP"), Some(ImageFormat::Bmp));
+        assert_eq!(image_format_for_name("a.ico"), Some(ImageFormat::Ico));
+        assert_eq!(image_format_for_name("a.ICO"), Some(ImageFormat::Ico));
+        assert_eq!(image_format_for_name("a.pbm"), Some(ImageFormat::Pnm));
+        assert_eq!(image_format_for_name("a.PPM"), Some(ImageFormat::Pnm));
+        assert_eq!(image_format_for_name("a.pgm"), Some(ImageFormat::Pnm));
+        assert_eq!(image_format_for_name("a.PNM"), Some(ImageFormat::Pnm));
         assert_eq!(image_format_for_name("a.txt"), None);
         assert_eq!(image_format_for_name("noextension"), None);
     }
@@ -323,6 +335,7 @@ mod image_tests {
             sniff_image_format(&[0xff, 0xd8, 0xff, 0xe0]),
             Some(ImageFormat::Jpeg)
         );
+        assert_eq!(sniff_image_format(b"GIF87a..."), Some(ImageFormat::Gif));
         assert_eq!(sniff_image_format(b"GIF89a..."), Some(ImageFormat::Gif));
         let mut webp = b"RIFF".to_vec();
         webp.extend_from_slice(&[0, 0, 0, 0]);
@@ -331,6 +344,11 @@ mod image_tests {
         assert_eq!(sniff_image_format(b"BM....."), Some(ImageFormat::Bmp));
         assert_eq!(
             sniff_image_format(&[b'I', b'I', 0x2a, 0x00]),
+            Some(ImageFormat::Tiff)
+        );
+        // Big-endian TIFF uses the "MM" byte-order mark with magic 0x2a00.
+        assert_eq!(
+            sniff_image_format(&[b'M', b'M', 0x00, 0x2a]),
             Some(ImageFormat::Tiff)
         );
         assert_eq!(

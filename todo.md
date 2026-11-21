@@ -700,26 +700,30 @@ status: current
 
 ### 優先度: 高（ループ R7・confirmed）
 
-- [ ] **K01** Ctrl+, が keymap override で evict され案内が壊れる
+- [x] **K01** Ctrl+, が keymap override で evict され案内が壊れる — 対応: loop9-core
   — main.rs:1265 / settings.rs:381
-- [ ] **K02** confirm_keymap の unbind no-op が拒否理由をマスク
+- [x] **K02** confirm_keymap の unbind no-op が拒否理由をマスク — 対応: loop9-core
   — main.rs:4222-4240
-- [ ] **K03** STATUS_NO_SELECTION が警告色から漏れる — main.rs:324
+- [x] **K03** STATUS_NO_SELECTION が警告色から漏れる — main.rs:324 — 対応: loop9-core
 
 ### 優先度: 中（ループ R7）
 
-- [ ] **K04** keymap ヒントが unbind 非対応と案内するが実装は受理
+- [x] **K04** keymap ヒントが unbind 非対応と案内するが実装は受理 — 対応: loop9-ux
   — settings_ui.rs:429
-- [ ] **K05** 進行中ステータスが STATUS_OP_IN_PROGRESS_SUFFIX を迂回
+- [x] **K05** 進行中ステータスが STATUS_OP_IN_PROGRESS_SUFFIX を迂回 — 対応: loop9-core
   — main.rs:5597,5732,7104
-- [ ] **K06** DESIGN §10.1 クロスリファレンスが 461 のまま — DESIGN.md:997
-- [ ] **K07** 設定検索の他タブ一致ヒントにジャンプ手段なし — settings_ui.rs:860
-- [ ] **K08** ラジオ/スイッチが Tab 巡回から除外されキーボード不可 — settings_ui.rs:491
-- [ ] **K09** preview.rs 画像判定の未テスト分岐（webp/gif/MM TIFF 等）
-- [ ] **K10** error.rs BoxedCause::clone が無テスト
-- [ ] **K11** mounts.rs unescape_mount_field の不正オクタル分岐が無テスト
-- [ ] **K12** system_icons.rs image-x- 生成分岐が無テスト
-- [ ] **K13** Terminal タブで未保存ヒントが重複表示 — settings_ui.rs:790,936
+- [x] **K06** DESIGN §10.1 クロスリファレンスが 461 のまま — DESIGN.md:997 — 対応: loop9-tests
+- [x] **K07** 設定検索の他タブ一致ヒントにジャンプ手段なし — settings_ui.rs:860 — 対応: loop9-ux
+- [x] **K08** ラジオ/スイッチが Tab 巡回から除外されキーボード不可 — settings_ui.rs:491 — 対応: loop9-ux
+- [x] **K09** preview.rs 画像判定の未テスト分岐（webp/gif/MM TIFF 等） — 対応: loop9-tests
+- [x] **K10** error.rs BoxedCause::clone が無テスト — 対応: loop9-tests
+- [x] **K11** mounts.rs unescape_mount_field の不正オクタル分岐が無テスト — 対応: loop9-tests
+- [x] **K12** system_icons.rs image-x- 生成分岐が無テスト — 対応: loop9-tests
+- [x] **K13** Terminal タブで未保存ヒントが重複表示 — settings_ui.rs:790,936 — 対応: loop9-ux
+
+### 優先度: 高（ループ R7・実バグ修正済み）
+
+- [x] **K14** unescape_mount_field がマルチバイト文字で panic — 対応: 親（bytes スライスに修正、回帰テスト追加）
 
 ### 優先度: 低（調査タスク）
 

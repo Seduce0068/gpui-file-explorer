@@ -314,4 +314,40 @@ mod tests {
             Some("detail".to_string())
         );
     }
+
+    #[test]
+    fn cloning_a_caused_error_preserves_source_and_message_ja() {
+        // FsCause: `from_io` attaches the OS error as a `BoxedCause`; cloning a
+        // boxed trait object falls back to its rendered text, so source() text
+        // and the Japanese message must survive the clone unchanged.
+        let io = std::io::Error::new(ErrorKind::NotFound, "missing file");
+        let original = AppError::from_io(PathBuf::from("/tmp/missing"), &io);
+        let cloned = original.clone();
+        assert!(matches!(cloned, AppError::FsCause { .. }));
+        assert_eq!(cloned.source().expect("cause").to_string(), "missing file");
+        assert_eq!(
+            cloned.source().map(ToString::to_string),
+            original.source().map(ToString::to_string)
+        );
+        assert_eq!(cloned.message_ja(), original.message_ja());
+        assert!(cloned.message_ja().contains("見つかりません"));
+
+        // NotFoundCause: the same guarantee for an operation error carrying a
+        // cause, whose message_ja() is the plain Display text.
+        let not_found = AppError::NotFoundCause(
+            PathBuf::from("/tmp/gone"),
+            BoxedCause::text("underlying detail"),
+        );
+        let cloned = not_found.clone();
+        assert_eq!(
+            cloned.source().expect("cause").to_string(),
+            "underlying detail"
+        );
+        assert_eq!(
+            cloned.source().map(ToString::to_string),
+            not_found.source().map(ToString::to_string)
+        );
+        assert_eq!(cloned.message_ja(), not_found.message_ja());
+        assert_eq!(cloned.message_ja(), "見つかりません: /tmp/gone");
+    }
 }

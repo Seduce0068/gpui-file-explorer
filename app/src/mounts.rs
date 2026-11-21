@@ -83,9 +83,15 @@ fn unescape_mount_field(value: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'\\' && index + 3 < bytes.len() {
-            let octal = &value[index + 1..index + 4];
-            if octal.bytes().all(|byte| (b'0'..=b'7').contains(&byte)) {
-                if let Ok(byte) = u8::from_str_radix(octal, 8) {
+            // Slice the byte buffer, not `&str`: the next three bytes may end
+            // inside a multi-byte UTF-8 character (e.g. `\aい`), and slicing
+            // `&str` at a non-char boundary would panic.
+            let octal = &bytes[index + 1..index + 4];
+            if octal.iter().all(|byte| (b'0'..=b'7').contains(byte)) {
+                if let Ok(byte) = u8::from_str_radix(
+                    std::str::from_utf8(octal).expect("octal digits are ASCII"),
+                    8,
+                ) {
                     out.push(byte);
                     index += 4;
                     continue;
@@ -199,6 +205,18 @@ overlay /var/lib/docker/overlay2/abc overlay rw 0 0
         assert_eq!(unescape_mount_field(r"a\011b"), "a\tb");
         assert_eq!(unescape_mount_field(r"a\134b"), r"a\b");
         assert_eq!(unescape_mount_field("plain"), "plain");
+
+        // Non-octal digits after a backslash: keep the escape verbatim.
+        assert_eq!(unescape_mount_field(r"a\xyzb"), r"a\xyzb");
+        // \777 = 511 does not fit in a byte: keep the escape verbatim.
+        assert_eq!(unescape_mount_field(r"a\777b"), r"a\777b");
+        // Fewer than three digits before the end: keep the escape verbatim.
+        assert_eq!(unescape_mount_field(r"a\04"), r"a\04");
+        assert_eq!(unescape_mount_field(r"a\0"), r"a\0");
+        // A backslash followed by bytes that end inside a multi-byte UTF-8
+        // character must not panic (the octal slice is taken from raw bytes).
+        assert_eq!(unescape_mount_field("\\aい"), "\\aい");
+        assert_eq!(unescape_mount_field("い\\a"), "い\\a");
     }
 
     #[test]
