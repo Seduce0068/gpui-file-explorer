@@ -490,6 +490,28 @@ mod tests {
     }
 
     #[test]
+    fn name_variants_add_image_x_prefix_without_duplicates() {
+        let variants = icon_name_variants("image-png");
+        assert_eq!(variants.first().map(String::as_str), Some("image-png"));
+        assert_eq!(
+            variants
+                .iter()
+                .filter(|v| v.as_str() == "image-x-png")
+                .count(),
+            1,
+            "image-png must gain exactly one image-x-png fallback: {variants:?}"
+        );
+
+        // An already x-prefixed name must not gain a second (or doubled) x-.
+        let already_prefixed = icon_name_variants("image-x-png");
+        assert_eq!(already_prefixed, vec!["image-x-png".to_string()]);
+        assert!(
+            !already_prefixed.iter().any(|v| v == "image-x-x-png"),
+            "x-prefixed name must not be prefixed again: {already_prefixed:?}"
+        );
+    }
+
+    #[test]
     fn size_candidates_prefer_exact_then_larger_then_smaller() {
         let dirs = size_dir_candidates(32);
         assert_eq!(dirs.first().map(String::as_str), Some("32"));

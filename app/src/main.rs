@@ -318,13 +318,15 @@ fn kind_color(kind: FileKind) -> u32 {
 
 /// Sentinels rendered in amber: stale search, cancellation, the read-only
 /// settings notice and the `STATUS_*NO_*` "not available here" notices.
-/// Checked **before** the error
-/// markers because several `STATUS_*FAILED` strings (e.g. "変更できません")
-/// are substrings of a longer `STATUS_*NO_*` notice; the specific notice wins.
+/// `STATUS_NO_SELECTION` is an operation refusal, not a success, so it belongs
+/// here too (K03). Checked **before** the error markers because several
+/// `STATUS_*FAILED` strings (e.g. "変更できません") are substrings of a longer
+/// `STATUS_*NO_*` notice; the specific notice wins.
 const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_SEARCH_STALE,
     STATUS_CANCELLED,
     STATUS_SETTINGS_READ_ONLY,
+    STATUS_NO_SELECTION,
     STATUS_NO_CLIPBOARD,
     STATUS_DROP_NO_DESTINATION,
     STATUS_REDO_NO_TARGET,
@@ -540,6 +542,16 @@ fn settings_validation_status(message: &str) -> String {
 /// A clean form needs no notice; only a dirty one loses work (H03).
 fn settings_discard_status(dirty: bool) -> Option<&'static str> {
     dirty.then_some(STATUS_SETTINGS_DISCARDED)
+}
+
+/// Caption for the keymap dialog's `unbind` command. Kept pure so the no-op
+/// branch (K02) can be regression-tested without a GPUI `Context`.
+fn keymap_unbind_caption(removed: bool, action: &str) -> String {
+    if removed {
+        format!("キーマップを解除しました: {action}")
+    } else {
+        format!("解除する設定はありません: {action}")
+    }
 }
 
 /// Choose the status to show after a settings write (Bug L01). The caller's
@@ -1624,8 +1636,8 @@ use crate::strings::{
     EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE,
     FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT,
     OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
-    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CHANGED,
-    STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
+    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
+    STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
     STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
     STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_LAST_TAB, STATUS_MISSING_COUNT_SUFFIX,
     STATUS_NOT_DIRECTORY, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
@@ -1706,6 +1718,31 @@ fn settings_tab_step(tab: SettingsTab, delta: isize) -> SettingsTab {
     let count = SettingsTab::ALL.len() as isize;
     let next = (tab.index() as isize + delta).rem_euclid(count) as usize;
     SettingsTab::from_index(next)
+}
+
+/// Pure: map an Alt+digit pressed inside the settings overlay straight to its
+/// page (K07). `1`..`5` follow [`SettingsTab::ALL`]; every other key returns
+/// `None`, so callers can try it unconditionally without swallowing typing.
+fn settings_tab_from_digit_key(key: &str) -> Option<SettingsTab> {
+    if key.len() != 1 {
+        return None;
+    }
+    let digit = key.as_bytes()[0];
+    if !(b'1'..=b'5').contains(&digit) {
+        return None;
+    }
+    SettingsTab::ALL.get((digit - b'1') as usize).copied()
+}
+
+/// Pure: next value of the Files-tab sort radio set (K08). The order matches
+/// the `sort_options` passed to `render_settings_content`; an unknown value
+/// starts at the first entry so Alt+S always makes visible progress.
+fn settings_sort_next(choice: &str) -> &'static str {
+    const ORDER: [&str; 4] = ["name", "kind", "size", "modified"];
+    match ORDER.iter().position(|value| *value == choice) {
+        Some(index) => ORDER[(index + 1) % ORDER.len()],
+        None => ORDER[0],
+    }
 }
 
 /// Inline rename dialog state. Dropping it closes the dialog and drops the
@@ -4208,7 +4245,10 @@ impl Explorer {
         // disk at the old value, so rollback must restore both settings.keymap
         // and the derived live table (D13).
         let snapshot = self.settings.clone();
-        let status = match command {
+        // `attempted` records whether anything reached `save()`. Bind always
+        // changes the overrides; unbind only does so when an override was really
+        // removed (K02). Mirrors the `clear_bookmark_label` no-op pattern.
+        let (status, attempted) = match command {
             KeymapInput::Bind { action, chord } => {
                 if !upsert_keymap_override(&mut self.settings.keymap, &action, &chord) {
                     self.set_keymap_error(
@@ -4217,27 +4257,34 @@ impl Explorer {
                     );
                     return;
                 }
-                format!("キーマップを設定しました: {action} → {chord}")
+                (
+                    format!("キーマップを設定しました: {action} → {chord}"),
+                    true,
+                )
             }
             KeymapInput::Unbind { action } => {
-                if remove_keymap_override(&mut self.settings.keymap, &action) {
-                    format!("キーマップを解除しました: {action}")
-                } else {
-                    format!("解除する設定はありません: {action}")
-                }
+                let removed = remove_keymap_override(&mut self.settings.keymap, &action);
+                (keymap_unbind_caption(removed, &action), removed)
             }
         };
         // Rebuild the live table so the change works without a restart, exactly
         // as a binding read from settings.json at startup would. Unbinding a
         // persisted override restores that action's default binding.
         self.keymap = KeyMap::from_settings(&self.settings);
-        let saved = self.save_settings();
+        // A no-op unbind never reaches `save()`, so there is nothing to skip:
+        // its own "解除する設定はありません" caption must survive instead of being
+        // masked by STATUS_SETTINGS_READ_ONLY in a read-only session (K02).
+        let saved = if attempted {
+            self.save_settings()
+        } else {
+            true
+        };
         if settings_write_needs_rollback(saved) {
             self.rollback_settings(snapshot, cx);
         }
         self.keymap_editor = None;
         self.focus_list_on_next_render = true;
-        self.status = settings_write_status(&self.settings, saved, true, status);
+        self.status = settings_write_status(&self.settings, saved, attempted, status);
         cx.notify();
     }
 
@@ -4393,6 +4440,32 @@ impl Explorer {
                     state.cycle_focus(window, cx, modifiers.shift);
                 }
                 return;
+            }
+            // K07: Alt+1..Alt+5 jump straight to a page. This gives the
+            // "matches in another tab" search hint a keyboard action instead
+            // of a static pointer. Ctrl remains excluded so Ctrl+Alt+digit is
+            // left alone.
+            if modifiers.alt && !modifiers.control {
+                if let Some(tab) = settings_tab_from_digit_key(key) {
+                    self.on_settings_action(SettingsUiAction::Tab(tab), cx);
+                    return;
+                }
+                // K08: RadioGroup/Switch are not in the Tab focus cycle, so
+                // the Files-tab sort order gets its own direct chord.
+                if key == "s" {
+                    let next_sort = self
+                        .settings_ui
+                        .as_ref()
+                        .filter(|state| state.tab == SettingsTab::Files)
+                        .map(|state| settings_sort_next(&state.sort_choice));
+                    if let Some(next_sort) = next_sort {
+                        self.on_settings_action(
+                            SettingsUiAction::SetSort(next_sort.to_string()),
+                            cx,
+                        );
+                        return;
+                    }
+                }
             }
             match key {
                 "escape" => self.dismiss_settings_ui(cx),
@@ -5594,7 +5667,7 @@ impl Explorer {
                     self.undo.push_undo(retry.clone());
                     return;
                 };
-                self.status = format!("{label}を元に戻しています…（Esc でキャンセル）");
+                self.status = format!("{label}を元に戻しています…{STATUS_CANCEL_HINT}");
                 cx.notify();
                 let rename_source = current.clone();
                 let cancel = token.cancel.clone();
@@ -5649,7 +5722,7 @@ impl Explorer {
                     self.undo.push_undo(retry);
                     return;
                 };
-                self.status = format!("{label}を元に戻しています…（Esc でキャンセル）");
+                self.status = format!("{label}を元に戻しています…{STATUS_CANCEL_HINT}");
                 cx.notify();
                 let cancel = token.cancel.clone();
                 let background = cx.background_spawn(async move {
@@ -5729,7 +5802,7 @@ impl Explorer {
                     self.undo.push_redo(retry);
                     return;
                 };
-                self.status = format!("{label}をやり直しています…（Esc でキャンセル）");
+                self.status = format!("{label}をやり直しています…{STATUS_CANCEL_HINT}");
                 cx.notify();
                 let cancel = token.cancel.clone();
                 let background = cx.background_spawn(async move {
@@ -5795,7 +5868,7 @@ impl Explorer {
                     self.undo.push_redo(retry);
                     return;
                 };
-                self.status = format!("{label}をやり直しています…（Esc でキャンセル）");
+                self.status = format!("{label}をやり直しています…{STATUS_CANCEL_HINT}");
                 cx.notify();
                 let cancel = token.cancel.clone();
                 // Keep the partial result even when cancelled: items already
@@ -7101,7 +7174,7 @@ impl Explorer {
         if let Some(rename) = self.renaming.as_mut() {
             rename.op = Some(token.clone());
         }
-        self.status = "名前を変更しています…（Esc でキャンセル）".to_string();
+        self.status = format!("名前を変更しています…{STATUS_CANCEL_HINT}");
         cx.notify();
         let rename_source = target.clone();
         let cancel = token.cancel.clone();
@@ -10957,11 +11030,12 @@ mod tests {
         clear_dialog_error, clear_op_token, format_chord, format_selected, fuzzy_candidates,
         fuzzy_score, grid_columns_for_width, help_overrides_line, icon_button_text_color,
         install_op_token, internal_drop_paths, join_status_notices, keymap_action_name,
-        keymap_chord_reserved, kind_color, labeled_display_name, middle_click_tab_dir,
-        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
-        pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
-        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
-        settings_discard_status, settings_save_status, settings_tab_step,
+        keymap_chord_reserved, keymap_unbind_caption, kind_color, labeled_display_name,
+        middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
+        parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
+        remove_keymap_override, saved_search_caption, saved_search_save_status,
+        search_filter_status, set_view_status, settings_discard_status, settings_save_status,
+        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
         settings_validation_status, settings_write_needs_rollback, settings_write_status,
         startup_dir_from, status_color, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
@@ -10975,12 +11049,13 @@ mod tests {
         GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CHANGED,
         STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_NOT_FOUND, STATUS_ERROR_MARKERS,
-        STATUS_ERROR_PREFIX, STATUS_NOT_DIRECTORY, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
-        STATUS_PRIORITY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESTORE_FAILED,
-        STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
-        STATUS_SETTINGS_SAVE_FAILED, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
-        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY, STATUS_WARNING_MARKERS,
-        THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_ERROR_PREFIX, STATUS_NOT_DIRECTORY, STATUS_NO_SELECTION,
+        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_FAILED,
+        STATUS_REDO_NO_TARGET, STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE,
+        STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
+        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX,
+        STATUS_TRASH_NO_COPY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
+        THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11013,6 +11088,9 @@ mod tests {
             (STATUS_SEARCH_STALE, C_YELLOW),
             (STATUS_CANCELLED, C_YELLOW),
             (STATUS_SETTINGS_READ_ONLY, C_YELLOW),
+            // K03: "選択項目がありません" refuses an operation, so it is amber
+            // rather than success green even without a *_FAILED phrase.
+            (STATUS_NO_SELECTION, C_YELLOW),
             (STATUS_TRASH_NO_COPY, C_YELLOW),
             // NO_* notices must win over the *_FAILED phrase they contain.
             (STATUS_REDO_NO_TARGET, C_YELLOW),
@@ -11124,6 +11202,7 @@ mod tests {
             (STATUS_SEARCH_STALE, dark.yellow, light.yellow),
             (STATUS_CANCELLED, dark.yellow, light.yellow),
             (STATUS_SETTINGS_READ_ONLY, dark.yellow, light.yellow),
+            (STATUS_NO_SELECTION, dark.yellow, light.yellow),
             (STATUS_TRASH_NO_COPY, dark.yellow, light.yellow),
             (STATUS_ERROR_PREFIX, dark.red, light.red),
             (STATUS_SETTINGS_SAVE_FAILED, dark.red, light.red),
@@ -12771,6 +12850,58 @@ mod tests {
         );
     }
 
+    // K02: an unbind that removes no override changes nothing, so it must not
+    // reach `save()`. Its own "nothing to unbind" caption has to survive even
+    // in a read-only session instead of becoming STATUS_SETTINGS_READ_ONLY.
+    #[test]
+    fn keymap_unbind_noop_keeps_rejection_caption_in_read_only_session() {
+        let noop = keymap_unbind_caption(false, "open_preview");
+        assert_eq!(noop, "解除する設定はありません: open_preview");
+        let removed = keymap_unbind_caption(true, "open_preview");
+        assert_eq!(removed, "キーマップを解除しました: open_preview");
+        assert_ne!(noop, removed);
+
+        for settings in [
+            Settings::default(),
+            Settings {
+                read_only: true,
+                ..Settings::default()
+            },
+            Settings {
+                ephemeral: true,
+                ..Settings::default()
+            },
+        ] {
+            // No-op path in `confirm_keymap`: `attempted = false`, `saved = true`.
+            assert_eq!(
+                settings_write_status(&settings, true, false, noop.clone()),
+                noop,
+                "no-op unbind must report its own rejection verbatim"
+            );
+            assert_ne!(
+                settings_write_status(&settings, true, false, noop.clone()),
+                STATUS_SETTINGS_READ_ONLY
+            );
+        }
+
+        // The masked behaviour this fixes: an actually attempted unbind in a
+        // read-only session *does* show the generic notice, which is why the
+        // no-op must skip `save()` entirely.
+        let read_only = Settings {
+            read_only: true,
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings_write_status(
+                &read_only,
+                true,
+                true,
+                keymap_unbind_caption(true, "open_preview")
+            ),
+            STATUS_SETTINGS_READ_ONLY
+        );
+    }
+
     // G08: Ctrl+Tab / Ctrl+Shift+Tab step the settings TabBar with wrap-around.
     #[test]
     fn settings_tab_step_wraps_in_both_directions() {
@@ -12793,6 +12924,33 @@ mod tests {
         for tab in SettingsTab::ALL {
             assert_eq!(settings_tab_step(tab, SettingsTab::ALL.len() as isize), tab);
         }
+    }
+
+    // K07: Alt+1..Alt+5 jump directly to a page, so the digit→page map must
+    // cover all five displayed tabs and reject every other key.
+    #[test]
+    fn settings_digit_key_maps_to_displayed_tabs_only() {
+        for (index, tab) in SettingsTab::ALL.iter().enumerate() {
+            let key = char::from_digit(index as u32 + 1, 10).unwrap().to_string();
+            assert_eq!(settings_tab_from_digit_key(&key), Some(*tab));
+        }
+        assert_eq!(settings_tab_from_digit_key("0"), None);
+        assert_eq!(settings_tab_from_digit_key("6"), None);
+        assert_eq!(settings_tab_from_digit_key("a"), None);
+        assert_eq!(settings_tab_from_digit_key(""), None);
+        assert_eq!(settings_tab_from_digit_key("12"), None);
+    }
+
+    // K08: RadioGroup is skipped by the Tab focus cycle, so Alt+S must always
+    // advance the sort choice and wrap after the last radio option.
+    #[test]
+    fn settings_sort_next_cycles_and_wraps() {
+        assert_eq!(settings_sort_next("name"), "kind");
+        assert_eq!(settings_sort_next("kind"), "size");
+        assert_eq!(settings_sort_next("size"), "modified");
+        assert_eq!(settings_sort_next("modified"), "name");
+        assert_eq!(settings_sort_next(""), "name");
+        assert_eq!(settings_sort_next("unknown"), "name");
     }
 
     // D13: every preview-then-write path must discard its in-memory changes
@@ -13431,8 +13589,16 @@ mod tests {
         );
         assert_eq!(keymap.resolve("p", true, true, false), KeyAction::None);
 
-        // Reserved dialog keys and unmapped actions are rejected.
+        // Reserved dialog keys, the Ctrl+, settings shortcut (K01) and unmapped
+        // actions are rejected. A rebind must not evict OpenSettings: the
+        // STATUS_SETTINGS_DISCARDED recovery hint depends on it.
         assert!(!keymap.rebind(KeyAction::FuzzyJump, "escape", false, false, false));
+        assert!(!keymap.rebind(KeyAction::FuzzyJump, ",", true, false, false));
+        assert_eq!(
+            keymap.resolve(",", true, false, false),
+            KeyAction::OpenSettings,
+            "Ctrl+, must survive a rejected rebind"
+        );
         assert!(!keymap.rebind(KeyAction::None, "p", true, false, false));
 
         keymap.reset(KeyAction::FuzzyJump);
@@ -13645,7 +13811,9 @@ mod tests {
 
     #[test]
     fn parse_keymap_input_rejects_reserved_keys() {
-        for chord in ["escape", "f1", "ctrl+f1", "shift+ESCAPE"] {
+        // K01: Ctrl+, backs the STATUS_SETTINGS_DISCARDED recovery hint, so a
+        // keymap override must not be able to claim it.
+        for chord in ["escape", "f1", "ctrl+f1", "shift+ESCAPE", ",", "ctrl+,"] {
             assert!(keymap_chord_reserved(chord), "not reserved: {chord}");
             let input = format!("open_preview {chord}");
             assert_eq!(parse_keymap_input(&input), None, "accepted {input:?}");

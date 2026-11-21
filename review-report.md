@@ -363,10 +363,17 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
   -D clippy::undocumented_unsafe_blocks`（2026-11-17T03:11+09:00）:
   警告なし。`app/src/main.rs` と `app/build.rs` に
   `#![forbid(unsafe_code)]` を確認（AGENTS.md §15 の unsafe 禁止を具現化）。
-- DESIGN の受入条件 AC-1〜AC-13 を照合（2026-11-17T06:37+09:00）:
-  PASS 8件、NOT TESTABLE 4件（AC-8/9/10/12 = 合成入力ツール未導入
-  による実押下不可）、AC-9 のエラー通知は GPUI API 制約で未実装
-  （README に明記済み）。新たな未対応項目なし。
+- DESIGN の受入条件 AC-1〜AC-13 を照合（2026-11-17T06:37+09:00）。
+  レビュー時点のスナップショットであり、現行値は README / 実行結果を参照。
+  旧表記「PASS 8 件 + NOT TESTABLE 4 件 = 12 件」は AC-4 の判定漏れによる
+  誤記。正しくは PASS 9 件 + NOT TESTABLE 4 件 = 13 件。
+  - PASS（9 件）: AC-1（build 成功）/ AC-2（test 成功）/
+    AC-3（Wayland 起動・エラーなし）/ AC-4（KWin D-Bus 確認）/
+    AC-5（5 領域スクショ）/ AC-6（非同期ロード）/ AC-7（監視更新）/
+    AC-11（設定永続化）/ AC-13（SIGTERM クリーン終了）。
+  - NOT TESTABLE（4 件）: AC-8 / AC-9 / AC-10 / AC-12
+    （合成入力ツール未導入による実押下不可）。AC-9 のエラー通知は
+    GPUI API 制約で未実装（README に明記済み）。新たな未対応項目なし。
 - 最終コードで実機起動を再確認（2026-11-17T06:58+09:00、Wayland
   `WAYLAND_DISPLAY=wayland-0`）: ビルド成功、3 秒間プロセス生存、
   stderr / stdout とも空（panic / EGL / Vulkan エラーなし = AC-3）、

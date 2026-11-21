@@ -372,22 +372,26 @@ fn sane_terminal_command(command: &str) -> bool {
         && !command.chars().any(char::is_control)
 }
 
-/// Whether a chord's key is one of the keys reserved for dialog ownership.
+/// Whether a chord's key is one of the keys reserved for dialog ownership or
+/// the settings shortcut.
 ///
 /// Only the final `+`-separated segment is the key: `f10` / `f12` contain the
 /// substring "f1" but are not the reserved F1 dialog key. Comparison is
-/// case-insensitive. This is the single definition shared by settings loading
-/// and the UI's keymap dialog.
+/// case-insensitive. `,` is reserved because Ctrl+, is the shipped OpenSettings
+/// shortcut (K01): a rebind must not evict it and make the
+/// "Ctrl+, で設定を開き直せます" recovery hint false. This is the single
+/// definition shared by settings loading and the UI's keymap dialog.
 pub fn is_reserved_chord(chord: &str) -> bool {
     let lowered = chord.to_ascii_lowercase();
     let key = lowered.rsplit('+').next().unwrap_or(lowered.as_str());
-    key == "f1" || key == "escape"
+    key == "f1" || key == "escape" || key == ","
 }
 
 /// Normalize one persisted `(action_name, chord)` pair. Both sides are trimmed
-/// and bounded, and a chord that mentions a dialog-ownership key (`escape` or
-/// `f1`, see [`is_reserved_chord`]) is rejected so a bad file cannot take away
-/// a way out of a dialog. Unknown action names are deliberately kept:
+/// and bounded, and a chord that mentions a reserved key (`escape`, `f1` or
+/// `,`, see [`is_reserved_chord`]) is rejected so a bad file cannot take away a
+/// way out of a dialog or the Ctrl+, settings shortcut. Unknown action names
+/// are deliberately kept:
 /// `KeyMap::from_settings` ignores names that are not in the shipped table.
 fn sane_keymap_entry(action: &str, chord: &str) -> Option<(String, String)> {
     let action = action.trim();
@@ -3976,7 +3980,7 @@ mod keymap_settings_tests {
 
     #[test]
     fn is_reserved_chord_matches_only_the_final_key_segment() {
-        for chord in ["f1", "escape", "ctrl+f1", "alt+escape"] {
+        for chord in ["f1", "escape", "ctrl+f1", "alt+escape", ",", "ctrl+,"] {
             assert!(is_reserved_chord(chord), "reserved: {chord}");
         }
         // Case-insensitive, like the chord parser in main.rs.
@@ -3996,9 +4000,11 @@ mod keymap_settings_tests {
                 "{chord} should be accepted"
             );
         }
-        for chord in ["f1", "ctrl+f1", "escape", "alt+escape"] {
+        // K01: Ctrl+, is the shipped OpenSettings shortcut; a persisted rebind
+        // must not be able to evict it.
+        for chord in ["f1", "ctrl+f1", "escape", "alt+escape", ",", "ctrl+,"] {
             assert!(
-                sane_keymap_entry("act", chord).is_none(),
+                sane_keymap_entry("open_settings", chord).is_none(),
                 "{chord} should be rejected"
             );
         }

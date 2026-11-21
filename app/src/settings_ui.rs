@@ -375,6 +375,18 @@ fn cancel_label(dirty: bool) -> &'static str {
     }
 }
 
+/// Text of the single, shared save-status line in the footer.
+///
+/// K13: this is the only place the "changes apply on Save" hint is rendered;
+/// the Terminal tab used to repeat it in its body when the form was clean.
+fn footer_status_text(dirty: bool) -> &'static str {
+    if dirty {
+        "未保存の変更があります"
+    } else {
+        crate::strings::STATUS_SETTINGS_UNSAVED_HINT
+    }
+}
+
 // Search keyword sets, one per visible row. They are shared by the per-row
 // filter in `render_settings_content` and by `tabs_matching_query`, so a row and
 // the cross-tab hint derived from it can never drift apart.
@@ -424,9 +436,11 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
 ];
 
 /// Shortcuts-tab keymap hint. Unlike the Alt+K dialog this field replaces the
-/// whole override list on Save and has no `unbind` syntax, so both consequences
-/// must be spelled out where the user is typing (H04).
-const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。1件ずつの解除は Alt+K の unbind を使用してください。";
+/// whole override list on Save, so that consequence must be spelled out where
+/// the user is typing (H04). Per-entry `unbind アクション名` is accepted here
+/// too (the Save handler parses it through `parse_keymap_input`), so the hint
+/// must not send users to Alt+K for something this field can do itself (K04).
+const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。";
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &["ターミナル", "terminal", "コマンド", "起動"];
 const PERSONALIZE_PALETTE_KEYWORDS: &[&str] = &["個人化", "パレット", "色", "カラー", "theme"];
 const PERSONALIZE_INFO_KEYWORDS: &[&str] = &["個人化", "情報", "about", "設定", "バージョン"];
@@ -457,6 +471,23 @@ pub fn tabs_matching_query(query: &str) -> Vec<SettingsTab> {
                 .any(|keywords| matches_query(query, keywords))
         })
         .collect()
+}
+
+/// Message shown when the active tab has no rows matching the search query.
+///
+/// Pure so the wording can be regression-tested without a GPUI window. When
+/// another tab holds the matches, the hint also names the Alt+digit direct-jump
+/// keys, giving the user a keyboard route to the reported page (K07).
+pub fn no_match_hint(matching_tabs: &[SettingsTab]) -> String {
+    if matching_tabs.is_empty() {
+        "該当する設定がありません".to_string()
+    } else {
+        let labels: Vec<&'static str> = matching_tabs.iter().map(|tab| tab.label()).collect();
+        format!(
+            "該当する設定がありません。{} タブに一致があります（Alt+数字でタブ移動）",
+            labels.join("、")
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -739,7 +770,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                     .child(setting_row(
                         palette,
                         "既定の並び順",
-                        "ファイル一覧を開いたときの基準となる項目",
+                        "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）",
                         sort_radios,
                     ));
             }
@@ -785,14 +816,9 @@ pub fn render_settings_content<V: SettingsUiHost>(
                     )
                     .child(Input::new(&state.terminal_input).w_full());
             }
-            // Validation errors are rendered once in the shared footer below,
-            // so they stay visible on every tab (including Shortcuts).
-            if show_terminal_command {
-                column = column.child(info_line(
-                    palette,
-                    crate::strings::STATUS_SETTINGS_UNSAVED_HINT,
-                ));
-            }
+            // K13: the "changes apply on Save" hint lives only in the shared
+            // footer below. Rendering it here as well showed it twice on this
+            // tab whenever the form was clean.
             column
         }
         SettingsTab::Personalize => {
@@ -859,15 +885,6 @@ pub fn render_settings_content<V: SettingsUiHost>(
 
     // Replace the blank column with a hint that names the tabs holding matches.
     let body = if !query.is_empty() && !current_tab_has_matches {
-        let message = if matching_tabs.is_empty() {
-            "該当する設定がありません".to_string()
-        } else {
-            let labels: Vec<&'static str> = matching_tabs.iter().map(|tab| tab.label()).collect();
-            format!(
-                "該当する設定がありません。{} タブに一致があります",
-                labels.join("、")
-            )
-        };
         div()
             .w_full()
             .py_6()
@@ -876,7 +893,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
             .justify_center()
             .text_sm()
             .text_color(rgb(palette.subtext))
-            .child(message)
+            .child(no_match_hint(&matching_tabs))
     } else {
         body
     };
@@ -933,11 +950,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                 } else {
                     palette.muted
                 }))
-                .child(if state.dirty {
-                    "未保存の変更があります"
-                } else {
-                    crate::strings::STATUS_SETTINGS_UNSAVED_HINT
-                }),
+                .child(footer_status_text(state.dirty)),
         )
         .child(
             Button::new("settings-cancel")
@@ -999,9 +1012,9 @@ mod tests {
     // Explicit imports only: the module-level `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
-        cancel_label, matches_query, next_settings_focus, selected_index, settings_focus_order,
-        tabs_matching_query, SettingsFocusTarget, SettingsTab, SettingsUiAction, SettingsUiPalette,
-        SETTINGS_KEYMAP_INPUT_HINT,
+        cancel_label, footer_status_text, matches_query, next_settings_focus, no_match_hint,
+        selected_index, settings_focus_order, tabs_matching_query, SettingsFocusTarget,
+        SettingsTab, SettingsUiAction, SettingsUiPalette, SETTINGS_KEYMAP_INPUT_HINT,
     };
 
     #[test]
@@ -1108,13 +1121,45 @@ mod tests {
     }
 
     #[test]
+    fn no_match_hint_points_at_the_matching_tab_and_alt_digits() {
+        // K07: a hit in another tab must be actionable from the keyboard, so
+        // the hint names both the tab and the Alt+digit direct-jump keys.
+        let hint = no_match_hint(&[SettingsTab::Terminal]);
+        assert!(hint.contains("ターミナル タブに一致があります"));
+        assert!(hint.contains("Alt+数字でタブ移動"));
+        let multiple = no_match_hint(&[SettingsTab::Appearance, SettingsTab::Personalize]);
+        assert!(multiple.contains("外観、個人化 タブに一致があります"));
+        assert!(multiple.contains("Alt+数字でタブ移動"));
+        // With no hits at all there is no page to jump to.
+        let none = no_match_hint(&[]);
+        assert_eq!(none, "該当する設定がありません");
+        assert!(!none.contains("Alt+数字"));
+    }
+
+    #[test]
+    fn save_status_hint_is_the_footers_single_source() {
+        // K13: the shared footer is the only renderer of the "apply on Save"
+        // hint; the Terminal tab body must not repeat it.
+        assert_eq!(
+            footer_status_text(false),
+            crate::strings::STATUS_SETTINGS_UNSAVED_HINT
+        );
+        assert_eq!(footer_status_text(true), "未保存の変更があります");
+        assert_ne!(footer_status_text(true), footer_status_text(false));
+    }
+
+    #[test]
     fn settings_keymap_hint_explains_replace_and_unbind_route() {
         // H04: the shared field looks like an additive editor, so the hint must
-        // say Save replaces everything and that per-entry removal lives in Alt+K.
+        // say Save replaces everything. K04: it must also advertise the unbind
+        // syntax this very field accepts, not point users to Alt+K only.
         assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("「操作=キー」形式で入力します"));
         assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("; で区切ります"));
         assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("置き換わります（一部追加ではありません）"));
-        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("Alt+K の unbind を使用してください"));
+        assert!(
+            SETTINGS_KEYMAP_INPUT_HINT.contains("この欄でも `unbind アクション名` で解除できます")
+        );
+        assert!(!SETTINGS_KEYMAP_INPUT_HINT.contains("Alt+K の unbind を使用してください"));
     }
 
     #[test]
