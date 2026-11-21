@@ -662,6 +662,24 @@ status: current
 - [x] **H15** set_view の read_only/ephemeral テストなし
   main.rs:12570 — 対応: loop6-core
 
+### 優先度: 高（ループ R5・confirmed）
+
+- [ ] **I01** 対象なし系の失敗通知が成功色（緑）で表示される
+  — main.rs:342-358 / strings.rs の TARGET_GONE 等
+- [ ] **I02** settings_write_status が no-op 分岐で拒否理由をマスク
+  — main.rs:555 / commit_label_editor, save_current_search
+
+### 優先度: 中（ループ R5）
+
+- [ ] **I03** review-report の debug hook「release 残存」記述が矛盾
+  — review-report.md:300-303
+- [ ] **I04** DESIGN の新規フォルダ名リテラルが実装と乖離
+  — DESIGN.md:266,802 / model.rs:805
+- [ ] **I05** 設定ダイアログ内 Tab ナビゲーション不在
+  — settings_ui.rs:771
+- [ ] **I06** 未保存破棄通知に復帰導線なし（strings 通知規約違反）
+  — strings.rs:316
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
