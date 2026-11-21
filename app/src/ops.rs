@@ -234,11 +234,25 @@ pub fn validate_file_name(name: &str) -> Result<(), OpError> {
     Ok(())
 }
 
+/// Numbered candidates tried by [`unique_path`] before falling back.
+const UNIQUE_PATH_ATTEMPTS: usize = 10_000;
+
 /// Return `dir/name` if free, otherwise the first free `name (N).ext`.
 ///
 /// Builds candidate names as raw `OsString`s so non-UTF-8 file names survive
 /// the rename-conflict path without lossy conversion.
 pub fn unique_path(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    unique_path_with_limit(dir, name, UNIQUE_PATH_ATTEMPTS)
+}
+
+/// [`unique_path`] with an explicit attempt bound.
+///
+/// The bound is a parameter (rather than a `cfg(test)` constant) so tests can
+/// drive the exhaustion fallback with a handful of files while production
+/// still tries 10,000 candidates. On exhaustion the occupied original path is
+/// returned, making the caller fail with `AlreadyExists` instead of looping
+/// forever.
+fn unique_path_with_limit(dir: &Path, name: &std::ffi::OsStr, attempts: usize) -> PathBuf {
     let candidate = dir.join(name);
     // A dangling symlink reports `exists() == false` but is still an occupied
     // name; skip it just like `rename_entry` does.
@@ -265,7 +279,7 @@ pub fn unique_path(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
         }
     };
 
-    for counter in 1..=10_000 {
+    for counter in 1..=attempts {
         let mut candidate_name = append_counter(stem, counter);
         if let Some(extension) = extension {
             candidate_name.push(".");
@@ -343,6 +357,45 @@ fn partial_temp_name(nanos: u128, pid: u32, files: u64, nonce: u64) -> String {
     format!(".partial-{nanos}-{pid}-{files}-{nonce}")
 }
 
+/// Reserve a fresh `.partial-*` sibling with `create_new`.
+///
+/// The candidate-name generator is injected so tests can force deterministic
+/// `AlreadyExists` collisions; production passes [`partial_temp_name`]. A
+/// colliding name is retried with a fresh candidate and is *never* deleted:
+/// only the file this function successfully opens is returned, so another
+/// operation's in-progress partial cannot be removed by a retry.
+fn reserve_partial(
+    parent: &Path,
+    dest: &Path,
+    mut make_name: impl FnMut() -> String,
+) -> Result<(PathBuf, fs::File), OpError> {
+    // Bound the retry loop so a directory pre-planted with many colliding names
+    // cannot spin forever; the production nonce changes on every attempt, so
+    // reaching the cap is only plausible under deliberate interference.
+    const PARTIAL_CREATE_ATTEMPTS: usize = 32;
+    let mut attempts = 0usize;
+    loop {
+        let candidate = parent.join(make_name());
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                attempts += 1;
+                if attempts >= PARTIAL_CREATE_ATTEMPTS {
+                    return Err(OpError::Io {
+                        path: dest.to_path_buf(),
+                        message: "一時ファイル名を確保できませんでした".to_string(),
+                    });
+                }
+            }
+            Err(error) => return Err(io_error(dest, error)),
+        }
+    }
+}
+
 /// Copy a single file atomically: write a sibling `.partial-*` file, flush,
 /// then link it into place. `dest` must not exist.
 fn copy_file_atomic(
@@ -378,39 +431,20 @@ fn copy_file_atomic(
     // source leaves no partial behind at all.
     let mut input = fs::File::open(src).map_err(|e| io_error(src, e))?;
 
-    // Bound the retry loop so a directory pre-planted with many colliding names
-    // cannot spin forever; the nonce changes on every attempt, so reaching the
-    // cap is only plausible under deliberate interference.
-    const PARTIAL_CREATE_ATTEMPTS: usize = 32;
-    let mut attempts = 0usize;
-    let (partial, mut output) = loop {
-        let candidate = parent.join(partial_temp_name(
+    // The O_EXCL reservation loop lives in `reserve_partial`; the injected
+    // generator keeps the timestamp / PID / counter / nonce scheme unchanged.
+    let files = stats.files;
+    let (partial, mut output) = reserve_partial(parent, dest, || {
+        partial_temp_name(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_nanos())
                 .unwrap_or(0),
             std::process::id(),
-            stats.files,
+            files,
             next_partial_nonce(),
-        ));
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(file) => break (candidate, file),
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                attempts += 1;
-                if attempts >= PARTIAL_CREATE_ATTEMPTS {
-                    return Err(OpError::Io {
-                        path: dest.to_path_buf(),
-                        message: "一時ファイル名を確保できませんでした".to_string(),
-                    });
-                }
-            }
-            Err(error) => return Err(io_error(dest, error)),
-        }
-    };
+        )
+    })?;
 
     let result = (|| -> Result<u64, OpError> {
         let mut buffer = vec![0u8; COPY_CHUNK_SIZE];
@@ -1219,6 +1253,93 @@ mod tests {
     }
 
     #[test]
+    fn partial_reservation_retries_collisions_then_succeeds() {
+        let dir = scratch("partial-retry");
+        let dest = dir.join("dest.txt");
+        // 31 collisions stay below the 32-attempt cap; the next name is free.
+        let collisions: Vec<String> = (0..31).map(|i| format!("planted-{i}")).collect();
+        for name in &collisions {
+            write(&dir.join(name), format!("foreign-{name}").as_bytes());
+        }
+        let mut generator = collisions
+            .iter()
+            .cloned()
+            .chain(std::iter::once("fresh".to_string()));
+        let (partial, _file) =
+            reserve_partial(&dir, &dest, || generator.next().expect("name sequence"))
+                .expect("collisions below the cap must be retried");
+        assert_eq!(partial, dir.join("fresh"));
+        for name in &collisions {
+            assert_eq!(
+                fs::read(dir.join(name)).unwrap(),
+                format!("foreign-{name}").as_bytes(),
+                "a retry must not delete a foreign partial: {name}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn partial_reservation_exhaustion_errors_without_deleting_collisions() {
+        let dir = scratch("partial-exhaust");
+        let dest = dir.join("dest.txt");
+        let collisions: Vec<String> = (0..32).map(|i| format!("planted-{i}")).collect();
+        for name in &collisions {
+            write(&dir.join(name), format!("foreign-{name}").as_bytes());
+        }
+        let mut generator = collisions.iter().cloned();
+        let err = reserve_partial(&dir, &dest, || generator.next().expect("name sequence"))
+            .expect_err("32 collisions must exhaust the retry budget");
+        match &err {
+            OpError::Io { path, message } => {
+                assert_eq!(path, &dest, "the error must reference the destination");
+                assert!(
+                    message.contains("一時ファイル名を確保できませんでした"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+        for name in &collisions {
+            assert_eq!(
+                fs::read(dir.join(name)).unwrap(),
+                format!("foreign-{name}").as_bytes(),
+                "exhaustion must not delete a foreign partial: {name}"
+            );
+        }
+        assert!(!dest.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn partial_reservation_does_not_delete_a_partial_created_during_retry() {
+        let dir = scratch("partial-concurrent");
+        let dest = dir.join("dest.txt");
+        let occupied = dir.join("occupied");
+        let foreign = dir.join("foreign-partial");
+        write(&occupied, b"foreign-occupied");
+        let mut call = 0;
+        let (partial, _file) = reserve_partial(&dir, &dest, || {
+            call += 1;
+            match call {
+                1 => "occupied".to_string(),
+                2 => {
+                    // Another operation reserves its own partial between our
+                    // attempts; that in-progress file must survive.
+                    write(&foreign, b"in-progress");
+                    "foreign-partial".to_string()
+                }
+                _ => "fresh-partial".to_string(),
+            }
+        })
+        .expect("a fresh name after two collisions must succeed");
+        assert_eq!(partial, dir.join("fresh-partial"));
+        assert_eq!(fs::read(&foreign).unwrap(), b"in-progress");
+        assert_eq!(fs::read(&occupied).unwrap(), b"foreign-occupied");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn concurrent_copies_keep_their_own_partials() {
         // Distinct destination names avoid a destination-level race, isolating
         // the temp-name race: both operations have the same PID and files == 0.
@@ -1364,6 +1485,38 @@ mod tests {
             Some("操作はキャンセルされました".to_string()),
             "the primary error must stay reachable through source()"
         );
+
+        // An `Io`/`IoCause` primary adopts its ORIGINAL path, not the cleanup
+        // destination: the error must point at the failing source operation.
+        let original = Path::new("/tmp/original.txt");
+        for primary in [
+            OpError::Io {
+                path: original.to_path_buf(),
+                message: "読み取り失敗".to_string(),
+            },
+            OpError::IoCause {
+                path: original.to_path_buf(),
+                message: "読み取り失敗".to_string(),
+                cause: BoxedCause::text("io failure"),
+            },
+        ] {
+            let err = with_cleanup_failure(
+                primary,
+                dest,
+                Err(OpError::PermissionDenied(dest.to_path_buf())),
+            );
+            // `Io` gets promoted to the cause-carrying `IoCause` by
+            // `with_cleanup_failure`, so accept both shapes.
+            let path = match &err {
+                OpError::Io { path, .. } | OpError::IoCause { path, .. } => path,
+                other => panic!("composed error must be Io/IoCause: {other:?}"),
+            };
+            assert_eq!(
+                path,
+                &original.to_path_buf(),
+                "the primary Io path must win over the cleanup dest"
+            );
+        }
     }
 
     #[test]
@@ -2480,9 +2633,7 @@ mod tests {
 
 #[cfg(test)]
 mod dir_stats_tests {
-    #[cfg(unix)]
-    use super::unique_path;
-    use super::{dir_stats, io_error, CancelFlag, OpError};
+    use super::{dir_stats, io_error, unique_path, unique_path_with_limit, CancelFlag, OpError};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -2642,6 +2793,40 @@ mod dir_stats_tests {
             let text = error.to_string();
             assert!(text.contains(expected), "expected {expected:?} in {text:?}");
         }
+    }
+
+    #[test]
+    fn unique_path_exhaustion_returns_the_occupied_original_path() {
+        // Contract of the practically-unreachable fallback: after every
+        // numbered candidate is taken, `unique_path` returns the occupied
+        // original path so the caller fails with AlreadyExists. An explicit
+        // small bound exercises the real fallback without 10,001 files.
+        let dir = scratch("unique-exhaustion");
+        let name = std::ffi::OsStr::new("taken.txt");
+        write(&dir.join("taken.txt"), 1);
+        write(&dir.join("taken (1).txt"), 1);
+        write(&dir.join("taken (2).txt"), 1);
+
+        let exhausted = unique_path_with_limit(&dir, name, 2);
+        assert_eq!(
+            exhausted,
+            dir.join("taken.txt"),
+            "exhaustion must fall back to the original occupied path"
+        );
+        assert!(exhausted.exists());
+
+        // Respecting the bound: one more slot stays free at limit 3, and the
+        // public entry point still uses the full 10,000-candidate ladder.
+        let available = unique_path_with_limit(&dir, name, 3);
+        assert_eq!(available, dir.join("taken (3).txt"));
+        assert!(!available.exists());
+        assert_eq!(
+            unique_path(&dir, name),
+            dir.join("taken (3).txt"),
+            "the public helper must use the production bound"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

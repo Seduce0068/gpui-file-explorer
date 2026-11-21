@@ -245,6 +245,22 @@ fn search_filter_status(current: &str, summary: String) -> String {
     }
 }
 
+/// Status for directory watch events that would report `STATUS_CHANGED` (Z02).
+///
+/// A failed reconciliation sets `STATUS_RESCAN_FAILED` with its F5 recovery
+/// hint and must stay visible until the next *successful* read (strings.rs
+/// F6-36). The three watch sites all route their "changed" notice through this
+/// helper so a bare watch event cannot bury the failure under a green status.
+/// Any other `next` status (a success path, or a different failure) passes
+/// through unchanged, so the guard does not pin the status permanently.
+fn reconcile_aware_status(current: &str, next: &str) -> String {
+    if current.starts_with(STATUS_RESCAN_FAILED) && next == STATUS_CHANGED {
+        current.to_string()
+    } else {
+        next.to_string()
+    }
+}
+
 /// Keys forwarded to the normal keymap while the search view is open and no
 /// search text input owns focus. Text editing keys stay with the query field;
 /// once focus moves to the result list, navigation, copy, F4 (terminal) and
@@ -1924,47 +1940,48 @@ fn empty_state_message(
 }
 
 use crate::strings::{
-    EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE,
-    FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT,
-    OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
-    STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
-    STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
-    STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
-    STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
-    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-    STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED,
-    STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
-    STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX,
-    STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX,
-    STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
-    STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
-    STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
-    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
-    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
-    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
-    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
-    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT,
-    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
-    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
+    DIALOG_FOOTER_HINT, EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH,
+    ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING,
+    LOAD_ERROR_HINT, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
+    PARENT_FOLDER_LABEL, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+    STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+    STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+    STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+    STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
+    STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
+    STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
+    STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING,
+    STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
+    STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX,
+    STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
+    STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MAX_TABS_SUFFIX,
+    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
+    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
+    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
+    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PLACE_GONE_HINT,
+    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
+    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_EXISTS_PREFIX,
+    STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT, STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY,
+    STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SAME_DIRECTORY_NO_MOVE,
+    STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
     STATUS_SEARCH_PROMPT, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
     STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_SAVE_FAILED,
     STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SKIPPED_PREFIX,
-    STATUS_SKIPPED_SUFFIX, STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SPECIAL,
-    STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY,
-    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY,
-    STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_INVALID,
-    STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
-    STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING, STATUS_TRASH_LOAD_FAILED_PREFIX,
-    STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
-    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
-    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
-    STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED,
-    STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK,
-    THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+    STATUS_SKIPPED_SUFFIX, STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY,
+    STATUS_SKIP_REASON_SPECIAL, STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW,
+    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED,
+    STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
+    STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
+    STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
+    STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY,
+    STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
+    STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_NO_TERMINAL_PREFIX,
+    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
+    STATUS_UNDO_HISTORY_HINT, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX,
+    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
+    THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -3640,7 +3657,8 @@ impl Explorer {
                         .iter()
                         .any(|event| matches!(event, FsEvent::Rescan | FsEvent::Renamed { .. }))
                     {
-                        this.status = STATUS_CHANGED.to_string();
+                        // Z02: do not overwrite a pending rescan failure here.
+                        this.status = reconcile_aware_status(&this.status, STATUS_CHANGED);
                         this.reload(cx);
                         return;
                     }
@@ -3678,7 +3696,8 @@ impl Explorer {
                                 }
                             }
                             FsEvent::Rescan | FsEvent::Renamed { .. } => {
-                                this.status = STATUS_CHANGED.to_string();
+                                // Z02: keep the F5 rescan-failure hint until a read succeeds.
+                                this.status = reconcile_aware_status(&this.status, STATUS_CHANGED);
                                 this.reload(cx);
                                 return;
                             }
@@ -3687,7 +3706,9 @@ impl Explorer {
                     if changed {
                         this.fingerprint = fingerprint(&this.all_entries);
                         this.rebuild_view(keep);
-                        this.status = STATUS_CHANGED.to_string();
+                        // Z02: an incremental update is not a successful
+                        // re-read; preserve a pending rescan failure here too.
+                        this.status = reconcile_aware_status(&this.status, STATUS_CHANGED);
                         cx.notify();
                     }
                 });
@@ -4498,7 +4519,7 @@ impl Explorer {
                 div()
                     .text_xs()
                     .text_color(rgb(p.muted))
-                    .child("Enter で確定 / Esc でキャンセル"),
+                    .child(DIALOG_FOOTER_HINT),
             );
 
         Some(
@@ -4689,7 +4710,7 @@ impl Explorer {
                 div()
                     .text_xs()
                     .text_color(rgb(p.muted))
-                    .child("Enter で確定 / Esc でキャンセル"),
+                    .child(DIALOG_FOOTER_HINT),
             );
 
         Some(
@@ -5459,11 +5480,17 @@ impl Explorer {
             return;
         }
 
-        let skip_notice = if missing.is_empty() {
-            String::new()
-        } else {
-            transfer_skip_notice(&[(STATUS_SKIP_REASON_MISSING, missing.len())])
-        };
+        // Z03: 混在ケースでは同フォルダのスキップも最終通知に残す。
+        // 全件が同フォルダのときは上の専用 STATUS が返るため、ここに来る
+        // `same_dir` は必ず「転送する項目がある」場合の一部である。
+        let mut parts: Vec<(&str, usize)> = Vec::new();
+        if !missing.is_empty() {
+            parts.push((STATUS_SKIP_REASON_MISSING, missing.len()));
+        }
+        if same_dir > 0 {
+            parts.push((STATUS_SKIP_REASON_SAME_DIRECTORY, same_dir));
+        }
+        let skip_notice = transfer_skip_notice(&parts);
         self.run_transfer(cwd.clone(), paths, cut, skip_notice, cx);
     }
 
@@ -5763,6 +5790,10 @@ impl Explorer {
         }
         if special > 0 {
             notices.push((STATUS_SKIP_REASON_SPECIAL, special));
+        }
+        // Z03: 混在ドロップでは同フォルダのスキップも理由として残す。
+        if same > 0 {
+            notices.push((STATUS_SKIP_REASON_SAME_DIRECTORY, same));
         }
         // Pass the notices to `run_transfer`: assigning `status` here would be
         // overwritten by its immediate "コピー中…" update, and the skip reasons
@@ -7721,7 +7752,7 @@ impl Explorer {
             div()
                 .text_xs()
                 .text_color(rgb(p.muted))
-                .child("Enter で確定 / Esc でキャンセル"),
+                .child(DIALOG_FOOTER_HINT),
         );
 
         Some(
@@ -11411,13 +11442,14 @@ mod tests {
         keymap_limit_status, keymap_unbind_caption, kind_color, labeled_display_name,
         load_error_display_text, middle_click_tab_dir, normalize_terminal_command, op_is_active,
         parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
-        read_properties_snapshot, remove_keymap_override, saved_search_caption,
-        saved_search_save_status, search_filter_status, set_view_status, settings_discard_status,
-        settings_read_only_status, settings_row_key_is_bare, settings_save_error_status,
-        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
-        settings_validation_status, settings_write_needs_rollback, settings_write_status,
-        startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
-        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
+        read_properties_snapshot, reconcile_aware_status, remove_keymap_override,
+        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
+        settings_discard_status, settings_read_only_status, settings_row_key_is_bare,
+        settings_save_error_status, settings_save_status, settings_sort_next,
+        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
+        settings_write_needs_rollback, settings_write_status, startup_dir_from,
+        startup_save_failure_status, status_color, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
         transfer_progress_status, transfer_skip_notice, trash_batch, trash_delete_status,
         trash_key_action, trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
@@ -11460,10 +11492,11 @@ mod tests {
         STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
         STATUS_DROP_NO_DESTINATION, STATUS_INVALID_CLI_DIR, STATUS_MAX_TABS_SUFFIX,
         STATUS_NO_CLIPBOARD, STATUS_RENAME_FAILED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
-        STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SPECIAL, STATUS_TRASH_ALL_FAILED,
-        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
-        STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-        STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_INIT_FAILED,
+        STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
+        STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
+        STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
+        STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
+        STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_INIT_FAILED,
     };
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -11631,6 +11664,30 @@ mod tests {
         // amber に落ちないこと（接頭辞優先）も同時に検証する。
         let cli_error = format!("{STATUS_ERROR_PREFIX}{STATUS_INVALID_CLI_DIR}");
         assert_eq!(status_color(&cli_error), C_RED, "{cli_error}");
+    }
+
+    #[test]
+    fn rescan_failed_survives_watch_changed_until_success() {
+        // Z02: 再スキャン失敗は次回の成功読み込みまで保持する（strings.rs F6-36）。
+        let failed = format!("{STATUS_RESCAN_FAILED}: permission denied");
+        assert_eq!(status_color(&failed), C_RED);
+        assert!(failed.contains("（F5 で再読込）"), "F5 導線が残ること");
+
+        // 監視イベントの "変更を検出しました" は失敗を上書きしない。
+        let after_watch = reconcile_aware_status(&failed, STATUS_CHANGED);
+        assert_eq!(after_watch, failed, "watch event must not bury the failure");
+        assert_eq!(status_color(&after_watch), C_RED);
+
+        // 成功側の通知は同じヘルパーを素通りし、赤を解除できる（固定されない）。
+        let success = "再読込しました";
+        let cleared = reconcile_aware_status(&after_watch, success);
+        assert_eq!(cleared, success);
+        assert_eq!(status_color(&cleared), C_GREEN);
+
+        // 失敗中でなければ "変更を検出しました" は従来どおり green。
+        let ordinary = reconcile_aware_status("3 件をコピーしました", STATUS_CHANGED);
+        assert_eq!(ordinary, STATUS_CHANGED);
+        assert_eq!(status_color(&ordinary), C_GREEN);
     }
 
     #[test]
@@ -12142,6 +12199,16 @@ mod tests {
             (STATUS_SKIP_REASON_SPECIAL, 1),
         ]);
         assert_eq!(notice, "（存在しない項目 2 / 特殊ファイル 1 件をスキップ）");
+        // Z03: 混在ケースで same_dir / same が消えないことを固定する。
+        let three = transfer_skip_notice(&[
+            (STATUS_SKIP_REASON_MISSING, 2),
+            (STATUS_SKIP_REASON_SPECIAL, 1),
+            (STATUS_SKIP_REASON_SAME_DIRECTORY, 3),
+        ]);
+        assert_eq!(
+            three,
+            "（存在しない項目 2 / 特殊ファイル 1 / 同じフォルダ 3 件をスキップ）"
+        );
     }
 
     #[test]

@@ -115,6 +115,18 @@ pub const SETTINGS_TAB_JUMP_KEYS: &str = settings_tab_jump_keys!();
 /// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
 const _: () = assert!(SETTINGS_TAB_JUMP_KEYS.len() == settings_tab_jump_keys!().len());
 
+/// 予約キーを列挙した正規の案内文（Z07）。
+///
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// `reserved_keys_note!()` を使う（入力ガード注記と同じ方式）。HELP_SECTIONS
+/// より前に定義するのは Rust の macro_rules! が定義順に効くため。
+macro_rules! reserved_keys_note {
+    () => {
+        "escape / f1 は予約キーです（, も Ctrl+, 固定のため予約キー）"
+    };
+}
+pub(crate) use reserved_keys_note;
+
 /// Keyboard shortcuts shown by the F1 help overlay: (section, [(key, description)]).
 pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
@@ -203,6 +215,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "設定ダイアログ",
                 concat!(
                     "Enter で保存 / Esc でキャンセル（未保存変更時は破棄され通知されます）/ 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。",
+                    "一致がゼロなら検索欄を空にするか Esc で閉じる。",
                     "他タブに一致すると Alt+数字で移動（",
                     settings_tab_jump_keys!(),
                     "）。F1 はダイアログ内で無効なので、下部のキー凡例に必要なキーを表示"
@@ -241,7 +254,11 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+T", "F4 で開くターミナルの起動コマンドを設定"),
             (
                 "Alt+K",
-                "キーボードショートカットを設定（アクション名 コード / unbind アクション名で解除、Enter で保存 / Esc でキャンセル）",
+                concat!(
+                    "キーボードショートカットを設定（アクション名 コード / unbind アクション名で解除、Enter で保存 / Esc でキャンセル）。",
+                    reserved_keys_note!(),
+                    "。最大 64 件まで。一括リセットのボタンはありません（KeyMap::reset は UI 未配線）。全既定へ戻す場合は設定ファイルの keymap を [] にするか、アクションごとに unbind してください"
+                ),
             ),
             ("Esc", "キャンセル / ダイアログを閉じる"),
             ("Ctrl+Q", "終了"),
@@ -260,15 +277,35 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// キーマップで上書きできない予約キーの正規リスト（Z07）。
+///
+/// `settings::is_reserved_chord` が拒否する 3 キーをここで定義し、F1 ヘルプ・
+/// Alt+K ダイアログ・設定のショートカット欄・README を同期させる。`escape` /
+/// `f1` はダイアログの所有権を守り、`,` は Ctrl+, 固定（L01）を守る。
+pub const RESERVED_CHORD_KEYS: &[&str] = &["escape", "f1", ","];
+
+/// 定数を非テストビルドでも参照させ、`-D warnings` の dead_code を防ぐ。
+const _: () = assert!(RESERVED_CHORD_KEYS.len() == 3);
+
+/// 予約キー案内文の正規表記（Z07）。F1 / ダイアログ / README の同期判定に使う。
+pub const RESERVED_KEYS_NOTE: &str = reserved_keys_note!();
+
+/// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
+const _: () = assert!(RESERVED_KEYS_NOTE.len() == reserved_keys_note!().len());
+
 /// Keymap settings dialog (Alt+K): the input syntax and the reserved keys.
 /// Text entry is used instead of raw key capture so Escape / F1 keep their
 /// dialog-ownership role (see `app/src/main.rs` keymap helpers). The
 /// `open_settings` notice explains why the shipped Ctrl+, cannot be moved: the
-/// F1 help and the discard-recovery hint promise that chord (L01). V02: the
-/// comma key itself is reserved too (`settings::is_reserved_chord` rejects
-/// `escape` / `f1` / `,`), so the hint must name all three.
-pub const KEYMAP_INPUT_HINT: &str =
-    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。escape / f1 は予約キーです（, も Ctrl+, 固定のため予約キー）。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。";
+/// F1 help and the discard-recovery hint promise that chord (L01). V02/Z07: the
+/// comma key is reserved too, so the hint names all three keys from
+/// [`RESERVED_CHORD_KEYS`] via [`RESERVED_KEYS_NOTE`]. Z12: the 64-entry cap from
+/// `settings::MAX_KEYMAP_OVERRIDES` is spelled out here too.
+pub const KEYMAP_INPUT_HINT: &str = concat!(
+    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。",
+    reserved_keys_note!(),
+    "。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。最大 64 件まで。"
+);
 
 // ---------------------------------------------------------------------------
 // 空状態・読み込み
@@ -281,7 +318,7 @@ pub const EMPTY_TRASH: (&str, &str) = (
 );
 pub const EMPTY_SEARCH: (&str, &str) = (
     "一致する項目がありません",
-    "検索語や絞り込みを変更してください（Ctrl+F で再検索）",
+    "検索語や絞り込みを変更して Enter（Esc で閉じる）",
 );
 pub const EMPTY_DIRECTORY: (&str, &str) = (
     "このフォルダは空です",
@@ -453,6 +490,12 @@ pub const STATUS_SKIP_REASON_MISSING: &str = "存在しない項目";
 /// スキップ理由のラベル（特殊ファイル）。`STATUS_SKIP_REASON_MISSING` と
 /// 同じく `transfer_skip_notice` の理由スロットで共有する（Y02）。
 pub const STATUS_SKIP_REASON_SPECIAL: &str = "特殊ファイル";
+/// スキップ理由のラベル（転送元と宛先が同じフォルダ）。
+/// 混在ケース（他の項目は転送し、同フォルダの項目だけスキップする場合）で
+/// `transfer_skip_notice` の理由スロットに渡すための共通定義（Z03）。
+/// 全件が同フォルダの場合は専用の `STATUS_SAME_DIRECTORY_NO_MOVE` /
+/// `STATUS_DROP_SAME_DIRECTORY` が使われる。
+pub const STATUS_SKIP_REASON_SAME_DIRECTORY: &str = "同じフォルダ";
 /// 操作中止の完了通知（進行中の `STATUS_CANCELLING` とは別フェーズ）。
 pub const STATUS_CANCELLED: &str = "キャンセルしました";
 /// 進行中通知の接尾（`{verb}` に続く）。
@@ -662,6 +705,23 @@ pub const OP_RESULT_PRIORITY: &[&str] = &["キャンセル", "一部失敗", "�
 pub const VALUE_UNKNOWN: &str = "-";
 /// Canonical cancel label. Do not use the English `cancel` in prompt buttons.
 pub const LABEL_CANCEL: &str = "キャンセル";
+
+/// ダイアログ共通フッターのキー案内（Z09）。
+/// ターミナル起動コマンド / キーマップ / 名前変更の 3 つのダイアログで
+/// 同じ文言を使う唯一の定義。F1 ヘルプ（「設定ダイアログ」/ Alt+K 行）と
+/// README の「Enter で保存 / Esc でキャンセル」に合わせる。
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// 下の `dialog_footer_hint!()` を使う（入力ガード注記と同じ方式）。
+macro_rules! dialog_footer_hint {
+    () => {
+        "Enter で保存 / Esc でキャンセル"
+    };
+}
+
+pub const DIALOG_FOOTER_HINT: &str = dialog_footer_hint!();
+
+/// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
+const _: () = assert!(DIALOG_FOOTER_HINT.len() == dialog_footer_hint!().len());
 
 /// `種類` 列のラベル（`model::kind_label` で使用）。
 pub const KIND_FOLDER: &str = "フォルダ";
@@ -880,9 +940,12 @@ mod tests {
         // P05: 空状態でも「どの条件を変えるか」と「どうやって戻るか」を
         // ユーザーに示さなければならない（EMPTY_DIRECTORY は従来からキーを列挙）。
         let (_, search) = EMPTY_SEARCH;
-        for token in ["検索語", "Ctrl+F", "再検索"] {
+        for token in ["検索語", "Enter", "Esc で閉じる"] {
             assert!(search.contains(token), "search hint: {search}");
         }
+        // Z01: Ctrl+F is dead in the Search view (no `f` in the key allowlist
+        // and no OpenSearch in the action allowlist), so it must not be offered.
+        assert!(!search.contains("Ctrl+F"), "search hint: {search}");
 
         let (_, filtered) = EMPTY_FILTERED;
         for token in ["種別", "拡張子", "名前（Ctrl+Shift+F）"] {
@@ -1633,6 +1696,8 @@ mod tests {
         // Y02: 理由ラベルも定数へ集約し、完全一致の期待値だけで文法を固定する。
         assert_eq!(STATUS_SKIP_REASON_MISSING, "存在しない項目");
         assert_eq!(STATUS_SKIP_REASON_SPECIAL, "特殊ファイル");
+        // Z03: 混在ケースで消えていた同フォルダの理由も定数へ集約する。
+        assert_eq!(STATUS_SKIP_REASON_SAME_DIRECTORY, "同じフォルダ");
         assert_eq!(
             format!("{STATUS_SKIPPED_PREFIX}{STATUS_SKIP_REASON_MISSING} 2{STATUS_SKIPPED_SUFFIX}"),
             "（存在しない項目 2 件をスキップ）"
@@ -1640,6 +1705,31 @@ mod tests {
         assert_eq!(
             format!("{STATUS_SKIPPED_PREFIX}{STATUS_SKIP_REASON_SPECIAL} 1{STATUS_SKIPPED_SUFFIX}"),
             "（特殊ファイル 1 件をスキップ）"
+        );
+        // 3 理由が混在しても区切りと件数接尾は 1 通りだけ（main.rs の
+        // `transfer_skip_notice` と同じ並びで検証する）。
+        assert_eq!(
+            format!(
+                "{STATUS_SKIPPED_PREFIX}{STATUS_SKIP_REASON_MISSING} 2 / {STATUS_SKIP_REASON_SPECIAL} 1 / {STATUS_SKIP_REASON_SAME_DIRECTORY} 3{STATUS_SKIPPED_SUFFIX}"
+            ),
+            "（存在しない項目 2 / 特殊ファイル 1 / 同じフォルダ 3 件をスキップ）"
+        );
+    }
+
+    #[test]
+    fn dialog_footer_wording_is_canonical() {
+        // Z09: 3 つのダイアログの脚文は F1 / README と同じ文言に統一する。
+        assert_eq!(DIALOG_FOOTER_HINT, "Enter で保存 / Esc でキャンセル");
+        assert_eq!(DIALOG_FOOTER_HINT, dialog_footer_hint!());
+        // 旧来の「確定」表記が main.rs に戻っていないことを固定する。
+        let main_source = include_str!("main.rs");
+        assert!(
+            !main_source.contains("\"Enter で確定 / Esc でキャンセル\""),
+            "dialog footer must go through DIALOG_FOOTER_HINT"
+        );
+        assert!(
+            main_source.matches("DIALOG_FOOTER_HINT").count() >= 3,
+            "all three dialogs must share the canonical footer"
         );
     }
 
@@ -1651,6 +1741,7 @@ mod tests {
         for name in [
             "STATUS_SKIP_REASON_MISSING",
             "STATUS_SKIP_REASON_SPECIAL",
+            "STATUS_SKIP_REASON_SAME_DIRECTORY",
             "STATUS_MAX_TABS_SUFFIX",
         ] {
             assert!(main_source.contains(name), "{name} must be used in main.rs");
@@ -1658,6 +1749,7 @@ mod tests {
         for literal in [
             STATUS_SKIP_REASON_MISSING,
             STATUS_SKIP_REASON_SPECIAL,
+            STATUS_SKIP_REASON_SAME_DIRECTORY,
             STATUS_MAX_TABS_SUFFIX,
         ] {
             assert!(

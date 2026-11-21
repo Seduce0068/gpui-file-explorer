@@ -144,6 +144,36 @@ impl Default for SystemIconResolver {
     }
 }
 
+/// Choose the theme directory ladder from the desktop environment and an
+/// optional explicit theme.
+///
+/// Pure so it can be tested without touching process environment variables;
+/// [`SystemIconResolver::new`] is the only production caller. `None` and
+/// `Some("")` both mean "unset", and an explicit theme that already appears in
+/// the standard ladder is not duplicated.
+fn theme_names_for(desktop: Option<&str>, explicit: Option<&str>) -> Vec<String> {
+    let kde = desktop
+        .unwrap_or_default()
+        .split(':')
+        .any(|part| part.eq_ignore_ascii_case("kde"));
+    let fallback: &[&str] = if kde {
+        &["breeze", "breeze-dark", "hicolor", "Adwaita"]
+    } else {
+        &["Adwaita", "hicolor", "breeze", "breeze-dark"]
+    };
+
+    let mut themes: Vec<String> = Vec::new();
+    if let Some(name) = explicit.filter(|name| !name.is_empty()) {
+        themes.push(name.to_string());
+    }
+    for name in fallback {
+        if !themes.iter().any(|theme| theme.as_str() == *name) {
+            themes.push((*name).to_string());
+        }
+    }
+    themes
+}
+
 impl SystemIconResolver {
     /// Build a resolver using `XDG_CURRENT_DESKTOP` and the standard freedesktop
     /// data directories. No I/O other than reading environment variables.
@@ -155,29 +185,12 @@ impl SystemIconResolver {
         push_unique_path(&mut roots, PathBuf::from("/usr/share/icons"));
         push_unique_path(&mut roots, PathBuf::from("/usr/local/share/icons"));
 
-        let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-        let kde = desktop
-            .split(':')
-            .any(|part| part.eq_ignore_ascii_case("kde"));
-        let theme_names: &[&str] = if kde {
-            &["breeze", "breeze-dark", "hicolor", "Adwaita"]
-        } else {
-            &["Adwaita", "hicolor", "breeze", "breeze-dark"]
-        };
-        // Honour an explicit theme if the user set one via the conventional
-        // environment variable, but keep the standard themes as fallbacks.
+        // `new()` only reads the environment; the ordering logic itself lives
+        // in the pure `theme_names_for` helper so tests can exercise it without
+        // mutating the process environment.
+        let desktop = env::var("XDG_CURRENT_DESKTOP").ok();
         let explicit = env::var("XDG_ICON_THEME").ok();
-        let mut themes: Vec<String> = Vec::new();
-        if let Some(name) = explicit {
-            if !name.is_empty() {
-                themes.push(name);
-            }
-        }
-        for name in theme_names {
-            if !themes.iter().any(|t| t == name) {
-                themes.push((*name).to_string());
-            }
-        }
+        let themes = theme_names_for(desktop.as_deref(), explicit.as_deref());
 
         Self {
             cache: HashMap::new(),
@@ -411,9 +424,63 @@ fn reorder_breeze_themes(themes: &mut [String], prefer_dark: bool) {
 mod tests {
     use super::{
         generic_icon_for_kind, icon_name_for_kind, icon_name_variants, push_unique_path,
-        size_dir_candidates, SystemIconResolver,
+        size_dir_candidates, theme_names_for, SystemIconResolver,
     };
     use crate::icons::{kind_for_name, FileKind};
+
+    #[test]
+    fn theme_names_for_kde_desktop_list_selects_breeze_first() {
+        // XDG_CURRENT_DESKTOP is a colon-separated list and matching is
+        // case-insensitive; KDE need not be the first entry.
+        assert_eq!(
+            theme_names_for(Some("ubuntu:GNOME:KDE"), None),
+            ["breeze", "breeze-dark", "hicolor", "Adwaita"]
+        );
+        assert_eq!(
+            theme_names_for(Some("KDE"), None),
+            ["breeze", "breeze-dark", "hicolor", "Adwaita"]
+        );
+    }
+
+    #[test]
+    fn theme_names_for_non_kde_desktop_starts_with_adwaita() {
+        assert_eq!(
+            theme_names_for(Some("GNOME"), None),
+            ["Adwaita", "hicolor", "breeze", "breeze-dark"]
+        );
+    }
+
+    #[test]
+    fn theme_names_for_explicit_theme_is_first_without_duplicates() {
+        assert_eq!(
+            theme_names_for(Some("KDE"), Some("custom-theme")),
+            [
+                "custom-theme",
+                "breeze",
+                "breeze-dark",
+                "hicolor",
+                "Adwaita"
+            ]
+        );
+        // An explicit name already in the ladder stays first (explicit wins)
+        // and must not appear a second time.
+        assert_eq!(
+            theme_names_for(None, Some("hicolor")),
+            ["hicolor", "Adwaita", "breeze", "breeze-dark"]
+        );
+    }
+
+    #[test]
+    fn theme_names_for_empty_inputs_use_the_non_kde_ladder() {
+        // `new()` maps a missing XDG_* variable to `None` via `env::var().ok()`;
+        // an explicitly empty value maps to `Some("")`. Both must behave alike.
+        for (desktop, explicit) in [(None, None), (Some(""), Some(""))] {
+            assert_eq!(
+                theme_names_for(desktop, explicit),
+                ["Adwaita", "hicolor", "breeze", "breeze-dark"]
+            );
+        }
+    }
 
     #[test]
     fn icon_name_for_kind_maps_known_extensions() {

@@ -641,6 +641,82 @@ mod tests {
     }
 
     #[test]
+    fn same_dirs_with_last_error_rewatches_and_clears_the_error() {
+        // The `watched == dirs && last_error.is_none()` fast path must NOT
+        // short-circuit once a previous attempt left an error behind. The
+        // child test module can reach the private `debouncer` (Y09 seam) to
+        // invalidate OS-level watches, producing a real `last_error` without
+        // adding a test-only constructor to production code.
+        let dir = scratch("same-dirs-retry");
+        let old = dir.join("old");
+        let next = dir.join("next");
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&next).unwrap();
+
+        let mut watcher = DirWatcher::new(|_| {});
+        if !watcher.is_supported() {
+            // No OS watcher: there is no underlying watch to invalidate.
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+
+        watcher.watch(std::slice::from_ref(&old));
+        assert!(watcher.last_error().is_none(), "seed watch must succeed");
+
+        // Drop the OS watch behind the manager's back, then change dirs: the
+        // stale `unwatch(old)` fails and leaves `watched == [next]` together
+        // with a non-empty `last_error`.
+        {
+            let debouncer = watcher.debouncer.as_mut().expect("supported watcher");
+            debouncer.unwatch(&old).expect("seed watch exists");
+        }
+        watcher.watch(std::slice::from_ref(&next));
+        let seeded = watcher
+            .last_error()
+            .expect("stale unwatch must seed last_error")
+            .to_string();
+        assert!(
+            seeded.contains(&old.display().to_string()),
+            "seeded error must name the stale dir: {seeded}"
+        );
+        assert_eq!(watcher.watched_paths(), std::slice::from_ref(&next));
+
+        // Rewatch the SAME dirs. Invalidate the OS watch once more so the
+        // retry's `unwatch` is observably re-run: the fresh error must name
+        // `next` and drop the stale `old` message.
+        {
+            let debouncer = watcher.debouncer.as_mut().expect("supported watcher");
+            debouncer.unwatch(&next).expect("seed watch next exists");
+        }
+        watcher.watch(std::slice::from_ref(&next));
+        let retried = watcher
+            .last_error()
+            .expect("retry must re-run unwatch and report its failure")
+            .to_string();
+        assert!(
+            retried.contains(&next.display().to_string()),
+            "unwatch must re-run on the same dirs: {retried}"
+        );
+        assert!(
+            !retried.contains(&old.display().to_string()),
+            "the stale error must be replaced: {retried}"
+        );
+        assert_eq!(watcher.watched_paths(), std::slice::from_ref(&next));
+
+        // A second same-dirs rewatch with healthy OS-level watches must clear
+        // `last_error` instead of short-circuiting on the stale `watched`.
+        watcher.watch(std::slice::from_ref(&next));
+        assert!(
+            watcher.last_error().is_none(),
+            "same-dirs rewatch must clear last_error: {:?}",
+            watcher.last_error()
+        );
+        assert_eq!(watcher.watched_paths(), std::slice::from_ref(&next));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn removed_paths_collects_only_removals() {
         use super::removed_paths;
         let events = vec![

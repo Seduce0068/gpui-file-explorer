@@ -610,7 +610,13 @@ const SETTINGS_SEARCH_PLACEHOLDER: &str = "設定・キー名で検索…";
 /// M04: like `strings::KEYMAP_INPUT_HINT`, it also names `open_settings` as a
 /// reserved action — `Ctrl+,` is fixed and cannot be rebound (or unbound)
 /// from either editor, so promising otherwise here would mislead the user.
-const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。";
+/// Z07/Z12: the reserved-key note and the `MAX_KEYMAP_OVERRIDES` cap come from
+/// the canonical `strings.rs` definitions via the shared macro/literal.
+const SETTINGS_KEYMAP_INPUT_HINT: &str = concat!(
+    "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。",
+    crate::strings::reserved_keys_note!(),
+    "。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。最大 64 件まで。"
+);
 
 /// Descriptions of the three rows with a bare-letter shortcut, plus the
 /// existing Alt+S row. Kept as constants so the visible hint can be regression
@@ -1778,6 +1784,17 @@ mod tests {
             dialog.contains(crate::strings::SETTINGS_TAB_JUMP_KEYS),
             "F1 dialog help must name the concrete jump keys: {dialog}"
         );
+        // Z08: a zero-hit search is a dead end unless the help also names the
+        // two recovery routes already used by `no_match_hint` and app/README.
+        assert!(
+            dialog.contains("検索欄を空にするか Esc で閉じる"),
+            "F1 dialog help must explain zero-hit recovery: {dialog}"
+        );
+        let app_readme = include_str!("../README.md");
+        assert!(
+            app_readme.contains("検索欄を空にするか `Esc` で閉じるよう案内します"),
+            "app README must document the same zero-hit recovery"
+        );
     }
 
     #[test]
@@ -1850,6 +1867,31 @@ mod tests {
     }
 
     #[test]
+    fn search_empty_hint_must_not_offer_a_rejected_chord() {
+        // Z01: the same failure mode as V13 (Trash Ctrl+H), now for Search.
+        // Read the real allowlists so a future change to either one breaks the
+        // test instead of leaving a hint that points at a dead key.
+        assert!(!crate::search_view_key_allowed("f", true, false));
+        assert!(!crate::search_view_action_allowed(
+            crate::KeyAction::OpenSearch
+        ));
+        // The keys the rewritten hint promises must actually reach handlers.
+        assert!(crate::search_view_key_allowed("enter", false, false));
+
+        let (_, hint) = crate::strings::EMPTY_SEARCH;
+        assert!(
+            !hint.contains("Ctrl+F") && !hint.contains("ctrl+f"),
+            "Search hint must not promise the dead Ctrl+F chord: {hint}"
+        );
+        for token in ["検索語", "Enter", "Esc"] {
+            assert!(
+                hint.contains(token),
+                "Search hint must name a reachable key: {hint}"
+            );
+        }
+    }
+
+    #[test]
     fn settings_keymap_hint_explains_replace_and_unbind_route() {
         // H04: the shared field looks like an additive editor, so the hint must
         // say Save replaces everything. K04: it must also advertise the unbind
@@ -1869,6 +1911,55 @@ mod tests {
         assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("unbind も不可"));
         assert!(SETTINGS_KEYMAP_INPUT_HINT
             .contains("open_settings は Ctrl+, 固定で変更できません（unbind も不可）"));
+    }
+
+    #[test]
+    fn reserved_keys_note_and_keymap_cap_are_synced_across_hints_and_readme() {
+        // Z07: one canonical reserved-key list drives the F1 Alt+K row, both
+        // keymap hints and both READMEs; a drift in any one fails here.
+        let keys = crate::strings::RESERVED_CHORD_KEYS;
+        let note = crate::strings::RESERVED_KEYS_NOTE;
+        assert_eq!(keys, &["escape", "f1", ","]);
+        for key in keys {
+            assert!(note.contains(key), "reserved note must list {key}: {note}");
+        }
+        let alt_k = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "Alt+K")
+            .map(|(_, text)| text)
+            .expect("F1 help must include the Alt+K row");
+        for (name, text) in [
+            ("F1 Alt+K", alt_k),
+            ("Alt+K dialog", crate::strings::KEYMAP_INPUT_HINT),
+            ("Shortcuts tab", SETTINGS_KEYMAP_INPUT_HINT),
+        ] {
+            assert!(text.contains(note), "{name} must use the canonical note");
+        }
+        // Both READMEs must carry the same three keys in one notation.
+        let readme_label = format!("`{}`", keys.join("` / `"));
+        for (name, text) in [
+            ("README.md", include_str!("../../README.md")),
+            ("app/README.md", include_str!("../README.md")),
+        ] {
+            assert!(
+                text.contains(&readme_label),
+                "{name} must list the canonical reserved keys {readme_label}"
+            );
+        }
+
+        // Z12: the visible "最大 64 件まで" must track the real runtime cap.
+        let cap = format!("最大 {} 件まで", crate::settings::MAX_KEYMAP_OVERRIDES);
+        for (name, text) in [
+            ("F1 Alt+K", alt_k),
+            ("Alt+K dialog", crate::strings::KEYMAP_INPUT_HINT),
+            ("Shortcuts tab", SETTINGS_KEYMAP_INPUT_HINT),
+        ] {
+            assert!(
+                text.contains(&cap),
+                "{name} must advertise the real keymap cap: {cap}"
+            );
+        }
     }
 
     #[test]

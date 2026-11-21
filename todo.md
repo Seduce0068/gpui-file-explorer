@@ -1055,31 +1055,36 @@ status: current
 
 ### 優先度: 高（ループ R21・confirmed）
 
-- [ ] **Z01** 検索0件ヒントの Ctrl+F が検索ビューで無効（V13 同型）
+- [x] **Z01** 検索0件ヒントの Ctrl+F が検索ビューで無効（V13 同型） — 対応: loop23-ux（実バグ修正）
   — strings.rs:282 / main.rs:253
-- [ ] **Z02** STATUS_RESCAN_FAILED が STATUS_CHANGED で上書きされる
+- [x] **Z02** STATUS_RESCAN_FAILED が STATUS_CHANGED で上書きされる — 対応: loop23-core（実バグ修正）
   — main.rs:3639
-- [ ] **Z03** 混在スキップ時に same_dir 理由が最終通知から消える
+- [x] **Z03** 混在スキップ時に same_dir 理由が最終通知から消える — 対応: loop23-core（実バグ修正）
   — main.rs:5452
 
 ### 優先度: 中（ループ R21）
 
-- [ ] **Z04** ops.rs partial 名の create_new リトライ/枯渇が無テスト
-- [ ] **Z05** watcher.rs 同一セット+last_error ありの再監視が無テスト
-- [ ] **Z06** system_icons.rs new() の XDG テーマ順序が無テスト
-- [ ] **Z07** 予約キー一覧が README/F1/設定ヒントに伝播せず
+- [x] **Z04** ops.rs partial 名の create_new リトライ/枯渇が無テスト — 対応: loop23-tests
+- [x] **Z05** watcher.rs 同一セット+last_error ありの再監視が無テスト — 対応: loop23-tests
+- [x] **Z06** system_icons.rs new() の XDG テーマ順序が無テスト — 対応: loop23-tests
+- [x] **Z07** 予約キー一覧が README/F1/設定ヒントに伝播せず — 対応: loop23-ux
   — strings.rs:268
-- [ ] **Z08** 設定検索0件の復帰導線が F1 に未反映 — strings.rs:203
-- [ ] **Z09** ダイアログ脚文の Enter/Esc 表記が F1/README と不一致
+- [x] **Z08** 設定検索0件の復帰導線が F1 に未反映 — strings.rs:203 — 対応: loop23-ux
+- [x] **Z09** ダイアログ脚文の Enter/Esc 表記が F1/README と不一致 — 対応: loop23-core
   — main.rs:4501
 
 ### 優先度: 低（ループ R21）
 
-- [ ] **Z10** ops.rs unique_path の10,000回枯渇が無テスト
-- [ ] **Z11** ops.rs with_cleanup_failure の Io 元パス分岐が無テスト
-- [ ] **Z12** キーマップ上限64件が入力前ヒントに未記載
+- [x] **Z10** ops.rs unique_path の10,000回枯渇が無テスト — 対応: loop23-tests
+- [x] **Z11** ops.rs with_cleanup_failure の Io 元パス分岐が無テスト — 対応: loop23-tests
+- [x] **Z12** キーマップ上限64件が入力前ヒントに未記載 — 対応: loop23-ux
   — strings.rs:270
-- [ ] **Z13** KeyMap::reset が設定 UI から操作できない
+- [x] **Z13** KeyMap::reset が設定 UI から操作できない — 対応: loop23-ux
+
+### 優先度: 中（ループ R21 フォローアップ・confirmed）
+
+- [ ] **Z14** 再スキャン成功時に STATUS_RESCAN_FAILED がクリアされない（「次回成功まで」規約）
+  — main.rs:3544-3575（Z02 の成功側、次ラウンド）
 
 ### 優先度: 低（調査タスク）
 
