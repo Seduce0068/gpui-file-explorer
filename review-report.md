@@ -771,9 +771,11 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 - 一意名生成の `exists()` ループは、同一関数内の初期チェックと
   ポリシー分岐で用途が異なるため統合せず現状維持（判断）。
 - `main.rs` のページステップ（行高 28px / クローム 140px）と
-  グリッド列計算（サイドバー 214px / セル 108px）を名前付き定数へ
+  グリッド列計算（サイドバー 190px / セル 108px）を名前付き定数へ
   抽出（`ROW_HEIGHT_PX` / `LIST_CHROME_HEIGHT_PX` /
   `SIDEBAR_WIDTH_PX` / `GRID_CELL_WIDTH_PX`、`2e230a6`）。
+  抽出時点の値は 214px だったが、as-built（2026-11-21 現在）は
+  `SIDEBAR_WIDTH_PX = 190.0`（`app/src/main.rs`）へ変更済み。
 - `watcher.rs` の `DEBOUNCE` は既に定数化済み。テスト内の 5 秒
   タイムアウトはテスト専用のため現状維持。
 

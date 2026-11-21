@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 437 tests
+cargo test           # 444 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -94,7 +94,8 @@ cargo test           # 437 tests
 
 ## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-18 更新）
 
-- `cargo build` 警告 0 / `cargo test` **437 passed / 0 failed**（2026-11-21 時点。初回実機検証時は 36 件）
+- `cargo build` 警告 0 / `cargo test` **444 passed / 0 failed**
+  （2026-11-21 時点。初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
 - 起動中に外部からファイル作成 → 一覧が自動更新（14→15 件）
@@ -136,7 +137,8 @@ bash packaging/linux/build-deb.sh --skip-build
   （詳細は [app/README.md](app/README.md) の「既知の制限」）。
 - P1 実装済み: 安全なファイル操作（`app/src/ops.rs`: 上書き禁止・symlink非追跡・キャンセル対応）、コピー/切り取り/貼り付け（`Ctrl+C`/`Ctrl+X`/`Ctrl+V`）、リネームダイアログ（F2、上書き拒否・失敗時は原名維持）、コピー/移動のバイト進捗表示（ステータスバー、80msスロットル）、複数選択（Ctrl/Shift/Ctrl+A）とバッチ操作（コピー/切り取り/ゴミ箱、件数付き確認）、ゴミ箱ビュー（一覧・復元）、視覚的な進捗バー（総バイト事前計算 + パーセント表示）、アイコングリッド表示（列数自動・設定永続化）、再帰検索（Ctrl+F、symlink非追跡・上限付き・キャンセル対応）、ボリューム（ドライブ）一覧（Linux /proc/mounts）、タブ（Ctrl+T/W/Tab、履歴保持）、最近使った場所（サイドバー、最大10件）、ドラッグ&ドロップ（OSからのコピー受信・フォルダ単位のドロップ先・OSへのドラッグアウト）、検索結果の絞り込み（種別・拡張子）、内容検索（行番号表示・バイナリ除外・上限付き）、ブックマーク（Ctrl+D、最大50件）、プロパティ表示（Ctrl+I、読み取り専用）、空状態・ローディング表示、キーボードヘルプ（F1）、タブ構成の永続化、プロパティのディレクトリサイズ計算（バックグラウンド・キャンセル可能）、種類（拡張子）でのソートと「種類」列、タブの並べ替え、検索履歴（チップから再利用）、パス直接入力（Ctrl+L）、テキスト/画像プレビュー（Space/F3、読み取り専用・上限付き・magic number 判定）、元に戻す/やり直す（Ctrl+Z、名前変更・ゴミ箱のみ）、検索結果の名前部分一致絞り込み（Ctrl+Shift+F）、閉じたタブの復元（Ctrl+Shift+T）を実装・テスト済み。`#![forbid(unsafe_code)]` を app 本体に適用。未実装: 検索結果のソース表示強化、OSファイルクリップボード連携（GPUI側未実装）
 - Windows / macOS の実機ビルド・実行は未検証（設計は `std::fs` / `dirs` / `trash` でポータブル）。
-  Windows は `cargo check` レベルでは成功（app/poc ともに警告なし）。macOS は
+  Windows は `cargo check` レベルでは成功（警告は cfg 分岐由来の 2 件のみ。
+  [review-report.md](review-report.md) の検証記録に記載）。macOS は
   上流 `gpui-pre-apple` のクロスビルド制約で check 不可。
 - 配布パッケージは Linux amd64 の DEB のみ（署名・AppImage/Flatpak・Windows/macOS は未対応）
 - 詳細は [app/README.md](app/README.md) の「既知の制限」
@@ -172,7 +174,11 @@ bash packaging/linux/build-deb.sh --skip-build
 `poc/` はルート `Cargo.toml` を持たない別プロジェクトのため共有ワークフローの対象外だったので、
 `extra_gates` で `poc/` の fmt / check(`--locked`) / test(`--locked`) / clippy(`-D warnings`) を追加した。
 
-- 検証（Runtime Proof）: 追加ゲートを含む CI が **success**（run 43734742786、12分22秒）。
+- 検証（Runtime Proof）: 追加ゲートを含む CI が **success**
+  （run 43734742786、12分22秒）— 2026-11-16 時点のスナップショット。
+- 最新（as-built 2026-11-21 時点）: コミット `19b5f1d` に対する
+  CI run 44063705679 が **success**（8m17s、2026-11-17T19:27+09:00 完了）。
+  [review-report.md](review-report.md) の承認記録に記載。
 - ローカルでも同一コマンド列の再現を確認（`app/` を cwd に `bash -e` で実行、poc 4 tests pass）。
 
 ### ローカル検証ループ
@@ -186,7 +192,7 @@ bash scripts/check.sh --app      # app/ のみ
 bash scripts/check.sh --poc      # poc/ のみ
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 437 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 444 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
 
 ## ソース・ライセンス

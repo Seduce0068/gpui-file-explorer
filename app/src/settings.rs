@@ -1331,6 +1331,15 @@ impl Settings {
         self.version = SCHEMA_VERSION;
     }
 
+    /// Whether a save is a no-op because this session cannot persist settings:
+    /// a read-only config (corrupt / future-schema file) or an ephemeral debug
+    /// session. `save()` reports success in that case, so callers that show a
+    /// status message must consult this to avoid claiming settings were saved
+    /// (F04). In-memory edits still apply for the current session.
+    pub fn write_was_skipped(&self) -> bool {
+        self.read_only || self.ephemeral
+    }
+
     /// Persist settings to the platform config path. Returns `false` when no
     /// config directory can be determined or a real write failed. Read-only /
     /// ephemeral sessions still count as success: nothing was expected to be
@@ -1345,7 +1354,7 @@ impl Settings {
     /// testable without unsetting HOME.
     fn save_to_optional_path(&self, path: Option<&Path>) -> bool {
         let Some(path) = path else {
-            if self.ephemeral || self.read_only {
+            if self.write_was_skipped() {
                 return true;
             }
             error!("設定ディレクトリを特定できないため、設定を保存できません");
@@ -1785,6 +1794,30 @@ mod tests {
         assert!(Settings::default().save_to_optional_path(Some(&path)));
         assert!(path.exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_was_skipped_tracks_read_only_and_ephemeral_sessions() {
+        assert!(!Settings::default().write_was_skipped());
+
+        let read_only = Settings {
+            read_only: true,
+            ..Settings::default()
+        };
+        assert!(read_only.write_was_skipped());
+
+        let ephemeral = Settings {
+            ephemeral: true,
+            ..Settings::default()
+        };
+        assert!(ephemeral.write_was_skipped());
+
+        let both = Settings {
+            read_only: true,
+            ephemeral: true,
+            ..Settings::default()
+        };
+        assert!(both.write_was_skipped());
     }
 
     #[test]
