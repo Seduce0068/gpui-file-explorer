@@ -331,6 +331,9 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_SEARCH_STALE,
     STATUS_CANCELLED,
     STATUS_SETTINGS_READ_ONLY,
+    // X02: 未保存設定の破棄はデータ消失の通知で成功ではないが、失敗でもない。
+    // 「できません」も持たないため、登録しないと成功 green に落ちていた。
+    STATUS_SETTINGS_DISCARDED,
     STATUS_NO_SELECTION,
     STATUS_NO_CLIPBOARD,
     STATUS_DROP_NO_DESTINATION,
@@ -377,6 +380,10 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
 const STATUS_ERROR_MARKERS: &[&str] = &[
     STATUS_ERROR_PREFIX,
     STATUS_SETTINGS_SAVE_FAILED,
+    // X01: 理由別の保存失敗は「できません」部分文字列で偶然赤くなっていただけ
+    // なので、明示的なマーカーとして登録して回帰を防ぐ。
+    STATUS_SETTINGS_SAVE_TOO_LARGE,
+    STATUS_SETTINGS_SAVE_LOCKED,
     STATUS_RESCAN_FAILED,
     STATUS_TRASH_ALL_FAILED,
     STATUS_RESTORE_FAILED,
@@ -409,6 +416,11 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     // R04 / R05: 動的な値を連結する失敗接頭辞も concrete failure として red。
     STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+    // X03 / X04 / X08: main.rs の format! 内に埋め込まれていた接頭辞 /
+    // ローカル定数を strings.rs へ移し、同じマーカー表から色を決める。
+    STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
+    STATUS_TRASH_LOAD_FAILED_PREFIX,
+    STATUS_UNDO_MISSING_SUFFIX,
 ];
 
 /// Pure colour decision for the primary status text (U-01). An explicit
@@ -807,7 +819,7 @@ fn bookmark_label_set_rejection(path: &std::path::Path, reason: Option<&'static 
 /// can be regression-tested.
 fn bookmark_label_not_set_status(path: &std::path::Path) -> String {
     format!(
-        "{STATUS_ERROR_PREFIX}ラベルは設定されていません: {}",
+        "{STATUS_ERROR_PREFIX}{STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX}{}",
         display_path(path)
     )
 }
@@ -815,7 +827,7 @@ fn bookmark_label_not_set_status(path: &std::path::Path) -> String {
 /// Error text for a failed trash listing (U06). Kept pure so the wording and
 /// its red colour classification can be regression-tested.
 fn trash_load_error_status(error: &str) -> String {
-    format!("{STATUS_ERROR_PREFIX}ゴミ箱を読み込めません: {error}")
+    format!("{STATUS_ERROR_PREFIX}{STATUS_TRASH_LOAD_FAILED_PREFIX}{error}")
 }
 
 /// Display text of a load error: add the shared error prefix exactly once
@@ -828,11 +840,6 @@ fn load_error_display_text(error: &str) -> String {
         format!("{STATUS_ERROR_PREFIX}{error}")
     }
 }
-
-/// Undo refusal when the current rename target no longer exists (U07). The
-/// suffix is local to main.rs because it is used only by this refusal; the
-/// shared `STATUS_UNDO_EXISTS_SUFFIX` covers the inverse case (target present).
-const STATUS_UNDO_MISSING_SUFFIX: &str = " が存在しません";
 
 /// Compose the missing-target undo refusal so its wording and red colour can
 /// be regression-tested without a live GPUI `Context`.
@@ -1908,7 +1915,7 @@ use crate::strings::{
     EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE,
     FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT,
     OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
-    STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+    STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
     STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
     STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
     STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
@@ -1916,17 +1923,18 @@ use crate::strings::{
     STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
     STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED,
     STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
-    STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX,
-    STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
-    STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
-    STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
-    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
-    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
-    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
-    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
-    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT,
-    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
-    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
+    STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX,
+    STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX,
+    STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
+    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
+    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
+    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
+    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PLACE_GONE_HINT,
+    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
+    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_EXISTS_PREFIX,
+    STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT, STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY,
+    STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SAME_DIRECTORY_NO_MOVE,
+    STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
     STATUS_SEARCH_PROMPT, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
@@ -1937,13 +1945,13 @@ use crate::strings::{
     STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
     STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
     STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
-    STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
-    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
-    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
-    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
-    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
-    THEME_LABEL_SYSTEM,
+    STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY,
+    STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
+    STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_NO_TERMINAL_PREFIX,
+    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
+    STATUS_UNDO_HISTORY_HINT, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX,
+    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
+    THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -11023,10 +11031,6 @@ enum CliAction {
     Help,
 }
 
-/// Startup status shown when a CLI-supplied directory cannot be opened.
-/// Local to `main.rs` because `strings.rs` is intentionally out of scope here.
-const STATUS_INVALID_CLI_DIR: &str = "起動ディレクトリを開けませんでした（フォルダではありません）";
-
 /// Pure CLI classification, kept separate from `std::env` and stdout for tests.
 ///
 /// `--` terminates option parsing: only arguments before it can be flags, so a
@@ -11417,7 +11421,7 @@ mod tests {
         STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
         STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
         STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
-        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_INVALID_PREFIX,
+        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
         STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY,
         STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
         STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX,
@@ -11432,13 +11436,17 @@ mod tests {
         STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_INVALID,
         STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
         STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_TERMINAL_PREFIX,
-        STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WARNING_MARKERS,
-        THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED, STATUS_WARNING_MARKERS, THEME_LABEL_DARK,
+        THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
     use crate::ops::{OpError, OpStats};
     use crate::settings::{Settings, SettingsSaveError, ThemeChoice, MAX_KEYMAP_OVERRIDES};
+    use crate::strings::{
+        STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_INVALID_CLI_DIR,
+        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_UNDO_MISSING_SUFFIX,
+    };
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -11451,6 +11459,9 @@ mod tests {
         let cases = [
             (wrapped_error.as_str(), C_RED),
             (STATUS_SETTINGS_SAVE_FAILED, C_RED),
+            // X01: 理由別の保存失敗も明示的な error マーカーとして赤を固定する。
+            (STATUS_SETTINGS_SAVE_TOO_LARGE, C_RED),
+            (STATUS_SETTINGS_SAVE_LOCKED, C_RED),
             // W06: 再スキャン失敗は ERROR_MARKERS 登録済みで red（表示は正しいが
             // 回帰表に欠けていたため、ここで明示的に固定する）。
             (STATUS_RESCAN_FAILED, C_RED),
@@ -11473,6 +11484,8 @@ mod tests {
             (STATUS_SEARCH_STALE, C_YELLOW),
             (STATUS_CANCELLED, C_YELLOW),
             (STATUS_SETTINGS_READ_ONLY, C_YELLOW),
+            // X02: 未保存設定の破棄通知は成功ではなく warning(amber)。
+            (STATUS_SETTINGS_DISCARDED, C_YELLOW),
             // K03: "選択項目がありません" refuses an operation, so it is amber
             // rather than success green even without a *_FAILED phrase.
             (STATUS_NO_SELECTION, C_YELLOW),
@@ -11642,7 +11655,8 @@ mod tests {
             "{discarded}"
         );
         assert_eq!(discarded, STATUS_SETTINGS_DISCARDED);
-        assert_eq!(status_color(STATUS_SETTINGS_DISCARDED), C_GREEN);
+        // X02: データ消失の通知を成功色で表示してはならない。
+        assert_eq!(status_color(STATUS_SETTINGS_DISCARDED), C_YELLOW);
     }
 
     #[test]
@@ -11670,6 +11684,8 @@ mod tests {
             (STATUS_SEARCH_STALE, dark.yellow, light.yellow),
             (STATUS_CANCELLED, dark.yellow, light.yellow),
             (STATUS_SETTINGS_READ_ONLY, dark.yellow, light.yellow),
+            // X02: 破棄通知もテーマごとの warning 色へマップされる。
+            (STATUS_SETTINGS_DISCARDED, dark.yellow, light.yellow),
             (STATUS_NO_SELECTION, dark.yellow, light.yellow),
             // L06: refusal / empty-target notices use the warning color.
             (STATUS_TABS_ONLY_DIRECTORY, dark.yellow, light.yellow),
@@ -11694,6 +11710,9 @@ mod tests {
             (STATUS_SEARCH_NOT_OPEN, dark.yellow, light.yellow),
             (STATUS_ERROR_PREFIX, dark.red, light.red),
             (STATUS_SETTINGS_SAVE_FAILED, dark.red, light.red),
+            // X01: 理由別の保存失敗もテーマごとの error 色へマップされる。
+            (STATUS_SETTINGS_SAVE_TOO_LARGE, dark.red, light.red),
+            (STATUS_SETTINGS_SAVE_LOCKED, dark.red, light.red),
             (STATUS_ACCESS_DENIED, dark.red, light.red),
             (STATUS_PATH_GONE, dark.red, light.red),
             (STATUS_TARGET_GONE, dark.red, light.red),
@@ -14226,9 +14245,13 @@ mod tests {
 
     #[test]
     fn bookmark_label_not_set_rejection_keeps_wording_and_is_red() {
-        // U05: 未設定拒否も共通エラー接頭辞を持ち、緑に落ちない。
+        // U05 / X03: 未設定拒否は strings.rs の共通接頭辞から組み立てられ、
+        // 緑に落ちない。期待値も同じ定数を使い、文言の乖離を検出できるようにする。
         let status = bookmark_label_not_set_status(std::path::Path::new("/tmp/target"));
-        assert_eq!(status, "エラー: ラベルは設定されていません: /tmp/target");
+        assert_eq!(
+            status,
+            format!("{STATUS_ERROR_PREFIX}{STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX}/tmp/target")
+        );
         assert!(status.contains(STATUS_ERROR_PREFIX), "{status}");
         assert_eq!(status_color(&status), C_RED, "{status}");
     }
@@ -14283,10 +14306,13 @@ mod tests {
 
     #[test]
     fn trash_load_error_is_prefixed_once_and_red() {
-        // U06: ゴミ箱読み込み失敗は発生時に接頭辞付きで組み立てられ、
+        // U06 / X04: ゴミ箱読み込み失敗は strings.rs の接頭辞付きで組み立てられ、
         // ステータスバー描画側での二重付与も起きない。
         let error = trash_load_error_status("permission denied");
-        assert_eq!(error, "エラー: ゴミ箱を読み込めません: permission denied");
+        assert_eq!(
+            error,
+            format!("{STATUS_ERROR_PREFIX}{STATUS_TRASH_LOAD_FAILED_PREFIX}permission denied")
+        );
         assert_eq!(status_color(&error), C_RED, "{error}");
 
         let plain = "読み込み失敗";
@@ -14301,10 +14327,13 @@ mod tests {
 
     #[test]
     fn undo_missing_status_keeps_wording_and_is_red() {
-        // U07: 「が存在しません」はローカル定数経由で組み立てられ、赤に分類される。
-        assert_eq!(STATUS_UNDO_MISSING_SUFFIX, " が存在しません");
+        // U07 / X08: 接尾辞は strings.rs の共有定数経由で組み立てられ、赤に分類される。
+        assert!(STATUS_UNDO_MISSING_SUFFIX.contains("存在しません"));
         let status = undo_missing_status(std::path::Path::new("/tmp/current"));
-        assert_eq!(status, "元に戻せません: /tmp/current が存在しません");
+        assert_eq!(
+            status,
+            format!("{STATUS_UNDO_FAILED}: /tmp/current{STATUS_UNDO_MISSING_SUFFIX}")
+        );
         assert!(status.contains(STATUS_UNDO_FAILED), "{status}");
         assert_eq!(status_color(&status), C_RED, "{status}");
     }

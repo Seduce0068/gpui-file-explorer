@@ -603,17 +603,27 @@ const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力し�
 /// tested without a GPUI window. F1 is blocked while the settings dialog owns
 /// the keyboard, so each row still names its own key inline even though the
 /// same t/v/h keys are also listed in `strings::HELP_SECTIONS` (N04). The
-/// shared typing-guard suffix (W07) is mirrored by the Alt+S F1 help row and
-/// README; `typing_guard_note_is_synced_across_row_hints_help_and_readme`
-/// keeps all three in step.
-const APPEARANCE_THEME_DESCRIPTION: &str =
-    "アプリ全体の明るさを切り替えます（t でキーボードから切替）（検索欄等の入力中は無効）";
-const APPEARANCE_VIEW_DESCRIPTION: &str =
-    "詳細一覧またはアイコン一覧を選択します（v でキーボードから切替）（検索欄等の入力中は無効）";
-const FILES_HIDDEN_DESCRIPTION: &str =
-    "名前が . で始まるファイルとフォルダを一覧に含めます（h でキーボードから切替）（検索欄等の入力中は無効）";
-const FILES_SORT_DESCRIPTION: &str =
-    "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）（検索欄等の入力中は無効）";
+/// shared typing-guard suffix (W07/X13) comes from the single canonical
+/// `strings::settings_input_guard_note!()` literal and is mirrored by the F1
+/// help rows, the Shortcuts-tab Alt+S row and README;
+/// `typing_guard_note_is_synced_across_row_hints_help_and_readme` keeps all of
+/// them in step.
+const APPEARANCE_THEME_DESCRIPTION: &str = concat!(
+    "アプリ全体の明るさを切り替えます（t でキーボードから切替）",
+    crate::strings::settings_input_guard_note!()
+);
+const APPEARANCE_VIEW_DESCRIPTION: &str = concat!(
+    "詳細一覧またはアイコン一覧を選択します（v でキーボードから切替）",
+    crate::strings::settings_input_guard_note!()
+);
+const FILES_HIDDEN_DESCRIPTION: &str = concat!(
+    "名前が . で始まるファイルとフォルダを一覧に含めます（h でキーボードから切替）",
+    crate::strings::settings_input_guard_note!()
+);
+const FILES_SORT_DESCRIPTION: &str = concat!(
+    "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）",
+    crate::strings::settings_input_guard_note!()
+);
 
 /// Rows of the "主な既定のショートカット" list, kept as one constant so the
 /// Shortcuts tab, F1 help (`strings::HELP_SECTIONS`) and README cannot drift
@@ -679,7 +689,10 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "Ctrl+Q … 終了",
     "Ctrl+, … 設定を開く",
     "Alt+1〜5 … 設定ダイアログのタブへ直接移動",
-    "Alt+S … ファイルタブの並び順を切替",
+    concat!(
+        "Alt+S … ファイルタブの並び順を切替",
+        crate::strings::settings_input_guard_note!()
+    ),
 ];
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &[
     "ターミナル",
@@ -1062,6 +1075,30 @@ fn personalize_source_info_line() -> String {
     "ソース: https://github.com/Seduce0068/gpui-file-explorer".to_string()
 }
 
+/// Read-only application line shown on the Personalize info page (X14).
+///
+/// `情報` / `about` in [`PERSONALIZE_INFO_KEYWORDS`] previously pointed at a
+/// page with no visible match (M09). The keywords now appear verbatim here.
+fn personalize_app_info_line() -> &'static str {
+    "gpui-file-explorer — GPUI 製のファイルマネージャー（情報 / about）"
+}
+
+/// Every read-only line rendered on the Personalize info page, in order.
+///
+/// Pure so both the renderer and the keyword-visibility test use the exact same
+/// strings (X14). Duplicating the literals in the test would let the page drift
+/// silently and reintroduce the M09 failure.
+fn personalize_info_lines() -> Vec<String> {
+    vec![
+        personalize_app_info_line().to_string(),
+        personalize_version_info_line(),
+        personalize_license_info_line(),
+        personalize_source_info_line(),
+        "設定は ~/.config/gpui-file-explorer/settings.json に保存されます。".to_string(),
+        "配色はテーマ設定に連動し、変更は保存時に反映されます。".to_string(),
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -1301,22 +1338,10 @@ pub fn render_settings_content<V: SettingsUiHost>(
             if show_personalize_info {
                 column = column
                     .child(divider(palette))
-                    .child(section_title(palette, "このアプリについて"))
-                    .child(info_line(
-                        palette,
-                        "gpui-file-explorer — GPUI 製のファイルマネージャー",
-                    ))
-                    .child(info_line(palette, &personalize_version_info_line()))
-                    .child(info_line(palette, &personalize_license_info_line()))
-                    .child(info_line(palette, &personalize_source_info_line()))
-                    .child(info_line(
-                        palette,
-                        "設定は ~/.config/gpui-file-explorer/settings.json に保存されます。",
-                    ))
-                    .child(info_line(
-                        palette,
-                        "配色はテーマ設定に連動し、変更は保存時に反映されます。",
-                    ));
+                    .child(section_title(palette, "このアプリについて"));
+                for line in personalize_info_lines() {
+                    column = column.child(info_line(palette, &line));
+                }
             }
             column
         }
@@ -1463,16 +1488,18 @@ mod tests {
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
         cancel_label, footer_status_text, matches_query, next_settings_focus, no_match_hint,
-        personalize_license_info_line, personalize_source_info_line, personalize_version_info_line,
-        selected_index, settings_focus_order, settings_footer_legend, settings_hidden_next,
-        settings_row_is_visible, settings_row_shortcut, settings_theme_next, settings_view_next,
-        tabs_matching_query, SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction,
-        SettingsUiPalette, APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS,
-        APPEARANCE_VIEW_DESCRIPTION, FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS,
-        FILES_SORT_DESCRIPTION, PERSONALIZE_INFO_KEYWORDS, SETTINGS_KEYMAP_INPUT_HINT,
+        personalize_info_lines, personalize_license_info_line, personalize_source_info_line,
+        personalize_version_info_line, selected_index, settings_focus_order,
+        settings_footer_legend, settings_hidden_next, settings_row_is_visible,
+        settings_row_shortcut, settings_theme_next, settings_view_next, tabs_matching_query,
+        SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
+        APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS, APPEARANCE_VIEW_DESCRIPTION,
+        FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS, FILES_SORT_DESCRIPTION,
+        PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_KEYWORDS, SETTINGS_KEYMAP_INPUT_HINT,
         SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
         TERMINAL_COMMAND_KEYWORDS,
     };
+    use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
     #[test]
     fn tab_labels_are_stable_and_localized() {
@@ -1899,6 +1926,45 @@ mod tests {
     }
 
     #[test]
+    fn personalize_keywords_point_at_visible_text_on_the_page() {
+        // X14/M09: a keyword that has no visible match can make the no-match
+        // hint point at a tab whose rows show nothing relevant. Build the
+        // visible text from the same pure helper the renderer uses so the two
+        // cannot drift. `theme` is a search-only alias of the Japanese label
+        // 「テーマ」 and is the sole explicit exception.
+        const SEARCH_ONLY_ALIASES: &[&str] = &["theme"];
+        let visible = [
+            SettingsTab::Personalize.label(),
+            "カラーパレット",
+            "アクセント / 成功 / エラー",
+            "このアプリについて",
+        ]
+        .join("\n");
+        let visible = format!("{visible}\n{}", personalize_info_lines().join("\n"));
+        let visible_lower = visible.to_lowercase();
+        for keyword in PERSONALIZE_INFO_KEYWORDS
+            .iter()
+            .chain(PERSONALIZE_PALETTE_KEYWORDS.iter())
+        {
+            if SEARCH_ONLY_ALIASES.contains(keyword) {
+                continue;
+            }
+            assert!(
+                visible_lower.contains(&keyword.to_lowercase()),
+                "keyword {keyword} must be visible on the Personalize tab: {visible}"
+            );
+            assert!(
+                matches_query(keyword, PERSONALIZE_INFO_KEYWORDS)
+                    || matches_query(keyword, PERSONALIZE_PALETTE_KEYWORDS),
+                "keyword {keyword} must be searchable"
+            );
+        }
+        // The two keywords that motivated X14 are now rendered verbatim.
+        let app_line = personalize_info_lines()[0].clone();
+        assert!(app_line.contains("情報") && app_line.contains("about"));
+    }
+
+    #[test]
     fn tabs_matching_query_finds_visible_表示_on_the_files_tab() {
         // N07: "ファイルの表示" (section) and "隠しファイルを表示" (label) are
         // rendered on the Files page, so searching that word must surface it.
@@ -1931,10 +1997,11 @@ mod tests {
 
     #[test]
     fn typing_guard_note_is_synced_across_row_hints_help_and_readme() {
-        // W07: Alt+S / t / v / h are ignored while a settings text input owns
-        // the keystroke. F1 is blocked inside the dialog, so the four inline
-        // row hints, the Alt+S help row and README must all say so.
-        const NOTE: &str = "（検索欄等の入力中は無効）";
+        // W07/X13: Alt+S / t / v / h are ignored while a settings text input
+        // owns the keystroke. F1 is blocked inside the dialog, so every inline
+        // row hint, both related F1 help rows, the Shortcuts-tab Alt+S row and
+        // both READMEs must use the one canonical wording.
+        let note = SETTINGS_INPUT_GUARD_NOTE;
         for description in [
             APPEARANCE_THEME_DESCRIPTION,
             APPEARANCE_VIEW_DESCRIPTION,
@@ -1942,27 +2009,72 @@ mod tests {
             FILES_SORT_DESCRIPTION,
         ] {
             assert!(
-                description.contains(NOTE),
+                description.contains(note),
                 "row description must explain the typing guard: {description}"
             );
         }
-        let sort_help = crate::strings::HELP_SECTIONS
+        let alt_s_row = SHORTCUTS_DEFAULT_LINES
+            .iter()
+            .find(|line| line.contains("Alt+S …"))
+            .expect("Shortcuts tab must render the Alt+S row");
+        assert!(
+            alt_s_row.contains(note),
+            "Shortcuts Alt+S row must explain the typing guard: {alt_s_row}"
+        );
+
+        let help_rows: Vec<(&str, &str)> = crate::strings::HELP_SECTIONS
             .iter()
             .flat_map(|(_, rows)| rows.iter().copied())
-            .find(|(key, _)| *key == "設定ダイアログの並び順")
-            .map(|(_, text)| text)
-            .expect("Alt+S help row exists");
-        assert!(
-            sort_help.contains(NOTE),
-            "Alt+S F1 help must explain the typing guard: {sort_help}"
-        );
-        let sort_line = include_str!("../README.md")
+            .collect();
+        for (key, expected_prefix) in [
+            ("設定ダイアログの並び順", "ファイルタブで Alt+S"),
+            ("設定ダイアログの行ショートカット", "外観タブで t=配色"),
+        ] {
+            let text = help_rows
+                .iter()
+                .find(|(row_key, _)| *row_key == key)
+                .map(|(_, text)| *text)
+                .unwrap_or_else(|| panic!("F1 help must include {key} row"));
+            assert!(
+                text.starts_with(expected_prefix) && text.ends_with(note),
+                "F1 {key} must end with the canonical typing-guard note: {text}"
+            );
+        }
+        // The row-shortcut note must keep the separate "no modifier" hint.
+        let row_shortcut_help = help_rows
+            .iter()
+            .find(|(key, _)| *key == "設定ダイアログの行ショートカット")
+            .map(|(_, text)| *text)
+            .expect("row-shortcut help row exists");
+        assert!(row_shortcut_help.contains("（修飾キーなし）"));
+
+        let app_readme = include_str!("../README.md");
+        let sort_line = app_readme
             .lines()
             .find(|line| line.contains("設定ダイアログの並び順"))
             .expect("README must document the settings sort key");
         assert!(
-            sort_line.contains(NOTE),
+            sort_line.contains(note),
             "README Alt+S row must explain the typing guard: {sort_line}"
+        );
+        let body_paragraph = app_readme
+            .split("\n\n")
+            .find(|paragraph| paragraph.contains("同じ理由で、テーマは外観タブの"))
+            .expect("README must explain the bare-letter row shortcuts")
+            .replace('\n', "");
+        assert!(
+            body_paragraph.contains(note),
+            "README row-shortcut body must use the canonical note: {body_paragraph}"
+        );
+        let root_readme = include_str!("../../README.md");
+        let root_paragraph = root_readme
+            .split("\n\n")
+            .find(|paragraph| paragraph.contains("外観タブは `t`（テーマ）"))
+            .expect("root README must explain the bare-letter row shortcuts")
+            .replace('\n', "");
+        assert!(
+            root_paragraph.contains(note),
+            "root README must use the canonical note: {root_paragraph}"
         );
     }
 
@@ -2255,6 +2367,97 @@ mod tests {
             actual, expected,
             "Shortcuts rows must be a 1:1 mirror of F1 help keyboard rows"
         );
+    }
+
+    /// Explicit notation differences between F1 help keys and the README key
+    /// column (X15). README spells arrows as Up/Down/Left/Right; a chord not
+    /// listed here must match the README table verbatim.
+    const README_KEY_ALIASES: &[(&str, &str)] = &[
+        ("↑", "Up"),
+        ("↓", "Down"),
+        ("Alt+←", "Alt+Left"),
+        ("Alt+→", "Alt+Right"),
+        ("Alt+↑", "Alt+Up"),
+        ("Shift+↑↓", "Shift+Up/Down/Home/End"),
+    ];
+
+    /// Key column of the README "キーバインド" table, one normalized cell per
+    /// line (backticks removed) so a deleted row can be detected (X15).
+    fn readme_key_column() -> String {
+        let mut in_section = false;
+        let mut cells = Vec::new();
+        for line in include_str!("../README.md").lines() {
+            if line.starts_with("## キーバインド") {
+                in_section = true;
+                continue;
+            }
+            if !in_section {
+                continue;
+            }
+            if line.starts_with('#') {
+                break;
+            }
+            if line.starts_with('|') {
+                if let Some(cell) = line.split('|').nth(1) {
+                    let cell = cell.trim().replace('`', "");
+                    if cell != "キー" && !cell.starts_with('-') {
+                        cells.push(cell);
+                    }
+                }
+            }
+        }
+        assert!(
+            !cells.is_empty(),
+            "README キーバインド table must have parseable key cells"
+        );
+        cells.join("\n")
+    }
+
+    /// Whole-chord match inside a README key cell: `R` must not pass just
+    /// because `Ctrl+R` is listed (X15).
+    fn cell_has_chord(cell: &str, chord: &str) -> bool {
+        let mut offset = 0;
+        while let Some(pos) = cell[offset..].find(chord) {
+            let start = offset + pos;
+            let end = start + chord.len();
+            let is_boundary =
+                |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '+' && c != '-');
+            if is_boundary(cell[..start].chars().next_back())
+                && is_boundary(cell[end..].chars().next())
+            {
+                return true;
+            }
+            offset = end;
+        }
+        false
+    }
+
+    #[test]
+    fn every_f1_help_key_has_a_readme_keybinding_row() {
+        // X15: the README key column and F1 HELP_SECTIONS drifted three times.
+        // Reuse the explicit `HELP_KEY_EXCEPTIONS` (prose / mouse / dialog rows
+        // have no chord row in the key table) and the explicit alias list
+        // above. Every remaining F1 chord must appear in a README key cell.
+        let keys = readme_key_column();
+        for (section, rows) in crate::strings::HELP_SECTIONS {
+            for (key, _) in *rows {
+                if HELP_KEY_EXCEPTIONS.contains(key) {
+                    continue;
+                }
+                for chord in key.split(" / ") {
+                    let chord = chord.trim();
+                    let expected = README_KEY_ALIASES
+                        .iter()
+                        .find(|(help, _)| *help == chord)
+                        .map(|(_, readme)| *readme)
+                        .unwrap_or(chord);
+                    assert!(
+                        keys.lines().any(|cell| cell_has_chord(cell, expected)),
+                        "F1 chord {chord} ({section}) must have a README key row ({expected})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

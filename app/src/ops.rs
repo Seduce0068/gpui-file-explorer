@@ -1282,6 +1282,90 @@ mod tests {
         assert!(validate_file_name("a\\b").is_ok());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn validate_file_name_rejects_windows_reserved_names() {
+        // Windows treats the stem before the first dot as a device name, so a
+        // legal-looking extension must not smuggle a reserved name through.
+        for name in [
+            "CON", "CON.txt", "PRN", "AUX", "NUL", "COM1", "COM9", "LPT1", "LPT9",
+            "com1.log", // comparison is case-insensitive
+        ] {
+            assert!(
+                validate_file_name(name).is_err(),
+                "reserved Windows name must be rejected: {name}"
+            );
+        }
+        // Names that merely start with a reserved word are ordinary file names.
+        for name in ["CONSOLE.txt", "NULLED.txt", "COM10.txt", "LPT0.txt"] {
+            assert!(
+                validate_file_name(name).is_ok(),
+                "non-reserved name must be accepted: {name}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_file_name_rejects_windows_forbidden_chars() {
+        for name in ["a<b", "a>b", "a:b", "a\"b", "a|b", "a?b", "a*b"] {
+            assert!(
+                validate_file_name(name).is_err(),
+                "forbidden Windows character must be rejected: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_cleanup_failure_not_found_keeps_original_error() {
+        let dest = Path::new("/tmp/dest.txt");
+        let err = with_cleanup_failure(
+            OpError::Cancelled,
+            dest,
+            Err(OpError::NotFound(dest.to_path_buf())),
+        );
+        assert!(
+            matches!(err, OpError::Cancelled),
+            "a missing destination needs no cleanup: {err:?}"
+        );
+
+        // The cause-carrying counterpart takes the same branch.
+        let err = with_cleanup_failure(
+            OpError::Cancelled,
+            dest,
+            Err(OpError::NotFoundCause(
+                dest.to_path_buf(),
+                BoxedCause::text("missing"),
+            )),
+        );
+        assert!(
+            matches!(err, OpError::Cancelled),
+            "NotFoundCause must be treated like NotFound: {err:?}"
+        );
+    }
+
+    #[test]
+    fn with_cleanup_failure_other_error_composes_message_and_keeps_source() {
+        let dest = Path::new("/tmp/dest.txt");
+        let err = with_cleanup_failure(
+            OpError::Cancelled,
+            dest,
+            Err(OpError::PermissionDenied(dest.to_path_buf())),
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("操作はキャンセルされました")
+                && text.contains("クリーンアップ失敗")
+                && text.contains("アクセスが拒否されました"),
+            "composed text must report both failures: {text}"
+        );
+        assert_eq!(
+            std::error::Error::source(&err).map(ToString::to_string),
+            Some("操作はキャンセルされました".to_string()),
+            "the primary error must stay reachable through source()"
+        );
+    }
+
     #[test]
     fn copy_file_into_directory() {
         let dir = scratch("copy-file");

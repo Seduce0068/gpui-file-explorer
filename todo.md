@@ -1008,25 +1008,25 @@ status: current
 
 ### 優先度: 中（ループ R19・confirmed）
 
-- [ ] **X01** save 失敗理由定数が error マーカー未登録 — main.rs:377
-- [ ] **X02** 未保存破棄通知が成功緑（データ損失通知） — main.rs:11645
-- [ ] **X03** ラベル未設定拒否が main.rs インライン — main.rs:808
-- [ ] **X04** ゴミ箱読込失敗が main.rs インライン — main.rs:817
-- [ ] **X05** ops.rs validate_file_name の Windows 分岐が無テスト
-- [ ] **X06** ops.rs with_cleanup_failure の NotFound 分岐が無テスト
+- [x] **X01** save 失敗理由定数が error マーカー未登録 — main.rs:377 — 対応: loop21-core
+- [x] **X02** 未保存破棄通知が成功緑（データ損失通知） — main.rs:11645 — 対応: loop21-core（実バグ修正）
+- [x] **X03** ラベル未設定拒否が main.rs インライン — main.rs:808 — 対応: loop21-core
+- [x] **X04** ゴミ箱読込失敗が main.rs インライン — main.rs:817 — 対応: loop21-core
+- [x] **X05** ops.rs validate_file_name の Windows 分岐が無テスト — 対応: loop21-tests
+- [x] **X06** ops.rs with_cleanup_failure の NotFound 分岐が無テスト — 対応: loop21-tests
 
 ### 優先度: 低（ループ R19）
 
-- [ ] **X07** typing ガード注記が Alt+S 一覧行に未同期 — settings_ui.rs:682
-- [ ] **X08** Undo「が存在しません」が main.rs ローカル — main.rs:832
-- [ ] **X09** CLI 起動ディレクトリ拒否が main.rs ローカル — main.rs:11026
-- [ ] **X10** review-report の DESIGN 行番号が drift — review-report.md:651
-- [ ] **X11** error.rs fs_message 空 OS メッセージ分岐が無テスト
-- [ ] **X12** system_icons push_unique_path 重複分岐が無テスト
-- [ ] **X13** 入力ガード注記が3通りに分岐 — strings.rs:183 / README:154
-- [ ] **X14** Personalize キーワード「情報」「about」が表示されず
+- [x] **X07** typing ガード注記が Alt+S 一覧行に未同期 — settings_ui.rs:682 — 対応: loop21-ux
+- [x] **X08** Undo「が存在しません」が main.rs ローカル — main.rs:832 — 対応: loop21-core
+- [x] **X09** CLI 起動ディレクトリ拒否が main.rs ローカル — main.rs:11026 — 対応: loop21-core
+- [x] **X10** review-report の DESIGN 行番号が drift — review-report.md:651 — 対応: loop21-ux
+- [x] **X11** error.rs fs_message 空 OS メッセージ分岐が無テスト — 対応: loop21-tests
+- [x] **X12** system_icons push_unique_path 重複分岐が無テスト — 対応: loop21-tests
+- [x] **X13** 入力ガード注記が3通りに分岐 — strings.rs:183 / README:154 — 対応: loop21-ux
+- [x] **X14** Personalize キーワード「情報」「about」が表示されず — 対応: loop21-ux
   — settings_ui.rs:713
-- [ ] **X15** README キー表と F1 の自動同期テストなし
+- [x] **X15** README キー表と F1 の自動同期テストなし — 対応: loop21-ux
 
 ### 優先度: 低（調査タスク）
 

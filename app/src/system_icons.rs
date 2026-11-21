@@ -410,8 +410,8 @@ fn reorder_breeze_themes(themes: &mut [String], prefer_dark: bool) {
 #[cfg(test)]
 mod tests {
     use super::{
-        generic_icon_for_kind, icon_name_for_kind, icon_name_variants, size_dir_candidates,
-        SystemIconResolver,
+        generic_icon_for_kind, icon_name_for_kind, icon_name_variants, push_unique_path,
+        size_dir_candidates, SystemIconResolver,
     };
     use crate::icons::{kind_for_name, FileKind};
 
@@ -791,5 +791,23 @@ mod tests {
                 "expected {name} to resolve, got {path:?}"
             );
         }
+    }
+
+    #[test]
+    fn push_unique_path_skips_duplicates() {
+        use std::path::PathBuf;
+
+        let mut paths = Vec::new();
+        let candidate = PathBuf::from("/usr/share/icons");
+        push_unique_path(&mut paths, candidate.clone());
+        push_unique_path(&mut paths, candidate.clone());
+        assert_eq!(
+            paths,
+            vec![candidate.clone()],
+            "the same path must be pushed only once"
+        );
+
+        push_unique_path(&mut paths, PathBuf::from("/usr/local/share/icons"));
+        assert_eq!(paths.len(), 2, "a distinct path must still be appended");
     }
 }

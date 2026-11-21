@@ -378,4 +378,26 @@ mod tests {
         assert_eq!(after, before);
         assert_eq!(after, Some("original detail".to_string()));
     }
+
+    #[test]
+    fn fs_message_omits_parenthetical_for_empty_os_message() {
+        // `io::Error::other("")` carries an empty OS message: from_io stores
+        // Some(""), and fs_message must fall through to the no-parenthesis arm.
+        let error = AppError::from_io(PathBuf::from("/tmp/empty-os"), &std::io::Error::other(""));
+        assert_eq!(error.fs_os_message(), Some(""));
+        assert_eq!(error.fs_kind(), Some(FsErrorKind::Unknown));
+        assert_eq!(
+            error.message_ja(),
+            "/tmp/empty-os: エラーが発生しました",
+            "an empty OS message must not produce an empty '(…)' suffix"
+        );
+
+        // The same arm handles a genuinely absent OS message.
+        let no_message = AppError::Fs {
+            kind: FsErrorKind::Unknown,
+            path: PathBuf::from("/tmp/no-os"),
+            os_message: None,
+        };
+        assert_eq!(no_message.message_ja(), "/tmp/no-os: エラーが発生しました");
+    }
 }

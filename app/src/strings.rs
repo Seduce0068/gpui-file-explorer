@@ -78,6 +78,25 @@ pub const FUZZY_JUMP_LABEL: &str = "クイックジャンプ";
 /// 親フォルダを指す共通ラベル。ヘルプとナビゲーションボタンで共用する。
 pub const PARENT_FOLDER_LABEL: &str = "親フォルダ";
 
+/// 設定ダイアログの行ショートカットがテキスト入力中に無効である旨の注記。
+///
+/// X13: 設定行の説明・F1 ヘルプ・README で文言が分かれていたため、ここを
+/// 唯一の定義とする。`concat!` は定数識別子を受け付けないので、静的文字列へ
+/// 埋め込む場合は下の `settings_input_guard_note!()` を使う。
+macro_rules! settings_input_guard_note {
+    () => {
+        "（検索欄等の入力中は無効）"
+    };
+}
+pub(crate) use settings_input_guard_note;
+
+/// 入力ガード注記の正規表記（X13）。F1 ヘルプ・設定行・README の同期判定に使う。
+pub const SETTINGS_INPUT_GUARD_NOTE: &str = settings_input_guard_note!();
+
+/// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
+/// テスト以外のビルドでも定数を参照させ、`-D warnings` の dead_code を防ぐ。
+const _: () = assert!(SETTINGS_INPUT_GUARD_NOTE.len() == settings_input_guard_note!().len());
+
 /// Keyboard shortcuts shown by the F1 help overlay: (section, [(key, description)]).
 pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
@@ -176,11 +195,17 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "設定ダイアログの並び順",
-                "ファイルタブで Alt+S により「既定の並び順」を切替（検索欄等の入力中は無効）",
+                concat!(
+                    "ファイルタブで Alt+S により「既定の並び順」を切替",
+                    settings_input_guard_note!()
+                ),
             ),
             (
                 "設定ダイアログの行ショートカット",
-                "外観タブで t=配色 / v=既定のビュー、ファイルタブで h=隠しファイルを切替（修飾キーなし・入力欄フォーカス中は無効）",
+                concat!(
+                    "外観タブで t=配色 / v=既定のビュー、ファイルタブで h=隠しファイルを切替（修飾キーなし）",
+                    settings_input_guard_note!()
+                ),
             ),
             (
                 "設定ダイアログの操作",
@@ -383,6 +408,13 @@ pub const STATUS_OP_FAILED_SUFFIX: &str = "できません";
 /// 「できません」を含まないため単独では成功 green に落ちていた。
 /// main.rs の warning マーカーとして登録し、全ての呼び出し側がこれを連結する。
 pub const STATUS_CANNOT_OPEN_SUFFIX: &str = "開けません";
+/// CLI で渡された起動ディレクトリがフォルダでなかったときの通知（X09）。
+/// 以前は main.rs ローカルで「strings.rs は対象外」という陳腐なコメントが
+/// 付いていたが、色分類表と一元化するためここへ移動した。
+/// 「開けません」は `STATUS_CANNOT_OPEN_SUFFIX`（warning）にも一致するため、
+/// 呼び出し側は必ず `STATUS_ERROR_PREFIX` を付け、エラー接頭辞を優先させる。
+pub const STATUS_INVALID_CLI_DIR: &str =
+    "起動ディレクトリを開けませんでした（フォルダではありません）";
 /// スキップ件数通知の開き括弧。`main.rs::transfer_skip_notice` が
 /// 「{理由} {N} 件をスキップ」を囲むために使う（T02）。
 pub const STATUS_SKIPPED_PREFIX: &str = "（";
@@ -478,6 +510,10 @@ pub const STATUS_UNDO_EMPTY: &str = "元に戻せる操作はありません";
 /// 操作履歴ダイアログが空のときの補足（T09）。`STATUS_UNDO_EMPTY` に連結する。
 pub const STATUS_UNDO_HISTORY_HINT: &str = "（名前変更とゴミ箱のみ記録します）";
 pub const STATUS_UNDO_EXISTS_SUFFIX: &str = " が既に存在します";
+/// 元に戻す対象が既に消えているときの接尾辞（U07 / X08）。
+/// 逆場合の `STATUS_UNDO_EXISTS_SUFFIX` と対称で、以前は main.rs ローカル
+/// だったが、マーカー表と一元化するためここへ移動した。
+pub const STATUS_UNDO_MISSING_SUFFIX: &str = " が存在しません";
 pub const STATUS_REDO_EMPTY: &str = "やり直せる操作がありません";
 pub const STATUS_REDO_FAILED: &str = "やり直せません";
 pub const STATUS_RENAME_FAILED: &str = "変更できません";
@@ -541,6 +577,13 @@ pub const STATUS_SAVED_SEARCH_QUERY_REQUIRED: &str = "検索語を入力して�
 /// ブックマークラベルの設定失敗の接頭辞（R05）。動的なパスが後続するため、
 /// 接頭辞自体を error マーカーとして登録する。
 pub const STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX: &str = "ラベルを設定できませんでした: ";
+/// ブックマークにラベルが設定されていないときの拒否接頭辞（U05 / X03）。
+/// 動的なパスが後続するため接頭辞自体を共有し、呼び出し側は
+/// `STATUS_ERROR_PREFIX` を付けて組み立てる。
+pub const STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX: &str = "ラベルは設定されていません: ";
+/// ゴミ箱の読み込みに失敗したときのエラー接頭辞（U06 / X04）。
+/// 動的な理由（`error`）が後続するため、接頭辞自体を共有する。
+pub const STATUS_TRASH_LOAD_FAILED_PREFIX: &str = "ゴミ箱を読み込めません: ";
 /// ブックマークラベルの拒否理由（U04）。
 /// `Settings::set_bookmark_label` は bool しか返さないため、main.rs の
 /// `bookmark_label_rejection_reason` が設定側と同じ条件を事前検証して
@@ -1006,6 +1049,7 @@ mod tests {
             STATUS_SKIPPED_SUFFIX,
             STATUS_CANCELLED,
             STATUS_CANCEL_HINT,
+            STATUS_INVALID_CLI_DIR,
             STATUS_NO_SELECTION,
             STATUS_OP_IN_PROGRESS_SUFFIX,
             STATUS_RESCAN_FAILED,
@@ -1039,6 +1083,7 @@ mod tests {
             STATUS_UNDO_EMPTY,
             STATUS_UNDO_HISTORY_HINT,
             STATUS_UNDO_EXISTS_SUFFIX,
+            STATUS_UNDO_MISSING_SUFFIX,
             STATUS_REDO_EMPTY,
             STATUS_REDO_FAILED,
             STATUS_RENAME_FAILED,
@@ -1070,6 +1115,9 @@ mod tests {
             STATUS_BOOKMARK_LABEL_REASON_TOO_LONG,
             STATUS_BOOKMARK_LABEL_REASON_NUL,
             STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+            // X03 / X04: 呼び出し側の format! に残っていた接頭辞も一元化した。
+            STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
+            STATUS_TRASH_LOAD_FAILED_PREFIX,
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
         }
@@ -1136,6 +1184,9 @@ mod tests {
             ),
             ("STATUS_TRASH_ALL_FAILED", STATUS_TRASH_ALL_FAILED, "error"),
             ("STATUS_RESTORE_FAILED", STATUS_RESTORE_FAILED, "error"),
+            // X09: 起動ディレクトリの拒否も concrete failure。呼び出し側は
+            // STATUS_ERROR_PREFIX を付与し、warning の「開けません」に負けないようにする。
+            ("STATUS_INVALID_CLI_DIR", STATUS_INVALID_CLI_DIR, "error"),
             // R02: OS によるアクセス拒否は concrete failure なので error(red)。
             ("STATUS_ACCESS_DENIED", STATUS_ACCESS_DENIED, "error"),
             // R04 / R05: 動的な値を連結する失敗接頭辞も error(red)。
@@ -1147,6 +1198,18 @@ mod tests {
             (
                 "STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX",
                 STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+                "error",
+            ),
+            // X03 / X04: 以前 main.rs の format! に埋め込まれていた接頭辞も
+            // concrete failure として明示的に分類する。
+            (
+                "STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX",
+                STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
+                "error",
+            ),
+            (
+                "STATUS_TRASH_LOAD_FAILED_PREFIX",
+                STATUS_TRASH_LOAD_FAILED_PREFIX,
                 "error",
             ),
             // Q02: P08 の「できません」拒否は STATUS_OP_FAILED_SUFFIX と同じ
@@ -1180,6 +1243,12 @@ mod tests {
                 "error",
             ),
             ("STATUS_NOT_FOUND_SUFFIX", STATUS_NOT_FOUND_SUFFIX, "error"),
+            // X08: Undo の存在しない対象も concrete failure（接尾辞を共有）。
+            (
+                "STATUS_UNDO_MISSING_SUFFIX",
+                STATUS_UNDO_MISSING_SUFFIX,
+                "error",
+            ),
             // L06: 未登録のため green で表示される定数。main.rs の
             // STATUS_WARNING_MARKERS に追加すべき正規一覧（下の配列と同期）。
             (
@@ -1206,6 +1275,13 @@ mod tests {
             ),
             ("STATUS_UNDO_EMPTY", STATUS_UNDO_EMPTY, "warning"),
             ("STATUS_REDO_EMPTY", STATUS_REDO_EMPTY, "warning"),
+            // X02: 未保存設定の破棄はデータ消失の通知であり、成功 green でも
+            // 汎用エラー red でもなく warning(amber) に分類する。
+            (
+                "STATUS_SETTINGS_DISCARDED",
+                STATUS_SETTINGS_DISCARDED,
+                "warning",
+            ),
             // N02: 「開けません」は「できません」を含まない拒否接尾なので、
             // 単独では成功 green に落ちていた。warning として登録する。
             (
@@ -1258,6 +1334,10 @@ mod tests {
         // W10: success 分類を許可するのは一時的な進行中通知だけ。意図なき
         // green 回帰を防ぐため、拒否語チェックの対象外もこの一覧で固定する。
         const TRANSIENT_IN_PROGRESS: &[&str] = &["STATUS_CANCELLING"];
+        // X02: データ消失の通知は拒否語（「〜ません」）を含まないが成功でもない。
+        // 一時進行通知と同じく一般ルールの対象外とし、破棄の事実と復帰導線を
+        // 個別に検証する（分類は warning 固定）。
+        const DATA_LOSS_NOTICES: &[&str] = &["STATUS_SETTINGS_DISCARDED"];
         // L06 / N02 / N03 / N08 / N09 の指摘で main.rs 側への登録が必要な定数名
         // （重複・脱落を防止）。全て warning として分類されなければならない。
         const PENDING_WARNING_MARKERS: &[&str] = &[
@@ -1300,6 +1380,12 @@ mod tests {
                 assert!(
                     message.contains("しています"),
                     "{name} must be an in-progress notice: {message}"
+                );
+            } else if DATA_LOSS_NOTICES.contains(name) {
+                // X02: 破棄の事実と、設定を開き直す導線の両方を固定する。
+                assert!(
+                    message.contains("破棄しました") && message.contains("開き直せます"),
+                    "{name} must describe the loss and its recovery: {message}"
                 );
             } else {
                 assert!(
@@ -1819,5 +1905,37 @@ mod tests {
         assert_eq!(STATUS_SETTINGS_READ_ONLY_HINT, "（Ctrl+, で設定を確認）");
         assert!(STATUS_SETTINGS_READ_ONLY_HINT.contains("Ctrl+,"));
         assert!(STATUS_SETTINGS_READ_ONLY_HINT.ends_with('）'));
+    }
+
+    #[test]
+    fn inline_status_literals_are_routed_through_shared_constants() {
+        // X03 / X04 / X08 / X09: これら 4 つの文言は以前 main.rs の
+        // format! または main.rs ローカル定数に埋め込まれており、色分類表と
+        // 表示文言が乖離していた。正規値はここに置き、呼び出し側は定数を参照する。
+        let source = include_str!("main.rs");
+        for (name, literal) in [
+            (
+                "STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX",
+                STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
+            ),
+            (
+                "STATUS_TRASH_LOAD_FAILED_PREFIX",
+                STATUS_TRASH_LOAD_FAILED_PREFIX,
+            ),
+            ("STATUS_UNDO_MISSING_SUFFIX", STATUS_UNDO_MISSING_SUFFIX),
+            ("STATUS_INVALID_CLI_DIR", STATUS_INVALID_CLI_DIR),
+        ] {
+            assert!(source.contains(name), "{name} must be used in main.rs");
+            assert!(
+                !source.contains(literal),
+                "inline literal for {name} must not reappear in main.rs"
+            );
+            assert!(
+                !source.contains(&format!("const {name}")),
+                "{name} must not be redefined locally in main.rs"
+            );
+        }
+        // X09: 移動済みであることを示す陳腐なコメントも削除されていること。
+        assert!(!source.contains("strings.rs is intentionally out of scope"));
     }
 }
