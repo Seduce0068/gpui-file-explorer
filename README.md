@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 426 tests
+cargo test           # 432 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -80,7 +80,7 @@ cargo test           # 426 tests
 | パス | 内容 |
 |---|---|
 | [app/](app/) | **動く試作**（AGPL-3.0-or-later）。ツールバー / ブレッドクラム / サイドバー / 仮想リスト / 非同期ロード / 自然順ソート / 隠しファイル切替 / 履歴 / 右クリックメニュー / ゴミ箱（確認付き）/ 設定永続化 / notify 監視 |
-| [DESIGN.md](DESIGN.md) | 設計書（1,138 行、2026-11-19 時点）。機能マトリクス P0〜P3、ASCII ワイヤーフレーム、型契約、watch→debounce→reconcile 状態機械、trash-first 安全則、AGPL 運用、受入条件 AC-1〜AC-13、ADR 12 件 |
+| [DESIGN.md](DESIGN.md) | 設計書。機能マトリクス P0〜P3、ASCII ワイヤーフレーム、型契約、watch→debounce→reconcile 状態機械、trash-first 安全則、AGPL 運用、受入条件 AC-1〜AC-13、ADR 12 件（変更履歴は DESIGN.md 末尾を参照） |
 | [RESEARCH.md](RESEARCH.md) | 調査レポート。要点 12 項目 / 推奨スタック / クロスプラットフォームの罠 / MVP 計画 / PoC 検証結果 |
 | [poc/](poc/) | スタック検証用の最小 PoC（`gpui-kit` のみ、実機でビルド・起動確認済み） |
 | [notes/](notes/) | 一次調査ノート（GPUI API 棚卸し・エコシステム・OS/FS 差分）と独立検証レポート |
@@ -94,7 +94,7 @@ cargo test           # 426 tests
 
 ## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-18 更新）
 
-- `cargo build` 警告 0 / `cargo test` **426 passed / 0 failed**（2026-11-21 時点。初回実機検証時は 36 件）
+- `cargo build` 警告 0 / `cargo test` **432 passed / 0 failed**（2026-11-21 時点。初回実機検証時は 36 件）
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
 - 起動中に外部からファイル作成 → 一覧が自動更新（14→15 件）
@@ -186,7 +186,7 @@ bash scripts/check.sh --app      # app/ のみ
 bash scripts/check.sh --poc      # poc/ のみ
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 426 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 432 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
 
 ## ソース・ライセンス

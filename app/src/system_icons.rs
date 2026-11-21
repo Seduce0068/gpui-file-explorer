@@ -129,8 +129,13 @@ pub struct SystemIconResolver {
     cache: HashMap<(String, u32), Option<PathBuf>>,
     /// Search roots in priority order: user overrides first, then system.
     roots: Vec<PathBuf>,
-    /// Theme directory names in priority order (Breeze first on KDE).
+    /// Theme directory names in priority order (Breeze first on KDE, or
+    /// Breeze-dark first once [`Self::set_prefer_dark`] is enabled).
     themes: Vec<String>,
+    /// Whether the dark sibling of a theme outranks its light variant. Kept
+    /// separately so [`Self::set_prefer_dark`] can skip cache invalidation when
+    /// the effective theme did not actually change.
+    prefer_dark: bool,
 }
 
 impl Default for SystemIconResolver {
@@ -178,7 +183,25 @@ impl SystemIconResolver {
             cache: HashMap::new(),
             roots,
             themes,
+            prefer_dark: false,
         }
+    }
+
+    /// Prefer the dark sibling of a theme (`breeze-dark` before `breeze`) when
+    /// the effective application theme is dark. Breeze-dark's
+    /// `index.theme` inherits from `breeze`, so it still provides every icon
+    /// the light theme has while returning the dark artwork.
+    ///
+    /// Reordering invalidates the lookup cache; calling this repeatedly with
+    /// the same value is a no-op, so every theme-change notification can call
+    /// it unconditionally.
+    pub fn set_prefer_dark(&mut self, prefer_dark: bool) {
+        if self.prefer_dark == prefer_dark {
+            return;
+        }
+        self.prefer_dark = prefer_dark;
+        reorder_breeze_themes(&mut self.themes, prefer_dark);
+        self.cache.clear();
     }
 
     /// Resolve the system icon for a directory entry.
@@ -369,6 +392,21 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
     }
 }
 
+/// Swap the `breeze` / `breeze-dark` positions so the requested variant is
+/// searched first. Swapping (instead of moving to the front) preserves any
+/// explicit `XDG_ICON_THEME` entry and the rest of the fallback ladder.
+fn reorder_breeze_themes(themes: &mut [String], prefer_dark: bool) {
+    let (Some(light), Some(dark)) = (
+        themes.iter().position(|theme| theme == "breeze"),
+        themes.iter().position(|theme| theme == "breeze-dark"),
+    ) else {
+        return;
+    };
+    if (dark < light) != prefer_dark {
+        themes.swap(light, dark);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{icon_name_for_kind, icon_name_variants, size_dir_candidates, SystemIconResolver};
@@ -450,6 +488,52 @@ mod tests {
         let smaller_pos = dirs.iter().position(|d| d == "24").unwrap();
         assert!(larger_pos < smaller_pos, "larger sizes must be tried first");
         assert_eq!(dirs.last().map(String::as_str), Some("scalable"));
+    }
+
+    #[test]
+    fn set_prefer_dark_reorders_themes_and_invalidates_cache() {
+        let mut resolver = SystemIconResolver::new();
+        // Fixed ladder: the host's XDG_* values must not affect this test.
+        resolver.themes = vec![
+            "breeze".to_string(),
+            "breeze-dark".to_string(),
+            "hicolor".to_string(),
+        ];
+        let light_order = resolver.themes.clone();
+
+        resolver.cache.insert(("icon".to_string(), 16), None);
+        resolver.set_prefer_dark(true);
+        assert_eq!(
+            resolver.themes,
+            vec!["breeze-dark", "breeze", "hicolor"],
+            "the dark theme must be searched before the light one"
+        );
+        assert!(
+            resolver.cache.is_empty(),
+            "cached paths must be invalidated"
+        );
+
+        // A repeated call with the same value must leave a fresh cache alone.
+        resolver.cache.insert(("icon".to_string(), 16), None);
+        resolver.set_prefer_dark(true);
+        assert_eq!(resolver.cache.len(), 1, "unchanged preference is a no-op");
+
+        resolver.set_prefer_dark(false);
+        assert_eq!(resolver.themes, light_order, "light order must be restored");
+        assert!(resolver.cache.is_empty());
+
+        // An explicit theme and unrelated fallbacks keep their positions.
+        resolver.themes = vec![
+            "custom".to_string(),
+            "hicolor".to_string(),
+            "breeze".to_string(),
+            "breeze-dark".to_string(),
+        ];
+        resolver.set_prefer_dark(true);
+        assert_eq!(
+            resolver.themes,
+            vec!["custom", "hicolor", "breeze-dark", "breeze"]
+        );
     }
 
     #[test]
