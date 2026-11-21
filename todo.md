@@ -682,17 +682,21 @@ status: current
 
 ### 優先度: 中（ループ R6・confirmed）
 
-- [ ] **J01** load_tab/navigate_with_mode が settings_write_status を迂回
+- [x] **J01** load_tab/navigate_with_mode が settings_write_status を迂回
+  対応: loop8-core
   — main.rs:3404,3667
-- [ ] **J02** status_message_constants_are_nonempty が定数を網羅していない
+- [x] **J02** status_message_constants_are_nonempty が定数を網羅していない — 対応: loop8-core
   — strings.rs:617
-- [ ] **J03** DESIGN §10.1 のテスト数 450 が実 461 と乖離 — DESIGN.md:996
-- [ ] **J04** settings_focus_order の Personalize/Alt+T が未テスト — settings_ui.rs:1164
-- [ ] **J05** next_settings_focus の未知 current+後方が未テスト — settings_ui.rs:510
-- [ ] **J06** 破棄通知の Ctrl+, が既定キーマップで未固定 — main.rs:1204
-- [ ] **J07** F1 ヘルプに Tab/Shift+Tab 巡回が未記載 — strings.rs:165
-- [ ] **J08** 未保存案内文言が2通りに分かれ未集約 — settings_ui.rs:793,939
-- [ ] **J09** review-report の「DESIGN 履歴 v0.1」が解消済みで陳腐化 — review-report.md:636
+- [x] **J03** DESIGN §10.1 のテスト数 450 が実 461 と乖離 — DESIGN.md:996 — 対応: loop8-docs
+- [x] **J04** settings_focus_order の Personalize/Alt+T が未テスト
+  settings_ui.rs:1164 — 対応: loop8-ux
+- [x] **J05** next_settings_focus の未知 current+後方が未テスト
+  settings_ui.rs:510 — 対応: loop8-ux
+- [x] **J06** 破棄通知の Ctrl+, が既定キーマップで未固定 — main.rs:1204 — 対応: loop8-core
+- [x] **J07** F1 ヘルプに Tab/Shift+Tab 巡回が未記載 — strings.rs:165 — 対応: loop8-ux
+- [x] **J08** 未保存案内文言が2通りに分かれ未集約 — settings_ui.rs:793,939 — 対応: loop8-ux
+- [x] **J09** review-report の「DESIGN 履歴 v0.1」が解消済みで陳腐化
+  review-report.md:636 — 対応: loop8-docs
 
 ### 優先度: 低（調査タスク）
 

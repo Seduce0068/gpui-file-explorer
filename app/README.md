@@ -24,7 +24,7 @@ cd gpui-file-explorer   # リポジトリ直下
 bash scripts/dev-setup.sh   # 初回のみ（下記「前提」を参照）
 cd app
 cargo build                 # 初回（依存込み）約 1m30s / 2回目以降 約2s / debug バイナリ 約 165MiB
-cargo test                  # 461 tests（データ層 + 監視）
+cargo test                  # 463 tests（データ層 + 監視）
 ```
 
 リポジトリ直下から全体をビルドする場合:
@@ -403,7 +403,7 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 
 ```bash
 cargo test
-# running 461 tests ... test result: ok. 461 passed; 0 failed
+# running 463 tests ... test result: ok. 463 passed; 0 failed
 ```
 
 カバレッジ: ディレクトリ読み込み（ディレクトリ先頭・メタデータ・エラー）、
@@ -416,7 +416,7 @@ fingerprint の変化検出、パンくず生成、一意な新規フォルダ�
 
 ## 実行検証記録（2026-11-11, このマシン。テスト数は 2026-11-21 更新）
 
-- `cargo build`: 警告 0 / `cargo test`: 461 passed
+- `cargo build`: 警告 0 / `cargo test`: 463 passed
   （初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - 起動: stderr 0 行（EGL/Vulkan/Wayland エラーなし）
 - KWin D-Bus（Wayland ネイティブであることの確認）:
@@ -541,17 +541,23 @@ bash packaging/linux/build-deb.sh
   最初の項目のリネームダイアログを開いた状態で表示できます（スクリーンショット用）。
   同様に `GPUI_FE_DEBUG_SELECT_ALL=1`（全選択）、`GPUI_FE_DEBUG_TRASH=1`（ゴミ箱ビュー）、
   `GPUI_FE_DEBUG_TRASH_RESTORE=1`（最初の項目を復元）、`GPUI_FE_DEBUG_GRID=1`（グリッド）、
+  `GPUI_FE_DEBUG_PROGRESS=1`（コピー進捗の表示）、
   `GPUI_FE_DEBUG_SEARCH=1` + `GPUI_FE_DEBUG_SEARCH_QUERY` / `GPUI_FE_DEBUG_SEARCH_KIND` /
   `GPUI_FE_DEBUG_SEARCH_EXT` / `GPUI_FE_DEBUG_SEARCH_NAME` /
   `GPUI_FE_DEBUG_SEARCH_MODE` / `GPUI_FE_DEBUG_SEARCH_SCOPE`（`current`/`tabs`/`bookmarks`、検索・絞り込み・内容検索・検索範囲）、
   `GPUI_FE_DEBUG_TABS=1`（タブ）、
+  `GPUI_FE_DEBUG_TAB_MOVE=left`（タブ作成時に左へ移動、`GPUI_FE_DEBUG_TABS=1` と併用）、
   `GPUI_FE_DEBUG_RECENT=1`（最近）、`GPUI_FE_DEBUG_BOOKMARKS=1`（ブックマーク）、`GPUI_FE_DEBUG_PROPERTIES=1`（プロパティ）、
   `GPUI_FE_DEBUG_HELP=1`（ヘルプ）、`GPUI_FE_DEBUG_PROPERTIES_SIZE=1`（ディレクトリサイズ計算）、
   `GPUI_FE_DEBUG_UNDO=rename|trash`（アンドゥ検証）、`GPUI_FE_DEBUG_SORT=kind`（種類ソート）、`GPUI_FE_DEBUG_SEARCH_HISTORY=1`（検索履歴）、
+  `GPUI_FE_DEBUG_UNDO_HISTORY=1`（undo 履歴オーバーレイを開く）、
   `GPUI_FE_DEBUG_LOCATION=1`（パス入力バー）、`GPUI_FE_DEBUG_PREVIEW=1`（プレビュー）、
   `GPUI_FE_DEBUG_PREVIEW_REPORT=1`（プレビュー結果を stderr に1行出力）、
   `GPUI_FE_DEBUG_DROP_PATH=<file>` + `GPUI_FE_DEBUG_DROP_TARGET=<folder>`（外部ドロップ相当を1回実行）
   の開発用フックがあります。デバッグ用フックが有効なセッションではタブ構成を保存しません。
+  （as-built 注記: 2026-11-21 時点で `GPUI_FE_DEBUG_PROGRESS` /
+  `GPUI_FE_DEBUG_UNDO_HISTORY` / `GPUI_FE_DEBUG_TAB_MOVE` を一覧へ追加。
+  根拠: `src/main.rs:2405`, `:2414`, `:2430`。debug ビルドのみ有効。）
 - 現状の削除は従来どおり `trash` のみで、完全削除はありません。
 - アンドゥの対象は**名前変更とゴミ箱のみ**（コピー/移動は対象外）。スタックはメモリ上に
   最大 20 件で、アプリを終了すると消えます。元に戻す先に同名ファイルがある場合は拒否します。
