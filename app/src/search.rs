@@ -826,6 +826,32 @@ mod content_tests {
     }
 
     #[test]
+    fn content_search_respects_max_depth() {
+        let dir = scratch("content-depth");
+        // Depth 0 (the root) and depth 1 (one directory down) are in scope; a
+        // file deeper than that must be skipped even when its content matches.
+        write(&dir.join("root.txt"), b"TARGET root\n");
+        write(&dir.join("one/level.txt"), b"TARGET level one\n");
+        write(&dir.join("one/two/deep.txt"), b"TARGET level two\n");
+
+        let options = ContentSearchOptions {
+            max_depth: 1,
+            ..Default::default()
+        };
+        let found = search_contents(&dir, "target", options, &AtomicBool::new(false));
+        let names: Vec<_> = found
+            .iter()
+            .map(|entry| entry.entry.name_text.clone())
+            .collect();
+        // Non-vacuous: the excluded deep file really holds the needle, so its
+        // absence below is caused by the depth cap, not by the fixture data.
+        assert_eq!(names, vec!["level.txt", "root.txt"]);
+        assert!(!names.iter().any(|name| name == "deep.txt"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn skips_binary_and_oversized_files() {
         let dir = scratch("binary");
         write(&dir.join("binary.bin"), b"TARGET\0\0\0");

@@ -393,7 +393,7 @@ fn footer_status_text(dirty: bool) -> &'static str {
 /// up in the help overlay have to be shown here. Kept to one compact line to
 /// fit the 760px card next to the save/cancel buttons.
 fn settings_footer_legend() -> &'static str {
-    "Enter 保存 / Esc 閉じる / Tab 移動 / Ctrl+Tab タブ / Alt+数字 直接移動"
+    "Tab/Shift+Tab 移動 / Ctrl+Tab・Ctrl+Shift+Tab タブ / Enter 保存 / Esc 閉じる / Alt+数字 直接移動"
 }
 
 // Search keyword sets, one per visible row. They are shared by the per-row
@@ -899,6 +899,19 @@ fn info_line(palette: &SettingsUiPalette, text: &str) -> impl IntoElement {
         .child(text.to_string())
 }
 
+/// Read-only version line shown on the Personalize info page (Q08).
+///
+/// Pure so the wording can be regression-tested without a GPUI window. The
+/// `バージョン` keyword in `PERSONALIZE_INFO_KEYWORDS` advertises this row, so
+/// the rendered text must actually contain it — otherwise a search for that
+/// word highlights a section with nothing matching on screen.
+fn personalize_version_info_line() -> String {
+    format!(
+        "バージョン: gpui-file-explorer v{}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -1143,6 +1156,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                         palette,
                         "gpui-file-explorer — GPUI 製のファイルマネージャー",
                     ))
+                    .child(info_line(palette, &personalize_version_info_line()))
                     .child(info_line(
                         palette,
                         "設定は ~/.config/gpui-file-explorer/settings.json に保存されます。",
@@ -1297,11 +1311,12 @@ mod tests {
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
         cancel_label, footer_status_text, matches_query, next_settings_focus, no_match_hint,
-        selected_index, settings_focus_order, settings_footer_legend, settings_hidden_next,
-        settings_row_is_visible, settings_row_shortcut, settings_theme_next, settings_view_next,
-        tabs_matching_query, SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction,
-        SettingsUiPalette, APPEARANCE_THEME_DESCRIPTION, APPEARANCE_VIEW_DESCRIPTION,
-        FILES_HIDDEN_DESCRIPTION, FILES_SORT_DESCRIPTION, SETTINGS_KEYMAP_INPUT_HINT,
+        personalize_version_info_line, selected_index, settings_focus_order,
+        settings_footer_legend, settings_hidden_next, settings_row_is_visible,
+        settings_row_shortcut, settings_theme_next, settings_view_next, tabs_matching_query,
+        SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
+        APPEARANCE_THEME_DESCRIPTION, APPEARANCE_VIEW_DESCRIPTION, FILES_HIDDEN_DESCRIPTION,
+        FILES_SORT_DESCRIPTION, PERSONALIZE_INFO_KEYWORDS, SETTINGS_KEYMAP_INPUT_HINT,
         SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
     };
 
@@ -1464,8 +1479,9 @@ mod tests {
         for token in [
             "Enter 保存",
             "Esc 閉じる",
-            "Tab 移動",
-            "Ctrl+Tab タブ",
+            "Tab/Shift+Tab 移動",
+            "Ctrl+Tab",
+            "Ctrl+Shift+Tab",
             "Alt+数字 直接移動",
         ] {
             assert!(legend.contains(token), "legend: {legend}");
@@ -1474,8 +1490,10 @@ mod tests {
             !legend.contains("F1"),
             "F1 is blocked in the dialog: {legend}"
         );
+        // Q05: naming both directions lengthens the line, but it must still fit
+        // the 760px card (one compact line next to the save/cancel buttons).
         assert!(
-            legend.chars().count() < 64,
+            legend.chars().count() < 96,
             "legend must stay compact: {legend}"
         );
     }
@@ -1588,6 +1606,20 @@ mod tests {
             tabs_matching_query("Alt+1〜5"),
             vec![SettingsTab::Shortcuts]
         );
+    }
+
+    #[test]
+    fn personalize_version_line_matches_the_version_keyword() {
+        // Q08: PERSONALIZE_INFO_KEYWORDS advertises "バージョン", so the info
+        // page must actually render a version row carrying that word.
+        assert!(PERSONALIZE_INFO_KEYWORDS.contains(&"バージョン"));
+        let line = personalize_version_info_line();
+        assert!(line.contains("バージョン"), "version line: {line}");
+        assert!(
+            line.contains(env!("CARGO_PKG_VERSION")),
+            "version line must embed CARGO_PKG_VERSION: {line}"
+        );
+        assert!(matches_query("バージョン", PERSONALIZE_INFO_KEYWORDS));
     }
 
     #[test]
