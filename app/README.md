@@ -24,7 +24,7 @@ cd gpui-file-explorer   # リポジトリ直下
 bash scripts/dev-setup.sh   # 初回のみ（下記「前提」を参照）
 cd app
 cargo build                 # 初回（依存込み）約 1m30s / 2回目以降 約2s / debug バイナリ 約 165MiB
-cargo test                  # 457 tests（データ層 + 監視）
+cargo test                  # 461 tests（データ層 + 監視）
 ```
 
 リポジトリ直下から全体をビルドする場合:
@@ -114,6 +114,7 @@ cd app
 | `Ctrl+,` | 設定を開く（5 タブ。Alt+K / Alt+T の個別ダイアログを包含・補完） |
 | 設定ダイアログのキー | `Enter` で保存 / `Esc` でキャンセル。未保存変更があると破棄時に通知。上部の検索欄で設定項目を絞り込み（キー名 `Alt+K` 等でも検索可）。テーマ表示名は「ダーク / ライト / システム」 |
 | 設定ダイアログのタブ | `Ctrl+Tab` / `Ctrl+Shift+Tab` で次のタブ / 前のタブへ移動（端で循環） |
+| 設定の `Tab` / `Shift+Tab` | 検索欄 → 現在タブの入力欄 → キャンセル / 保存へフォーカス移動（循環） |
 | `Ctrl+P` | クイックジャンプ（候補を絞り込み、Enter で移動・Esc でキャンセル） |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 次のタブ / 前のタブ（循環） |
 | `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | アクティブタブを左 / 右へ移動 |
@@ -139,6 +140,11 @@ cd app
 | 右クリック | コンテキストメニュー（開く / ファイルマネージャで表示 / パスをコピー / ゴミ箱へ移動 / 新規フォルダ） |
 | ヘッダクリック | 名前 / サイズ / 更新日時でソート（同一列で昇順⇔降順） |
 | サイドバー / パンくずクリック | その場所へ移動 |
+
+**設定ダイアログの Tab 巡回**: `Tab` / `Shift+Tab` は検索欄 → 表示中の
+タブのテキスト入力（ショートカット / ターミナル）→ キャンセル / 保存ボタン
+の順に循環します。gpui-component 0.9.1 には汎用の `TabIndex` が無いため、
+ラジオボタン・スイッチ・タブバーはこの巡回には含まれません。
 
 ### キーマップの上書き（設定 UI / settings.json）
 
@@ -397,7 +403,7 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 
 ```bash
 cargo test
-# running 457 tests ... test result: ok. 457 passed; 0 failed
+# running 461 tests ... test result: ok. 461 passed; 0 failed
 ```
 
 カバレッジ: ディレクトリ読み込み（ディレクトリ先頭・メタデータ・エラー）、
@@ -410,7 +416,7 @@ fingerprint の変化検出、パンくず生成、一意な新規フォルダ�
 
 ## 実行検証記録（2026-11-11, このマシン。テスト数は 2026-11-21 更新）
 
-- `cargo build`: 警告 0 / `cargo test`: 457 passed
+- `cargo build`: 警告 0 / `cargo test`: 461 passed
   （初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - 起動: stderr 0 行（EGL/Vulkan/Wayland エラーなし）
 - KWin D-Bus（Wayland ネイティブであることの確認）:

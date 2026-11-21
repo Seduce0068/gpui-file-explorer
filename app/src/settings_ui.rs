@@ -192,6 +192,10 @@ pub struct SettingsUiState {
     pub keymap_input: Entity<InputState>,
     /// Settings search box in the card header; filters rows by caption.
     pub search_input: Entity<InputState>,
+    /// Caller-owned focus handle for the footer Cancel button (I05).
+    pub cancel_focus: FocusHandle,
+    /// Caller-owned focus handle for the footer Save button (I05).
+    pub save_focus: FocusHandle,
     /// Validation / save error shown on the active tab.
     pub error: Option<String>,
     /// Whether any control has been edited since opening.
@@ -225,6 +229,8 @@ impl SettingsUiState {
             terminal_input,
             keymap_input,
             search_input,
+            cancel_focus: cx.focus_handle(),
+            save_focus: cx.focus_handle(),
             error: None,
             dirty: false,
             subscriptions: Vec::new(),
@@ -276,6 +282,49 @@ impl SettingsUiState {
                 cx.notify();
             });
         self.subscriptions.push(subscription);
+    }
+
+    /// Move keyboard focus one step through the visible controls. `backwards`
+    /// implements Shift+Tab. Returns `true` when a control was focused.
+    ///
+    /// The host calls this from its settings key guard for bare Tab; Ctrl+Tab
+    /// keeps its page-switching role (I05).
+    pub fn cycle_focus(&self, window: &mut Window, cx: &mut App, backwards: bool) -> bool {
+        // Copy the filter first: the read guard borrows `cx` immutably while
+        // `focus()` below needs it mutably.
+        let query = self.search_input.read(cx).value().to_string();
+        let order = settings_focus_order(self.tab, &query);
+        let current = order.iter().copied().find(|target| match target {
+            SettingsFocusTarget::Search => self
+                .search_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            SettingsFocusTarget::Keymap => self
+                .keymap_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            SettingsFocusTarget::Terminal => self
+                .terminal_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            SettingsFocusTarget::Cancel => self.cancel_focus.is_focused(window),
+            SettingsFocusTarget::Save => self.save_focus.is_focused(window),
+        });
+        let Some(target) = next_settings_focus(&order, current, backwards) else {
+            return false;
+        };
+        let focus = match target {
+            SettingsFocusTarget::Search => self.search_input.read(cx).focus_handle(cx),
+            SettingsFocusTarget::Keymap => self.keymap_input.read(cx).focus_handle(cx),
+            SettingsFocusTarget::Terminal => self.terminal_input.read(cx).focus_handle(cx),
+            SettingsFocusTarget::Cancel => self.cancel_focus.clone(),
+            SettingsFocusTarget::Save => self.save_focus.clone(),
+        };
+        focus.focus(window, cx);
+        true
     }
 }
 
@@ -408,6 +457,75 @@ pub fn tabs_matching_query(query: &str) -> Vec<SettingsTab> {
                 .any(|keywords| matches_query(query, keywords))
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Focus order (I05)
+// ---------------------------------------------------------------------------
+
+/// Keyboard-focusable controls of the settings card, in visual order.
+///
+/// gpui-component 0.9.1 has per-widget focus handles (including
+/// `Button::track_focus`) but no generic `TabIndex` traversal across the
+/// mixed controls used here, so the card owns an explicit order instead of
+/// relying on the window's global tab stops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsFocusTarget {
+    /// Header search box (always rendered).
+    Search,
+    /// Shortcuts-tab keymap editor (visible only when its row matches).
+    Keymap,
+    /// Terminal-tab command editor (visible only when its row matches).
+    Terminal,
+    /// Footer discard button (always rendered).
+    Cancel,
+    /// Footer save button (always rendered).
+    Save,
+}
+
+/// Focusable controls currently rendered, in tab order.
+///
+/// Pure so the cycle can be tested without a GPUI window. The active tab's
+/// text editor is included only when its row survives the header search
+/// filter; an empty query matches every row, mirroring [`matches_query`].
+pub fn settings_focus_order(tab: SettingsTab, query: &str) -> Vec<SettingsFocusTarget> {
+    let mut order = vec![SettingsFocusTarget::Search];
+    let query = query.trim();
+    match tab {
+        SettingsTab::Shortcuts if matches_query(query, SHORTCUTS_KEYMAP_KEYWORDS) => {
+            order.push(SettingsFocusTarget::Keymap);
+        }
+        SettingsTab::Terminal if matches_query(query, TERMINAL_COMMAND_KEYWORDS) => {
+            order.push(SettingsFocusTarget::Terminal);
+        }
+        _ => {}
+    }
+    order.push(SettingsFocusTarget::Cancel);
+    order.push(SettingsFocusTarget::Save);
+    order
+}
+
+/// Next target after `current` in `order`, wrapping at both ends.
+///
+/// An unknown (or `None`) current target starts at the first entry, or the
+/// last one when going backwards, so Tab always moves focus somewhere useful.
+pub fn next_settings_focus(
+    order: &[SettingsFocusTarget],
+    current: Option<SettingsFocusTarget>,
+    backwards: bool,
+) -> Option<SettingsFocusTarget> {
+    if order.is_empty() {
+        return None;
+    }
+    let len = order.len();
+    let index = current.and_then(|target| order.iter().position(|item| *item == target));
+    let next = match index {
+        Some(index) if backwards => (index + len - 1) % len,
+        Some(index) => (index + 1) % len,
+        None if backwards => len - 1,
+        None => 0,
+    };
+    order.get(next).copied()
 }
 
 // ---------------------------------------------------------------------------
@@ -824,12 +942,14 @@ pub fn render_settings_content<V: SettingsUiHost>(
         .child(
             Button::new("settings-cancel")
                 .label(cancel_label(state.dirty))
+                .track_focus(&state.cancel_focus)
                 .on_click(cancel_click),
         )
         .child(
             Button::new("settings-save")
                 .label("保存")
                 .primary()
+                .track_focus(&state.save_focus)
                 .on_click(save_click),
         );
 
@@ -879,8 +999,9 @@ mod tests {
     // Explicit imports only: the module-level `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
-        cancel_label, matches_query, selected_index, tabs_matching_query, SettingsTab,
-        SettingsUiAction, SettingsUiPalette, SETTINGS_KEYMAP_INPUT_HINT,
+        cancel_label, matches_query, next_settings_focus, selected_index, settings_focus_order,
+        tabs_matching_query, SettingsFocusTarget, SettingsTab, SettingsUiAction, SettingsUiPalette,
+        SETTINGS_KEYMAP_INPUT_HINT,
     };
 
     #[test]
@@ -1037,5 +1158,73 @@ mod tests {
         // Mirrors `matches_query`: an empty query makes every row visible.
         assert_eq!(tabs_matching_query(""), SettingsTab::ALL.to_vec());
         assert_eq!(tabs_matching_query("   "), SettingsTab::ALL.to_vec());
+    }
+
+    #[test]
+    fn focus_order_tracks_the_active_tab_and_search_filter() {
+        use SettingsFocusTarget::{Cancel, Keymap, Save, Search, Terminal};
+
+        // Tabs without a text editor expose only the header and footer.
+        assert_eq!(
+            settings_focus_order(SettingsTab::Appearance, ""),
+            vec![Search, Cancel, Save]
+        );
+        assert_eq!(
+            settings_focus_order(SettingsTab::Files, ""),
+            vec![Search, Cancel, Save]
+        );
+        // The Shortcuts/Terminal editor joins the cycle only when its row is
+        // actually rendered (empty or matching query).
+        assert_eq!(
+            settings_focus_order(SettingsTab::Shortcuts, ""),
+            vec![Search, Keymap, Cancel, Save]
+        );
+        assert_eq!(
+            settings_focus_order(SettingsTab::Terminal, "  "),
+            vec![Search, Terminal, Cancel, Save]
+        );
+        assert_eq!(
+            settings_focus_order(SettingsTab::Shortcuts, "Alt+K"),
+            vec![Search, Keymap, Cancel, Save]
+        );
+        assert_eq!(
+            settings_focus_order(SettingsTab::Terminal, "ターミナル"),
+            vec![Search, Terminal, Cancel, Save]
+        );
+        // A filter that hides the editor must remove it from the cycle.
+        assert_eq!(
+            settings_focus_order(SettingsTab::Shortcuts, "存在しない設定"),
+            vec![Search, Cancel, Save]
+        );
+        assert_eq!(
+            settings_focus_order(SettingsTab::Terminal, "zzz"),
+            vec![Search, Cancel, Save]
+        );
+    }
+
+    #[test]
+    fn next_focus_wraps_in_both_directions() {
+        use SettingsFocusTarget::{Cancel, Keymap, Save, Search};
+
+        let order = [Search, Keymap, Cancel, Save];
+        assert_eq!(next_settings_focus(&order, None, false), Some(Search));
+        assert_eq!(next_settings_focus(&order, None, true), Some(Save));
+        assert_eq!(
+            next_settings_focus(&order, Some(Search), false),
+            Some(Keymap)
+        );
+        assert_eq!(
+            next_settings_focus(&order, Some(Keymap), true),
+            Some(Search)
+        );
+        assert_eq!(next_settings_focus(&order, Some(Save), false), Some(Search));
+        assert_eq!(next_settings_focus(&order, Some(Search), true), Some(Save));
+        // A handle outside the current order (e.g. a focused radio button)
+        // restarts the cycle instead of stalling.
+        assert_eq!(
+            next_settings_focus(&order, Some(SettingsFocusTarget::Terminal), false),
+            Some(Search)
+        );
+        assert_eq!(next_settings_focus(&[], Some(Search), false), None);
     }
 }

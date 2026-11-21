@@ -355,6 +355,13 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     // neither message carries `STATUS_ERROR_PREFIX` (H02/H07).
     STATUS_ACCESS_DENIED,
     STATUS_PATH_GONE,
+    // Missing drop/move targets and non-directory paths are concrete failures
+    // too, not warnings: the requested operation could not be carried out
+    // (I01). Keep them out of `STATUS_WARNING_MARKERS`.
+    STATUS_TARGET_GONE,
+    STATUS_TARGET_MISSING,
+    STATUS_DROP_NOT_FOUND,
+    STATUS_NOT_DIRECTORY,
 ];
 
 /// Status shown when a bookmark toggle targets a path serde cannot persist
@@ -552,7 +559,20 @@ fn settings_save_status(saved: bool, success: String) -> String {
 /// instead of the caller's success message — the same behaviour the settings
 /// overlay already had. Rollback is still decided by the raw `saved` flag: a
 /// skipped write keeps the in-memory preview for the current session.
-fn settings_write_status(settings: &Settings, saved: bool, success: String) -> String {
+///
+/// `attempted` tells whether `save()` was actually called. No-op callers (an
+/// unchanged label, a rejected saved-search add, …) never reach `save()`, so
+/// there is nothing to skip: their own rejection message must survive instead
+/// of being masked by `STATUS_SETTINGS_READ_ONLY` (I02).
+fn settings_write_status(
+    settings: &Settings,
+    saved: bool,
+    attempted: bool,
+    success: String,
+) -> String {
+    if !attempted {
+        return success;
+    }
     if settings.write_was_skipped() {
         STATUS_SETTINGS_READ_ONLY.to_string()
     } else {
@@ -569,7 +589,7 @@ fn set_view_status(settings: &Settings, saved: bool, mode: ViewLayout) -> String
         ViewLayout::Details => "詳細リストに切り替えました".to_string(),
         ViewLayout::Icons => "アイコングリッドに切り替えました".to_string(),
     };
-    settings_write_status(settings, saved, success)
+    settings_write_status(settings, saved, true, success)
 }
 
 /// Pure rollback decision shared by the seven write paths that preview settings
@@ -2909,6 +2929,7 @@ impl Explorer {
         self.status = settings_write_status(
             &self.settings,
             saved,
+            true,
             if added {
                 format!("ブックマークに追加しました: {}", display_path(&path))
             } else {
@@ -2937,6 +2958,7 @@ impl Explorer {
         self.status = settings_write_status(
             &self.settings,
             saved,
+            true,
             if added {
                 format!("ブックマークに追加しました: {}", display_path(path))
             } else {
@@ -3004,7 +3026,11 @@ impl Explorer {
         } else {
             self.settings.set_bookmark_label(&path, &label)
         };
-        let saved = if changed || auto_bookmarked {
+        // No label change means no `save()` call: keep the specific "not set" /
+        // "could not set" caption instead of letting a read-only session mask it
+        // with the generic read-only notice (I02).
+        let attempted = changed || auto_bookmarked;
+        let saved = if attempted {
             self.save_settings()
         } else {
             true
@@ -3016,6 +3042,7 @@ impl Explorer {
         self.status = settings_write_status(
             &self.settings,
             saved,
+            attempted,
             if label.is_empty() {
                 if changed {
                     format!("ラベルを削除しました: {}", display_path(&path))
@@ -3034,10 +3061,13 @@ impl Explorer {
     /// Remove a label directly from the row context menu (F6-49).
     fn clear_bookmark_label(&mut self, path: &Path, cx: &mut Context<Self>) {
         let removed = self.settings.remove_bookmark_label(path);
+        // An unchanged label never reaches `save()`; report the caller's own
+        // "not set" caption verbatim (I02).
         let saved = if removed { self.save_settings() } else { true };
         self.status = settings_write_status(
             &self.settings,
             saved,
+            removed,
             if removed {
                 format!("ラベルを削除しました: {}", display_path(path))
             } else {
@@ -3430,6 +3460,7 @@ impl Explorer {
         self.status = settings_write_status(
             &self.settings,
             saved,
+            true,
             format!("新しいタブで開きました: {}", display_path(&path)),
         );
         cx.notify();
@@ -3472,6 +3503,7 @@ impl Explorer {
             self.status = settings_write_status(
                 &self.settings,
                 saved,
+                true,
                 format!("{STATUS_TAB_RESTORED}: {}", display_path(&cwd)),
             );
         } else {
@@ -3510,8 +3542,12 @@ impl Explorer {
         if self.tabs.move_active_left() {
             self.persist_tabs();
             let saved = self.save_settings();
-            self.status =
-                settings_write_status(&self.settings, saved, STATUS_TAB_MOVED_LEFT.to_string());
+            self.status = settings_write_status(
+                &self.settings,
+                saved,
+                true,
+                STATUS_TAB_MOVED_LEFT.to_string(),
+            );
             cx.notify();
         }
     }
@@ -3521,8 +3557,12 @@ impl Explorer {
         if self.tabs.move_active_right() {
             self.persist_tabs();
             let saved = self.save_settings();
-            self.status =
-                settings_write_status(&self.settings, saved, STATUS_TAB_MOVED_RIGHT.to_string());
+            self.status = settings_write_status(
+                &self.settings,
+                saved,
+                true,
+                STATUS_TAB_MOVED_RIGHT.to_string(),
+            );
             cx.notify();
         }
     }
@@ -3997,6 +4037,7 @@ impl Explorer {
         self.status = settings_write_status(
             &self.settings,
             saved,
+            true,
             if command.is_empty() {
                 "ターミナル起動コマンドを無効にしました".to_string()
             } else {
@@ -4192,7 +4233,7 @@ impl Explorer {
         }
         self.keymap_editor = None;
         self.focus_list_on_next_render = true;
-        self.status = settings_write_status(&self.settings, saved, status);
+        self.status = settings_write_status(&self.settings, saved, true, status);
         cx.notify();
     }
 
@@ -4338,6 +4379,15 @@ impl Explorer {
             if key == "tab" && modifiers.control {
                 let delta = if modifiers.shift { -1 } else { 1 };
                 self.cycle_settings_tab(delta, cx);
+                return;
+            }
+            // I05: bare Tab / Shift+Tab cycles focus through the visible
+            // controls (search box, the active tab's text editor when present,
+            // then the Cancel/Save buttons). Ctrl+Tab above still switches pages.
+            if key == "tab" {
+                if let Some(state) = self.settings_ui.as_ref() {
+                    state.cycle_focus(window, cx, modifiers.shift);
+                }
                 return;
             }
             match key {
@@ -4633,6 +4683,7 @@ impl Explorer {
         self.status = settings_write_status(
             &self.settings,
             saved,
+            true,
             if self.settings.show_hidden {
                 "隠しファイルを表示しています".to_string()
             } else {
@@ -4719,6 +4770,7 @@ impl Explorer {
         self.status = settings_write_status(
             &self.settings,
             saved,
+            true,
             format!(
                 "{STATUS_THEME_CHANGED_PREFIX}{}",
                 theme_choice_label(choice)
@@ -6009,6 +6061,7 @@ impl Explorer {
         self.status = settings_write_status(
             &self.settings,
             saved,
+            true,
             format!("新しいタブで開きました: {}", display_path(&parent)),
         );
         cx.notify();
@@ -8074,6 +8127,9 @@ impl Explorer {
             settings_write_status(
                 &self.settings,
                 saved,
+                // A rejected save (e.g. the max-search cap) never called
+                // `save()`: keep the concrete rejection reason (I02).
+                stored,
                 saved_search_save_status(&name, stored),
             )
         };
@@ -8106,6 +8162,7 @@ impl Explorer {
             settings_write_status(
                 &self.settings,
                 saved,
+                true,
                 format!("保存検索を削除しました: {name}"),
             )
         } else {
@@ -10917,10 +10974,11 @@ mod tests {
         C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
         GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CHANGED,
-        STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
-        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_FAILED,
-        STATUS_REDO_NO_TARGET, STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE,
-        STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
+        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_NOT_FOUND, STATUS_ERROR_MARKERS,
+        STATUS_ERROR_PREFIX, STATUS_NOT_DIRECTORY, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
+        STATUS_PRIORITY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESTORE_FAILED,
+        STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
+        STATUS_SETTINGS_SAVE_FAILED, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
         STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY, STATUS_WARNING_MARKERS,
         THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
@@ -10944,6 +11002,12 @@ mod tests {
             (STATUS_REDO_FAILED, C_RED),
             (STATUS_ACCESS_DENIED, C_RED),
             (STATUS_PATH_GONE, C_RED),
+            // I01: a vanished drop/move target and a non-directory path are
+            // failures, so they must not fall through to success green.
+            (STATUS_TARGET_GONE, C_RED),
+            (STATUS_TARGET_MISSING, C_RED),
+            (STATUS_DROP_NOT_FOUND, C_RED),
+            (STATUS_NOT_DIRECTORY, C_RED),
             ("コピーできません: 権限がありません", C_RED),
             ("3 件コピーしました（一部失敗: 権限がありません）", C_RED),
             (STATUS_SEARCH_STALE, C_YELLOW),
@@ -10975,6 +11039,19 @@ mod tests {
             status_color(&format!("{STATUS_PATH_GONE}: /tmp/props")),
             C_RED
         );
+        // The same sentinels appear with a path appended at their call sites.
+        for marker in [
+            STATUS_TARGET_GONE,
+            STATUS_TARGET_MISSING,
+            STATUS_DROP_NOT_FOUND,
+            STATUS_NOT_DIRECTORY,
+        ] {
+            assert_eq!(
+                status_color(&format!("{marker}: /tmp/target")),
+                C_RED,
+                "composed status for {marker:?} must be red"
+            );
+        }
     }
 
     #[test]
@@ -11007,14 +11084,18 @@ mod tests {
         // name the loss when the edited form is thrown away. The footer Cancel
         // button keeps its own `保存せず閉じる` label and does not use this.
         assert_eq!(settings_discard_status(false), None);
-        assert_eq!(
-            settings_discard_status(true),
-            Some("未保存の変更を破棄しました")
+        let discarded = settings_discard_status(true).expect("dirty form must report the discard");
+        assert!(
+            discarded.starts_with("未保存の変更を破棄しました"),
+            "{discarded}"
         );
-        assert_eq!(
-            settings_discard_status(true),
-            Some(STATUS_SETTINGS_DISCARDED)
+        // I06: the notice also tells the user how to reopen the settings, and
+        // the status bar mirrors the canonical constant verbatim.
+        assert!(
+            discarded.contains("Ctrl+, で設定を開き直せます"),
+            "{discarded}"
         );
+        assert_eq!(discarded, STATUS_SETTINGS_DISCARDED);
         assert_eq!(status_color(STATUS_SETTINGS_DISCARDED), C_GREEN);
     }
 
@@ -11048,6 +11129,10 @@ mod tests {
             (STATUS_SETTINGS_SAVE_FAILED, dark.red, light.red),
             (STATUS_ACCESS_DENIED, dark.red, light.red),
             (STATUS_PATH_GONE, dark.red, light.red),
+            (STATUS_TARGET_GONE, dark.red, light.red),
+            (STATUS_TARGET_MISSING, dark.red, light.red),
+            (STATUS_DROP_NOT_FOUND, dark.red, light.red),
+            (STATUS_NOT_DIRECTORY, dark.red, light.red),
             ("3 件をコピーしました", dark.green, light.green),
             ("", dark.green, light.green),
         ];
@@ -12594,11 +12679,11 @@ mod tests {
         let writable = Settings::default();
         assert!(!writable.write_was_skipped());
         assert_eq!(
-            settings_write_status(&writable, true, success.clone()),
+            settings_write_status(&writable, true, true, success.clone()),
             success
         );
         assert_eq!(
-            settings_write_status(&writable, false, success.clone()),
+            settings_write_status(&writable, false, true, success.clone()),
             STATUS_SETTINGS_SAVE_FAILED
         );
 
@@ -12619,18 +12704,71 @@ mod tests {
         ] {
             assert!(skipped.write_was_skipped());
             assert_eq!(
-                settings_write_status(&skipped, true, success.clone()),
+                settings_write_status(&skipped, true, true, success.clone()),
                 STATUS_SETTINGS_READ_ONLY
             );
             // A skipped write must win over a failed one: reporting
             // `STATUS_SETTINGS_SAVE_FAILED` here would wrongly tell a read-only
             // user a file write was attempted and failed (G12).
             assert_eq!(
-                settings_write_status(&skipped, false, success.clone()),
+                settings_write_status(&skipped, false, true, success.clone()),
                 STATUS_SETTINGS_READ_ONLY,
                 "skipped writes take precedence over saved=false"
             );
         }
+    }
+
+    // I02: callers that never invoked `save()` have nothing to skip. Their own
+    // rejection caption must survive even in a read-only / ephemeral session,
+    // otherwise the concrete reason ("ラベルは設定されていません", the max-search
+    // cap, …) is lost behind the generic read-only notice.
+    #[test]
+    fn settings_write_status_noop_keeps_caller_rejection_message() {
+        let rejection = "ラベルを設定できませんでした: /tmp/target".to_string();
+        let skipped = Settings {
+            read_only: true,
+            ..Settings::default()
+        };
+        let ephemeral = Settings {
+            ephemeral: true,
+            ..Settings::default()
+        };
+        for settings in [Settings::default(), skipped, ephemeral] {
+            // `saved` is `true` on the no-op branches, and `attempted` is false.
+            assert_eq!(
+                settings_write_status(&settings, true, false, rejection.clone()),
+                rejection,
+                "a no-op must report its own rejection verbatim"
+            );
+            // The generic read-only notice must not leak into the no-op path.
+            assert_ne!(
+                settings_write_status(&settings, true, false, rejection.clone()),
+                STATUS_SETTINGS_READ_ONLY
+            );
+            // The same caption is still masked when a write really was skipped.
+            if settings.write_was_skipped() {
+                assert_eq!(
+                    settings_write_status(&settings, true, true, rejection.clone()),
+                    STATUS_SETTINGS_READ_ONLY
+                );
+            }
+        }
+
+        // The concrete saved-search cap reason must also survive a no-op.
+        let cap_reason = saved_search_save_status("仕事", false);
+        assert!(cap_reason.contains("上限に達しました"), "{cap_reason}");
+        assert_eq!(
+            settings_write_status(
+                &Settings {
+                    read_only: true,
+                    ..Settings::default()
+                },
+                true,
+                false,
+                cap_reason.clone()
+            ),
+            cap_reason
+        );
     }
 
     // G08: Ctrl+Tab / Ctrl+Shift+Tab step the settings TabBar with wrap-around.

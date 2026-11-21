@@ -263,7 +263,11 @@ main()
 | `Ctrl+Q` | 終了 | `Action Quit`（KDE 慣習。`cx.quit()`） |
 
 - **フォーカス規約**: ルート要素が `track_focus`。一覧のクリック/空クリックでフォーカスを奪い、ショートカットを常に有効化（RESEARCH §3.3 の「フォーカス喪失でショートカット死」対策）。ダイアログ表示中はダイアログがフォーカスを持ち、閉じたらリストへ戻す。
-- **IME**: P0 はテキスト入力 UI を持たない（新規フォルダ名は `新規フォルダ`・`新規フォルダ (2)` の自動採番）。P1 のリネーム/パス入力で gpui-component `Input` を使う（自前 IME 実装は禁止、RESEARCH §4.5）。
+- **IME**: P0 はテキスト入力 UI を持たない。新規フォルダ名は as-built の
+  `新しいフォルダ`・`新しいフォルダ (2)` の自動採番
+  （`app/src/model.rs:805` の `create_unique_folder` がこの日本語リテラルを
+  使用）。P1 のリネーム/パス入力で gpui-component `Input` を使う
+  （自前 IME 実装は禁止、RESEARCH §4.5）。
 
 ### 3.5 状態表示（loading / error / empty）
 
@@ -799,7 +803,11 @@ pub fn confirm_and_trash(
 
 1. 成功した削除対象を `Listing::remove_path` で即時除去 → `rebuild` → `Selection::reconcile` → `scroll` 位置を clamp → `notify`。
 2. 失敗時は一覧を変更しない（楽観更新をしない）。通知で理由を表示し、監視イベント/F5 で再同期。
-3. 新規フォルダ: `create_dir` を background 実行 → 成功したら再読込（または upsert）→ 新フォルダを選択状態に。名前は `新規フォルダ`、衝突時 `新規フォルダ (2)`…（`exists` チェックは `create_dir` の `AlreadyExists` で検出）。
+3. 新規フォルダ: `create_dir` を background 実行 → 成功したら再読込
+   （または upsert）→ 新フォルダを選択状態に。名前は as-built の
+   `新しいフォルダ`、衝突時 `新しいフォルダ (2)`…（`exists` チェックは
+   `create_dir` の `AlreadyExists` で検出）。`app/src/model.rs:805` の
+   `create_unique_folder` がこの日本語リテラルを使用。
 4. 監視の自己操作抑制（§4.6）とセットで、ちらつきを防ぐ。
 
 ### 6.7 完全削除（将来の扱い）

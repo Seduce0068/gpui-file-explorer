@@ -664,20 +664,20 @@ status: current
 
 ### 優先度: 高（ループ R5・confirmed）
 
-- [ ] **I01** 対象なし系の失敗通知が成功色（緑）で表示される
+- [x] **I01** 対象なし系の失敗通知が成功色（緑）で表示される — 対応: loop7-core
   — main.rs:342-358 / strings.rs の TARGET_GONE 等
-- [ ] **I02** settings_write_status が no-op 分岐で拒否理由をマスク
+- [x] **I02** settings_write_status が no-op 分岐で拒否理由をマスク — 対応: loop7-core
   — main.rs:555 / commit_label_editor, save_current_search
 
 ### 優先度: 中（ループ R5）
 
-- [ ] **I03** review-report の debug hook「release 残存」記述が矛盾
+- [x] **I03** review-report の debug hook「release 残存」記述が矛盾 — 対応: loop7-docs
   — review-report.md:300-303
-- [ ] **I04** DESIGN の新規フォルダ名リテラルが実装と乖離
+- [x] **I04** DESIGN の新規フォルダ名リテラルが実装と乖離 — 対応: loop7-docs
   — DESIGN.md:266,802 / model.rs:805
-- [ ] **I05** 設定ダイアログ内 Tab ナビゲーション不在
+- [x] **I05** 設定ダイアログ内 Tab ナビゲーション不在 — 対応: loop7-docs
   — settings_ui.rs:771
-- [ ] **I06** 未保存破棄通知に復帰導線なし（strings 通知規約違反）
+- [x] **I06** 未保存破棄通知に復帰導線なし（strings 通知規約違反） — 対応: loop7-core
   — strings.rs:316
 
 ### 優先度: 低（調査タスク）
