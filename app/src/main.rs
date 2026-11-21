@@ -605,6 +605,12 @@ fn keymap_unbind_caption(removed: bool, action: &str) -> String {
     }
 }
 
+/// Keymap override limit notice (V04). Both the Alt+K dialog and the settings
+/// card hit this cap, so the dynamic count is composed in one place only.
+fn keymap_limit_status() -> String {
+    format!("{STATUS_KEYMAP_LIMIT_PREFIX}{MAX_KEYMAP_OVERRIDES}{STATUS_KEYMAP_LIMIT_SUFFIX}")
+}
+
 /// Choose the status to show after a settings write (Bug L01). The caller's
 /// success message is used only when the write succeeded; otherwise the
 /// dedicated save-failure status wins, even when the UI action itself worked.
@@ -623,6 +629,15 @@ fn settings_save_error_status(error: Option<SettingsSaveError>) -> Option<String
         Some(SettingsSaveError::Locked) => Some(STATUS_SETTINGS_SAVE_LOCKED.to_string()),
         Some(SettingsSaveError::Io) | None => None,
     }
+}
+
+/// Start-up writes call `save_settings()` before any status bar is live, so the
+/// failure must be turned into a notice here (V01). Use the concrete reason
+/// recorded in `settings.last_save_error` when there is one; only fall back to
+/// the generic notice for plain I/O failures / unknown causes.
+fn startup_save_failure_status(settings: &Settings) -> String {
+    settings_save_error_status(settings.last_save_error.get())
+        .unwrap_or_else(|| STATUS_SETTINGS_SAVE_FAILED.to_string())
 }
 
 /// Status shown after a settings write, accounting for skipped writes (F04).
@@ -1862,13 +1877,15 @@ fn empty_state_message(
         });
     }
     if entries == 0 {
-        return Some(if view == ViewSource::Search {
-            (
+        return Some(match view {
+            ViewSource::Search => (
                 EMPTY_FILTERED.0.to_string(),
                 Some(EMPTY_FILTERED.1.to_string()),
-            )
-        } else {
-            (crate::strings::empty_hidden_only(all_entries), None)
+            ),
+            // V13: `toggle_hidden` rejects Ctrl+H in Trash, so the generic
+            // hint would suggest a chord that cannot work here.
+            ViewSource::Trash => (crate::strings::empty_hidden_only_trash(all_entries), None),
+            ViewSource::Directory => (crate::strings::empty_hidden_only(all_entries), None),
         });
     }
     None
@@ -1885,16 +1902,18 @@ use crate::strings::{
     STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
     STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
     STATUS_ERROR_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
-    STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
-    STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
-    STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
-    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
-    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
-    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
-    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
-    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT,
-    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
-    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
+    STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX,
+    STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX,
+    STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
+    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
+    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
+    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
+    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PLACE_GONE_HINT,
+    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
+    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_EXISTS_PREFIX,
+    STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT, STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY,
+    STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SAME_DIRECTORY_NO_MOVE,
+    STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
     STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
@@ -1902,14 +1921,15 @@ use crate::strings::{
     STATUS_SKIPPED_PREFIX, STATUS_SKIPPED_SUFFIX, STATUS_SPECIAL_FILE_NO_COPY,
     STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
     STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
-    STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
-    STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
-    STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
-    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
-    STATUS_UNDO_HISTORY_HINT, STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED,
-    STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK,
-    THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+    STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT,
+    STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED,
+    STATUS_TRASH_LOADING, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
+    STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
+    STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
+    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
+    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
+    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
+    THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -2902,7 +2922,9 @@ impl Explorer {
         // three times (the last assignment used to swallow the earlier ones).
         let mut startup_notices: Vec<String> = Vec::new();
         if !this.save_settings() {
-            startup_notices.push(STATUS_SETTINGS_SAVE_FAILED.to_string());
+            // V01: `save_settings` records why the write failed; show that
+            // reason instead of a generic "check the file" notice.
+            startup_notices.push(startup_save_failure_status(&this.settings));
         }
         if let Some(reason) = this.settings.load_error.as_deref() {
             startup_notices.push(format!("{STATUS_SETTINGS_READ_ONLY}: {reason}"));
@@ -4341,7 +4363,7 @@ impl Explorer {
         // the old value, so rollback restores the persisted command (D13).
         let snapshot = self.settings.clone();
         if !self.settings.set_terminal_command(&command) {
-            self.set_terminal_command_error("コマンドが長すぎるか、制御文字を含んでいます", cx);
+            self.set_terminal_command_error(STATUS_TERMINAL_COMMAND_INVALID, cx);
             return;
         }
         let saved = self.save_settings();
@@ -4510,10 +4532,7 @@ impl Explorer {
             editor.input.read(cx).value().to_string()
         };
         let Some(command) = parse_keymap_input(&raw) else {
-            self.set_keymap_error(
-                "形式は「アクション名 コード」または「unbind アクション名」です（例: open_preview ctrl+shift+p）",
-                cx,
-            );
+            self.set_keymap_error(STATUS_KEYMAP_FORMAT_INVALID, cx);
             return;
         };
         // Snapshot before previewing the keymap change: a failed write leaves
@@ -4526,10 +4545,7 @@ impl Explorer {
         let (status, attempted) = match command {
             KeymapInput::Bind { action, chord } => {
                 if !upsert_keymap_override(&mut self.settings.keymap, &action, &chord) {
-                    self.set_keymap_error(
-                        &format!("上書きは最大 {MAX_KEYMAP_OVERRIDES} 件までです"),
-                        cx,
-                    );
+                    self.set_keymap_error(&keymap_limit_status(), cx);
                     return;
                 }
                 (keymap_bind_caption(&action, &chord), true)
@@ -5031,7 +5047,12 @@ impl Explorer {
                 // No status bar survives `quit`, so surface the failure in the
                 // log instead of silently dropping it (Bug L01).
                 if !self.save_settings() {
-                    tracing::error!("failed to save settings before quitting");
+                    // V10: log the reason recorded by `save_with_reason` so a
+                    // locked / oversized settings file is diagnosable.
+                    tracing::error!(
+                        reason = ?self.settings.last_save_error.get(),
+                        "failed to save settings before quitting"
+                    );
                 }
                 cx.quit();
             }
@@ -8195,7 +8216,11 @@ impl Explorer {
                 if !this.settings.write_was_skipped() {
                     let saved = this.save_settings();
                     if !saved {
-                        tracing::error!("failed to save search history");
+                        // V10: keep the recorded reason in the log as well.
+                        tracing::error!(
+                            reason = ?this.settings.last_save_error.get(),
+                            "failed to save search history"
+                        );
                     }
                 }
             });
@@ -10862,8 +10887,7 @@ impl SettingsUiHost for Explorer {
                     match parse_keymap_input(&normalized) {
                         Some(KeymapInput::Bind { action, chord }) => {
                             if !upsert_keymap_override(&mut overrides, &action, &chord) {
-                                error =
-                                    Some(format!("上書きは最大 {MAX_KEYMAP_OVERRIDES} 件までです"));
+                                error = Some(keymap_limit_status());
                                 break;
                             }
                         }
@@ -10873,7 +10897,7 @@ impl SettingsUiHost for Explorer {
                             remove_keymap_override(&mut overrides, &action);
                         }
                         None => {
-                            error = Some(format!("無効なキーマップ指定: {entry}"));
+                            error = Some(format!("{STATUS_KEYMAP_INVALID_PREFIX}{entry}"));
                             break;
                         }
                     }
@@ -10895,7 +10919,7 @@ impl SettingsUiHost for Explorer {
 
                 let command = normalize_terminal_command(&terminal_raw).unwrap_or_default();
                 if !self.settings.set_terminal_command(&command) {
-                    let message = "コマンドが長すぎるか、制御文字を含んでいます".to_string();
+                    let message = STATUS_TERMINAL_COMMAND_INVALID.to_string();
                     if let Some(state) = self.settings_ui.as_mut() {
                         state.error = Some(message.clone());
                     }
@@ -11317,7 +11341,11 @@ fn main() {
                     if !this.save_settings() {
                         // No status bar survives the close; mirror the Ctrl+Q
                         // path and surface the failure in the log (Bug L01).
-                        tracing::error!("failed to save settings before closing window");
+                        // V10: include why the write failed.
+                        tracing::error!(
+                            reason = ?this.settings.last_save_error.get(),
+                            "failed to save settings before closing window"
+                        );
                     }
                 });
                 true
@@ -11348,47 +11376,48 @@ mod tests {
         format_chord, format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
         help_overrides_line, icon_button_text_color, install_op_token, internal_drop_paths,
         join_status_notices, keymap_action_name, keymap_bind_caption, keymap_chord_reserved,
-        keymap_unbind_caption, kind_color, labeled_display_name, load_error_display_text,
-        middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
-        parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
-        remove_keymap_override, saved_search_caption, saved_search_save_status,
-        search_filter_status, set_view_status, settings_discard_status, settings_row_key_is_bare,
-        settings_save_error_status, settings_save_status, settings_sort_next,
-        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
-        settings_write_needs_rollback, settings_write_status, startup_dir_from, status_color,
-        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
-        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
-        theme_choice_label, transfer_log_level, transfer_progress_status, transfer_skip_notice,
-        trash_batch, trash_delete_status, trash_key_action, trash_load_error_status,
-        trash_redo_cancelled_status, trash_undo_status, undo_missing_status,
-        upsert_keymap_override, validate_cli_dir, version_label, visible_secondary_slots,
-        AppPalette, CliAction, DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource,
-        KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction,
-        SecondarySlot, SettingsTab, SortKey, TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM,
-        C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
-        GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
-        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
-        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCEL_HINT,
-        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
-        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FOLDER_NO_PREVIEW,
-        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_NO_UNBIND_PREFIX,
-        STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
-        STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
-        STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX, STATUS_PARTIAL_FAILURE_SUFFIX,
-        STATUS_PATH_GONE, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
-        STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED,
-        STATUS_REDO_NO_TARGET, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED,
-        STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
-        STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
-        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SETTINGS_SAVE_LOCKED,
-        STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW,
-        STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
-        STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
-        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY,
-        STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WARNING_MARKERS,
-        THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        keymap_limit_status, keymap_unbind_caption, kind_color, labeled_display_name,
+        load_error_display_text, middle_click_tab_dir, normalize_terminal_command, op_is_active,
+        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
+        read_properties_snapshot, remove_keymap_override, saved_search_caption,
+        saved_search_save_status, search_filter_status, set_view_status, settings_discard_status,
+        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
+        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        settings_validation_status, settings_write_needs_rollback, settings_write_status,
+        startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
+        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
+        transfer_progress_status, transfer_skip_notice, trash_batch, trash_delete_status,
+        trash_key_action, trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
+        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
+        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
+        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers,
+        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, UndoAction,
+        ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX,
+        GRID_GAP_PX, GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX,
+        STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
+        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+        STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER,
+        STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY,
+        STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
+        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
+        STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
+        STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
+        STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
+        STATUS_OP_FAILED_SUFFIX, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
+        STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
+        STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESTORE_EMPTY,
+        STATUS_RESTORE_FAILED, STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY,
+        STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE,
+        STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
+        STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SPECIAL_FILE_NO_COPY,
+        STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
+        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_INVALID,
+        STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
+        STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED,
+        STATUS_UNDO_MISSING_SUFFIX, STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
+        THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11552,9 +11581,9 @@ mod tests {
         // Use the same helper the Save handler calls, so a future refactor that
         // drops the prefix fails here instead of silently turning errors green.
         let messages = [
-            "無効なキーマップ指定: ctrl+x".to_string(),
-            format!("上書きは最大 {MAX_KEYMAP_OVERRIDES} 件までです"),
-            "コマンドが長すぎるか、制御文字を含んでいます".to_string(),
+            format!("{STATUS_KEYMAP_INVALID_PREFIX}ctrl+x"),
+            keymap_limit_status(),
+            STATUS_TERMINAL_COMMAND_INVALID.to_string(),
         ];
         for message in messages {
             assert_eq!(status_color(&message), C_GREEN, "unprefixed: {message}");
@@ -12252,6 +12281,16 @@ mod tests {
 
         let (title, _) = empty_state_message(ViewSource::Directory, false, None, 5, 0).unwrap();
         assert!(title.contains("隠しファイル 5 件"));
+
+        // V13: Trash rejects Ctrl+H, so it must not suggest the chord
+        // unconditionally; the recovery route is to leave Trash first.
+        let (title, _) = empty_state_message(ViewSource::Trash, false, None, 5, 0).unwrap();
+        assert_eq!(
+            title,
+            "隠しファイル 5 件が非表示です（ゴミ箱を出て Ctrl+H で表示）"
+        );
+        assert!(title.contains("ゴミ箱を出て Ctrl+H"));
+        assert!(!title.contains("（Ctrl+H で表示）"));
 
         let (title, _) = empty_state_message(ViewSource::Directory, true, None, 0, 0).unwrap();
         assert_eq!(title, "読み込み中…");
@@ -13328,6 +13367,41 @@ mod tests {
         }
     }
 
+    // V01: the start-up notice is built before the UI exists, but it must still
+    // use the reason `save_settings()` recorded instead of the generic message.
+    #[test]
+    fn startup_save_failure_status_uses_the_recorded_reason() {
+        let too_large = Settings {
+            last_save_error: std::cell::Cell::new(Some(SettingsSaveError::TooLarge)),
+            ..Settings::default()
+        };
+        assert_eq!(
+            startup_save_failure_status(&too_large),
+            STATUS_SETTINGS_SAVE_TOO_LARGE
+        );
+        let locked = Settings {
+            last_save_error: std::cell::Cell::new(Some(SettingsSaveError::Locked)),
+            ..Settings::default()
+        };
+        assert_eq!(
+            startup_save_failure_status(&locked),
+            STATUS_SETTINGS_SAVE_LOCKED
+        );
+        // Unknown / plain I/O failures keep the previous generic wording.
+        let io = Settings {
+            last_save_error: std::cell::Cell::new(Some(SettingsSaveError::Io)),
+            ..Settings::default()
+        };
+        assert_eq!(
+            startup_save_failure_status(&io),
+            STATUS_SETTINGS_SAVE_FAILED
+        );
+        assert_eq!(
+            startup_save_failure_status(&Settings::default()),
+            STATUS_SETTINGS_SAVE_FAILED
+        );
+    }
+
     // L01: a discarded settings-write result must never be reported as a
     // successful UI action. The pure selector is shared by every fixed path.
     #[test]
@@ -13345,6 +13419,36 @@ mod tests {
     // F04: `save()` reports success without writing for read-only / ephemeral
     // sessions. Every write path must then show the read-only notice instead of
     // its success caption, just as the settings overlay already did.
+    // V06: when a real write failed, `settings_write_status` must prefer the
+    // concrete reason recorded by `save_with_reason` over the caller's success
+    // caption and over the generic failure notice.
+    #[test]
+    fn settings_write_status_prefers_the_recorded_failure_reason() {
+        let success = "ブックマークに追加しました".to_string();
+        let settings = Settings::default();
+        for (reason, expected) in [
+            (
+                crate::settings::SettingsSaveError::TooLarge,
+                STATUS_SETTINGS_SAVE_TOO_LARGE,
+            ),
+            (
+                crate::settings::SettingsSaveError::Locked,
+                STATUS_SETTINGS_SAVE_LOCKED,
+            ),
+        ] {
+            settings.last_save_error.set(Some(reason));
+            let status = settings_write_status(&settings, false, true, success.clone());
+            assert_eq!(status, expected, "reason must beat the success caption");
+            assert_ne!(status, STATUS_SETTINGS_SAVE_FAILED);
+        }
+        // No recorded reason falls back to the generic failure notice.
+        settings.last_save_error.set(None);
+        assert_eq!(
+            settings_write_status(&settings, false, true, success.clone()),
+            STATUS_SETTINGS_SAVE_FAILED
+        );
+    }
+
     #[test]
     fn settings_write_status_reports_skipped_writes() {
         let success = "ブックマークに追加しました".to_string();

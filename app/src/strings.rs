@@ -209,9 +209,11 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
 /// Text entry is used instead of raw key capture so Escape / F1 keep their
 /// dialog-ownership role (see `app/src/main.rs` keymap helpers). The
 /// `open_settings` notice explains why the shipped Ctrl+, cannot be moved: the
-/// F1 help and the discard-recovery hint promise that chord (L01).
+/// F1 help and the discard-recovery hint promise that chord (L01). V02: the
+/// comma key itself is reserved too (`settings::is_reserved_chord` rejects
+/// `escape` / `f1` / `,`), so the hint must name all three.
 pub const KEYMAP_INPUT_HINT: &str =
-    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。escape / f1 は予約キーです。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。";
+    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。escape / f1 は予約キーです（, も Ctrl+, 固定のため予約キー）。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。";
 
 // ---------------------------------------------------------------------------
 // 空状態・読み込み
@@ -248,6 +250,16 @@ pub const EMPTY_HIDDEN_ONLY: &str = "隠しファイル {count} 件を非表示�
 /// passed to it directly; the caller should use this helper instead.
 pub fn empty_hidden_only(count: usize) -> String {
     EMPTY_HIDDEN_ONLY.replace("{count}", &count.to_string())
+}
+/// Hidden-files-only empty state in Trash view (V13): `Ctrl+H` is rejected by
+/// `toggle_hidden` while Trash is open, so the hint must tell the user to leave
+/// Trash first instead of suggesting a chord that cannot work here.
+pub const EMPTY_HIDDEN_ONLY_TRASH: &str =
+    "隠しファイル {count} 件が非表示です（ゴミ箱を出て Ctrl+H で表示）";
+
+/// Render the Trash hidden-files-only empty-state message (V13).
+pub fn empty_hidden_only_trash(count: usize) -> String {
+    EMPTY_HIDDEN_ONLY_TRASH.replace("{count}", &count.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +389,8 @@ pub const STATUS_OP_IN_PROGRESS_SUFFIX: &str = "中…（Esc でキャンセル�
 pub const STATUS_CANCEL_HINT: &str = "（Esc でキャンセル）";
 
 /// 再スキャン失敗。後続の `STATUS_CHANGED` で上書きしない（R6-A-04）。
-pub const STATUS_RESCAN_FAILED: &str = "再スキャンに失敗しました";
+/// V14: 失敗だけで終わらせず、手動での復帰操作（F5）を案内する。
+pub const STATUS_RESCAN_FAILED: &str = "再スキャンに失敗しました（F5 で再読込）";
 /// 監視の状態表示。`last_error()` がある場合は理由を連結する。
 pub const STATUS_WATCH_PREFIX: &str = "監視: ";
 pub const STATUS_WATCH_PARTIAL: &str = "一部無効 — ";
@@ -392,6 +405,18 @@ pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: 
 /// キーマップの `unbind` で解除するオーバーライドがなかったときの通知接頭辞。
 /// 動的な `{action}` を連結するため、接頭辞自体を色判定のマーカーとして登録する。
 pub const STATUS_KEYMAP_NO_UNBIND_PREFIX: &str = "解除する設定はありません: ";
+/// キーマップ入力の形式が不正なときの通知（V04）。
+/// Alt+K ダイアログと設定カードの Shortcuts 欄で同じ文言を共有する。
+pub const STATUS_KEYMAP_FORMAT_INVALID: &str =
+    "形式は「アクション名 コード」または「unbind アクション名」です（例: open_preview ctrl+shift+p）";
+/// キーマップの上書き件数が上限に達したときの拒否通知の接頭辞（V04）。
+/// 動的な件数を連結するため、接頭辞自体をマーカーとして扱う。
+pub const STATUS_KEYMAP_LIMIT_PREFIX: &str = "上書きは最大 ";
+/// 上限件数の後ろに続く接尾（V04）。件数と合わせて完全な通知を組み立てる。
+pub const STATUS_KEYMAP_LIMIT_SUFFIX: &str = " 件までです";
+/// 設定カードのキーマップ欄で指定が不正だったときの通知接頭辞（V04）。
+/// 動的な `entry` が後続するため、接頭辞自体をマーカーとして扱う。
+pub const STATUS_KEYMAP_INVALID_PREFIX: &str = "無効なキーマップ指定: ";
 /// タブ数が上限に達したときの拒否通知の接頭辞（N08）。
 /// 動的な `{n}` を連結するため、M05 と同じく接頭辞自体を warning マーカーに登録する。
 pub const STATUS_MAX_TABS_PREFIX: &str = "タブは最大 ";
@@ -403,13 +428,12 @@ pub const STATUS_SETTINGS_SAVE_FAILED: &str =
     "設定を保存できませんでした（ファイルの状態を確認して再試行してください）";
 /// シリアライズ結果が MAX_SETTINGS_BYTES を超えたときの理由（U03）。
 /// 保存は行われず、変更はメモリ上に残る。
-/// main.rs の理由判別配線は後続ラウンド（save() が bool を返す限り判別不可）。
-#[allow(dead_code)]
+/// `main.rs::settings_save_error_status` が理由別通知として表示する。
 pub const STATUS_SETTINGS_SAVE_TOO_LARGE: &str =
     "設定を保存できませんでした（設定データが大きすぎます。不要な履歴や保存項目を減らしてから再試行してください）";
 /// 保存ロックがタイムアウトしたときの理由（U03）。
 /// 別インスタンスが編集中なので、待ってから再試行する導線を示す。
-#[allow(dead_code)]
+/// `main.rs::settings_save_error_status` が理由別通知として表示する。
 pub const STATUS_SETTINGS_SAVE_LOCKED: &str =
     "設定を保存できませんでした（別の gpui-file-explorer が設定を編集中です。少し待ってから再試行してください）";
 pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
@@ -474,6 +498,9 @@ pub const STATUS_ACCESS_DENIED: &str = "アクセスが拒否されました";
 /// ターミナル起動失敗の接頭辞（R03）。`STATUS_OP_FAILED_SUFFIX` と連結して
 /// 「ターミナルを起動できません」を組み立てる。
 pub const STATUS_TERMINAL_START_PREFIX: &str = "ターミナルを起動";
+/// ターミナル起動コマンドが長すぎる／制御文字を含むときの入力エラー（V03）。
+/// ターミナルコマンドダイアログと設定カードの両方で共有する唯一の定義。
+pub const STATUS_TERMINAL_COMMAND_INVALID: &str = "コマンドが長すぎるか、制御文字を含んでいます";
 /// 保存検索の保存失敗（上限超過）の接頭辞（R04）。動的な `{name}` が後続するため、
 /// 接頭辞自体を error マーカーとして登録する。
 pub const STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX: &str = "検索を保存できませんでした: ";
@@ -602,6 +629,9 @@ mod tests {
         assert!(KEYMAP_INPUT_HINT.contains("open_preview ctrl+shift+p"));
         assert!(KEYMAP_INPUT_HINT.contains("unbind アクション名"));
         assert!(KEYMAP_INPUT_HINT.contains("escape / f1"));
+        // V02: `is_reserved_chord` also rejects the bare comma (Ctrl+, is fixed),
+        // so the dialog hint must list it alongside escape / f1.
+        assert!(KEYMAP_INPUT_HINT.contains(", も Ctrl+, 固定のため予約キー"));
         assert!(KEYMAP_INPUT_HINT
             .contains("open_settings は Ctrl+, 固定で変更できません（unbind も不可）"));
     }
@@ -801,6 +831,16 @@ mod tests {
             hidden_only.contains("Ctrl+H"),
             "hidden-only hint: {hidden_only}"
         );
+        // V13: in Trash the same chord is rejected, so the hint must give the
+        // exit route instead of offering Ctrl+H unconditionally.
+        let trash_only = empty_hidden_only_trash(3);
+        assert_eq!(
+            trash_only,
+            "隠しファイル 3 件が非表示です（ゴミ箱を出て Ctrl+H で表示）"
+        );
+        assert!(trash_only.contains("ゴミ箱を出て Ctrl+H"));
+        assert!(!trash_only.contains("（Ctrl+H で表示）"));
+        assert_ne!(trash_only, hidden_only);
     }
 
     #[test]
@@ -959,6 +999,10 @@ mod tests {
             STATUS_OPENED_DEFAULT_SUFFIX,
             STATUS_REVEALED_PREFIX,
             STATUS_KEYMAP_NO_UNBIND_PREFIX,
+            STATUS_KEYMAP_FORMAT_INVALID,
+            STATUS_KEYMAP_LIMIT_PREFIX,
+            STATUS_KEYMAP_LIMIT_SUFFIX,
+            STATUS_KEYMAP_INVALID_PREFIX,
             STATUS_MAX_TABS_PREFIX,
             STATUS_SETTINGS_SAVE_FAILED,
             STATUS_SETTINGS_SAVE_TOO_LARGE,
@@ -993,6 +1037,7 @@ mod tests {
             // R02〜R05: strings.rs へ集約した拒否・失敗文言。
             STATUS_ACCESS_DENIED,
             STATUS_TERMINAL_START_PREFIX,
+            STATUS_TERMINAL_COMMAND_INVALID,
             STATUS_TERMINAL_DISABLED_HINT,
             STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
             STATUS_SAVED_SEARCH_INVALID_INPUT,
@@ -1605,5 +1650,82 @@ mod tests {
             assert!(message.contains("ディレクトリ表示でのみ"), "{message}");
             assert!(!message.contains(STATUS_OP_FAILED_SUFFIX), "{message}");
         }
+    }
+
+    #[test]
+    fn terminal_command_invalid_literal_has_one_definition() {
+        // V03: ターミナルコマンドの入力エラーは 2 箇所で同じ文言を使っていた。
+        // 定数自身がリテラルを含むため、走査用の文字列は定数から取得し、
+        // 「定数定義の 1 回だけ」を検出する（テスト自身が定義を増やさない）。
+        let literal = STATUS_TERMINAL_COMMAND_INVALID;
+        let strings_source = include_str!("strings.rs");
+        assert_eq!(
+            strings_source.matches(literal).count(),
+            1,
+            "the literal must appear only in its constant definition"
+        );
+        let main_source = include_str!("main.rs");
+        assert!(
+            !main_source.contains(&format!("\"{literal}\"")),
+            "main.rs must route through STATUS_TERMINAL_COMMAND_INVALID"
+        );
+        assert!(main_source.contains("STATUS_TERMINAL_COMMAND_INVALID"));
+    }
+
+    #[test]
+    fn keymap_rejection_literals_have_one_definition() {
+        // V04: 形式エラー・上限・無効指定の文言がダイアログと設定カードに
+        // 重複していた。各リテラルは定数定義の 1 回だけに保つ。
+        let strings_source = include_str!("strings.rs");
+        for (name, literal) in [
+            ("STATUS_KEYMAP_FORMAT_INVALID", STATUS_KEYMAP_FORMAT_INVALID),
+            ("STATUS_KEYMAP_LIMIT_PREFIX", STATUS_KEYMAP_LIMIT_PREFIX),
+            ("STATUS_KEYMAP_LIMIT_SUFFIX", STATUS_KEYMAP_LIMIT_SUFFIX),
+            ("STATUS_KEYMAP_INVALID_PREFIX", STATUS_KEYMAP_INVALID_PREFIX),
+        ] {
+            assert_eq!(
+                strings_source.matches(literal).count(),
+                1,
+                "{name} must have a single definition"
+            );
+        }
+        let main_source = include_str!("main.rs");
+        for name in [
+            "STATUS_KEYMAP_FORMAT_INVALID",
+            "STATUS_KEYMAP_LIMIT_PREFIX",
+            "STATUS_KEYMAP_LIMIT_SUFFIX",
+            "STATUS_KEYMAP_INVALID_PREFIX",
+        ] {
+            assert!(main_source.contains(name), "{name} must be used in main.rs");
+        }
+        for literal in [
+            STATUS_KEYMAP_FORMAT_INVALID,
+            STATUS_KEYMAP_LIMIT_PREFIX,
+            STATUS_KEYMAP_INVALID_PREFIX,
+        ] {
+            assert!(
+                !main_source.contains(&format!("\"{literal}\"")),
+                "inline keymap literal: {literal}"
+            );
+        }
+        // 上限通知は接頭辞 + 動的件数 + 接尾で組み立てる（旧来の書式は禁止）。
+        assert!(
+            !main_source.contains(&format!("\"{}{{", STATUS_KEYMAP_LIMIT_PREFIX)),
+            "the interpolated limit literal must go through the constants"
+        );
+        let count = 8usize;
+        let composed = format!("{STATUS_KEYMAP_LIMIT_PREFIX}{count}{STATUS_KEYMAP_LIMIT_SUFFIX}");
+        assert!(composed.starts_with(STATUS_KEYMAP_LIMIT_PREFIX));
+        assert!(composed.contains(&count.to_string()));
+        assert!(composed.ends_with(STATUS_KEYMAP_LIMIT_SUFFIX));
+    }
+
+    #[test]
+    fn rescan_failure_carries_a_recovery_hint() {
+        // V14: 再スキャン失敗を表示するだけでは再試行方法が分からないため、
+        // F5 の再読込導線を括弧内に添える（F6-36 の「復帰導線」）。
+        assert!(STATUS_RESCAN_FAILED.starts_with("再スキャンに失敗しました"));
+        assert!(STATUS_RESCAN_FAILED.contains("（F5 で再読込）"));
+        assert!(STATUS_RESCAN_FAILED.ends_with('）'));
     }
 }

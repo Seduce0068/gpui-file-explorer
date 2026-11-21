@@ -402,10 +402,17 @@ fn settings_footer_legend() -> &'static str {
 // the cross-tab hint derived from it can never drift apart.
 // M09: each array also carries the words actually rendered in that row's
 // caption, description and section title — users search what they can see, not
-// the internal option value. Keep the lists in sync with the row markup below.
+// the internal option value. V07: the persisted `settings.json` key name is
+// included as well, because recovery hints quote that exact key and the
+// placeholder advertises "キー名で検索". Keep the lists in sync with the row
+// markup below.
 const APPEARANCE_THEME_KEYWORDS: &[&str] = &[
     "テーマ",
     "theme",
+    // V07: the persisted `settings.json` key name must be searchable too —
+    // recovery hints (e.g. strings.rs) name that key, and the placeholder
+    // promises "キー名で検索". Without it those hints lead to a zero-hit search.
+    "theme_choice",
     "ダーク",
     "ライト",
     "システム",
@@ -435,6 +442,8 @@ const APPEARANCE_VIEW_KEYWORDS: &[&str] = &[
 const FILES_HIDDEN_KEYWORDS: &[&str] = &[
     "隠しファイル",
     "hidden",
+    // V07: persisted `settings.json` key name (see APPEARANCE_THEME_KEYWORDS).
+    "show_hidden",
     "ファイル",
     "ドットファイル",
     // Visible on this row: "ファイルの表示" (section) / "隠しファイルを表示" (label).
@@ -672,6 +681,9 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &[
     "ターミナル",
     "terminal",
+    // V07: persisted `settings.json` key name; the "起動コマンドが未設定です"
+    // recovery hint (strings.rs) points users at it by name.
+    "terminal_command",
     "コマンド",
     "起動",
     // "選択中のフォルダを作業ディレクトリとして起動するコマンド（空欄で無効化）"
@@ -1452,10 +1464,11 @@ mod tests {
         selected_index, settings_focus_order, settings_footer_legend, settings_hidden_next,
         settings_row_is_visible, settings_row_shortcut, settings_theme_next, settings_view_next,
         tabs_matching_query, SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction,
-        SettingsUiPalette, APPEARANCE_THEME_DESCRIPTION, APPEARANCE_VIEW_DESCRIPTION,
-        FILES_HIDDEN_DESCRIPTION, FILES_SORT_DESCRIPTION, PERSONALIZE_INFO_KEYWORDS,
-        SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
-        SHORTCUTS_DEFAULT_LINES,
+        SettingsUiPalette, APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS,
+        APPEARANCE_VIEW_DESCRIPTION, FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS,
+        FILES_SORT_DESCRIPTION, PERSONALIZE_INFO_KEYWORDS, SETTINGS_KEYMAP_INPUT_HINT,
+        SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
+        TERMINAL_COMMAND_KEYWORDS,
     };
 
     #[test]
@@ -1562,6 +1575,38 @@ mod tests {
     }
 
     #[test]
+    fn tabs_matching_query_finds_persisted_setting_key_names() {
+        // V07: the placeholder promises "キー名で検索", and the recovery hints
+        // in strings.rs name the exact `settings.json` key. Searching that key
+        // must land on the tab that actually renders it — not a zero-hit dead
+        // end that forces the user to guess a Japanese label.
+        let cases: &[(&str, SettingsTab)] = &[
+            ("terminal_command", SettingsTab::Terminal),
+            ("theme_choice", SettingsTab::Appearance),
+            ("show_hidden", SettingsTab::Files),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(
+                tabs_matching_query(key),
+                vec![*expected],
+                "persisted key {key} must surface {expected:?}"
+            );
+            // `matches_query` lowercases both sides, so uppercase input works.
+            assert_eq!(
+                tabs_matching_query(&key.to_uppercase()),
+                vec![*expected],
+                "uppercase key {key} must surface {expected:?}"
+            );
+        }
+        // Guard the arrays themselves as well, so a future keyword rewrite
+        // cannot drop the key names while the tests above still pass via some
+        // unrelated substring match.
+        assert!(APPEARANCE_THEME_KEYWORDS.contains(&"theme_choice"));
+        assert!(FILES_HIDDEN_KEYWORDS.contains(&"show_hidden"));
+        assert!(TERMINAL_COMMAND_KEYWORDS.contains(&"terminal_command"));
+    }
+
+    #[test]
     fn no_match_hint_points_at_the_matching_tab_and_alt_digits() {
         // K07/L05: a hit in another tab must be actionable from the keyboard,
         // so the hint names the tab *and its exact Alt+digit* — not a generic
@@ -1642,6 +1687,48 @@ mod tests {
         // must say so rather than promising only setting-label search.
         assert_eq!(SETTINGS_SEARCH_PLACEHOLDER, "設定・キー名で検索…");
         assert!(SETTINGS_SEARCH_PLACEHOLDER.contains("キー名"));
+    }
+
+    /// Required wording for the hidden-files-only empty state in Trash view.
+    ///
+    /// V13: the canonical constant belongs in `strings.rs` (owned by a separate
+    /// change); this test records the contract so the wiring in `main.rs` can be
+    /// verified against it. The current generic hint (`EMPTY_HIDDEN_ONLY`)
+    /// offers `Ctrl+H`, but `toggle_hidden` rejects that chord in Trash.
+    const EMPTY_HIDDEN_ONLY_TRASH_SPEC: &str =
+        "隠しファイル {count} 件が非表示です（ゴミ箱を出て Ctrl+H で表示）";
+
+    #[test]
+    fn trash_hidden_only_hint_must_not_offer_a_rejected_chord() {
+        let generic = crate::strings::EMPTY_HIDDEN_ONLY;
+        assert!(
+            generic.contains("Ctrl+H で表示"),
+            "generic hint must still offer the chord outside Trash: {generic}"
+        );
+        let trash = EMPTY_HIDDEN_ONLY_TRASH_SPEC;
+        // The unusable chord is only suggested after leaving Trash.
+        assert!(
+            trash.contains("ゴミ箱を出て"),
+            "Trash hint must name the exit route: {trash}"
+        );
+        assert!(
+            !trash.contains("（Ctrl+H で表示）"),
+            "Trash hint must not offer the chord unconditionally: {trash}"
+        );
+        assert!(
+            trash.contains("Ctrl+H"),
+            "Trash hint must keep the chord: {trash}"
+        );
+        // Keep the `{count}` substitution contract of `empty_hidden_only`.
+        assert!(
+            trash.contains("{count}"),
+            "Trash hint must keep the count placeholder: {trash}"
+        );
+        assert_eq!(
+            trash.replace("{count}", &3.to_string()),
+            "隠しファイル 3 件が非表示です（ゴミ箱を出て Ctrl+H で表示）"
+        );
+        assert_ne!(trash, generic);
     }
 
     #[test]

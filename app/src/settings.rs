@@ -1938,6 +1938,63 @@ mod tests {
         };
         assert!(read_only.save_to_optional_path_with_reason(None).is_ok());
         assert_eq!(read_only.last_save_error.get(), None);
+
+        let dir = scratch("save-reason");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        // (a) InvalidData -> TooLarge. `sanitize_paths_for_save` drops any path
+        // longer than MAX_PATH_BYTES, so a single oversized *path* would be
+        // filtered out before serialization. A single long search query is not
+        // path-filtered: one ~8 MiB string stays fast and pushes the serialized
+        // document past MAX_SETTINGS_BYTES, exercising the reason mapping.
+        let oversized = Settings {
+            recent_searches: vec!["q".repeat(MAX_SETTINGS_BYTES as usize + 1)],
+            ..Settings::default()
+        };
+        assert_eq!(
+            oversized.save_to_optional_path_with_reason(Some(&path)),
+            Err(SettingsSaveError::TooLarge)
+        );
+        assert_eq!(
+            oversized.last_save_error.get(),
+            Some(SettingsSaveError::TooLarge)
+        );
+        assert!(!path.exists(), "the oversized save must not create a file");
+
+        // (b) WouldBlock -> Locked. Pre-create a *fresh* lock file: it is not
+        // stale (< 60 s), so `acquire_save_lock` times out with WouldBlock.
+        let lock = dir.join("settings.json.lock");
+        fs::write(&lock, b"").unwrap();
+        assert_eq!(
+            settings.save_to_optional_path_with_reason(Some(&path)),
+            Err(SettingsSaveError::Locked)
+        );
+        assert_eq!(
+            settings.last_save_error.get(),
+            Some(SettingsSaveError::Locked)
+        );
+        // Release the pre-planted lock so the next save can proceed.
+        fs::remove_file(&lock).unwrap();
+
+        // (c) A real, successful save clears the stale reason to None.
+        assert_eq!(
+            settings.save_to_optional_path_with_reason(Some(&path)),
+            Ok(())
+        );
+        assert_eq!(settings.last_save_error.get(), None);
+        assert!(path.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn history_entry_cap_matches_runtime_back_limit() {
+        // These two constants are declared in separate modules and must stay
+        // equal: settings persists up to MAX_HISTORY_ENTRIES back/forward paths
+        // per tab, while History bounds its back stack with DEFAULT_MAX_BACK.
+        // A drift would silently truncate a restored session (V09).
+        assert_eq!(super::MAX_HISTORY_ENTRIES, crate::history::DEFAULT_MAX_BACK);
     }
 
     #[test]

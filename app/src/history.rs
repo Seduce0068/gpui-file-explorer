@@ -5,7 +5,12 @@ use std::path::{Path, PathBuf};
 
 /// Default upper bound of the back stack. Shared by [`History::new`] and
 /// [`History::default`] so the two constructors cannot drift apart.
-const DEFAULT_MAX_BACK: usize = 200;
+///
+/// `pub(crate)` so `settings` can assert that its persisted
+/// `MAX_HISTORY_ENTRIES` cap stays equal to this runtime limit: the two are
+/// declared independently and a drift would silently truncate or overfill a
+/// restored session (V09).
+pub(crate) const DEFAULT_MAX_BACK: usize = 200;
 
 /// Drop the oldest elements so at most `keep` remain.
 ///
