@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 450 tests
+cargo test           # 457 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -92,9 +92,9 @@ cargo test           # 450 tests
 > `notes/` は元の開発ワークスペース（`work/gpui-file-explorer/`）で作成した調査記録です。
 > 一部に `work/gpui-file-explorer/...` や `security-review/Argus`（リポジトリ外）への参照が残っています。
 
-## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-18 更新）
+## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-21 更新）
 
-- `cargo build` 警告 0 / `cargo test` **450 passed / 0 failed**
+- `cargo build` 警告 0 / `cargo test` **457 passed / 0 failed**
   （2026-11-21 時点。初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
@@ -193,8 +193,14 @@ bash scripts/check.sh --app      # app/ のみ
 bash scripts/check.sh --poc      # poc/ のみ
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 450 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 457 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
+
+### OFFLINE / headless 検証
+
+headless 環境では `scripts/check.sh --fast` で cargo audit を省略可能。
+GUI 検証は `DISPLAY=:1 WAYLAND_DISPLAY=wayland-0` + spectacle + kdotool で
+スクリーンショット取得可（実キー入力は KWin ポータル制約で未検証）。
 
 ## ソース・ライセンス
 

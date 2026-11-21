@@ -351,6 +351,10 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     STATUS_OP_FAILED_SUFFIX,
     STATUS_PARTIAL_FAILURE_SUFFIX,
     STATUS_TRASH_PARTIAL_FAILED,
+    // A denied metadata read and a vanished path are both errors even though
+    // neither message carries `STATUS_ERROR_PREFIX` (H02/H07).
+    STATUS_ACCESS_DENIED,
+    STATUS_PATH_GONE,
 ];
 
 /// Status shown when a bookmark toggle targets a path serde cannot persist
@@ -490,9 +494,9 @@ fn display_name_for(
 /// reported identically (G07).
 fn theme_choice_label(choice: ThemeChoice) -> &'static str {
     match choice {
-        ThemeChoice::Light => "light",
-        ThemeChoice::Dark => "dark",
-        ThemeChoice::System => "system",
+        ThemeChoice::Light => THEME_LABEL_LIGHT,
+        ThemeChoice::Dark => THEME_LABEL_DARK,
+        ThemeChoice::System => THEME_LABEL_SYSTEM,
     }
 }
 
@@ -525,6 +529,12 @@ fn settings_validation_status(message: &str) -> String {
     format!("{STATUS_ERROR_PREFIX}{message}")
 }
 
+/// Status shown when Esc / backdrop dismissal drops unsaved settings edits.
+/// A clean form needs no notice; only a dirty one loses work (H03).
+fn settings_discard_status(dirty: bool) -> Option<&'static str> {
+    dirty.then_some(STATUS_SETTINGS_DISCARDED)
+}
+
 /// Choose the status to show after a settings write (Bug L01). The caller's
 /// success message is used only when the write succeeded; otherwise the
 /// dedicated save-failure status wins, even when the UI action itself worked.
@@ -550,11 +560,24 @@ fn settings_write_status(settings: &Settings, saved: bool, success: String) -> S
     }
 }
 
-/// Pure rollback decision shared by the six write paths that preview settings
+/// Status shown after a view switch. Only a real write reports the switch; a
+/// skipped (read-only / ephemeral) write shows the read-only notice and a failed
+/// write shows the save-failure notice, so `set_view` never silently drops the
+/// outcome of `save_settings` (H05/H14/H15).
+fn set_view_status(settings: &Settings, saved: bool, mode: ViewLayout) -> String {
+    let success = match mode {
+        ViewLayout::Details => "詳細リストに切り替えました".to_string(),
+        ViewLayout::Icons => "アイコングリッドに切り替えました".to_string(),
+    };
+    settings_write_status(settings, saved, success)
+}
+
+/// Pure rollback decision shared by the seven write paths that preview settings
 /// in memory before persisting them (the settings overlay Save, the terminal
-/// command dialog, the keymap dialog, `toggle_theme`, `set_sort` and
-/// `toggle_hidden`). A failed write leaves disk at the old values, so the
-/// previewed in-memory values must be discarded to keep both in sync (D13).
+/// command dialog, the keymap dialog, `toggle_theme`, `set_sort`,
+/// `toggle_hidden` and `set_view`). A failed write leaves disk at the old
+/// values, so the previewed in-memory values must be discarded to keep both in
+/// sync (D13/H01).
 fn settings_write_needs_rollback(saved: bool) -> bool {
     !saved
 }
@@ -1590,14 +1613,16 @@ use crate::strings::{
     STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PRIORITY,
     STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED,
     STATUS_RESCAN_FAILED, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SEARCH_STALE,
-    STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
-    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY,
-    STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX,
-    STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
-    STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
-    STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
-    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_WATCH_COUNT_SUFFIX,
-    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
+    STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
+    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED,
+    STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
+    STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
+    STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE,
+    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
+    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
+    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
+    THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -3770,10 +3795,16 @@ impl Explorer {
         if self.settings.view == mode {
             return;
         }
+        // Snapshot before previewing the view switch: a failed write leaves
+        // disk at the old mode, so the in-memory value must be rolled back
+        // before the next render can observe the preview (D13/H01).
+        let snapshot = self.settings.clone();
         self.settings.view = mode;
-        if !self.save_settings() {
-            self.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
+        let saved = self.save_settings();
+        if settings_write_needs_rollback(saved) {
+            self.rollback_settings(snapshot, cx);
         }
+        self.status = set_view_status(&self.settings, saved, mode);
         cx.notify();
     }
 
@@ -4310,7 +4341,7 @@ impl Explorer {
                 return;
             }
             match key {
-                "escape" => self.on_settings_action(SettingsUiAction::Cancel, cx),
+                "escape" => self.dismiss_settings_ui(cx),
                 "enter" => self.on_settings_action(SettingsUiAction::Save, cx),
                 _ => {}
             }
@@ -10151,6 +10182,21 @@ impl Explorer {
         self.on_settings_action(SettingsUiAction::Tab(settings_tab_step(tab, delta)), cx);
     }
 
+    /// Dismiss the preferences overlay with Esc or a backdrop click.
+    ///
+    /// Both routes bypass the footer's explicit `保存せず閉じる` label, so an
+    /// edited form must say out loud that its changes were dropped (H03). The
+    /// footer Cancel button keeps its own warning and still calls the plain
+    /// `SettingsUiAction::Cancel` handler.
+    fn dismiss_settings_ui(&mut self, cx: &mut Context<Self>) {
+        if let Some(status) =
+            settings_discard_status(self.settings_ui.as_ref().is_some_and(|state| state.dirty))
+        {
+            self.status = status.to_string();
+        }
+        self.on_settings_action(SettingsUiAction::Cancel, cx);
+    }
+
     /// Ctrl+,: build the preferences overlay from the persisted settings and
     /// subscribe to its search box so typing re-renders the filtered rows.
     fn open_settings_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -10233,9 +10279,9 @@ impl Explorer {
             SettingsUiPalette::light()
         };
         let theme_options = [
-            ("dark", "ダーク"),
-            ("light", "ライト"),
-            ("system", "システム"),
+            ("dark", THEME_LABEL_DARK),
+            ("light", THEME_LABEL_LIGHT),
+            ("system", THEME_LABEL_SYSTEM),
         ];
         let view_options = [("details", "一覧"), ("icons", "アイコン")];
         let sort_options = [
@@ -10261,7 +10307,7 @@ impl Explorer {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _window, cx| {
-                    this.on_settings_action(SettingsUiAction::Cancel, cx);
+                    this.dismiss_settings_ui(cx);
                 }),
             );
         Some(
@@ -10857,29 +10903,31 @@ mod tests {
         keymap_chord_reserved, kind_color, labeled_display_name, middle_click_tab_dir,
         normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
         pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
-        saved_search_caption, saved_search_save_status, search_filter_status, settings_save_status,
-        settings_tab_step, settings_validation_status, settings_write_needs_rollback,
-        settings_write_status, startup_dir_from, status_color, summarize_op, tab_label,
-        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, transfer_log_level, transfer_skip_notice,
-        trash_batch, trash_delete_status, trash_key_action, trash_redo_cancelled_status,
-        trash_undo_status, upsert_keymap_override, validate_cli_dir, version_label,
-        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
-        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
-        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, C_BLUE,
-        C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
+        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
+        settings_discard_status, settings_save_status, settings_tab_step,
+        settings_validation_status, settings_write_needs_rollback, settings_write_status,
+        startup_dir_from, status_color, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
+        transfer_skip_notice, trash_batch, trash_delete_status, trash_key_action,
+        trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override, validate_cli_dir,
+        version_label, visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides,
+        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
+        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, ViewLayout,
+        C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
         GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CHANGED,
         STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
         STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_FAILED,
         STATUS_REDO_NO_TARGET, STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE,
-        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_TRASH_NO_COPY,
-        STATUS_WARNING_MARKERS,
+        STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED,
+        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY, STATUS_WARNING_MARKERS,
+        THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
     use crate::ops::{OpError, OpStats};
-    use crate::settings::{Settings, MAX_KEYMAP_OVERRIDES};
+    use crate::settings::{Settings, ThemeChoice, MAX_KEYMAP_OVERRIDES};
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -10894,6 +10942,8 @@ mod tests {
             (STATUS_SETTINGS_SAVE_FAILED, C_RED),
             (STATUS_RESTORE_FAILED, C_RED),
             (STATUS_REDO_FAILED, C_RED),
+            (STATUS_ACCESS_DENIED, C_RED),
+            (STATUS_PATH_GONE, C_RED),
             ("コピーできません: 権限がありません", C_RED),
             ("3 件コピーしました（一部失敗: 権限がありません）", C_RED),
             (STATUS_SEARCH_STALE, C_YELLOW),
@@ -10914,6 +10964,15 @@ mod tests {
             status_color(&format!(
                 "移動しました{STATUS_PARTIAL_FAILURE_SUFFIX}理由）"
             )),
+            C_RED
+        );
+        // Composed properties statuses carry a path after the sentinel.
+        assert_eq!(
+            status_color(&format!("{STATUS_ACCESS_DENIED}: /tmp/props")),
+            C_RED
+        );
+        assert_eq!(
+            status_color(&format!("{STATUS_PATH_GONE}: /tmp/props")),
             C_RED
         );
     }
@@ -10943,6 +11002,38 @@ mod tests {
     }
 
     #[test]
+    fn settings_discard_status_only_reports_a_dirty_form() {
+        // H03: Esc / backdrop dismissal is silent for a clean form, but must
+        // name the loss when the edited form is thrown away. The footer Cancel
+        // button keeps its own `保存せず閉じる` label and does not use this.
+        assert_eq!(settings_discard_status(false), None);
+        assert_eq!(
+            settings_discard_status(true),
+            Some("未保存の変更を破棄しました")
+        );
+        assert_eq!(
+            settings_discard_status(true),
+            Some(STATUS_SETTINGS_DISCARDED)
+        );
+        assert_eq!(status_color(STATUS_SETTINGS_DISCARDED), C_GREEN);
+    }
+
+    #[test]
+    fn theme_labels_are_shared_by_status_and_settings_options() {
+        // H08: both entry points must report the same localized name.
+        assert_eq!(theme_choice_label(ThemeChoice::Dark), THEME_LABEL_DARK);
+        assert_eq!(theme_choice_label(ThemeChoice::Light), THEME_LABEL_LIGHT);
+        assert_eq!(theme_choice_label(ThemeChoice::System), THEME_LABEL_SYSTEM);
+        assert_eq!(
+            format!(
+                "{STATUS_THEME_CHANGED_PREFIX}{}",
+                theme_choice_label(ThemeChoice::Light)
+            ),
+            "テーマ: ライト"
+        );
+    }
+
+    #[test]
     fn palette_status_color_uses_active_theme_colors() {
         let dark = AppPalette::dark();
         let light = AppPalette::light();
@@ -10955,6 +11046,8 @@ mod tests {
             (STATUS_TRASH_NO_COPY, dark.yellow, light.yellow),
             (STATUS_ERROR_PREFIX, dark.red, light.red),
             (STATUS_SETTINGS_SAVE_FAILED, dark.red, light.red),
+            (STATUS_ACCESS_DENIED, dark.red, light.red),
+            (STATUS_PATH_GONE, dark.red, light.red),
             ("3 件をコピーしました", dark.green, light.green),
             ("", dark.green, light.green),
         ];
@@ -12571,6 +12664,62 @@ mod tests {
     fn failed_settings_write_triggers_rollback() {
         assert!(settings_write_needs_rollback(false));
         assert!(!settings_write_needs_rollback(true));
+    }
+
+    // H06: the pure decision helper above cannot prove that a call site exists.
+    // Check the source itself so a newly added or regressed write path cannot
+    // silently omit rollback (the `main.rs` include is compiled into the test).
+    // The seven preview-then-write paths are: settings overlay Save, terminal
+    // command dialog, keymap dialog, toggle_theme, set_sort, toggle_hidden and
+    // set_view. Build the needle from fragments so this test's own source does
+    // not contribute a match.
+    #[test]
+    fn rollback_is_called_by_all_seven_preview_then_write_paths() {
+        let source = include_str!("main.rs");
+        let needle = concat!("self", ".rollback_settings(");
+        let call_sites = source.matches(needle).count();
+        assert_eq!(
+            call_sites, 7,
+            "each preview-then-write path must call rollback_settings"
+        );
+    }
+
+    // H05/H14/H15: set_view used to ignore the write result entirely, so a
+    // read-only / ephemeral session showed no notice at all. Exercise the pure
+    // helper the handler now uses for both skipped and failed writes.
+    #[test]
+    fn set_view_status_reports_skipped_and_failed_writes() {
+        let success = set_view_status(&Settings::default(), true, ViewLayout::Details);
+        assert!(success.contains("詳細リスト"), "{success}");
+        assert_eq!(status_color(&success), C_GREEN);
+        assert!(
+            set_view_status(&Settings::default(), true, ViewLayout::Icons)
+                .contains("アイコングリッド")
+        );
+
+        for settings in [
+            Settings {
+                read_only: true,
+                ..Settings::default()
+            },
+            Settings {
+                ephemeral: true,
+                ..Settings::default()
+            },
+        ] {
+            assert!(settings.write_was_skipped());
+            for mode in [ViewLayout::Details, ViewLayout::Icons] {
+                assert_eq!(
+                    set_view_status(&settings, true, mode),
+                    STATUS_SETTINGS_READ_ONLY,
+                    "a skipped view write must show the read-only notice"
+                );
+            }
+        }
+
+        let failed = set_view_status(&Settings::default(), false, ViewLayout::Icons);
+        assert_eq!(failed, STATUS_SETTINGS_SAVE_FAILED);
+        assert_eq!(status_color(&failed), C_RED);
     }
 
     // F6-49: the personalization wiring uses these pure helpers plus the real

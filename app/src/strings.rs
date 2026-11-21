@@ -313,6 +313,9 @@ pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: 
 pub const STATUS_SETTINGS_SAVE_FAILED: &str =
     "設定を保存できませんでした（権限や空き容量を確認して再試行してください）";
 pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
+/// Esc / 背景クリックで未保存の設定変更を破棄したときの通知（H03）。
+/// フッターの「保存せず閉じる」ボタンと違い、これらの操作は事前の警告がない。
+pub const STATUS_SETTINGS_DISCARDED: &str = "未保存の変更を破棄しました";
 /// タブ復元の成否。
 pub const STATUS_TAB_RESTORED: &str = "タブを復元しました";
 pub const STATUS_TAB_RESTORE_EMPTY: &str = "復元できるタブがありません";
@@ -329,8 +332,12 @@ pub const STATUS_REDO_EMPTY: &str = "やり直せる操作がありません";
 pub const STATUS_REDO_FAILED: &str = "やり直せません";
 pub const STATUS_RENAME_FAILED: &str = "変更できません";
 pub const STATUS_TARGET_MISSING: &str = "対象は既に存在しません";
-/// テーマ切替後の通知（値は ThemeChoice の serde 名: `dark` / `light` / `system`）。
+/// テーマ切替後の通知（表示名は `THEME_LABEL_*` を参照）。
 pub const STATUS_THEME_CHANGED_PREFIX: &str = "テーマ: ";
+/// テーマ設定の表示名。`theme_choice_label` と設定オーバーレイの選択肢で共用する（H08）。
+pub const THEME_LABEL_DARK: &str = "ダーク";
+pub const THEME_LABEL_LIGHT: &str = "ライト";
+pub const THEME_LABEL_SYSTEM: &str = "システム";
 /// ゴミ箱操作の全件失敗と部分失敗（後者は `（{n} 件失敗: 「{name}」: {reason}）` の一部）。
 pub const STATUS_TRASH_ALL_FAILED: &str = "ゴミ箱へ移動できません";
 pub const STATUS_TRASH_PARTIAL_FAILED: &str = " 件失敗: ";
@@ -625,6 +632,7 @@ mod tests {
             STATUS_REVEALED_PREFIX,
             STATUS_SETTINGS_SAVE_FAILED,
             STATUS_SETTINGS_READ_ONLY,
+            STATUS_SETTINGS_DISCARDED,
             STATUS_TAB_RESTORED,
             STATUS_TAB_RESTORE_EMPTY,
             STATUS_FOLDER_CREATED,
@@ -646,6 +654,24 @@ mod tests {
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
         }
+    }
+
+    #[test]
+    fn theme_display_labels_are_localized() {
+        // H08: the status bar and the settings overlay share one display name
+        // per ThemeChoice, not the serde values (`dark` / `light` / `system`).
+        assert_eq!(THEME_LABEL_DARK, "ダーク");
+        assert_eq!(THEME_LABEL_LIGHT, "ライト");
+        assert_eq!(THEME_LABEL_SYSTEM, "システム");
+        assert_eq!(
+            format!("{STATUS_THEME_CHANGED_PREFIX}{THEME_LABEL_DARK}"),
+            "テーマ: ダーク"
+        );
+        for label in [THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM] {
+            assert!(!label.is_empty());
+        }
+        assert_ne!(THEME_LABEL_DARK, THEME_LABEL_LIGHT);
+        assert_ne!(THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM);
     }
 
     #[test]

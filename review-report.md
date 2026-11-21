@@ -699,6 +699,7 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
     README の「Windows 対応」記述との整合性は要検討。
 - `npx --no-install markdownlint-cli2 review-report.md`
   （2026-11-17T10:20+09:00）: **0 issues / exit 0**。
+  レビュー時点のスナップショット（現在値は各ドキュメントの lint 実行結果を参照）。
 - `git status --short`: 変更は `review-report.md` のみ。
   `.serena/` は untracked（MCP ローカル設定のため対象外）。
 
