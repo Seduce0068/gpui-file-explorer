@@ -219,7 +219,8 @@ impl SettingsUiState {
     ) -> Self {
         let terminal_input = cx.new(|cx| InputState::new(window, cx).default_value(terminal));
         let keymap_input = cx.new(|cx| InputState::new(window, cx).default_value(keymap));
-        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("設定を検索…"));
+        let search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(SETTINGS_SEARCH_PLACEHOLDER));
         Self {
             tab: SettingsTab::Appearance,
             theme_choice: String::new(),
@@ -438,9 +439,9 @@ const FILES_HIDDEN_KEYWORDS: &[&str] = &[
     "ドットファイル",
     // Visible on this row: "ファイルの表示" (section) / "隠しファイルを表示" (label).
     "表示",
-    // "名前が . で始まるファイルとフォルダーを一覧に含めます（h でキーボードから切替）"
+    // "名前が . で始まるファイルとフォルダを一覧に含めます（h でキーボードから切替）"
     "ドット",
-    "フォルダー",
+    "フォルダ",
     "一覧",
     "キーボード",
     "切替",
@@ -489,6 +490,9 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "Alt+K",
     "Alt+T",
     "Alt+S",
+    // R12: the global theme chord is listed in F1 help and README, so the
+    // Shortcuts tab must expose it too (and keep this array in sync).
+    "Alt+Shift+T",
     // Settings-dialog tab navigation, listed in F1 help and the default-shortcut
     // list below (L03/L07). Keep the array in sync with SHORTCUTS_DEFAULT_LINES.
     "Alt+1",
@@ -519,6 +523,10 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "設定を開く",
 ];
 
+/// Placeholder of the settings-page search field. Chord names such as `Alt+K`
+/// are searchable too, so the wording must advertise that (R07).
+const SETTINGS_SEARCH_PLACEHOLDER: &str = "設定・キー名で検索…";
+
 /// Shortcuts-tab keymap hint. Unlike the Alt+K dialog this field replaces the
 /// whole override list on Save, so that consequence must be spelled out where
 /// the user is typing (H04). Per-entry `unbind アクション名` is accepted here
@@ -531,14 +539,15 @@ const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力し�
 
 /// Descriptions of the three rows with a bare-letter shortcut, plus the
 /// existing Alt+S row. Kept as constants so the visible hint can be regression
-/// tested without a GPUI window: F1 help lives in `strings.rs` (separate
-/// follow-up), so the row itself must tell the user the key that changes it.
+/// tested without a GPUI window. F1 is blocked while the settings dialog owns
+/// the keyboard, so each row still names its own key inline even though the
+/// same t/v/h keys are also listed in `strings::HELP_SECTIONS` (N04).
 const APPEARANCE_THEME_DESCRIPTION: &str =
     "アプリ全体の明るさを切り替えます（t でキーボードから切替）";
 const APPEARANCE_VIEW_DESCRIPTION: &str =
     "詳細一覧またはアイコン一覧を選択します（v でキーボードから切替）";
 const FILES_HIDDEN_DESCRIPTION: &str =
-    "名前が . で始まるファイルとフォルダーを一覧に含めます（h でキーボードから切替）";
+    "名前が . で始まるファイルとフォルダを一覧に含めます（h でキーボードから切替）";
 const FILES_SORT_DESCRIPTION: &str =
     "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）";
 
@@ -555,16 +564,17 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "Ctrl+, … 設定を開く",
     "Alt+1〜5 … 設定ダイアログのタブへ直接移動",
     "Alt+S … ファイルタブの並び順を切替",
+    "Alt+Shift+T … テーマをダーク / ライト / システムで切替",
 ];
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &[
     "ターミナル",
     "terminal",
     "コマンド",
     "起動",
-    // "選択中のフォルダーを作業ディレクトリとして起動するコマンド（空欄で無効化）"
+    // "選択中のフォルダを作業ディレクトリとして起動するコマンド（空欄で無効化）"
     "作業ディレクトリ",
     "無効化",
-    "フォルダー",
+    "フォルダ",
     "選択",
     "空欄",
 ];
@@ -1098,7 +1108,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                             .w_full()
                             .text_xs()
                             .text_color(rgb(palette.subtext))
-                            .child("選択中のフォルダーを作業ディレクトリとして起動するコマンド（空欄で無効化）"),
+                            .child("選択中のフォルダを作業ディレクトリとして起動するコマンド（空欄で無効化）"),
                     )
                     .child(Input::new(&state.terminal_input).w_full());
             }
@@ -1317,7 +1327,7 @@ mod tests {
         SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
         APPEARANCE_THEME_DESCRIPTION, APPEARANCE_VIEW_DESCRIPTION, FILES_HIDDEN_DESCRIPTION,
         FILES_SORT_DESCRIPTION, PERSONALIZE_INFO_KEYWORDS, SETTINGS_KEYMAP_INPUT_HINT,
-        SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
+        SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
     };
 
     #[test]
@@ -1499,6 +1509,14 @@ mod tests {
     }
 
     #[test]
+    fn settings_search_placeholder_advertises_key_name_search() {
+        // R07: chord names such as Alt+K are searchable, so the placeholder
+        // must say so rather than promising only setting-label search.
+        assert_eq!(SETTINGS_SEARCH_PLACEHOLDER, "設定・キー名で検索…");
+        assert!(SETTINGS_SEARCH_PLACEHOLDER.contains("キー名"));
+    }
+
+    #[test]
     fn settings_keymap_hint_explains_replace_and_unbind_route() {
         // H04: the shared field looks like an additive editor, so the hint must
         // say Save replaces everything. K04: it must also advertise the unbind
@@ -1527,6 +1545,8 @@ mod tests {
         for key in [
             "Alt+K",
             "Alt+T",
+            // R12: the theme chord is part of the default-shortcut list too.
+            "Alt+Shift+T",
             // L03: settings-dialog tab/direct-jump chords and the wording used
             // by the no-match hint must be searchable as well.
             "Alt+1",
@@ -1637,8 +1657,9 @@ mod tests {
 
     #[test]
     fn row_descriptions_advertise_their_bare_letter_shortcuts() {
-        // N04: F1 help lives in strings.rs (separate follow-up), so until then
-        // each row must name the key that changes it, just like the Alt+S row.
+        // N04: F1 is blocked inside the settings dialog, so each row still
+        // names the key that changes it, just like the Alt+S row — even though
+        // t/v/h are also listed in the F1 help (strings.rs).
         for (description, key) in [
             (APPEARANCE_THEME_DESCRIPTION, "t"),
             (APPEARANCE_VIEW_DESCRIPTION, "v"),
@@ -1773,7 +1794,16 @@ mod tests {
         // README. Every literal chord shown here is searchable via the
         // defaults keyword group, and the Alt+1〜5 display form expands to the
         // five individually searchable chords.
-        for key in ["F1", "Ctrl+L", "Ctrl+F", "F4", "Alt+T", "Ctrl+,", "Alt+S"] {
+        for key in [
+            "F1",
+            "Ctrl+L",
+            "Ctrl+F",
+            "F4",
+            "Alt+T",
+            "Alt+Shift+T",
+            "Ctrl+,",
+            "Alt+S",
+        ] {
             assert!(
                 SHORTCUTS_DEFAULT_LINES
                     .iter()

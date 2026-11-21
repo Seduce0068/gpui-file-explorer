@@ -406,12 +406,10 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     STATUS_SPECIAL_FILE_NO_COPY,
     STATUS_FOLDER_NO_PREVIEW,
     STATUS_SYMLINK_NO_PREVIEW,
+    // R04 / R05: 動的な値を連結する失敗接頭辞も concrete failure として red。
+    STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
+    STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
 ];
-
-/// Status shown when the properties metadata read is denied by the OS.
-/// The sibling bookmark refusal was moved to `strings.rs` (Q03); this literal
-/// stays local because only the properties call sites use it.
-const STATUS_ACCESS_DENIED: &str = "アクセスが拒否されました";
 
 /// Pure colour decision for the primary status text (U-01). An explicit
 /// `STATUS_ERROR_PREFIX` is always red, stale/cancelled/`NO_*` warnings are
@@ -567,10 +565,8 @@ fn saved_search_save_status(name: &str, stored: bool) -> String {
         format!("検索を保存しました: {name}")
     } else {
         // 空の名前／検索語は呼び出し側で別メッセージとして扱われるため、ここ
-        // は保存件数の上限に達した場合の案内とする（F6-49）。
-        format!(
-            "検索を保存できませんでした: {name}（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）"
-        )
+        // は保存件数の上限に達した場合の案内とする（F6-49 / R04）。
+        format!("{STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX}{name}{STATUS_SAVED_SEARCH_CAP_HINT}")
     }
 }
 
@@ -731,6 +727,16 @@ fn bookmark_label_is_settable(settings: &Settings, path: &std::path::Path, label
         || settings.bookmark_labels.len() < crate::model::MAX_BOOKMARK_LABELS
 }
 
+/// Rejection caption when a bookmark label cannot be set (R05). Kept pure so
+/// the composed wording and its red colour classification can be regression
+/// tested against the exact string the editor handler emits.
+fn bookmark_label_set_rejection(path: &std::path::Path) -> String {
+    format!(
+        "{STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX}{}",
+        display_path(path)
+    )
+}
+
 /// Label for a tab: the directory's last component, or "ルート" for `/`.
 fn tab_label(path: &std::path::Path) -> String {
     if path == std::path::Path::new("/") {
@@ -888,7 +894,7 @@ fn terminal_started_status(argv: &[String], dir: &Path) -> String {
 /// user can tell a missing emulator from a missing directory.
 fn terminal_failed_status(error: &std::io::Error, dir: &Path) -> String {
     format!(
-        "ターミナルを起動できません: {error}（{}）",
+        "{STATUS_TERMINAL_START_PREFIX}{STATUS_OP_FAILED_SUFFIX}: {error}（{}）",
         display_path(dir)
     )
 }
@@ -1440,13 +1446,19 @@ fn active_keymap_overrides(keymap: &KeyMap) -> Vec<(String, String)> {
     // stays truthful about what users can actually press.
     for default in &defaults.bindings {
         let claimed = keymap.bindings.iter().any(|binding| {
-            KeyMap::binding_matches(
-                binding,
-                &default.key,
-                default.ctrl,
-                default.alt,
-                default.shift,
-            )
+            // R01: the chord must still be held by the SAME action. A rebind
+            // can move another action onto this key (e.g. open_terminal onto
+            // space, evicting open_preview's space binding): the chord is then
+            // still claimed, but no longer by its default action, so the
+            // displaced default must be reported as unassigned.
+            binding.action == default.action
+                && KeyMap::binding_matches(
+                    binding,
+                    &default.key,
+                    default.ctrl,
+                    default.alt,
+                    default.shift,
+                )
         });
         if !claimed {
             let chord = format_chord(default);
@@ -1732,11 +1744,11 @@ use crate::strings::{
     EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE,
     FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT,
     OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
-    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-    STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
-    STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
-    STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
-    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
+    STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+    STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
+    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+    STATUS_ERROR_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
     STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
     STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
     STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
@@ -1745,18 +1757,19 @@ use crate::strings::{
     STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
     STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED,
     STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
-    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
+    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT,
+    STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
     STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
     STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY,
     STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
     STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
-    STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED,
-    STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
-    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
-    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
-    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
-    THEME_LABEL_SYSTEM,
+    STATUS_TARGET_MISSING, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
+    STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
+    STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
+    STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
+    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_WATCH_COUNT_SUFFIX,
+    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
+    THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -2296,6 +2309,7 @@ impl PropertiesErrorReaction {
     fn apply(self, path: &Path, error: &FsError) -> (String, bool) {
         match self {
             Self::PathGone => (format!("{STATUS_PATH_GONE}: {}", display_path(path)), true),
+            // R02: 共有の STATUS_ACCESS_DENIED（strings.rs）を色分類表と同じく参照する。
             Self::AccessDenied => (
                 format!("{STATUS_ACCESS_DENIED}: {}", display_path(path)),
                 false,
@@ -3206,7 +3220,7 @@ impl Explorer {
             } else if changed {
                 format!("ラベルを設定しました: {label}（{}）", display_path(&path))
             } else {
-                format!("ラベルを設定できませんでした: {}", display_path(&path))
+                bookmark_label_set_rejection(&path)
             },
         );
         cx.notify();
@@ -11188,35 +11202,36 @@ mod tests {
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
         active_keymap_overrides, apply_debug_settings_overrides, bookmark_label_is_settable,
-        bookmark_toggle_rejection, build_places, canonical_chord, chord_for_action, classify_cli,
-        clear_dialog_error, clear_op_token, format_chord, format_selected, fuzzy_candidates,
-        fuzzy_score, grid_columns_for_width, help_overrides_line, icon_button_text_color,
-        install_op_token, internal_drop_paths, join_status_notices, keymap_action_name,
-        keymap_bind_caption, keymap_chord_reserved, keymap_unbind_caption, kind_color,
-        labeled_display_name, middle_click_tab_dir, normalize_terminal_command, op_is_active,
-        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
-        read_properties_snapshot, remove_keymap_override, saved_search_caption,
-        saved_search_save_status, search_filter_status, set_view_status, settings_discard_status,
-        settings_row_key_is_bare, settings_save_status, settings_sort_next,
-        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
-        settings_write_needs_rollback, settings_write_status, startup_dir_from, status_color,
-        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
-        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
-        theme_choice_label, transfer_log_level, transfer_skip_notice, trash_batch,
-        trash_delete_status, trash_key_action, trash_redo_cancelled_status, trash_undo_status,
-        upsert_keymap_override, validate_cli_dir, version_label, visible_secondary_slots,
-        AppPalette, CliAction, DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource,
-        KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction,
-        SecondarySlot, SettingsTab, SortKey, TrashKeyAction, ViewLayout, C_BLUE, C_DIM, C_GREEN,
-        C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX,
-        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
-        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
-        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FOLDER_NO_PREVIEW,
-        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
-        STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
-        STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
+        bookmark_label_set_rejection, bookmark_toggle_rejection, build_places, canonical_chord,
+        chord_for_action, classify_cli, clear_dialog_error, clear_op_token, format_chord,
+        format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
+        help_overrides_line, icon_button_text_color, install_op_token, internal_drop_paths,
+        join_status_notices, keymap_action_name, keymap_bind_caption, keymap_chord_reserved,
+        keymap_unbind_caption, kind_color, labeled_display_name, middle_click_tab_dir,
+        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
+        pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
+        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
+        settings_discard_status, settings_row_key_is_bare, settings_save_status,
+        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        settings_validation_status, settings_write_needs_rollback, settings_write_status,
+        startup_dir_from, status_color, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
+        transfer_skip_notice, trash_batch, trash_delete_status, trash_key_action,
+        trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override, validate_cli_dir,
+        version_label, visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides,
+        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
+        Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction,
+        ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX,
+        GRID_GAP_PX, GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX,
+        STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_NOT_PERSISTABLE,
+        STATUS_CANCELLED, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER,
+        STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY,
+        STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
+        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
+        STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY,
+        STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
+        STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX,
         STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PREVIEW_ONLY_DIRECTORY,
         STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED,
         STATUS_REDO_NO_TARGET, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED,
@@ -11224,9 +11239,9 @@ mod tests {
         STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
         STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY,
         STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
-        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX,
-        STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK,
-        THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_START_PREFIX,
+        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY,
+        STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11346,7 +11361,7 @@ mod tests {
         }
         // N02 のマーカー追加で、明示的なエラー接頭辞付き起動エラーが
         // amber に落ちないこと（接頭辞優先）も同時に検証する。
-        let cli_error = format!("{STATUS_ERROR_PREFIX}起動ディレクトリを開けませんでした");
+        let cli_error = format!("{STATUS_ERROR_PREFIX}{STATUS_INVALID_CLI_DIR}");
         assert_eq!(status_color(&cli_error), C_RED, "{cli_error}");
     }
 
@@ -11956,10 +11971,13 @@ mod tests {
 
     #[test]
     fn help_reports_unassigned_default_chord_after_real_rebind() {
-        // P07: a real `rebind` moves the action, leaving its old chord
-        // unclaimed while the action stays bound elsewhere. space claims the
-        // new open_terminal binding, so only f4 is reported as unassigned;
-        // open_preview keeps f3, so no "space → 未割り当て" entry appears.
+        // P07/R01: a real `rebind` moves the action, leaving its old chord
+        // unclaimed while the action stays bound elsewhere. Rebinding
+        // open_terminal to space also evicts open_preview's default space
+        // binding, so space is still claimed -- but by a different action.
+        // R01 requires the SAME action to hold a default chord for it to count
+        // as claimed, so open_preview's displaced space must be reported as
+        // unassigned even though open_terminal now owns space.
         let mut keymap = KeyMap::default_keymap();
         assert!(keymap.rebind(KeyAction::OpenTerminal, "space", false, false, false));
         let overrides = active_keymap_overrides(&keymap);
@@ -11972,13 +11990,18 @@ mod tests {
             "f4 must be reported as unassigned: {overrides:?}"
         );
         assert!(
+            overrides.contains(&("open_preview".to_string(), "space → 未割り当て".to_string())),
+            "open_preview's space default is displaced by open_terminal: {overrides:?}"
+        );
+        assert!(
             !overrides
                 .iter()
-                .any(|(_, chord)| chord == "space → 未割り当て"),
-            "space is still bound to open_terminal: {overrides:?}"
+                .any(|(_, chord)| chord == "f3 → 未割り当て"),
+            "open_preview keeps its f3 default: {overrides:?}"
         );
         let line = help_overrides_line(&keymap).expect("override notice");
         assert!(line.contains("open_terminal → f4 → 未割り当て"), "{line}");
+        assert!(line.contains("open_preview → space → 未割り当て"), "{line}");
     }
 
     #[test]
@@ -13191,7 +13214,7 @@ mod tests {
     // cap, …) is lost behind the generic read-only notice.
     #[test]
     fn settings_write_status_noop_keeps_caller_rejection_message() {
-        let rejection = "ラベルを設定できませんでした: /tmp/target".to_string();
+        let rejection = bookmark_label_set_rejection(std::path::Path::new("/tmp/target"));
         let skipped = Settings {
             read_only: true,
             ..Settings::default()
@@ -13806,6 +13829,39 @@ mod tests {
         let failed = terminal_failed_status(&error, &dir);
         assert!(failed.contains("no emulator"), "{failed}");
         assert!(failed.contains("/work/project"), "{failed}");
+        // R03: 文言は strings.rs の定数から組み立てられ、赤に分類される。
+        assert_eq!(
+            failed,
+            format!(
+                "{STATUS_TERMINAL_START_PREFIX}{STATUS_OP_FAILED_SUFFIX}: {error}（/work/project）"
+            ),
+            "{failed}"
+        );
+        assert_eq!(
+            failed,
+            format!("ターミナルを起動できません: {error}（/work/project）")
+        );
+        assert_eq!(status_color(&failed), C_RED, "{failed}");
+    }
+
+    #[test]
+    fn saved_search_cap_rejection_keeps_wording_and_is_red() {
+        // R04: 上限拒否は strings.rs の接頭辞 + 理由から組み立てられ、赤に分類される。
+        let rejected = saved_search_save_status("仕事", false);
+        assert_eq!(
+            rejected,
+            "検索を保存できませんでした: 仕事（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）",
+            "{rejected}"
+        );
+        assert_eq!(status_color(&rejected), C_RED, "{rejected}");
+    }
+
+    #[test]
+    fn bookmark_label_rejection_keeps_wording_and_is_red() {
+        // R05: ラベル設定拒否は strings.rs の接頭辞から組み立てられ、赤に分類される。
+        let rejection = bookmark_label_set_rejection(std::path::Path::new("/tmp/target"));
+        assert_eq!(rejection, "ラベルを設定できませんでした: /tmp/target");
+        assert_eq!(status_color(&rejection), C_RED, "{rejection}");
     }
 
     #[test]
