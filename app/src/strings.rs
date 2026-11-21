@@ -164,7 +164,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+,", "設定を開く"),
             (
                 "設定ダイアログ",
-                "Enter で保存 / Esc でキャンセル / 上部の検索欄で設定項目を絞り込み",
+                "Enter で保存 / Esc でキャンセル / 上部の検索欄で設定項目を絞り込み。F1 はダイアログ内で無効なので、下部のキー凡例に必要なキーを表示",
             ),
             (
                 "設定ダイアログのタブ",
@@ -220,7 +220,7 @@ pub const KEYMAP_INPUT_HINT: &str =
 /// Empty-state title + optional hint per listing source.
 pub const EMPTY_TRASH: (&str, &str) = (
     "ゴミ箱は空です",
-    "削除した項目はここに表示されます（完全削除は未対応）",
+    "削除した項目はここに表示されます（完全削除は未対応）。Alt+← で前の場所へ",
 );
 pub const EMPTY_SEARCH: (&str, &str) = (
     "一致する項目がありません",
@@ -302,6 +302,10 @@ pub const STATUS_FOLDER_NO_PREVIEW: &str = "フォルダはプレビューでき
 /// シンボリックリンクのプレビュー拒否。`main.rs::open_preview_selected` と
 /// `preview.rs::read_preview` / `read_image_preview` の 3 箇所で共用する。
 pub const STATUS_SYMLINK_NO_PREVIEW: &str = "シンボリックリンクはプレビューできません";
+/// Ctrl+D のブックマーク切り替えが永続化できないパス（空 / NUL / 非 UTF-8 /
+/// サイズ超過）を拒否するときの通知。`main.rs::bookmark_toggle_rejection` が
+/// 呼び出す（Q03: 以前は main.rs ローカルだったが、色分類表と一元化した）。
+pub const STATUS_BOOKMARK_NOT_PERSISTABLE: &str = "このパスはブックマークできません（非UTF-8）";
 
 // ---------------------------------------------------------------------------
 // 操作完了サマリ
@@ -599,6 +603,22 @@ mod tests {
     }
 
     #[test]
+    fn help_settings_dialog_note_explains_f1_block_and_footer_legend() {
+        // Q06: F1 is swallowed while the settings dialog owns the keyboard, so
+        // the help entry itself must say so and point at the footer legend that
+        // substitutes for the overlay.
+        let dialog = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, entries)| *entries)
+            .find(|(key, _)| *key == "設定ダイアログ")
+            .map(|(_, description)| *description)
+            .expect("settings dialog keys must be in F1 help");
+        for token in ["F1", "無効", "凡例"] {
+            assert!(dialog.contains(token), "settings dialog note: {dialog}");
+        }
+    }
+
+    #[test]
     fn help_lists_navigation_restore_and_trash_notes() {
         let entries: Vec<(&str, &str)> = HELP_SECTIONS
             .iter()
@@ -639,6 +659,19 @@ mod tests {
         let (_, directory) = EMPTY_DIRECTORY;
         for token in ["Ctrl+Shift+N", "Ctrl+V"] {
             assert!(directory.contains(token), "directory hint: {directory}");
+        }
+
+        // Q07: every empty state must also say how to get back. The trash and
+        // load-error overlays are no exception — name their recovery keys.
+        let (_, trash) = EMPTY_TRASH;
+        for token in ["Alt+←", "前の場所へ"] {
+            assert!(trash.contains(token), "trash hint: {trash}");
+        }
+        for token in ["F5", "Ctrl+L"] {
+            assert!(
+                LOAD_ERROR_HINT.contains(token),
+                "load error hint: {LOAD_ERROR_HINT}"
+            );
         }
     }
 
@@ -768,6 +801,7 @@ mod tests {
             STATUS_SAME_DIRECTORY_NO_MOVE,
             STATUS_FOLDER_NO_PREVIEW,
             STATUS_SYMLINK_NO_PREVIEW,
+            STATUS_BOOKMARK_NOT_PERSISTABLE,
             STATUS_TRASH_LOADING,
             STATUS_FOLDER_CREATING,
             STATUS_TARGET_GONE,
@@ -871,6 +905,30 @@ mod tests {
             ),
             ("STATUS_TRASH_ALL_FAILED", STATUS_TRASH_ALL_FAILED, "error"),
             ("STATUS_RESTORE_FAILED", STATUS_RESTORE_FAILED, "error"),
+            // Q02: P08 の「できません」拒否は STATUS_OP_FAILED_SUFFIX と同じ
+            // 文言を含むため error(red)。main.rs の error マーカーにも明示登録済み。
+            (
+                "STATUS_SPECIAL_FILE_NO_COPY",
+                STATUS_SPECIAL_FILE_NO_COPY,
+                "error",
+            ),
+            (
+                "STATUS_FOLDER_NO_PREVIEW",
+                STATUS_FOLDER_NO_PREVIEW,
+                "error",
+            ),
+            (
+                "STATUS_SYMLINK_NO_PREVIEW",
+                STATUS_SYMLINK_NO_PREVIEW,
+                "error",
+            ),
+            // Q03: ブックマーク拒否は「できません」を含むが、より具体的な
+            // 拒否通知として warning(amber) に分類する（main.rs 登録済み）。
+            (
+                "STATUS_BOOKMARK_NOT_PERSISTABLE",
+                STATUS_BOOKMARK_NOT_PERSISTABLE,
+                "warning",
+            ),
             // 動的な値を連結する接尾も、単体で concrete failure として分類する。
             (
                 "STATUS_MISSING_COUNT_SUFFIX",
@@ -969,9 +1027,13 @@ mod tests {
             "STATUS_MAX_TABS_PREFIX",
             "STATUS_RESTORE_EMPTY",
             "STATUS_SEARCH_EMPTY_QUERY",
+            // Q03: strings.rs へ移動したブックマーク拒否も warning として固定。
+            "STATUS_BOOKMARK_NOT_PERSISTABLE",
         ];
-        // STATUS_DROP_SAME_DIRECTORY（「同じフォルダのためコピーしません」）は
-        // 操作の拒否ではなくコピー不要の情報通知として green のまま（L06 対象外）。
+        // STATUS_DROP_SAME_DIRECTORY（「同じフォルダのためコピーしません」）と
+        // STATUS_SAME_DIRECTORY_NO_MOVE（「同じフォルダのため移動しません」）は
+        // 操作の拒否ではなく同一フォルダへの不要な操作を行わない情報通知として
+        // green のまま（L06 対象外、Q02）。よって上の分類表には登録しない。
         let source = include_str!("strings.rs");
         let mut seen = std::collections::HashSet::new();
         for (name, message, class) in documented {

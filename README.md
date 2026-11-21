@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 516 tests
+cargo test           # 全テスト（データ層・監視・P1 機能を含む。件数は実行結果を参照）
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -98,7 +98,7 @@ cargo test           # 516 tests
 
 ## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-21 更新）
 
-- `cargo build` 警告 0 / `cargo test` **516 passed / 0 failed**
+- `cargo build` 警告 0 / `cargo test` **全件 passed / 0 failed**（件数は実行結果を参照）
   （2026-11-21 時点。初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認

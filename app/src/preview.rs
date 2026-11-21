@@ -378,6 +378,29 @@ mod image_tests {
     }
 
     #[test]
+    fn sniffs_pnm_magic_p1_through_p6_only() {
+        // PNM's on-disk magic is P1..P6 (PBM/PGM/PPM in ASCII and raw forms);
+        // P0 and P7 are not PNM magics and must not be guessed as any image.
+        let cases: &[(&[u8], Option<ImageFormat>)] = &[
+            (b"P1", Some(ImageFormat::Pnm)),
+            (b"P2", Some(ImageFormat::Pnm)),
+            (b"P3", Some(ImageFormat::Pnm)),
+            (b"P4", Some(ImageFormat::Pnm)),
+            (b"P5", Some(ImageFormat::Pnm)),
+            (b"P6", Some(ImageFormat::Pnm)),
+            (b"P0", None),
+            (b"P7", None),
+        ];
+        for (magic, expected) in cases {
+            assert_eq!(
+                sniff_image_format(magic).as_ref(),
+                expected.as_ref(),
+                "magic {magic:?}"
+            );
+        }
+    }
+
+    #[test]
     fn sniff_image_format_ignores_svg_past_the_first_kib() {
         // The sniffer only decodes the leading 1024 bytes. Keep the positive
         // control on one side of that boundary and the negative case exactly on
@@ -648,6 +671,22 @@ mod workflow_tests {
         assert_eq!(step_preview_index(&entries, Some(0), 1), Some(1));
         assert_eq!(step_preview_index(&entries, Some(2), -1), Some(1));
         assert_eq!(step_preview_index(&entries, Some(2), 1), Some(3));
+    }
+
+    #[test]
+    fn preview_navigation_zero_delta_keeps_current_or_falls_forward() {
+        let entries = listing();
+        // A previewable current row comes back unchanged: with delta 0 the
+        // wrapped position arithmetic is a no-op.
+        assert_eq!(step_preview_index(&entries, Some(1), 0), Some(1));
+        assert_eq!(step_preview_index(&entries, Some(3), 0), Some(3));
+        // A non-previewable current row (folder/symlink/stale index) takes the
+        // fallback branch. delta 0 is not < 0, so it lands on the first
+        // previewable slot after the focused row, wrapping to the first one
+        // when the focused row is at or past the last previewable slot.
+        assert_eq!(step_preview_index(&entries, Some(0), 0), Some(1));
+        assert_eq!(step_preview_index(&entries, Some(2), 0), Some(3));
+        assert_eq!(step_preview_index(&entries, Some(9), 0), Some(1));
     }
 
     #[test]

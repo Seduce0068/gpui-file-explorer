@@ -663,6 +663,30 @@ mod tests {
     }
 
     #[test]
+    fn set_prefer_dark_with_only_one_breeze_sibling_is_safe() {
+        // The `let (Some(light), Some(dark))` pattern in `reorder_breeze_themes`
+        // bails out when either sibling is missing: no swap and no panic. The
+        // flag and cache still change on a real preference toggle.
+        for (tag, names) in [
+            ("light-only", ["breeze", "hicolor"]),
+            ("dark-only", ["breeze-dark", "hicolor"]),
+        ] {
+            let mut resolver = SystemIconResolver::new();
+            resolver.themes = names.iter().map(|name| name.to_string()).collect();
+            let original = resolver.themes.clone();
+            resolver.cache.insert(("icon".to_string(), 16), None);
+
+            resolver.set_prefer_dark(true);
+            assert_eq!(
+                resolver.themes, original,
+                "{tag}: theme order must be untouched"
+            );
+            assert!(resolver.prefer_dark, "{tag}: flag must be updated");
+            assert!(resolver.cache.is_empty(), "{tag}: cache must be cleared");
+        }
+    }
+
+    #[test]
     fn set_prefer_dark_already_dark_order_is_not_swapped_twice() {
         let mut resolver = SystemIconResolver::new();
         resolver.themes = vec![

@@ -367,6 +367,9 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_SEARCH_EMPTY_QUERY,
     // P03: 検索を開く前の案内は操作拒否なので amber（放置すると green になる）。
     STATUS_SEARCH_NOT_OPEN,
+    // Q03: ブックマーク拒否は「できません」を含むが、具体的な拒否通知として
+    // warning(amber) に分類する（error マーカーより先に判定される）。
+    STATUS_BOOKMARK_NOT_PERSISTABLE,
 ];
 
 /// Sentinels rendered in red: wrapped errors and the concrete
@@ -398,15 +401,16 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     // fixed part itself is the marker; otherwise these refusals read as success.
     STATUS_NOT_FOUND_SUFFIX,
     STATUS_MISSING_COUNT_SUFFIX,
+    // Q02: P08 の「できません」拒否は STATUS_OP_FAILED_SUFFIX に包含的だが、
+    // 明示的に登録してマーカー表の完全性をテストでも固定する。
+    STATUS_SPECIAL_FILE_NO_COPY,
+    STATUS_FOLDER_NO_PREVIEW,
+    STATUS_SYMLINK_NO_PREVIEW,
 ];
 
-/// Status shown when a bookmark toggle targets a path serde cannot persist
-/// (non-UTF-8). Local to `main.rs` because `strings.rs` is intentionally out of
-/// scope for this module.
-const STATUS_BOOKMARK_NOT_PERSISTABLE: &str = "このパスはブックマークできません（非UTF-8）";
-
 /// Status shown when the properties metadata read is denied by the OS.
-/// Local to `main.rs` for the same reason as [`STATUS_BOOKMARK_NOT_PERSISTABLE`].
+/// The sibling bookmark refusal was moved to `strings.rs` (Q03); this literal
+/// stays local because only the properties call sites use it.
 const STATUS_ACCESS_DENIED: &str = "アクセスが拒否されました";
 
 /// Pure colour decision for the primary status text (U-01). An explicit
@@ -1427,17 +1431,29 @@ fn active_keymap_overrides(keymap: &KeyMap) -> Vec<(String, String)> {
                 .map(|chord| (keymap_action_name(binding.action), chord))
         })
         .collect();
-    // P07: a rebind can evict a shipped default binding entirely (e.g. binding
-    // `copy` to ctrl+p removes the default ctrl+c). Report those actions as
-    // unassigned so F1 help stays truthful about what users can actually press.
-    let seen: Vec<KeyAction> = keymap
-        .bindings
-        .iter()
-        .map(|binding| binding.action)
-        .collect();
+    // P07: compare *default chords*, not merely actions. A rebind moves the
+    // action to a new key and can leave one of its shipped chords unclaimed
+    // (e.g. rebind `open_terminal` to space: F4 is now unassigned although the
+    // action itself is still bound at space). A chord counts as claimed when a
+    // current binding matches its key/modifiers, using the same wildcard
+    // semantics as key dispatch. Report each lost chord explicitly so F1 help
+    // stays truthful about what users can actually press.
     for default in &defaults.bindings {
-        if !seen.contains(&default.action) {
-            overrides.push((keymap_action_name(default.action), "未割り当て".to_string()));
+        let claimed = keymap.bindings.iter().any(|binding| {
+            KeyMap::binding_matches(
+                binding,
+                &default.key,
+                default.ctrl,
+                default.alt,
+                default.shift,
+            )
+        });
+        if !claimed {
+            let chord = format_chord(default);
+            overrides.push((
+                keymap_action_name(default.action),
+                format!("{chord} → 未割り当て"),
+            ));
         }
     }
     overrides.sort();
@@ -1716,10 +1732,11 @@ use crate::strings::{
     EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE,
     FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT,
     OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
-    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
-    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-    STATUS_ERROR_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
+    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+    STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
+    STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
+    STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
+    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
     STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
     STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
     STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
@@ -11195,19 +11212,21 @@ mod tests {
         SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
         STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
-        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_ERROR_MARKERS,
-        STATUS_ERROR_PREFIX, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_NO_UNBIND_PREFIX,
-        STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
-        STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
-        STATUS_NO_SELECTION, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
-        STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
-        STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESTORE_EMPTY,
-        STATUS_RESTORE_FAILED, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
+        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FOLDER_NO_PREVIEW,
+        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
+        STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
+        STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
+        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PREVIEW_ONLY_DIRECTORY,
+        STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED,
+        STATUS_REDO_NO_TARGET, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED,
+        STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
         STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
-        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_TABS_ONLY_DIRECTORY,
-        STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
-        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY,
-        STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY,
+        STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
+        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_THEME_CHANGED_PREFIX,
+        STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK,
+        THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11235,6 +11254,10 @@ mod tests {
             (STATUS_TARGET_MISSING, C_RED),
             (STATUS_DROP_NOT_FOUND, C_RED),
             (STATUS_NOT_DIRECTORY, C_RED),
+            // Q02: P08 の「できません」拒否は concrete failure として error(red)。
+            (STATUS_SPECIAL_FILE_NO_COPY, C_RED),
+            (STATUS_FOLDER_NO_PREVIEW, C_RED),
+            (STATUS_SYMLINK_NO_PREVIEW, C_RED),
             ("コピーできません: 権限がありません", C_RED),
             ("3 件コピーしました（一部失敗: 権限がありません）", C_RED),
             (STATUS_SEARCH_STALE, C_YELLOW),
@@ -11269,7 +11292,13 @@ mod tests {
             (STATUS_SEARCH_EMPTY_QUERY, C_YELLOW),
             // P03: 検索未オープンの案内も拒否通知として amber。
             (STATUS_SEARCH_NOT_OPEN, C_YELLOW),
+            // Q03: 「できません」を含むが具体的な拒否通知なので warning(amber)。
+            (STATUS_BOOKMARK_NOT_PERSISTABLE, C_YELLOW),
             (STATUS_CHANGED, C_GREEN),
+            // Q02: 同一フォルダへの操作は拒否ではなく不要な操作を行わない
+            // 情報通知なので、従来どおり成功 green のまま。
+            (STATUS_SAME_DIRECTORY_NO_MOVE, C_GREEN),
+            (STATUS_DROP_SAME_DIRECTORY, C_GREEN),
             ("3 件をコピーしました", C_GREEN),
             ("", C_GREEN),
         ];
@@ -11909,21 +11938,65 @@ mod tests {
 
     #[test]
     fn help_reports_evicted_default_bindings_as_unassigned() {
-        // A custom keymap that drops the shipped single f4 binding for
-        // open_terminal must make F1 help stop claiming F4 works (P07).
-        // Model the evicted state directly — rebind's shift-wildcard matching
-        // does not always evict a `shift: None` default.
+        // Direct-state regression: a keymap that drops the shipped single f4
+        // binding for open_terminal must make F1 help stop claiming F4 works
+        // (P07). The chord, not just the action, is now reported.
         let mut keymap = KeyMap::default_keymap();
         keymap
             .bindings
             .retain(|b| b.action != KeyAction::OpenTerminal);
         let overrides = active_keymap_overrides(&keymap);
         assert!(
-            overrides.contains(&("open_terminal".to_string(), "未割り当て".to_string())),
-            "evicted default must be reported: {overrides:?}"
+            overrides.contains(&("open_terminal".to_string(), "f4 → 未割り当て".to_string())),
+            "evicted default chord must be reported: {overrides:?}"
         );
         let line = help_overrides_line(&keymap).expect("override notice");
-        assert!(line.contains("open_terminal → 未割り当て"), "{line}");
+        assert!(line.contains("open_terminal → f4 → 未割り当て"), "{line}");
+    }
+
+    #[test]
+    fn help_reports_unassigned_default_chord_after_real_rebind() {
+        // P07: a real `rebind` moves the action, leaving its old chord
+        // unclaimed while the action stays bound elsewhere. space claims the
+        // new open_terminal binding, so only f4 is reported as unassigned;
+        // open_preview keeps f3, so no "space → 未割り当て" entry appears.
+        let mut keymap = KeyMap::default_keymap();
+        assert!(keymap.rebind(KeyAction::OpenTerminal, "space", false, false, false));
+        let overrides = active_keymap_overrides(&keymap);
+        assert!(
+            overrides.contains(&("open_terminal".to_string(), "space".to_string())),
+            "live rebind must still be reported: {overrides:?}"
+        );
+        assert!(
+            overrides.contains(&("open_terminal".to_string(), "f4 → 未割り当て".to_string())),
+            "f4 must be reported as unassigned: {overrides:?}"
+        );
+        assert!(
+            !overrides
+                .iter()
+                .any(|(_, chord)| chord == "space → 未割り当て"),
+            "space is still bound to open_terminal: {overrides:?}"
+        );
+        let line = help_overrides_line(&keymap).expect("override notice");
+        assert!(line.contains("open_terminal → f4 → 未割り当て"), "{line}");
+    }
+
+    #[test]
+    fn help_reports_every_unassigned_default_chord_for_one_action() {
+        // P07: open_preview ships two default chords (space / f3). Rebinding it
+        // must report both; sort/dedup must not collapse them into one line.
+        let mut keymap = KeyMap::default_keymap();
+        assert!(keymap.rebind(KeyAction::OpenPreview, "f9", false, false, false));
+        let overrides = active_keymap_overrides(&keymap);
+        for chord in ["f3", "space"] {
+            assert!(
+                overrides.contains(&("open_preview".to_string(), format!("{chord} → 未割り当て"))),
+                "{chord} must be reported: {overrides:?}"
+            );
+        }
+        let line = help_overrides_line(&keymap).expect("override notice");
+        assert!(line.contains("open_preview → f3 → 未割り当て"), "{line}");
+        assert!(line.contains("open_preview → space → 未割り当て"), "{line}");
     }
 
     #[test]
@@ -11939,9 +12012,15 @@ mod tests {
 
         let mut keymap = KeyMap::default_keymap();
         assert!(keymap.rebind(KeyAction::OpenPreview, "p", true, true, false));
+        // P07: the live override stays, and both shipped open_preview chords
+        // (f3 / space) are now unassigned. Sorted by (action, chord).
         assert_eq!(
             active_keymap_overrides(&keymap),
-            vec![("open_preview".to_string(), "ctrl+shift+p".to_string())]
+            vec![
+                ("open_preview".to_string(), "ctrl+shift+p".to_string()),
+                ("open_preview".to_string(), "f3 → 未割り当て".to_string()),
+                ("open_preview".to_string(), "space → 未割り当て".to_string()),
+            ]
         );
         assert_eq!(
             chord_for_action(&keymap, KeyAction::OpenPreview).as_deref(),
@@ -14437,6 +14516,22 @@ mod tests {
         let loose = fuzzy_score("main.rs", "mns").unwrap();
         assert!(exact > loose, "exact={exact} loose={loose}");
         assert!(fuzzy_score("src/main.rs", "mr").is_some());
+    }
+
+    #[test]
+    fn fuzzy_source_label_covers_every_variant() {
+        // Q10: all five `FuzzySource` arms are asserted in one table so a new
+        // variant without a label (or a changed label) fails this test.
+        let cases = [
+            (FuzzySource::Tab, "タブ"),
+            (FuzzySource::Bookmark, "ブックマーク"),
+            (FuzzySource::Recent, "最近"),
+            (FuzzySource::Ancestor, "階層"),
+            (FuzzySource::Entry, "ファイル"),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(source.label(), expected, "{source:?}");
+        }
     }
 
     #[test]
