@@ -993,8 +993,8 @@ app/
 | 性能 | 1k/10k 件の初回表示・スクロール・監視反映 | 手動 + `date`/スクショ + `/proc/<pid>/status` | △（1k のみ） |
 
 **as-built スナップショット（2026-11-21 実行、現在値は README / 実行結果を参照）**:
-単体テストは `cargo test --all-targets --locked` が 471 passed / 0 failed（app）。
-数値は 2026-11-21 実行の as-built スナップショット（README の 463 と一致）。
+単体テストは `cargo test --all-targets --locked` が 482 passed / 0 failed（app）。
+数値は 2026-11-21 実行の as-built スナップショット（README.md / app/README.md の cargo test 欄と一致）。
 実機 GUI は KWin D-Bus + XDG Portal で起動・描画・監視・ゴミ箱を確認済み。
 `DISPLAY=:1 WAYLAND_DISPLAY=wayland-0` + spectacle + kdotool でスクショ取得可だが、
 実キー入力は KWin ポータル制約で未検証。UI ヘッドレスは未実装（P2 先送り）、

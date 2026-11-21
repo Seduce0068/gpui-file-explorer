@@ -24,7 +24,7 @@ cd gpui-file-explorer   # リポジトリ直下
 bash scripts/dev-setup.sh   # 初回のみ（下記「前提」を参照）
 cd app
 cargo build                 # 初回（依存込み）約 1m30s / 2回目以降 約2s / debug バイナリ 約 165MiB
-cargo test                  # 471 tests（データ層 + 監視）
+cargo test                  # 482 tests（データ層 + 監視）
 ```
 
 リポジトリ直下から全体をビルドする場合:
@@ -148,8 +148,9 @@ cd app
 ラジオボタン・スイッチ・タブバーはこの巡回には含まれません。
 代わりにタブページは `Alt+1`〜`Alt+5` で直接切り替え、ファイルタブの
 「既定の並び順」は `Alt+S` でキーボードから切り替えられます。
-検索欄に一致が無く他タブに一致がある場合は、そのタブ名とともに
-「Alt+数字でタブ移動」と表示されます。
+検索欄に一致が無く他タブに一致がある場合は、一致したタブ名とその直接移動キー
+が表示されます（例: 「該当する設定がありません。ターミナル（Alt+4）タブに
+一致があります」）。
 
 ### キーマップの上書き（設定 UI / settings.json）
 
@@ -408,7 +409,7 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 
 ```bash
 cargo test
-# running 471 tests ... test result: ok. 471 passed; 0 failed
+# running 482 tests ... test result: ok. 482 passed; 0 failed
 ```
 
 カバレッジ: ディレクトリ読み込み（ディレクトリ先頭・メタデータ・エラー）、
@@ -421,7 +422,7 @@ fingerprint の変化検出、パンくず生成、一意な新規フォルダ�
 
 ## 実行検証記録（2026-11-11, このマシン。テスト数は 2026-11-21 更新）
 
-- `cargo build`: 警告 0 / `cargo test`: 471 passed
+- `cargo build`: 警告 0 / `cargo test`: 482 passed
   （初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - 起動: stderr 0 行（EGL/Vulkan/Wayland エラーなし）
 - KWin D-Bus（Wayland ネイティブであることの確認）:

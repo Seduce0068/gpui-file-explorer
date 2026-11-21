@@ -727,29 +727,29 @@ status: current
 
 ### 優先度: 高（ループ R8・confirmed）
 
-- [ ] **L01** open_settings 自身を rebind すると Ctrl+, が消え案内が矛盾
+- [x] **L01** open_settings 自身を rebind すると Ctrl+, が消え案内が矛盾 — 対応: loop10-core
   — main.rs:1004 / settings.rs:396
-- [ ] **L02** is_reserved_chord が内部空白入り chord をすり抜ける
+- [x] **L02** is_reserved_chord が内部空白入り chord をすり抜ける — 対応: loop10-core
   — settings.rs:384
-- [ ] **L03** 設定検索が Alt+S / Alt+1〜5 にマッチしない
+- [x] **L03** 設定検索が Alt+S / Alt+1〜5 にマッチしない — 対応: loop10-ux
   — settings_ui.rs:406
 
 ### 優先度: 中（ループ R8）
 
-- [ ] **L04** Search ビューで Ctrl+, が keymap に到達しない
+- [x] **L04** Search ビューで Ctrl+, が keymap に到達しない — 対応: loop10-core
   — main.rs:267
-- [ ] **L05** 他タブ一致ヒントが Alt+数字の具体的番号を案内しない
+- [x] **L05** 他タブ一致ヒントが Alt+数字の具体的番号を案内しない — 対応: loop10-ux
   — settings_ui.rs:481
-- [ ] **L06** 対象なし系ステータスが成功色のまま — main.rs:325
-- [ ] **L07** 既定ショートカット一覧に Ctrl+, / Alt+数字 / Alt+S 未掲載
+- [x] **L06** 対象なし系ステータスが成功色のまま — main.rs:325 — 対応: loop10-ux + 親（main.rs マーカー追加）
+- [x] **L07** 既定ショートカット一覧に Ctrl+, / Alt+数字 / Alt+S 未掲載 — 対応: loop10-ux
   — settings_ui.rs:793
-- [ ] **L08** generic_icon_for_kind の 5 分岐が未テスト — system_icons.rs:294
-- [ ] **L09** text-x- 二重プレフィックスガード未テスト — system_icons.rs:336
-- [ ] **L10** normalize_events の空 paths→Rescan 分岐が未テスト — watcher.rs:56
-- [ ] **L11** human_size の T/P 単位分岐が未テスト — model.rs:726
-- [ ] **L12** DESIGN 471 件の Root Proof が存在しない README:463 を参照
+- [x] **L08** generic_icon_for_kind の 5 分岐が未テスト — system_icons.rs:294 — 対応: loop10-tests
+- [x] **L09** text-x- 二重プレフィックスガード未テスト — system_icons.rs:336 — 対応: loop10-tests
+- [x] **L10** normalize_events の空 paths→Rescan 分岐が未テスト — watcher.rs:56 — 対応: loop10-tests
+- [x] **L11** human_size の T/P 単位分岐が未テスト — model.rs:726 — 対応: loop10-tests
+- [x] **L12** DESIGN 471 件の Root Proof が存在しない README:463 を参照 — 対応: loop10-tests
   — DESIGN.md:997
-- [ ] **L13** review-report 却下根拠の README:133 が現行と不一致
+- [x] **L13** review-report 却下根拠の README:133 が現行と不一致 — 対応: loop10-tests
   — review-report.md:344
 
 ### 優先度: 低（調査タスク）

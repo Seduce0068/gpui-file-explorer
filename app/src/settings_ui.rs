@@ -402,7 +402,7 @@ const APPEARANCE_THEME_KEYWORDS: &[&str] = &[
 const APPEARANCE_VIEW_KEYWORDS: &[&str] =
     &["レイアウト", "view", "一覧", "アイコン", "表示", "外観"];
 const FILES_HIDDEN_KEYWORDS: &[&str] = &["隠しファイル", "hidden", "ファイル", "ドットファイル"];
-const FILES_SORT_KEYWORDS: &[&str] = &["並び", "sort", "ファイル", "順序"];
+const FILES_SORT_KEYWORDS: &[&str] = &["並び", "sort", "ファイル", "順序", "Alt+S"];
 const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "ショートカット",
     "キー",
@@ -415,6 +415,9 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "Ctrl+Tab",
     "Ctrl+Shift+Tab",
     "F1",
+    // The no-match hint names these direct-jump chords; searching that wording
+    // must land on the Shortcuts page too (L03).
+    "Alt+数字",
 ];
 const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "既定",
@@ -423,6 +426,15 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "キー",
     "Alt+K",
     "Alt+T",
+    "Alt+S",
+    // Settings-dialog tab navigation, listed in F1 help and the default-shortcut
+    // list below (L03/L07). Keep the array in sync with SHORTCUTS_DEFAULT_LINES.
+    "Alt+1",
+    "Alt+2",
+    "Alt+3",
+    "Alt+4",
+    "Alt+5",
+    "Alt+数字",
     "Ctrl+,",
     "Ctrl+F",
     "Ctrl+L",
@@ -441,6 +453,20 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
 /// too (the Save handler parses it through `parse_keymap_input`), so the hint
 /// must not send users to Alt+K for something this field can do itself (K04).
 const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。";
+/// Rows of the "主な既定のショートカット" list, kept as one constant so the
+/// Shortcuts tab, F1 help (`strings::HELP_SECTIONS`) and README cannot drift
+/// apart. The chord names are also searchable via `SHORTCUTS_DEFAULTS_KEYWORDS`
+/// (L03/L07).
+const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
+    "F1 … ヘルプ / キー一覧",
+    "Ctrl+L … 場所を入力",
+    "Ctrl+F … ファイルを検索",
+    "F4 … ターミナルを開く",
+    "Alt+T … ターミナル起動コマンドの設定",
+    "Ctrl+, … 設定を開く",
+    "Alt+1〜5 … 設定ダイアログのタブへ直接移動",
+    "Alt+S … ファイルタブの並び順を切替",
+];
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &["ターミナル", "terminal", "コマンド", "起動"];
 const PERSONALIZE_PALETTE_KEYWORDS: &[&str] = &["個人化", "パレット", "色", "カラー", "theme"];
 const PERSONALIZE_INFO_KEYWORDS: &[&str] = &["個人化", "情報", "about", "設定", "バージョン"];
@@ -476,15 +502,19 @@ pub fn tabs_matching_query(query: &str) -> Vec<SettingsTab> {
 /// Message shown when the active tab has no rows matching the search query.
 ///
 /// Pure so the wording can be regression-tested without a GPUI window. When
-/// another tab holds the matches, the hint also names the Alt+digit direct-jump
-/// keys, giving the user a keyboard route to the reported page (K07).
+/// another tab holds the matches, the hint names each tab together with its
+/// own Alt+digit direct-jump key, giving the user an actionable keyboard route
+/// to the reported page instead of a generic "Alt+数字" (K07/L05).
 pub fn no_match_hint(matching_tabs: &[SettingsTab]) -> String {
     if matching_tabs.is_empty() {
         "該当する設定がありません".to_string()
     } else {
-        let labels: Vec<&'static str> = matching_tabs.iter().map(|tab| tab.label()).collect();
+        let labels: Vec<String> = matching_tabs
+            .iter()
+            .map(|tab| format!("{}（Alt+{}）", tab.label(), tab.index() + 1))
+            .collect();
         format!(
-            "該当する設定がありません。{} タブに一致があります（Alt+数字でタブ移動）",
+            "該当する設定がありません。{}タブに一致があります",
             labels.join("、")
         )
     }
@@ -793,12 +823,10 @@ pub fn render_settings_content<V: SettingsUiHost>(
             if show_shortcuts_defaults {
                 column = column
                     .child(divider(palette))
-                    .child(section_title(palette, "主な既定のショートカット"))
-                    .child(info_line(palette, "F1 … ヘルプ / キー一覧"))
-                    .child(info_line(palette, "Ctrl+L … 場所を入力"))
-                    .child(info_line(palette, "Ctrl+F … ファイルを検索"))
-                    .child(info_line(palette, "F4 … ターミナルを開く"))
-                    .child(info_line(palette, "Alt+T … ターミナル起動コマンドの設定"));
+                    .child(section_title(palette, "主な既定のショートカット"));
+                for line in SHORTCUTS_DEFAULT_LINES {
+                    column = column.child(info_line(palette, line));
+                }
             }
             column
         }
@@ -1015,6 +1043,7 @@ mod tests {
         cancel_label, footer_status_text, matches_query, next_settings_focus, no_match_hint,
         selected_index, settings_focus_order, tabs_matching_query, SettingsFocusTarget,
         SettingsTab, SettingsUiAction, SettingsUiPalette, SETTINGS_KEYMAP_INPUT_HINT,
+        SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
     };
 
     #[test]
@@ -1122,18 +1151,31 @@ mod tests {
 
     #[test]
     fn no_match_hint_points_at_the_matching_tab_and_alt_digits() {
-        // K07: a hit in another tab must be actionable from the keyboard, so
-        // the hint names both the tab and the Alt+digit direct-jump keys.
-        let hint = no_match_hint(&[SettingsTab::Terminal]);
-        assert!(hint.contains("ターミナル タブに一致があります"));
-        assert!(hint.contains("Alt+数字でタブ移動"));
-        let multiple = no_match_hint(&[SettingsTab::Appearance, SettingsTab::Personalize]);
-        assert!(multiple.contains("外観、個人化 タブに一致があります"));
-        assert!(multiple.contains("Alt+数字でタブ移動"));
+        // K07/L05: a hit in another tab must be actionable from the keyboard,
+        // so the hint names the tab *and its exact Alt+digit* — not a generic
+        // "Alt+数字" that leaves the user guessing which key to press.
+        assert_eq!(
+            no_match_hint(&[SettingsTab::Terminal]),
+            "該当する設定がありません。ターミナル（Alt+4）タブに一致があります"
+        );
+        assert_eq!(
+            no_match_hint(&[SettingsTab::Appearance, SettingsTab::Personalize]),
+            "該当する設定がありません。外観（Alt+1）、個人化（Alt+5）タブに一致があります"
+        );
+        // Every tab advertises the same digit the real key handler accepts, so
+        // the hint can never drift from the F1 help / README table.
+        for tab in SettingsTab::ALL {
+            let hint = no_match_hint(&[tab]);
+            assert!(
+                hint.contains(&format!("{}（Alt+{}）", tab.label(), tab.index() + 1)),
+                "hint for {tab:?}: {hint}"
+            );
+            assert!(!hint.contains("Alt+数字"), "generic hint: {hint}");
+        }
         // With no hits at all there is no page to jump to.
         let none = no_match_hint(&[]);
         assert_eq!(none, "該当する設定がありません");
-        assert!(!none.contains("Alt+数字"));
+        assert!(!none.contains("Alt+"));
     }
 
     #[test]
@@ -1169,6 +1211,14 @@ mod tests {
         for key in [
             "Alt+K",
             "Alt+T",
+            // L03: settings-dialog tab/direct-jump chords and the wording used
+            // by the no-match hint must be searchable as well.
+            "Alt+1",
+            "Alt+2",
+            "Alt+3",
+            "Alt+4",
+            "Alt+5",
+            "Alt+数字",
             "Ctrl+,",
             "Ctrl+F",
             "Ctrl+L",
@@ -1178,6 +1228,7 @@ mod tests {
             "Ctrl+Space",
             "Ctrl+Shift+C",
             "Ctrl+Tab",
+            "Ctrl+Shift+Tab",
         ] {
             assert_eq!(
                 tabs_matching_query(key),
@@ -1189,6 +1240,46 @@ mod tests {
                 tabs_matching_query(&key.to_lowercase()),
                 vec![SettingsTab::Shortcuts],
                 "lowercase query {key} must surface the Shortcuts tab"
+            );
+        }
+        // Alt+S names the Files-tab sort row and is also one of the default
+        // shortcuts, so both pages surface in display order (L03/L07).
+        assert_eq!(
+            tabs_matching_query("Alt+S"),
+            vec![SettingsTab::Files, SettingsTab::Shortcuts]
+        );
+        assert_eq!(
+            tabs_matching_query("alt+s"),
+            vec![SettingsTab::Files, SettingsTab::Shortcuts]
+        );
+    }
+
+    #[test]
+    fn default_shortcut_list_matches_f1_help_and_search_keywords() {
+        // L07: the Shortcuts tab must advertise the same keys as F1 help and
+        // README. Every literal chord shown here is searchable via the
+        // defaults keyword group, and the Alt+1〜5 display form expands to the
+        // five individually searchable chords.
+        for key in ["F1", "Ctrl+L", "Ctrl+F", "F4", "Alt+T", "Ctrl+,", "Alt+S"] {
+            assert!(
+                SHORTCUTS_DEFAULT_LINES
+                    .iter()
+                    .any(|line| line.contains(key)),
+                "default shortcut list must show {key}"
+            );
+            assert!(
+                SHORTCUTS_DEFAULTS_KEYWORDS.contains(&key),
+                "default shortcut keywords must contain {key}"
+            );
+        }
+        assert!(SHORTCUTS_DEFAULT_LINES
+            .iter()
+            .any(|line| line.contains("Alt+1〜5")));
+        for digit in 1..=5 {
+            let key = format!("Alt+{digit}");
+            assert!(
+                SHORTCUTS_DEFAULTS_KEYWORDS.contains(&key.as_str()),
+                "default shortcut keywords must contain {key}"
             );
         }
     }

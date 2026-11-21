@@ -203,9 +203,11 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
 
 /// Keymap settings dialog (Alt+K): the input syntax and the reserved keys.
 /// Text entry is used instead of raw key capture so Escape / F1 keep their
-/// dialog-ownership role (see `app/src/main.rs` keymap helpers).
+/// dialog-ownership role (see `app/src/main.rs` keymap helpers). The
+/// `open_settings` notice explains why the shipped Ctrl+, cannot be moved: the
+/// F1 help and the discard-recovery hint promise that chord (L01).
 pub const KEYMAP_INPUT_HINT: &str =
-    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。escape / f1 は予約キーです";
+    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。escape / f1 は予約キーです。open_settings は Ctrl+, 固定で変更できません";
 
 // ---------------------------------------------------------------------------
 // 空状態・読み込み
@@ -445,6 +447,7 @@ mod tests {
         assert!(KEYMAP_INPUT_HINT.contains("open_preview ctrl+shift+p"));
         assert!(KEYMAP_INPUT_HINT.contains("unbind アクション名"));
         assert!(KEYMAP_INPUT_HINT.contains("escape / f1"));
+        assert!(KEYMAP_INPUT_HINT.contains("open_settings は Ctrl+, 固定で変更できません"));
     }
 
     #[test]
@@ -720,6 +723,116 @@ mod tests {
             STATUS_THEME_CHANGED_PREFIX,
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
+        }
+    }
+
+    #[test]
+    fn refusal_statuses_have_a_documented_colour_class() {
+        // L06: 「操作を行わなかった / できなかった」を表す STATUS_* は成功 green
+        // ではなく warning(amber) / error(red) に分類する。表示側の
+        // STATUS_WARNING_MARKERS / STATUS_ERROR_MARKERS は main.rs（別担当）が
+        // 管理するため、ここでは定数名→分類の正規一覧を持ち、登録漏れや
+        // 文言変更を検出できるようにする。
+        // 色の適用自体は main.rs の status_color が行う（このテストは分類表のみ検証）。
+        let documented: &[(&str, &str, &str)] = &[
+            // 既に main.rs の warning markers に登録済みの拒否通知。
+            ("STATUS_NO_SELECTION", STATUS_NO_SELECTION, "warning"),
+            ("STATUS_NO_CLIPBOARD", STATUS_NO_CLIPBOARD, "warning"),
+            (
+                "STATUS_DROP_NO_DESTINATION",
+                STATUS_DROP_NO_DESTINATION,
+                "warning",
+            ),
+            ("STATUS_REDO_NO_TARGET", STATUS_REDO_NO_TARGET, "warning"),
+            ("STATUS_TRASH_NO_COPY", STATUS_TRASH_NO_COPY, "warning"),
+            ("STATUS_TRASH_NO_CUT", STATUS_TRASH_NO_CUT, "warning"),
+            ("STATUS_TRASH_NO_PASTE", STATUS_TRASH_NO_PASTE, "warning"),
+            ("STATUS_TRASH_NO_RENAME", STATUS_TRASH_NO_RENAME, "warning"),
+            ("STATUS_TRASH_NO_PURGE", STATUS_TRASH_NO_PURGE, "warning"),
+            ("STATUS_TRASH_NO_HIDDEN", STATUS_TRASH_NO_HIDDEN, "warning"),
+            ("STATUS_TRASH_NO_SORT", STATUS_TRASH_NO_SORT, "warning"),
+            // 既に error markers に登録済みの concrete failure。
+            ("STATUS_UNDO_FAILED", STATUS_UNDO_FAILED, "error"),
+            ("STATUS_REDO_FAILED", STATUS_REDO_FAILED, "error"),
+            ("STATUS_RENAME_FAILED", STATUS_RENAME_FAILED, "error"),
+            ("STATUS_TARGET_GONE", STATUS_TARGET_GONE, "error"),
+            ("STATUS_TARGET_MISSING", STATUS_TARGET_MISSING, "error"),
+            ("STATUS_DROP_NOT_FOUND", STATUS_DROP_NOT_FOUND, "error"),
+            ("STATUS_NOT_DIRECTORY", STATUS_NOT_DIRECTORY, "error"),
+            (
+                "STATUS_SETTINGS_SAVE_FAILED",
+                STATUS_SETTINGS_SAVE_FAILED,
+                "error",
+            ),
+            ("STATUS_TRASH_ALL_FAILED", STATUS_TRASH_ALL_FAILED, "error"),
+            ("STATUS_RESTORE_FAILED", STATUS_RESTORE_FAILED, "error"),
+            // L06: 未登録のため green で表示される定数。main.rs の
+            // STATUS_WARNING_MARKERS に追加すべき正規一覧（下の配列と同期）。
+            (
+                "STATUS_TABS_ONLY_DIRECTORY",
+                STATUS_TABS_ONLY_DIRECTORY,
+                "warning",
+            ),
+            (
+                "STATUS_BOOKMARKS_ONLY_DIRECTORY",
+                STATUS_BOOKMARKS_ONLY_DIRECTORY,
+                "warning",
+            ),
+            ("STATUS_LAST_TAB", STATUS_LAST_TAB, "warning"),
+            (
+                "STATUS_DROP_ONLY_DIRECTORY",
+                STATUS_DROP_ONLY_DIRECTORY,
+                "warning",
+            ),
+            ("STATUS_DROP_EMPTY", STATUS_DROP_EMPTY, "warning"),
+            (
+                "STATUS_TAB_RESTORE_EMPTY",
+                STATUS_TAB_RESTORE_EMPTY,
+                "warning",
+            ),
+            ("STATUS_UNDO_EMPTY", STATUS_UNDO_EMPTY, "warning"),
+            ("STATUS_REDO_EMPTY", STATUS_REDO_EMPTY, "warning"),
+        ];
+        // L06 の指摘で main.rs 側への登録が必要な定数名（重複・脱落を防止）。
+        const PENDING_WARNING_MARKERS: &[&str] = &[
+            "STATUS_TABS_ONLY_DIRECTORY",
+            "STATUS_BOOKMARKS_ONLY_DIRECTORY",
+            "STATUS_LAST_TAB",
+            "STATUS_DROP_ONLY_DIRECTORY",
+            "STATUS_DROP_EMPTY",
+            "STATUS_TAB_RESTORE_EMPTY",
+            "STATUS_UNDO_EMPTY",
+            "STATUS_REDO_EMPTY",
+        ];
+        // STATUS_DROP_SAME_DIRECTORY（「同じフォルダのためコピーしません」）は
+        // 操作の拒否ではなくコピー不要の情報通知として green のまま（L06 対象外）。
+        let source = include_str!("strings.rs");
+        let mut seen = std::collections::HashSet::new();
+        for (name, message, class) in documented {
+            assert!(seen.insert(*name), "duplicate classification: {name}");
+            assert!(
+                source.contains(&format!("pub const {name}")),
+                "{name} is not declared in strings.rs"
+            );
+            assert!(!message.is_empty(), "{name} must not be empty");
+            assert!(
+                message.contains("ません")
+                    || message.contains("のみ")
+                    || message.contains("未対応"),
+                "{name} is not refusal-worded: {message}"
+            );
+            assert!(
+                *class == "warning" || *class == "error",
+                "{name} has unknown class: {class}"
+            );
+        }
+        for name in PENDING_WARNING_MARKERS {
+            assert!(
+                documented
+                    .iter()
+                    .any(|(n, _, class)| *n == *name && *class == "warning"),
+                "{name} must be documented as a warning"
+            );
         }
     }
 

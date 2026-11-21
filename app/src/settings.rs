@@ -372,34 +372,55 @@ fn sane_terminal_command(command: &str) -> bool {
         && !command.chars().any(char::is_control)
 }
 
+/// Whether an action is reserved and therefore must keep its shipped chord.
+///
+/// `open_settings` owns Ctrl+, which both the F1 help and
+/// `STATUS_SETTINGS_DISCARDED` advertise as the way back into preferences. A
+/// persisted override (or a dialog command) that moves or unbinds the action
+/// would evict Ctrl+, leaving those static hints pointing at a dead key (L01).
+/// The check is case-insensitive and trims outer whitespace, matching the
+/// tolerance of the chord helpers; `KeyMap::rebind` enforces the same rule on
+/// the `KeyAction` enum side.
+pub fn is_reserved_action(action: &str) -> bool {
+    action.trim().eq_ignore_ascii_case("open_settings")
+}
+
 /// Whether a chord's key is one of the keys reserved for dialog ownership or
 /// the settings shortcut.
 ///
 /// Only the final `+`-separated segment is the key: `f10` / `f12` contain the
 /// substring "f1" but are not the reserved F1 dialog key. Comparison is
-/// case-insensitive. `,` is reserved because Ctrl+, is the shipped OpenSettings
-/// shortcut (K01): a rebind must not evict it and make the
+/// case-insensitive and the segment is trimmed, so `ctrl + ,` is recognised
+/// just like `ctrl+,` (L02): `parse_chord` ignores internal whitespace and
+/// would otherwise normalise the chord to a reserved key only after validation.
+/// `,` is reserved because Ctrl+, is the shipped OpenSettings shortcut (K01):
+/// a rebind must not evict it and make the
 /// "Ctrl+, で設定を開き直せます" recovery hint false. This is the single
 /// definition shared by settings loading and the UI's keymap dialog.
 pub fn is_reserved_chord(chord: &str) -> bool {
     let lowered = chord.to_ascii_lowercase();
-    let key = lowered.rsplit('+').next().unwrap_or(lowered.as_str());
+    let key = lowered
+        .rsplit('+')
+        .next()
+        .unwrap_or(lowered.as_str())
+        .trim();
     key == "f1" || key == "escape" || key == ","
 }
 
 /// Normalize one persisted `(action_name, chord)` pair. Both sides are trimmed
-/// and bounded, and a chord that mentions a reserved key (`escape`, `f1` or
-/// `,`, see [`is_reserved_chord`]) is rejected so a bad file cannot take away a
-/// way out of a dialog or the Ctrl+, settings shortcut. Unknown action names
-/// are deliberately kept:
-/// `KeyMap::from_settings` ignores names that are not in the shipped table.
+/// and bounded, and entries that would take away a way out of a dialog or the
+/// Ctrl+, settings shortcut are rejected: a chord mentioning a reserved key
+/// (`escape`, `f1` or `,`, see [`is_reserved_chord`]) or a reserved action
+/// (`open_settings`, see [`is_reserved_action`]). Unknown action names are
+/// deliberately kept: `KeyMap::from_settings` ignores names that are not in
+/// the shipped table.
 fn sane_keymap_entry(action: &str, chord: &str) -> Option<(String, String)> {
     let action = action.trim();
     let chord = chord.trim();
     let sane = |value: &str| {
         !value.is_empty() && value.len() <= MAX_CHORD_BYTES && !value.chars().any(char::is_control)
     };
-    if !sane(action) || !sane(chord) || is_reserved_chord(chord) {
+    if !sane(action) || !sane(chord) || is_reserved_action(action) || is_reserved_chord(chord) {
         return None;
     }
     Some((action.to_string(), chord.to_string()))
@@ -3850,7 +3871,8 @@ mod terminal_command_tests {
 #[cfg(test)]
 mod keymap_settings_tests {
     use super::{
-        is_reserved_chord, sane_keymap_entry, Settings, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES,
+        is_reserved_action, is_reserved_chord, sane_keymap_entry, Settings, MAX_CHORD_BYTES,
+        MAX_KEYMAP_OVERRIDES,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -3986,9 +4008,33 @@ mod keymap_settings_tests {
         // Case-insensitive, like the chord parser in main.rs.
         assert!(is_reserved_chord("CTRL+F1"));
         assert!(is_reserved_chord("Escape"));
+        // L02: `parse_chord` trims each `+`-separated token, so whitespace
+        // around the final key must not smuggle a reserved chord past validation.
+        for chord in [
+            "ctrl + ,",
+            " ctrl + , ",
+            "ctrl+ ,",
+            "CTRL + F1",
+            "alt + escape",
+        ] {
+            assert!(
+                is_reserved_chord(chord),
+                "reserved with whitespace: {chord}"
+            );
+        }
         // `f10` / `f12` contain the substring "f1" but are ordinary keys.
         for chord in ["f10", "ctrl+f12", "shift+f19", "ctrl+p", ""] {
             assert!(!is_reserved_chord(chord), "not reserved: {chord}");
+        }
+    }
+
+    #[test]
+    fn is_reserved_action_protects_the_settings_shortcut_hint() {
+        for action in ["open_settings", " open_settings ", "OPEN_SETTINGS"] {
+            assert!(is_reserved_action(action), "reserved: {action}");
+        }
+        for action in ["open_preview", "settings", "open_settings_extra", ""] {
+            assert!(!is_reserved_action(action), "not reserved: {action}");
         }
     }
 
@@ -4001,13 +4047,48 @@ mod keymap_settings_tests {
             );
         }
         // K01: Ctrl+, is the shipped OpenSettings shortcut; a persisted rebind
-        // must not be able to evict it.
-        for chord in ["f1", "ctrl+f1", "escape", "alt+escape", ",", "ctrl+,"] {
+        // must not be able to evict it. L02: internal whitespace is normalised
+        // by `parse_chord` before the live rebind, so reject it here too.
+        for chord in [
+            "f1",
+            "ctrl+f1",
+            "escape",
+            "alt+escape",
+            ",",
+            "ctrl+,",
+            "ctrl + ,",
+            " ctrl + , ",
+        ] {
             assert!(
-                sane_keymap_entry("open_settings", chord).is_none(),
+                sane_keymap_entry("open_preview", chord).is_none(),
                 "{chord} should be rejected"
             );
         }
+        // L01: the action itself is reserved, so even an ordinary chord cannot
+        // move Ctrl+, away from OpenSettings.
+        for action in ["open_settings", " open_settings ", "OPEN_SETTINGS"] {
+            assert!(
+                sane_keymap_entry(action, "ctrl+o").is_none(),
+                "{action} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn keymap_validation_drops_reserved_action_overrides_from_settings_json() {
+        let (dir, path) = setup("reserved-action");
+        fs::write(
+            &path,
+            br#"{"version":1,"keymap":[["open_settings","ctrl+o"],["open_preview","ctrl + ,"],["quit","ctrl+q"]]}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(
+            loaded.keymap,
+            vec![("quit".to_string(), "ctrl+q".to_string())],
+            "neither the reserved action nor the spaced reserved chord may persist"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

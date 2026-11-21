@@ -1175,6 +1175,17 @@ mod tests {
     }
 
     #[test]
+    fn human_size_tera_peta_and_max_unit_boundary() {
+        // The T and P rungs of the ladder (L11).
+        assert_eq!(human_size(1024_u64.pow(4)), "1.0 T");
+        assert_eq!(human_size(1024_u64.pow(5)), "1.0 P");
+        // P is the last unit: one rung beyond it stays at P instead of
+        // inventing an E unit, and u64::MAX saturates the same way.
+        assert_eq!(human_size(1024_u64.pow(6)), "1024.0 P");
+        assert_eq!(human_size(u64::MAX), "16384.0 P");
+    }
+
+    #[test]
     fn datetime_and_age_handle_missing_times() {
         assert_eq!(human_datetime(None), "-");
         assert_eq!(human_age(None), "-");

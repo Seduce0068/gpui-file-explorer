@@ -409,7 +409,10 @@ fn reorder_breeze_themes(themes: &mut [String], prefer_dark: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{icon_name_for_kind, icon_name_variants, size_dir_candidates, SystemIconResolver};
+    use super::{
+        generic_icon_for_kind, icon_name_for_kind, icon_name_variants, size_dir_candidates,
+        SystemIconResolver,
+    };
     use crate::icons::{kind_for_name, FileKind};
 
     #[test]
@@ -467,6 +470,32 @@ mod tests {
     }
 
     #[test]
+    fn generic_icon_for_kind_covers_every_file_kind() {
+        // Table-driven oracle for every FileKind variant (L08): a missing or
+        // regressed branch would surface as a wrong icon name here.
+        let cases = [
+            (FileKind::Image, "image-x-generic"),
+            (FileKind::Code, "text-x-generic"),
+            (FileKind::Archive, "application-x-archive"),
+            (FileKind::Pdf, "application-pdf"),
+            (FileKind::Text, "text-x-generic"),
+            (FileKind::Audio, "audio-x-generic"),
+            (FileKind::Video, "video-x-generic"),
+            (FileKind::Unknown, "text-x-generic"),
+            (FileKind::Folder, "text-x-generic"),
+            (FileKind::Symlink, "text-x-generic"),
+        ];
+        assert_eq!(cases.len(), 10, "all FileKind variants must be listed");
+        for (kind, expected) in cases {
+            assert_eq!(
+                generic_icon_for_kind(kind),
+                expected,
+                "unexpected generic icon for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
     fn name_variants_cover_rust_and_symlink() {
         let rust = icon_name_variants("text-rust");
         assert_eq!(rust.first().map(String::as_str), Some("text-rust"));
@@ -486,6 +515,21 @@ mod tests {
         assert!(
             variants.iter().any(|v| v == "text-rust"),
             "the x-prefixed Rust name must fall back to text-rust: {variants:?}"
+        );
+    }
+
+    #[test]
+    fn name_variants_do_not_double_prefix_text_x() {
+        let variants = icon_name_variants("text-x-rust");
+        assert!(
+            !variants.iter().any(|v| v == "text-x-x-rust"),
+            "an already x-prefixed name must not gain a second x-: {variants:?}"
+        );
+        // The reverse Rust alias is deliberately special-cased, so the vector
+        // is [primary, alias] rather than the primary alone.
+        assert_eq!(
+            variants,
+            vec!["text-x-rust".to_string(), "text-rust".to_string()]
         );
     }
 
