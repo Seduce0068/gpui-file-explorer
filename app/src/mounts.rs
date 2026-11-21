@@ -179,7 +179,13 @@ tmpfs /run tmpfs rw,nosuid,nodev 0 0
 /snap/core24/1643 /snap/core24/1643 squashfs ro,nodev 0 0
 overlay /var/lib/docker/overlay2/abc overlay rw 0 0
 /dev/nvme0n1p7 /mnt/timeshift ext4 rw,relatime 0 0
+/dev/sdc1 /snap/data ext4 rw,relatime 0 0
+/dev/sdd1 /var/lib/docker/volumes ext4 rw,relatime 0 0
 "#;
+    // The last two lines use ALLOWED filesystems at hidden mount points, so
+    // they pass `fs_is_visible` and can only be dropped by `path_is_visible`.
+    // Without them, every hidden path in SAMPLE was also pseudo-fs and the
+    // parser tests never exercised the path filter non-vacuously.
 
     #[test]
     fn filters_pseudo_filesystems_and_dedupes() {
@@ -194,6 +200,35 @@ overlay /var/lib/docker/overlay2/abc overlay rw 0 0
         );
         assert_eq!(mounts[0].fs_type, "ext4");
         assert_eq!(mounts[2].fs_type, "exfat");
+    }
+
+    #[test]
+    fn path_is_visible_rejects_hidden_paths_even_with_allowed_filesystem() {
+        // Positive control: ext4 is an ALLOWED filesystem, so the hidden paths
+        // below are rejected by the path filter alone (not by fs filtering).
+        assert!(fs_is_visible("ext4"));
+        assert!(!path_is_visible("/snap/data"));
+        assert!(!path_is_visible("/var/lib/docker/volumes"));
+
+        // A mount table holding only allowed-fs mounts at hidden paths must
+        // still parse to nothing, proving `parse_mounts` really consults the
+        // path filter rather than getting the same result from `fs_is_visible`.
+        let hidden_only = "/dev/sdc1 /snap/data ext4 rw 0 0\n\
+                           /dev/sdd1 /var/lib/docker/volumes ext4 rw 0 0\n";
+        assert!(parse_mounts(hidden_only).is_empty());
+    }
+
+    #[test]
+    fn path_is_visible_uses_exact_hidden_prefixes_not_plain_string_prefixes() {
+        assert!(path_is_visible("/"));
+        assert!(!path_is_visible("/proc"));
+        assert!(!path_is_visible("/proc/self"));
+        // Boundary: "/procx" shares the prefix string but is not inside /proc.
+        assert!(path_is_visible("/procx"));
+        assert!(path_is_visible("/procfs/mounts"));
+        // The same component-aware rule applies to the longer hidden prefix.
+        assert!(!path_is_visible("/var/lib/docker"));
+        assert!(path_is_visible("/var/lib/dockerized"));
     }
 
     #[test]

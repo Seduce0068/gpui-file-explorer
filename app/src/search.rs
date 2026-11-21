@@ -1058,6 +1058,51 @@ mod scope_tests {
     }
 
     #[test]
+    fn search_roots_dedupes_alternative_spellings_of_one_directory() {
+        let dir = scratch("roots-alias");
+        let real = dir.join("real");
+        fs::create_dir_all(&real).unwrap();
+        let dot_alias = real.join(".");
+        #[cfg(unix)]
+        let symlink_alias = dir.join("link-to-real");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &symlink_alias).unwrap();
+
+        // Positive controls: both aliases really are directories and the
+        // symlink is a distinct path, so the dedupe below is non-vacuous.
+        assert!(dot_alias.is_dir());
+        #[cfg(unix)]
+        {
+            assert!(symlink_alias.is_dir());
+            assert_ne!(symlink_alias, real);
+        }
+
+        let mut candidates = vec![real.clone(), dot_alias];
+        #[cfg(unix)]
+        candidates.push(symlink_alias);
+
+        let resolved = search_roots(SearchScope::OpenTabs, &dir, &candidates, &[]);
+        assert_eq!(
+            resolved.roots.len(),
+            1,
+            "canonicalize must collapse dir, dir/. and the symlink: {:?}",
+            resolved.roots
+        );
+        // The first spelling wins; all candidates map to the same real path.
+        assert_eq!(resolved.roots, vec![real]);
+        assert!(!resolved.fell_back_to_cwd);
+
+        // The canonicalize-failure fallback key (`unwrap_or_else(|_| path.clone())`)
+        // is intentionally not forced here: `search_roots` first requires
+        // `path.is_dir()`, and every deterministic way to make `canonicalize`
+        // fail (missing path, dangling link, ELOOP, invalid bytes) also makes
+        // `is_dir()` fail. Reaching it needs a filesystem race or a production
+        // test seam, so it is reported as deferred instead of refactored.
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn search_roots_falls_back_to_cwd_when_empty() {
         let dir = scratch("fallback");
         let resolved = search_roots(SearchScope::Bookmarks, &dir, &[], &[]);

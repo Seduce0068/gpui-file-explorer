@@ -373,6 +373,9 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
     // Q03: ブックマーク拒否は「できません」を含むが、具体的な拒否通知として
     // warning(amber) に分類する（error マーカーより先に判定される）。
     STATUS_BOOKMARK_NOT_PERSISTABLE,
+    // Y08: 監視の初期化失敗は secondary slot が直接 p.yellow で描画するが、
+    // 分類表との一貫性のため warning マーカーにも登録する。
+    STATUS_WATCH_INIT_FAILED,
 ];
 
 /// Sentinels rendered in red: wrapped errors and the concrete
@@ -421,6 +424,11 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
     STATUS_TRASH_LOAD_FAILED_PREFIX,
     STATUS_UNDO_MISSING_SUFFIX,
+    // X09 / Y01: 起動ディレクトリ拒否は strings.rs の分類表で error だが、
+    // 「開けません」(STATUS_CANNOT_OPEN_SUFFIX) を含むため、単体では warning に
+    // 負けていた。呼び出し側は STATUS_ERROR_PREFIX を付けるが（下の status_color
+    // の早期 return も参照）、分類表との整合のため明示的に error 登録する。
+    STATUS_INVALID_CLI_DIR,
 ];
 
 /// Pure colour decision for the primary status text (U-01). An explicit
@@ -432,7 +440,11 @@ fn status_color(status: &str) -> u32 {
     // generic `*_FAILED` phrase. 「開けません」(N02), however, also occurs in the
     // wrapped startup error "エラー: 起動ディレクトリを開けませんでした"; the
     // explicit prefix must win there or that error would turn amber.
-    if status.contains(STATUS_ERROR_PREFIX) {
+    // X09 / Y01: STATUS_INVALID_CLI_DIR は「開けません」を含むため warning
+    // マーカーに一致するが、起動ディレクトリの拒否は concrete error なので
+    // 明示的なエラー接頭辞と同じく最優先で赤にする（呼び出し側は常に接頭辞を
+    // 付けるが、単体で classification を問うテストも正しく通す）。
+    if status.contains(STATUS_ERROR_PREFIX) || status.contains(STATUS_INVALID_CLI_DIR) {
         return C_RED;
     }
     if STATUS_WARNING_MARKERS.iter().any(|m| status.contains(m)) {
@@ -1926,32 +1938,33 @@ use crate::strings::{
     STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX,
     STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_PREFIX,
     STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
-    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
-    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
-    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
-    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PLACE_GONE_HINT,
-    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
-    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_EXISTS_PREFIX,
-    STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT, STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY,
-    STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX, STATUS_SAME_DIRECTORY_NO_MOVE,
-    STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
+    STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
+    STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
+    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
+    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
+    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
+    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
+    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT,
+    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
+    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
     STATUS_SEARCH_PROMPT, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
     STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_SAVE_FAILED,
     STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SKIPPED_PREFIX,
-    STATUS_SKIPPED_SUFFIX, STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW,
-    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED,
-    STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
-    STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
-    STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
-    STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY,
-    STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
-    STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_NO_TERMINAL_PREFIX,
-    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
-    STATUS_UNDO_HISTORY_HINT, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX,
-    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
-    THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+    STATUS_SKIPPED_SUFFIX, STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SPECIAL,
+    STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY,
+    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY,
+    STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_INVALID,
+    STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
+    STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING, STATUS_TRASH_LOAD_FAILED_PREFIX,
+    STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
+    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
+    STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED,
+    STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK,
+    THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -3785,7 +3798,7 @@ impl Explorer {
             return;
         }
         if self.tabs.len() >= MAX_TABS {
-            self.status = format!("{STATUS_MAX_TABS_PREFIX}{MAX_TABS} 個までです");
+            self.status = format!("{STATUS_MAX_TABS_PREFIX}{MAX_TABS}{STATUS_MAX_TABS_SUFFIX}");
             cx.notify();
             return;
         }
@@ -3808,7 +3821,7 @@ impl Explorer {
             return;
         }
         if self.tabs.len() >= MAX_TABS {
-            self.status = format!("{STATUS_MAX_TABS_PREFIX}{MAX_TABS} 個までです");
+            self.status = format!("{STATUS_MAX_TABS_PREFIX}{MAX_TABS}{STATUS_MAX_TABS_SUFFIX}");
             cx.notify();
             return;
         }
@@ -5449,7 +5462,7 @@ impl Explorer {
         let skip_notice = if missing.is_empty() {
             String::new()
         } else {
-            transfer_skip_notice(&[("存在しない項目", missing.len())])
+            transfer_skip_notice(&[(STATUS_SKIP_REASON_MISSING, missing.len())])
         };
         self.run_transfer(cwd.clone(), paths, cut, skip_notice, cx);
     }
@@ -5746,10 +5759,10 @@ impl Explorer {
         }
         let mut notices: Vec<(&str, usize)> = Vec::new();
         if missing > 0 {
-            notices.push(("存在しない項目", missing));
+            notices.push((STATUS_SKIP_REASON_MISSING, missing));
         }
         if special > 0 {
-            notices.push(("特殊ファイル", special));
+            notices.push((STATUS_SKIP_REASON_SPECIAL, special));
         }
         // Pass the notices to `run_transfer`: assigning `status` here would be
         // overwritten by its immediate "コピー中…" update, and the skip reasons
@@ -11444,8 +11457,13 @@ mod tests {
     use crate::ops::{OpError, OpStats};
     use crate::settings::{Settings, SettingsSaveError, ThemeChoice, MAX_KEYMAP_OVERRIDES};
     use crate::strings::{
-        STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_INVALID_CLI_DIR,
-        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_UNDO_MISSING_SUFFIX,
+        STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+        STATUS_DROP_NO_DESTINATION, STATUS_INVALID_CLI_DIR, STATUS_MAX_TABS_SUFFIX,
+        STATUS_NO_CLIPBOARD, STATUS_RENAME_FAILED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
+        STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SPECIAL, STATUS_TRASH_ALL_FAILED,
+        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+        STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+        STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_INIT_FAILED,
     };
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -11465,6 +11483,21 @@ mod tests {
             // W06: 再スキャン失敗は ERROR_MARKERS 登録済みで red（表示は正しいが
             // 回帰表に欠けていたため、ここで明示的に固定する）。
             (STATUS_RESCAN_FAILED, C_RED),
+            // Y01: 回帰表に欠けていた concrete error マーカーを全て固定する。
+            (STATUS_TRASH_ALL_FAILED, C_RED),
+            (STATUS_RENAME_FAILED, C_RED),
+            (STATUS_TRASH_PARTIAL_FAILED, C_RED),
+            (STATUS_OP_FAILED_SUFFIX, C_RED),
+            (STATUS_PARTIAL_FAILURE_SUFFIX, C_RED),
+            (STATUS_NOT_FOUND_SUFFIX, C_RED),
+            (STATUS_MISSING_COUNT_SUFFIX, C_RED),
+            (STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, C_RED),
+            (STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, C_RED),
+            (STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, C_RED),
+            (STATUS_TRASH_LOAD_FAILED_PREFIX, C_RED),
+            (STATUS_UNDO_MISSING_SUFFIX, C_RED),
+            // X09 / Y01: 「開けません」を含むが concrete error なので赤。
+            (STATUS_INVALID_CLI_DIR, C_RED),
             (STATUS_RESTORE_FAILED, C_RED),
             (STATUS_REDO_FAILED, C_RED),
             (STATUS_ACCESS_DENIED, C_RED),
@@ -11490,6 +11523,16 @@ mod tests {
             // rather than success green even without a *_FAILED phrase.
             (STATUS_NO_SELECTION, C_YELLOW),
             (STATUS_TRASH_NO_COPY, C_YELLOW),
+            // Y01: 従来の回帰表になかった NO_* / TRASH_NO_* マーカーを固定する。
+            (STATUS_NO_CLIPBOARD, C_YELLOW),
+            (STATUS_DROP_NO_DESTINATION, C_YELLOW),
+            (STATUS_TRASH_NO_CUT, C_YELLOW),
+            (STATUS_TRASH_NO_PASTE, C_YELLOW),
+            (STATUS_TRASH_NO_RENAME, C_YELLOW),
+            (STATUS_TRASH_NO_PURGE, C_YELLOW),
+            (STATUS_TRASH_NO_HIDDEN, C_YELLOW),
+            (STATUS_TRASH_NO_SORT, C_YELLOW),
+            (STATUS_KEYMAP_NO_UNBIND_PREFIX, C_YELLOW),
             // NO_* notices must win over the *_FAILED phrase they contain.
             (STATUS_REDO_NO_TARGET, C_YELLOW),
             // L06: refusal / empty-target notices are warnings, not success.
@@ -11517,6 +11560,9 @@ mod tests {
             (STATUS_SEARCH_NOT_OPEN, C_YELLOW),
             // Q03: 「できません」を含むが具体的な拒否通知なので warning(amber)。
             (STATUS_BOOKMARK_NOT_PERSISTABLE, C_YELLOW),
+            // Y08: 監視の初期化失敗は secondary slot で直接黄色に描画されるが、
+            // 色分類でも warning マーカーとして固定する。
+            (STATUS_WATCH_INIT_FAILED, C_YELLOW),
             // W10: 「キャンセルしています…」は進行中の一時通知で拒否ではない。
             // 完了通知 STATUS_CANCELLED（黄色）と意図的に色を分け、成功 green
             // のままとする。strings.rs の分類表と同じ判断をここでも固定する。
@@ -11608,7 +11654,7 @@ mod tests {
         assert_eq!(status_color(&missing_count), C_RED, "{missing_count}");
 
         // N08: 動的な上限値を含む「タブは最大 {n} 個までです」もwarning(amber)。
-        let max_tabs = format!("{STATUS_MAX_TABS_PREFIX}8 個までです");
+        let max_tabs = format!("{STATUS_MAX_TABS_PREFIX}8{STATUS_MAX_TABS_SUFFIX}");
         assert!(max_tabs.contains(STATUS_MAX_TABS_PREFIX), "{max_tabs}");
         assert_eq!(status_color(&max_tabs), C_YELLOW, "{max_tabs}");
     }
@@ -11687,6 +11733,19 @@ mod tests {
             // X02: 破棄通知もテーマごとの warning 色へマップされる。
             (STATUS_SETTINGS_DISCARDED, dark.yellow, light.yellow),
             (STATUS_NO_SELECTION, dark.yellow, light.yellow),
+            // Y01: 回帰表に欠けていた NO_* / keymap / bookmark の warning。
+            (STATUS_NO_CLIPBOARD, dark.yellow, light.yellow),
+            (STATUS_DROP_NO_DESTINATION, dark.yellow, light.yellow),
+            (STATUS_TRASH_NO_CUT, dark.yellow, light.yellow),
+            (STATUS_TRASH_NO_PASTE, dark.yellow, light.yellow),
+            (STATUS_TRASH_NO_RENAME, dark.yellow, light.yellow),
+            (STATUS_TRASH_NO_PURGE, dark.yellow, light.yellow),
+            (STATUS_TRASH_NO_HIDDEN, dark.yellow, light.yellow),
+            (STATUS_TRASH_NO_SORT, dark.yellow, light.yellow),
+            (STATUS_KEYMAP_NO_UNBIND_PREFIX, dark.yellow, light.yellow),
+            (STATUS_BOOKMARK_NOT_PERSISTABLE, dark.yellow, light.yellow),
+            // Y08: 監視の初期化失敗も warning 色へマップされる。
+            (STATUS_WATCH_INIT_FAILED, dark.yellow, light.yellow),
             // L06: refusal / empty-target notices use the warning color.
             (STATUS_TABS_ONLY_DIRECTORY, dark.yellow, light.yellow),
             (STATUS_BOOKMARKS_ONLY_DIRECTORY, dark.yellow, light.yellow),
@@ -11719,6 +11778,26 @@ mod tests {
             (STATUS_TARGET_MISSING, dark.red, light.red),
             (STATUS_DROP_NOT_FOUND, dark.red, light.red),
             (STATUS_NOT_DIRECTORY, dark.red, light.red),
+            // Y01: 回帰表に欠けていた concrete error マーカーもテーマ色へ。
+            (STATUS_RESCAN_FAILED, dark.red, light.red),
+            (STATUS_TRASH_ALL_FAILED, dark.red, light.red),
+            (STATUS_RESTORE_FAILED, dark.red, light.red),
+            (STATUS_UNDO_FAILED, dark.red, light.red),
+            (STATUS_RENAME_FAILED, dark.red, light.red),
+            (STATUS_OP_FAILED_SUFFIX, dark.red, light.red),
+            (STATUS_PARTIAL_FAILURE_SUFFIX, dark.red, light.red),
+            (STATUS_NOT_FOUND_SUFFIX, dark.red, light.red),
+            (STATUS_MISSING_COUNT_SUFFIX, dark.red, light.red),
+            (STATUS_SPECIAL_FILE_NO_COPY, dark.red, light.red),
+            (STATUS_FOLDER_NO_PREVIEW, dark.red, light.red),
+            (STATUS_SYMLINK_NO_PREVIEW, dark.red, light.red),
+            (STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, dark.red, light.red),
+            (STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, dark.red, light.red),
+            (STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, dark.red, light.red),
+            (STATUS_TRASH_LOAD_FAILED_PREFIX, dark.red, light.red),
+            (STATUS_UNDO_MISSING_SUFFIX, dark.red, light.red),
+            // X09 / Y01: 接頭辞付きでなくても concrete error として赤。
+            (STATUS_INVALID_CLI_DIR, dark.red, light.red),
             ("3 件をコピーしました", dark.green, light.green),
             ("", dark.green, light.green),
         ];
@@ -11769,6 +11848,17 @@ mod tests {
 
     #[test]
     fn palette_status_color_covers_all_warning_and_error_markers() {
+        // Y01: マーカーの重複は strings.rs の分類表との相互照合を曖昧にし、
+        // 削除漏れを見逃す原因になるため、両配列で一意性を固定する。
+        for (markers, label) in [
+            (STATUS_WARNING_MARKERS, "warning"),
+            (STATUS_ERROR_MARKERS, "error"),
+        ] {
+            let mut seen = std::collections::HashSet::new();
+            for marker in markers {
+                assert!(seen.insert(*marker), "duplicate {label} marker: {marker}");
+            }
+        }
         for palette in [AppPalette::dark(), AppPalette::light()] {
             for marker in STATUS_WARNING_MARKERS {
                 assert_eq!(
@@ -12042,11 +12132,15 @@ mod tests {
         // T02: paste / move / drop now share one wording template, so only the
         // reason label changes while the "N 件をスキップ" suffix stays common.
         assert_eq!(transfer_skip_notice(&[]), "");
+        // Y02: 理由ラベルは strings.rs の定数経由で組み立てる。
         assert_eq!(
-            transfer_skip_notice(&[("存在しない項目", 3)]),
+            transfer_skip_notice(&[(STATUS_SKIP_REASON_MISSING, 3)]),
             "（存在しない項目 3 件をスキップ）"
         );
-        let notice = transfer_skip_notice(&[("存在しない項目", 2), ("特殊ファイル", 1)]);
+        let notice = transfer_skip_notice(&[
+            (STATUS_SKIP_REASON_MISSING, 2),
+            (STATUS_SKIP_REASON_SPECIAL, 1),
+        ]);
         assert_eq!(notice, "（存在しない項目 2 / 特殊ファイル 1 件をスキップ）");
     }
 

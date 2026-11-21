@@ -97,6 +97,24 @@ pub const SETTINGS_INPUT_GUARD_NOTE: &str = settings_input_guard_note!();
 /// テスト以外のビルドでも定数を参照させ、`-D warnings` の dead_code を防ぐ。
 const _: () = assert!(SETTINGS_INPUT_GUARD_NOTE.len() == settings_input_guard_note!().len());
 
+/// 設定ダイアログのタブ直接移動キーの正規表記（Y05）。
+///
+/// フッターのキー凡例・F1 ヘルプ・README で同じ表記を使うための唯一の定義。
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// 下の `settings_tab_jump_keys!()` を使う（入力ガード注記と同じ方式）。
+macro_rules! settings_tab_jump_keys {
+    () => {
+        "Alt+1〜5"
+    };
+}
+pub(crate) use settings_tab_jump_keys;
+
+/// タブ直接移動キーの正規表記（Y05）。F1 / フッター / README の同期判定に使う。
+pub const SETTINGS_TAB_JUMP_KEYS: &str = settings_tab_jump_keys!();
+
+/// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
+const _: () = assert!(SETTINGS_TAB_JUMP_KEYS.len() == settings_tab_jump_keys!().len());
+
 /// Keyboard shortcuts shown by the F1 help overlay: (section, [(key, description)]).
 pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
@@ -183,7 +201,12 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+,", "設定を開く"),
             (
                 "設定ダイアログ",
-                "Enter で保存 / Esc でキャンセル（未保存変更時は破棄され通知されます）/ 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。F1 はダイアログ内で無効なので、下部のキー凡例に必要なキーを表示",
+                concat!(
+                    "Enter で保存 / Esc でキャンセル（未保存変更時は破棄され通知されます）/ 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。",
+                    "他タブに一致すると Alt+数字で移動（",
+                    settings_tab_jump_keys!(),
+                    "）。F1 はダイアログ内で無効なので、下部のキー凡例に必要なキーを表示"
+                ),
             ),
             (
                 "設定ダイアログのタブ",
@@ -191,7 +214,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "設定ダイアログのタブ（直接）",
-                "Alt+1〜5 で外観 / ファイル / ショートカット / ターミナル / 個人化へ直接移動",
+                concat!(
+                    settings_tab_jump_keys!(),
+                    " で外観 / ファイル / ショートカット / ターミナル / 個人化へ直接移動"
+                ),
             ),
             (
                 "設定ダイアログの並び順",
@@ -215,7 +241,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+T", "F4 で開くターミナルの起動コマンドを設定"),
             (
                 "Alt+K",
-                "キーボードショートカットを設定（アクション名 コード）",
+                "キーボードショートカットを設定（アクション名 コード / unbind アクション名で解除、Enter で保存 / Esc でキャンセル）",
             ),
             ("Esc", "キャンセル / ダイアログを閉じる"),
             ("Ctrl+Q", "終了"),
@@ -421,6 +447,12 @@ pub const STATUS_SKIPPED_PREFIX: &str = "（";
 /// スキップ件数通知の閉じ括弧。件数に続く「件をスキップ」と一体化させ、
 /// コピー／移動／ドロップの 3 箇所で同じ文言になるよう共有する（T02）。
 pub const STATUS_SKIPPED_SUFFIX: &str = " 件をスキップ）";
+/// スキップ理由のラベル（存在しない項目）。Y02: main.rs のコピー／移動と
+/// 外部ドロップの 3 箇所で inline に書かれていた文言をここへ集約する。
+pub const STATUS_SKIP_REASON_MISSING: &str = "存在しない項目";
+/// スキップ理由のラベル（特殊ファイル）。`STATUS_SKIP_REASON_MISSING` と
+/// 同じく `transfer_skip_notice` の理由スロットで共有する（Y02）。
+pub const STATUS_SKIP_REASON_SPECIAL: &str = "特殊ファイル";
 /// 操作中止の完了通知（進行中の `STATUS_CANCELLING` とは別フェーズ）。
 pub const STATUS_CANCELLED: &str = "キャンセルしました";
 /// 進行中通知の接尾（`{verb}` に続く）。
@@ -462,6 +494,9 @@ pub const STATUS_KEYMAP_INVALID_PREFIX: &str = "無効なキーマップ指定: 
 /// タブ数が上限に達したときの拒否通知の接頭辞（N08）。
 /// 動的な `{n}` を連結するため、M05 と同じく接頭辞自体を warning マーカーに登録する。
 pub const STATUS_MAX_TABS_PREFIX: &str = "タブは最大 ";
+/// タブ数上限の後ろに続く接尾（Y07）。`STATUS_KEYMAP_LIMIT_SUFFIX` と同じく
+/// 動的な件数と合わせて完全な通知を組み立てるため、呼び出し側はこの定数を使う。
+pub const STATUS_MAX_TABS_SUFFIX: &str = " 個までです";
 /// 設定の失敗／退避（読み込み失敗と情報量を揃える）。
 /// U03: 保存失敗は権限・空き容量だけでなく、MAX_SETTINGS_BYTES 超過や
 /// ロックタイムアウトでも起きる。理由を判別できない汎用経路では
@@ -1047,6 +1082,8 @@ mod tests {
             STATUS_CANNOT_OPEN_SUFFIX,
             STATUS_SKIPPED_PREFIX,
             STATUS_SKIPPED_SUFFIX,
+            STATUS_SKIP_REASON_MISSING,
+            STATUS_SKIP_REASON_SPECIAL,
             STATUS_CANCELLED,
             STATUS_CANCEL_HINT,
             STATUS_INVALID_CLI_DIR,
@@ -1066,6 +1103,7 @@ mod tests {
             STATUS_KEYMAP_LIMIT_SUFFIX,
             STATUS_KEYMAP_INVALID_PREFIX,
             STATUS_MAX_TABS_PREFIX,
+            STATUS_MAX_TABS_SUFFIX,
             STATUS_SETTINGS_SAVE_FAILED,
             STATUS_SETTINGS_SAVE_TOO_LARGE,
             STATUS_SETTINGS_SAVE_LOCKED,
@@ -1326,6 +1364,16 @@ mod tests {
             ),
             // P03: 検索を開く前の操作を求める案内も拒否なので warning。
             ("STATUS_SEARCH_NOT_OPEN", STATUS_SEARCH_NOT_OPEN, "warning"),
+            // Y08: 監視の初期化失敗は concrete failure だが、ステータスバーでは
+            // self.status を通らず secondary slot が直接 p.yellow で描画する。
+            // 色分類表にも warning として載せ、main.rs の warning マーカーにも
+            // 登録して回帰を固定する（直接描画なのでマーカー自体は表示経路に
+            // 乗らないが、分類の一貫性を保つ）。
+            (
+                "STATUS_WATCH_INIT_FAILED",
+                STATUS_WATCH_INIT_FAILED,
+                "warning",
+            ),
             // W10: 「キャンセルしています…」は操作の進行中を示す一時通知で、
             // 拒否でも失敗でもない。完了通知 STATUS_CANCELLED は warning だが、
             // 進行中は成功 green のままとする（下の検証で例外として明示）。
@@ -1419,6 +1467,46 @@ mod tests {
                     .any(|(n, _, class)| *n == *name && *class == "warning"),
                 "{name} must be documented as a warning"
             );
+        }
+        // Y01: 従来はこのテストが strings.rs 自身（include_str!("strings.rs")）
+        // しか見ておらず、main.rs 側の STATUS_WARNING_MARKERS /
+        // STATUS_ERROR_MARKERS からマーカーを削除しても検出できなかった。
+        // 分類表と実際のマーカー配列を相互照合し、脱落を即座に失敗させる。
+        let main_source = include_str!("main.rs");
+        fn marker_array<'a>(source: &'a str, const_name: &str) -> &'a str {
+            let head = format!("const {const_name}: &[&str] = &[");
+            let start = source
+                .find(&head)
+                .unwrap_or_else(|| panic!("{const_name} is not defined in main.rs"))
+                + head.len();
+            let rest = &source[start..];
+            let end = rest
+                .find("\n];")
+                .unwrap_or_else(|| panic!("{const_name} array is not terminated"));
+            &rest[..end]
+        }
+        fn has_marker(array: &str, name: &str) -> bool {
+            array
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|token| token == name)
+        }
+        let warning_markers = marker_array(main_source, "STATUS_WARNING_MARKERS");
+        let error_markers = marker_array(main_source, "STATUS_ERROR_MARKERS");
+        for (name, _, class) in documented {
+            match *class {
+                "warning" => assert!(
+                    has_marker(warning_markers, name),
+                    "{name} is documented as warning but missing from STATUS_WARNING_MARKERS"
+                ),
+                "error" => assert!(
+                    has_marker(error_markers, name),
+                    "{name} is documented as error but missing from STATUS_ERROR_MARKERS"
+                ),
+                // W10: STATUS_CANCELLING のみ一時進行通知（success）で、
+                // 意図的にどちらのマーカーにも登録しない。
+                "success" => assert!(TRANSIENT_IN_PROGRESS.contains(name)),
+                other => panic!("{name} has unknown class: {other}"),
+            }
         }
     }
 
@@ -1525,7 +1613,10 @@ mod tests {
         assert_eq!(STATUS_MISSING_COUNT_SUFFIX, " 件は既に存在しません");
         // N08: 件数を連結する上限拒否も、接頭辞自体を warning マーカーにする。
         assert_eq!(STATUS_MAX_TABS_PREFIX, "タブは最大 ");
-        assert!(format!("{STATUS_MAX_TABS_PREFIX}8 個までです").contains(STATUS_MAX_TABS_PREFIX));
+        // Y07: 接尾も定数化し、呼び出し側に " 個までです" を残さない。
+        assert_eq!(STATUS_MAX_TABS_SUFFIX, " 個までです");
+        assert!(format!("{STATUS_MAX_TABS_PREFIX}8{STATUS_MAX_TABS_SUFFIX}")
+            .contains(STATUS_MAX_TABS_PREFIX));
         assert!(format!("{STATUS_KEYMAP_NO_UNBIND_PREFIX}open_preview")
             .contains(STATUS_KEYMAP_NO_UNBIND_PREFIX));
         assert!(format!("保存検索{STATUS_NOT_FOUND_SUFFIX}: foo").contains(STATUS_NOT_FOUND_SUFFIX));
@@ -1539,14 +1630,41 @@ mod tests {
         // 定義を一箇所に固定し、3 通りのinline文言が再び増えるのを防ぐ。
         assert_eq!(STATUS_SKIPPED_PREFIX, "（");
         assert_eq!(STATUS_SKIPPED_SUFFIX, " 件をスキップ）");
+        // Y02: 理由ラベルも定数へ集約し、完全一致の期待値だけで文法を固定する。
+        assert_eq!(STATUS_SKIP_REASON_MISSING, "存在しない項目");
+        assert_eq!(STATUS_SKIP_REASON_SPECIAL, "特殊ファイル");
         assert_eq!(
-            format!("{STATUS_SKIPPED_PREFIX}存在しない項目 2{STATUS_SKIPPED_SUFFIX}"),
+            format!("{STATUS_SKIPPED_PREFIX}{STATUS_SKIP_REASON_MISSING} 2{STATUS_SKIPPED_SUFFIX}"),
             "（存在しない項目 2 件をスキップ）"
         );
         assert_eq!(
-            format!("{STATUS_SKIPPED_PREFIX}特殊ファイル 1{STATUS_SKIPPED_SUFFIX}"),
+            format!("{STATUS_SKIPPED_PREFIX}{STATUS_SKIP_REASON_SPECIAL} 1{STATUS_SKIPPED_SUFFIX}"),
             "（特殊ファイル 1 件をスキップ）"
         );
+    }
+
+    #[test]
+    fn skip_reasons_and_tab_limit_are_routed_through_constants() {
+        // Y02 / Y07: main.rs のコピー／移動／ドロップとタブ上限の 5 箇所に
+        // inline 文言が戻らないことを、定数名の使用とリテラルの不在で固定する。
+        let main_source = include_str!("main.rs");
+        for name in [
+            "STATUS_SKIP_REASON_MISSING",
+            "STATUS_SKIP_REASON_SPECIAL",
+            "STATUS_MAX_TABS_SUFFIX",
+        ] {
+            assert!(main_source.contains(name), "{name} must be used in main.rs");
+        }
+        for literal in [
+            STATUS_SKIP_REASON_MISSING,
+            STATUS_SKIP_REASON_SPECIAL,
+            STATUS_MAX_TABS_SUFFIX,
+        ] {
+            assert!(
+                !main_source.contains(&format!("\"{literal}\"")),
+                "inline literal must go through a constant: {literal}"
+            );
+        }
     }
 
     #[test]

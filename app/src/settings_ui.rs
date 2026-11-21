@@ -394,7 +394,11 @@ fn footer_status_text(dirty: bool) -> &'static str {
 /// up in the help overlay have to be shown here. Kept to one compact line to
 /// fit the 760px card next to the save/cancel buttons.
 fn settings_footer_legend() -> &'static str {
-    "Tab/Shift+Tab 移動 / Ctrl+Tab・Ctrl+Shift+Tab タブ / Enter 保存 / Esc 閉じる / Alt+数字 直接移動"
+    concat!(
+        "Tab/Shift+Tab 移動 / Ctrl+Tab・Ctrl+Shift+Tab タブ / Enter 保存 / Esc 閉じる / ",
+        crate::strings::settings_tab_jump_keys!(),
+        " 直接移動"
+    )
 }
 
 // Search keyword sets, one per visible row. They are shared by the per-row
@@ -467,6 +471,16 @@ const FILES_SORT_KEYWORDS: &[&str] = &[
     "キーボード",
     "切替",
     "基準",
+    // Y04: the radio group shows `SortKey::label()` values (main.rs
+    // `sort_options`) — users search the visible choice labels, not the
+    // internal `name`/`kind`/`size`/`modified` values. The direction words
+    // are the header-click wording documented in README.
+    "名前",
+    "種類",
+    "サイズ",
+    "更新日時",
+    "昇順",
+    "降順",
 ];
 const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "ショートカット",
@@ -1695,7 +1709,7 @@ mod tests {
             "Tab/Shift+Tab 移動",
             "Ctrl+Tab",
             "Ctrl+Shift+Tab",
-            "Alt+数字 直接移動",
+            concat!(crate::strings::settings_tab_jump_keys!(), " 直接移動"),
         ] {
             assert!(legend.contains(token), "legend: {legend}");
         }
@@ -1712,6 +1726,83 @@ mod tests {
     }
 
     #[test]
+    fn direct_jump_keys_are_synced_across_legend_f1_and_readme() {
+        // Y05: the footer legend, the F1 direct-jump help row and app/README
+        // must spell the settings-tab jump keys with one canonical wording.
+        let keys = crate::strings::SETTINGS_TAB_JUMP_KEYS;
+        assert_eq!(keys, "Alt+1〜5");
+        let legend = settings_footer_legend();
+        assert!(
+            legend.contains(&format!("{keys} 直接移動")),
+            "footer legend must use the canonical keys: {legend}"
+        );
+        let direct = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "設定ダイアログのタブ（直接）")
+            .map(|(_, text)| text)
+            .expect("F1 help must list the direct-jump keys");
+        assert!(
+            direct.starts_with(keys),
+            "F1 direct-jump row must use the canonical keys: {direct}"
+        );
+        let app_readme = include_str!("../README.md");
+        assert!(
+            app_readme.contains(keys),
+            "app README must use the canonical direct-jump keys {keys}"
+        );
+        // The Shortcuts tab renders the same notation as a searchable row.
+        assert!(
+            SHORTCUTS_DEFAULT_LINES
+                .iter()
+                .any(|line| line.starts_with(keys)),
+            "Shortcuts tab must render the canonical direct-jump keys"
+        );
+    }
+
+    #[test]
+    fn f1_dialog_help_names_cross_tab_search_navigation() {
+        // Y11: README documents that a no-match hint points at the matching
+        // tab and its direct-jump key; the F1 dialog row must say the same.
+        let dialog = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "設定ダイアログ")
+            .map(|(_, text)| text)
+            .expect("F1 help must include the settings dialog row");
+        assert!(
+            dialog.contains("他タブに一致すると Alt+数字で移動"),
+            "F1 dialog help must explain cross-tab navigation: {dialog}"
+        );
+        assert!(
+            dialog.contains(crate::strings::SETTINGS_TAB_JUMP_KEYS),
+            "F1 dialog help must name the concrete jump keys: {dialog}"
+        );
+    }
+
+    #[test]
+    fn f1_keymap_help_explains_unbind_and_dialog_keys() {
+        // Y12: the F1 Alt+K row must match README's keymap-dialog contract —
+        // unbind syntax plus Enter/Esc — not just the input format.
+        let keymap = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "Alt+K")
+            .map(|(_, text)| text)
+            .expect("F1 help must include the Alt+K row");
+        for token in [
+            "unbind アクション名で解除",
+            "Enter で保存",
+            "Esc でキャンセル",
+        ] {
+            assert!(
+                keymap.contains(token),
+                "F1 Alt+K help must mention {token}: {keymap}"
+            );
+        }
+    }
+
+    #[test]
     fn settings_search_placeholder_advertises_key_name_search() {
         // R07: chord names such as Alt+K are searchable, so the placeholder
         // must say so rather than promising only setting-label search.
@@ -1719,23 +1810,16 @@ mod tests {
         assert!(SETTINGS_SEARCH_PLACEHOLDER.contains("キー名"));
     }
 
-    /// Required wording for the hidden-files-only empty state in Trash view.
-    ///
-    /// V13: the canonical constant belongs in `strings.rs` (owned by a separate
-    /// change); this test records the contract so the wiring in `main.rs` can be
-    /// verified against it. The current generic hint (`EMPTY_HIDDEN_ONLY`)
-    /// offers `Ctrl+H`, but `toggle_hidden` rejects that chord in Trash.
-    const EMPTY_HIDDEN_ONLY_TRASH_SPEC: &str =
-        "隠しファイル {count} 件が非表示です（ゴミ箱を出て Ctrl+H で表示）";
-
     #[test]
     fn trash_hidden_only_hint_must_not_offer_a_rejected_chord() {
+        // V13/Y06: use the canonical `strings.rs` constant, not a test-local
+        // copy, so this contract cannot silently drift from the rendered hint.
         let generic = crate::strings::EMPTY_HIDDEN_ONLY;
         assert!(
             generic.contains("Ctrl+H で表示"),
             "generic hint must still offer the chord outside Trash: {generic}"
         );
-        let trash = EMPTY_HIDDEN_ONLY_TRASH_SPEC;
+        let trash = crate::strings::EMPTY_HIDDEN_ONLY_TRASH;
         // The unusable chord is only suggested after leaving Trash.
         assert!(
             trash.contains("ゴミ箱を出て"),
@@ -1756,6 +1840,10 @@ mod tests {
         );
         assert_eq!(
             trash.replace("{count}", &3.to_string()),
+            "隠しファイル 3 件が非表示です（ゴミ箱を出て Ctrl+H で表示）"
+        );
+        assert_eq!(
+            crate::strings::empty_hidden_only_trash(3),
             "隠しファイル 3 件が非表示です（ゴミ箱を出て Ctrl+H で表示）"
         );
         assert_ne!(trash, generic);
@@ -1847,6 +1935,14 @@ mod tests {
             ("アイコン", SettingsTab::Appearance),
             ("既定のビュー", SettingsTab::Appearance),
             ("ドット", SettingsTab::Files),
+            // Y04: the sort radio labels come from `SortKey::label()` in the
+            // host's `sort_options`; searching what is visible must not dead-end.
+            ("名前", SettingsTab::Files),
+            ("種類", SettingsTab::Files),
+            ("サイズ", SettingsTab::Files),
+            ("更新日時", SettingsTab::Files),
+            ("昇順", SettingsTab::Files),
+            ("降順", SettingsTab::Files),
             ("作業ディレクトリ", SettingsTab::Terminal),
             ("無効化", SettingsTab::Terminal),
             ("unbind", SettingsTab::Shortcuts),

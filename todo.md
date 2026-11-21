@@ -1030,27 +1030,27 @@ status: current
 
 ### 優先度: 中（ループ R20・confirmed）
 
-- [ ] **Y01** 色分類の strings.rs↔main.rs 相互検証テストなし
+- [x] **Y01** 色分類の strings.rs↔main.rs 相互検証テストなし — 対応: loop22-core（実バグ修正）
   — strings.rs:1126 / main.rs:330
-- [ ] **Y02** スキップ理由語が main.rs インライン残存 — main.rs:5452,5749
-- [ ] **Y03** mounts.rs path_is_visible が非vacuousに検証されず
+- [x] **Y02** スキップ理由語が main.rs インライン残存 — main.rs:5452,5749 — 対応: loop22-core
+- [x] **Y03** mounts.rs path_is_visible が非vacuousに検証されず — 対応: loop22-tests
   — mounts.rs:59
-- [ ] **Y04** 設定検索が並び順選択肢名と昇順/降順をキーワードに欠く
+- [x] **Y04** 設定検索が並び順選択肢名と昇順/降順をキーワードに欠く — 対応: loop22-ux
   — settings_ui.rs:458
-- [ ] **Y05** キー凡例と README/F1 の同期保証なし — settings_ui.rs:396
-- [ ] **Y06** ゴミ箱空状態テストがローカル副本を検証 — settings_ui.rs:1722
+- [x] **Y05** キー凡例と README/F1 の同期保証なし — settings_ui.rs:396 — 対応: loop22-ux
+- [x] **Y06** ゴミ箱空状態テストがローカル副本を検証 — settings_ui.rs:1722 — 対応: loop22-ux
 
 ### 優先度: 低（ループ R20）
 
-- [ ] **Y07** タブ上限拒否の接尾辞「 個までです」がインライン
+- [x] **Y07** タブ上限拒否の接尾辞「 個までです」がインライン — 対応: loop22-core
   — main.rs:3788
-- [ ] **Y08** STATUS_WATCH_INIT_FAILED が分類表・マーカーから漏れ
+- [x] **Y08** STATUS_WATCH_INIT_FAILED が分類表・マーカーから漏れ — 対応: loop22-core
   — strings.rs:440
-- [ ] **Y09** watcher.rs 旧監視解除失敗の集約が未検証 — watcher.rs:244
-- [ ] **Y10** search_roots の canonicalize 異表記重複排除が未検証
+- [x] **Y09** watcher.rs 旧監視解除失敗の集約が未検証 — watcher.rs:244 — 対応: loop22-tests
+- [x] **Y10** search_roots の canonicalize 異表記重複排除が未検証 — 対応: loop22-tests
   — search.rs:227
-- [ ] **Y11** F1「設定ダイアログ」行に他タブ一致案内なし — strings.rs:186
-- [ ] **Y12** F1 Alt+K 行に unbind 構文と Enter/Esc の説明なし
+- [x] **Y11** F1「設定ダイアログ」行に他タブ一致案内なし — strings.rs:186 — 対応: loop22-ux
+- [x] **Y12** F1 Alt+K 行に unbind 構文と Enter/Esc の説明なし — 対応: loop22-ux
   — strings.rs:217
 
 ### 優先度: 低（調査タスク）

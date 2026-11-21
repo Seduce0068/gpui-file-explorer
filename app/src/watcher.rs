@@ -572,6 +572,75 @@ mod tests {
     }
 
     #[test]
+    fn multiple_old_unwatch_failures_are_joined_and_cleared_by_rewatch() {
+        // Test seam without touching production code: this child module can
+        // reach `DirWatcher`'s private `debouncer`. Dropping the OS-level
+        // watches behind the manager's back leaves `watched` stale on purpose,
+        // so the next `watch()` drives the real `debouncer.unwatch()` failure
+        // branch (inotify returns `WatchNotFound`) for BOTH old paths. No
+        // test-only constructor or injected closure is required.
+        let dir = scratch("unwatch-failures");
+        let old_a = dir.join("a");
+        let old_b = dir.join("b");
+        let next = dir.join("next");
+        let after = dir.join("after");
+        for path in [&old_a, &old_b, &next, &after] {
+            fs::create_dir_all(path).unwrap();
+        }
+
+        let mut watcher = DirWatcher::new(|_| {});
+        if !watcher.is_supported() {
+            // No OS watcher on this host: there is no underlying watch to
+            // invalidate, so the failure-aggregation scenario cannot be set up.
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        watcher.watch(&[old_a.clone(), old_b.clone()]);
+        assert!(watcher.last_error().is_none(), "seed watches must succeed");
+        assert_eq!(watcher.watched_paths(), &[old_a.clone(), old_b.clone()]);
+
+        {
+            let debouncer = watcher.debouncer.as_mut().expect("supported watcher");
+            debouncer.unwatch(&old_a).expect("seed watch a exists");
+            debouncer.unwatch(&old_b).expect("seed watch b exists");
+        }
+
+        watcher.watch(std::slice::from_ref(&next));
+        let error = watcher
+            .last_error()
+            .expect("stale watches must surface unwatch failures");
+        assert!(
+            error.contains(&old_a.display().to_string()),
+            "first unwatch failure missing: {error}"
+        );
+        assert!(
+            error.contains(&old_b.display().to_string()),
+            "second unwatch failure missing: {error}"
+        );
+        assert!(
+            error.contains("の監視解除に失敗"),
+            "unwatch failures must be labelled: {error}"
+        );
+        assert!(
+            error.contains(", "),
+            "multiple failures must be joined: {error}"
+        );
+        assert_eq!(watcher.watched_paths(), std::slice::from_ref(&next));
+
+        // The stale paths are no longer in `watched`, so a later rewatch only
+        // performs healthy unwatch/watch calls and must clear `last_error`.
+        watcher.watch(std::slice::from_ref(&after));
+        assert!(
+            watcher.last_error().is_none(),
+            "successful rewatch must clear the aggregated error: {:?}",
+            watcher.last_error()
+        );
+        assert_eq!(watcher.watched_paths(), std::slice::from_ref(&after));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn removed_paths_collects_only_removals() {
         use super::removed_paths;
         let events = vec![
