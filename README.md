@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 444 tests
+cargo test           # 450 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -94,7 +94,7 @@ cargo test           # 444 tests
 
 ## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-18 更新）
 
-- `cargo build` 警告 0 / `cargo test` **444 passed / 0 failed**
+- `cargo build` 警告 0 / `cargo test` **450 passed / 0 failed**
   （2026-11-21 時点。初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
@@ -176,8 +176,9 @@ bash packaging/linux/build-deb.sh --skip-build
 
 - 検証（Runtime Proof）: 追加ゲートを含む CI が **success**
   （run 43734742786、12分22秒）— 2026-11-16 時点のスナップショット。
-- 最新（as-built 2026-11-21 時点）: コミット `19b5f1d` に対する
-  CI run 44063705679 が **success**（8m17s、2026-11-17T19:27+09:00 完了）。
+- 2026-11-17 時点のスナップショット（現在の as-built ではない）: コミット
+  `19b5f1d` に対する CI run 44063705679 が **success**
+  （8m17s、2026-11-17T19:27+09:00 完了）。
   [review-report.md](review-report.md) の承認記録に記載。
 - ローカルでも同一コマンド列の再現を確認（`app/` を cwd に `bash -e` で実行、poc 4 tests pass）。
 
@@ -192,7 +193,7 @@ bash scripts/check.sh --app      # app/ のみ
 bash scripts/check.sh --poc      # poc/ のみ
 ```
 
-- 検証（Runtime Proof）: 完全ループが **exit 0**（app 444 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
+- 検証（Runtime Proof）: 完全ループが **exit 0**（app 450 tests / poc 4 tests / clippy 警告 0 / `cargo audit` は既知 8 件の allowed warnings のみ）。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
 
 ## ソース・ライセンス

@@ -606,26 +606,33 @@ status: current
 
 ### 優先度: 高（ループ R3・confirmed）
 
-- [ ] **G01** toggle_hidden 保存失敗時に show_hidden がロールバックされない
+- [x] **G01** toggle_hidden 保存失敗時に show_hidden がロールバックされない — 対応: loop5-core
   — main.rs:4529 / stale コメントあり
-- [ ] **G02** read_only 通知が成功色（緑）表示 — main.rs:323-352
-- [ ] **G03** ブックマーク/ラベル4経路が settings_write_status を迂回 — main.rs:2850,2953
+- [x] **G02** read_only 通知が成功色（緑）表示 — main.rs:323-352 — 対応: loop5-core
+- [x] **G03** ブックマーク/ラベル4経路が settings_write_status を迂回
+  main.rs:2850,2953 — 対応: loop5-core
 
 ### 優先度: 中（ループ R3）
 
-- [ ] **G04** 検索履歴保存の失敗が完全握りつぶし — main.rs:7649
-- [ ] **G05** 保存検索の入力エラーが緑表示 — main.rs:7958
-- [ ] **G06** 保存検索の名前入力で Enter 保存が効かない — main.rs:7513
-- [ ] **G07** 設定UIテーマ変更保存時に切替通知なし — main.rs:10342
-- [ ] **G08** 設定UIタブ切替にキーボード導線なし — settings_ui.rs:771
-- [ ] **G09** review-report の OKF verified が本文実測より古い — review-report.md:13
-- [ ] **G10** DESIGN ops.rs テスト数 11 vs 実 47 — DESIGN.md:359
-- [ ] **G11** CI run「最新」が 11-17 のまま as-built 11-21 — README.md:179
-- [ ] **G12** settings_write_status の skipped+saved=false 未テスト — main.rs:523
-- [ ] **G13** 設定エラー prefix がハンドラ側で未検証 — main.rs:10300
-- [ ] **G14** bookmark_toggle_rejection の NUL/長さが未テスト — main.rs:2303
-- [ ] **G15** icon の text-x-rust 逆方向 / size=0 クランプ未テスト — system_icons.rs:326,228
-- [ ] **G16** 設定UI内キー操作が F1/README に未記載 — strings.rs:81, app/README.md:114
+- [x] **G04** 検索履歴保存の失敗が完全握りつぶし — main.rs:7649 — 対応: loop5-core
+- [x] **G05** 保存検索の入力エラーが緑表示 — main.rs:7958 — 対応: loop5-core
+- [x] **G06** 保存検索の名前入力で Enter 保存が効かない — main.rs:7513 — 対応: loop5-ux
+- [x] **G07** 設定UIテーマ変更保存時に切替通知なし — main.rs:10342 — 対応: loop5-core
+- [x] **G08** 設定UIタブ切替にキーボード導線なし — settings_ui.rs:771 — 対応: loop5-ux
+- [x] **G09** review-report の OKF verified が本文実測より古い
+  review-report.md:13 — 対応: loop5-docs
+- [x] **G10** DESIGN ops.rs テスト数 11 vs 実 47 — DESIGN.md:359 — 対応: loop5-docs
+- [x] **G11** CI run「最新」が 11-17 のまま as-built 11-21
+  README.md:179 — 対応: loop5-docs
+- [x] **G12** settings_write_status の skipped+saved=false 未テスト
+  main.rs:523 — 対応: loop5-ux
+- [x] **G13** 設定エラー prefix がハンドラ側で未検証 — main.rs:10300 — 対応: loop5-ux
+- [x] **G14** bookmark_toggle_rejection の NUL/長さが未テスト
+  main.rs:2303 — 対応: loop5-ux
+- [x] **G15** icon の text-x-rust 逆方向 / size=0 クランプ未テスト — system_icons.rs:326,228
+  対応: loop5-docs
+- [x] **G16** 設定UI内キー操作が F1/README に未記載
+  strings.rs:81, app/README.md:114 — 対応: loop5-ux
 
 ### 優先度: 低（調査タスク）
 

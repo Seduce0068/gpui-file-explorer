@@ -316,13 +316,15 @@ fn kind_color(kind: FileKind) -> u32 {
     }
 }
 
-/// Sentinels rendered in amber: stale search, cancellation and the
-/// `STATUS_*NO_*` "not available here" notices. Checked **before** the error
+/// Sentinels rendered in amber: stale search, cancellation, the read-only
+/// settings notice and the `STATUS_*NO_*` "not available here" notices.
+/// Checked **before** the error
 /// markers because several `STATUS_*FAILED` strings (e.g. "変更できません")
 /// are substrings of a longer `STATUS_*NO_*` notice; the specific notice wins.
 const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_SEARCH_STALE,
     STATUS_CANCELLED,
+    STATUS_SETTINGS_READ_ONLY,
     STATUS_NO_CLIPBOARD,
     STATUS_DROP_NO_DESTINATION,
     STATUS_REDO_NO_TARGET,
@@ -483,6 +485,17 @@ fn display_name_for(
     entry.name_text.clone()
 }
 
+/// Short status label for a theme preference. Both theme entry points (the
+/// Alt+Shift+T toggle and the settings overlay Save) use it so a switch is
+/// reported identically (G07).
+fn theme_choice_label(choice: ThemeChoice) -> &'static str {
+    match choice {
+        ThemeChoice::Light => "light",
+        ThemeChoice::Dark => "dark",
+        ThemeChoice::System => "system",
+    }
+}
+
 /// Caption of a saved-search chip. The name comes first so the list can be
 /// scanned quickly, with the saved query shown for confirmation (F6-49).
 fn saved_search_caption(name: &str, query: &str) -> String {
@@ -501,6 +514,15 @@ fn saved_search_save_status(name: &str, stored: bool) -> String {
             "検索を保存できませんでした: {name}（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）"
         )
     }
+}
+
+/// Status-bar copy of a settings-card validation error. The card footer already
+/// paints the raw message red; the status bar needs the error prefix to get the
+/// same treatment from `status_color`. Keeping this composition in one pure
+/// function lets the regression test exercise the handler's actual message
+/// instead of rebuilding the prefix by hand (G13).
+fn settings_validation_status(message: &str) -> String {
+    format!("{STATUS_ERROR_PREFIX}{message}")
 }
 
 /// Choose the status to show after a settings write (Bug L01). The caller's
@@ -528,11 +550,11 @@ fn settings_write_status(settings: &Settings, saved: bool, success: String) -> S
     }
 }
 
-/// Pure rollback decision shared by the five write paths that preview settings
+/// Pure rollback decision shared by the six write paths that preview settings
 /// in memory before persisting them (the settings overlay Save, the terminal
-/// command dialog, the keymap dialog, `toggle_theme` and `set_sort`). A failed
-/// write leaves disk at the old values, so the previewed in-memory values must
-/// be discarded to keep both in sync (D13).
+/// command dialog, the keymap dialog, `toggle_theme`, `set_sort` and
+/// `toggle_hidden`). A failed write leaves disk at the old values, so the
+/// previewed in-memory values must be discarded to keep both in sync (D13).
 fn settings_write_needs_rollback(saved: bool) -> bool {
     !saved
 }
@@ -1633,6 +1655,14 @@ fn clear_dialog_error(error: &mut Option<String>) -> bool {
     error.take().is_some()
 }
 
+/// Step one settings page by `delta`, wrapping at both ends (G08). Kept pure
+/// so the Ctrl+Tab / Ctrl+Shift+Tab cycle is regression-testable headlessly.
+fn settings_tab_step(tab: SettingsTab, delta: isize) -> SettingsTab {
+    let count = SettingsTab::ALL.len() as isize;
+    let next = (tab.index() as isize + delta).rem_euclid(count) as usize;
+    SettingsTab::from_index(next)
+}
+
 /// Inline rename dialog state. Dropping it closes the dialog and drops the
 /// input subscription.
 struct RenameState {
@@ -1750,6 +1780,10 @@ struct SearchState {
     subscription: Option<Subscription>,
     /// Name field of the saved-search bar (F6-49).
     save_name: Option<Entity<InputState>>,
+    /// Keeps the save-name field's `PressEnter` subscription alive while open.
+    /// It is bound to this input only, so Enter here saves the search while
+    /// Enter in the query field still triggers `run_search` (G06).
+    save_name_subscription: Option<Subscription>,
     ext: Option<Entity<InputState>>,
     ext_subscription: Option<Subscription>,
     name_filter: Option<Entity<InputState>>,
@@ -2847,13 +2881,15 @@ impl Explorer {
         debug_assert_eq!(added, !was_bookmarked);
         let saved = self.save_settings();
         self.refresh_bookmarks();
-        self.status = if !saved {
-            STATUS_SETTINGS_SAVE_FAILED.to_string()
-        } else if added {
-            format!("ブックマークに追加しました: {}", display_path(&path))
-        } else {
-            format!("ブックマークを解除しました: {}", display_path(&path))
-        };
+        self.status = settings_write_status(
+            &self.settings,
+            saved,
+            if added {
+                format!("ブックマークに追加しました: {}", display_path(&path))
+            } else {
+                format!("ブックマークを解除しました: {}", display_path(&path))
+            },
+        );
         cx.notify();
     }
 
@@ -2873,13 +2909,15 @@ impl Explorer {
         let added = self.settings.toggle_bookmark(path);
         let saved = self.save_settings();
         self.refresh_bookmarks();
-        self.status = if !saved {
-            STATUS_SETTINGS_SAVE_FAILED.to_string()
-        } else if added {
-            format!("ブックマークに追加しました: {}", display_path(path))
-        } else {
-            format!("ブックマークを解除しました: {}", display_path(path))
-        };
+        self.status = settings_write_status(
+            &self.settings,
+            saved,
+            if added {
+                format!("ブックマークに追加しました: {}", display_path(path))
+            } else {
+                format!("ブックマークを解除しました: {}", display_path(path))
+            },
+        );
         cx.notify();
     }
 
@@ -2950,19 +2988,21 @@ impl Explorer {
             self.refresh_bookmarks();
         }
         self.close_label_editor(cx);
-        self.status = if !saved {
-            STATUS_SETTINGS_SAVE_FAILED.to_string()
-        } else if label.is_empty() {
-            if changed {
-                format!("ラベルを削除しました: {}", display_path(&path))
+        self.status = settings_write_status(
+            &self.settings,
+            saved,
+            if label.is_empty() {
+                if changed {
+                    format!("ラベルを削除しました: {}", display_path(&path))
+                } else {
+                    format!("ラベルは設定されていません: {}", display_path(&path))
+                }
+            } else if changed {
+                format!("ラベルを設定しました: {label}（{}）", display_path(&path))
             } else {
-                format!("ラベルは設定されていません: {}", display_path(&path))
-            }
-        } else if changed {
-            format!("ラベルを設定しました: {label}（{}）", display_path(&path))
-        } else {
-            format!("ラベルを設定できませんでした: {}", display_path(&path))
-        };
+                format!("ラベルを設定できませんでした: {}", display_path(&path))
+            },
+        );
         cx.notify();
     }
 
@@ -2970,13 +3010,15 @@ impl Explorer {
     fn clear_bookmark_label(&mut self, path: &Path, cx: &mut Context<Self>) {
         let removed = self.settings.remove_bookmark_label(path);
         let saved = if removed { self.save_settings() } else { true };
-        self.status = if !saved {
-            STATUS_SETTINGS_SAVE_FAILED.to_string()
-        } else if removed {
-            format!("ラベルを削除しました: {}", display_path(path))
-        } else {
-            format!("ラベルは設定されていません: {}", display_path(path))
-        };
+        self.status = settings_write_status(
+            &self.settings,
+            saved,
+            if removed {
+                format!("ラベルを削除しました: {}", display_path(path))
+            } else {
+                format!("ラベルは設定されていません: {}", display_path(path))
+            },
+        );
         cx.notify();
     }
 
@@ -4257,6 +4299,16 @@ impl Explorer {
             // Escape cancels and Enter saves, reusing the same action handler as
             // the footer buttons. This guard sits before F1 so the help overlay
             // can never be stacked on top of the settings dialog.
+            //
+            // The main keymap binds Ctrl+Tab / Ctrl+Shift+Tab to NextTab /
+            // PrevTab, but that dispatch is unreachable while this guard holds.
+            // Reuse the chords here to step through the five settings pages
+            // instead; no settings action claimed them before (G08).
+            if key == "tab" && modifiers.control {
+                let delta = if modifiers.shift { -1 } else { 1 };
+                self.cycle_settings_tab(delta, cx);
+                return;
+            }
             match key {
                 "escape" => self.on_settings_action(SettingsUiAction::Cancel, cx),
                 "enter" => self.on_settings_action(SettingsUiAction::Save, cx),
@@ -4526,18 +4578,26 @@ impl Explorer {
             cx.notify();
             return;
         }
+        // Snapshot before previewing the hidden flag: a failed write leaves
+        // disk at the old setting, so the in-memory value must be rolled back
+        // (D13) before any view refresh can observe the preview.
+        let snapshot = self.settings.clone();
         self.settings.show_hidden = !self.settings.show_hidden;
         let saved = self.save_settings();
-        let keep = self.selected_entry().map(|entry| entry.path.clone());
-        if self.view == ViewSource::Search {
-            // The snapshot was captured with the old hidden setting, so a
-            // filter-only refresh cannot add/remove hidden hits. Re-run the
-            // query with the new setting (`run_search` reads it again).
-            // `rebuild_view` would replace search results with the directory
-            // listing and drop kind/extension/name filters (finding 3).
-            self.run_search(cx);
+        if settings_write_needs_rollback(saved) {
+            self.rollback_settings(snapshot, cx);
         } else {
-            self.rebuild_view(keep);
+            let keep = self.selected_entry().map(|entry| entry.path.clone());
+            if self.view == ViewSource::Search {
+                // The current hits were collected under the old hidden setting;
+                // a filter-only refresh cannot add/remove hidden hits. Re-run
+                // the query with the new setting (`run_search` reads it again).
+                // `rebuild_view` would replace search results with the directory
+                // listing and drop kind/extension/name filters (finding 3).
+                self.run_search(cx);
+            } else {
+                self.rebuild_view(keep);
+            }
         }
         self.status = settings_write_status(
             &self.settings,
@@ -4625,15 +4685,13 @@ impl Explorer {
         if settings_write_needs_rollback(saved) {
             self.rollback_settings(snapshot, cx);
         }
-        let label = match choice {
-            ThemeChoice::Light => "light",
-            ThemeChoice::Dark => "dark",
-            ThemeChoice::System => "system",
-        };
         self.status = settings_write_status(
             &self.settings,
             saved,
-            format!("{STATUS_THEME_CHANGED_PREFIX}{label}"),
+            format!(
+                "{STATUS_THEME_CHANGED_PREFIX}{}",
+                theme_choice_label(choice)
+            ),
         );
         cx.notify();
     }
@@ -7510,9 +7568,18 @@ impl Explorer {
         );
         self.search.name_filter = Some(name_input);
         self.search.name_filter_subscription = Some(name_subscription);
-        // The save-name field is read when "保存" is clicked; no subscription
-        // is needed (F6-49).
-        self.search.save_name = Some(cx.new(|cx| InputState::new(window, cx)));
+        // The save-name field is read when "保存" is clicked, but Enter must
+        // work there too (G06). The subscription is bound to this input only,
+        // so it cannot steal Enter from the query field's `run_search`.
+        let save_name = cx.new(|cx| InputState::new(window, cx));
+        let save_name_subscription =
+            cx.subscribe(&save_name, |this, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.save_current_search(cx);
+                }
+            });
+        self.search.save_name = Some(save_name);
+        self.search.save_name_subscription = Some(save_name_subscription);
         self.search.kind = SearchKind::All;
         self.search.mode = SearchMode::Name;
         self.search.scope = SearchScope::Current;
@@ -7647,8 +7714,14 @@ impl Explorer {
                 this.all_entries = entries.into_iter().map(|result| result.entry).collect();
                 this.apply_search_filter(cx);
                 this.settings.record_search(&this.search.query);
-                if !this.debug.ephemeral {
-                    let _ = this.save_settings();
+                // `write_was_skipped()` covers read-only and ephemeral sessions,
+                // both of which make `save()` a no-op. Log a real failure
+                // instead of silently discarding the result (Bug L01).
+                if !this.settings.write_was_skipped() {
+                    let saved = this.save_settings();
+                    if !saved {
+                        tracing::error!("failed to save search history");
+                    }
                 }
             });
         });
@@ -7748,6 +7821,7 @@ impl Explorer {
         self.search.name_filter = None;
         self.search.name_filter_subscription = None;
         self.search.save_name = None;
+        self.search.save_name_subscription = None;
         self.search.kind = SearchKind::All;
         self.search.mode = SearchMode::Name;
         self.search.scope = SearchScope::Current;
@@ -7962,9 +8036,9 @@ impl Explorer {
         };
         let saved = if stored { self.save_settings() } else { true };
         self.status = if name.is_empty() {
-            "保存する検索名を入力してください".to_string()
+            format!("{STATUS_ERROR_PREFIX}保存する検索名を入力してください")
         } else if query.is_empty() {
-            "検索語を入力してから保存してください".to_string()
+            format!("{STATUS_ERROR_PREFIX}検索語を入力してから保存してください")
         } else {
             settings_write_status(
                 &self.settings,
@@ -10060,10 +10134,23 @@ impl Render for Explorer {
 // ---------------------------------------------------------- settings overlay
 
 use crate::settings_ui::{
-    render_settings_content, SettingsUiAction, SettingsUiHost, SettingsUiPalette, SettingsUiState,
+    render_settings_content, SettingsTab, SettingsUiAction, SettingsUiHost, SettingsUiPalette,
+    SettingsUiState,
 };
 
 impl Explorer {
+    /// Step the settings overlay's active page by `delta`, wrapping around.
+    ///
+    /// Delegates to the same `SettingsUiAction::Tab` handler as the `TabBar`
+    /// click, so `select_tab`, stale-error clearing and `cx.notify()` all stay
+    /// in one place and the segmented control follows the rendered page (G08).
+    fn cycle_settings_tab(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(tab) = self.settings_ui.as_ref().map(|state| state.tab) else {
+            return;
+        };
+        self.on_settings_action(SettingsUiAction::Tab(settings_tab_step(tab, delta)), cx);
+    }
+
     /// Ctrl+,: build the preferences overlay from the persisted settings and
     /// subscribe to its search box so typing re-renders the filtered rows.
     fn open_settings_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -10307,7 +10394,7 @@ impl SettingsUiHost for Explorer {
                     // the scrollable card), and prefix it so `status_color`
                     // paints it red instead of default success green. Keep the
                     // dialog open for editing.
-                    self.status = format!("{STATUS_ERROR_PREFIX}{message}");
+                    self.status = settings_validation_status(&message);
                     cx.notify();
                     return;
                 }
@@ -10318,7 +10405,7 @@ impl SettingsUiHost for Explorer {
                     if let Some(state) = self.settings_ui.as_mut() {
                         state.error = Some(message.clone());
                     }
-                    self.status = format!("{STATUS_ERROR_PREFIX}{message}");
+                    self.status = settings_validation_status(&message);
                     cx.notify();
                     return;
                 }
@@ -10328,6 +10415,11 @@ impl SettingsUiHost for Explorer {
                     "system" => crate::settings::ThemeChoice::System,
                     _ => crate::settings::ThemeChoice::Dark,
                 };
+                // Compare against the pre-edit snapshot, not the resolved mode:
+                // changing the persisted preference is worth reporting even
+                // when the effective theme stays the same (e.g. System→Dark on
+                // a dark desktop). Mirrors the Alt+Shift+T notice (G07).
+                let theme_changed = snapshot.theme_choice != theme;
                 // Resolve against the appearance GPUI observes for this window,
                 // not the previously persisted mode, then push the result through
                 // the single entry point that keeps `settings.theme`, the palette
@@ -10381,6 +10473,8 @@ impl SettingsUiHost for Explorer {
                     // `save()` reports success without writing in a read-only /
                     // ephemeral session, so don't claim the settings were saved.
                     STATUS_SETTINGS_READ_ONLY.to_string()
+                } else if theme_changed {
+                    format!("{STATUS_THEME_CHANGED_PREFIX}{}", theme_choice_label(theme))
                 } else {
                     "設定を保存しました".to_string()
                 };
@@ -10764,15 +10858,16 @@ mod tests {
         normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
         pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
         saved_search_caption, saved_search_save_status, search_filter_status, settings_save_status,
-        settings_write_needs_rollback, settings_write_status, startup_dir_from, status_color,
-        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
-        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
-        transfer_log_level, transfer_skip_notice, trash_batch, trash_delete_status,
-        trash_key_action, trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override,
-        validate_cli_dir, version_label, visible_secondary_slots, AppPalette, CliAction,
-        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
-        KeyMap, KeymapInput, PropertiesErrorReaction, SecondarySlot, SortKey, TrashKeyAction,
-        C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
+        settings_tab_step, settings_validation_status, settings_write_needs_rollback,
+        settings_write_status, startup_dir_from, status_color, summarize_op, tab_label,
+        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, transfer_log_level, transfer_skip_notice,
+        trash_batch, trash_delete_status, trash_key_action, trash_redo_cancelled_status,
+        trash_undo_status, upsert_keymap_override, validate_cli_dir, version_label,
+        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
+        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
+        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, C_BLUE,
+        C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
         GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CHANGED,
         STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
@@ -10803,6 +10898,7 @@ mod tests {
             ("3 件コピーしました（一部失敗: 権限がありません）", C_RED),
             (STATUS_SEARCH_STALE, C_YELLOW),
             (STATUS_CANCELLED, C_YELLOW),
+            (STATUS_SETTINGS_READ_ONLY, C_YELLOW),
             (STATUS_TRASH_NO_COPY, C_YELLOW),
             // NO_* notices must win over the *_FAILED phrase they contain.
             (STATUS_REDO_NO_TARGET, C_YELLOW),
@@ -10827,6 +10923,8 @@ mod tests {
         // The settings Save path mirrors validation errors from the card footer
         // into `self.status`. Without the prefix the pure classifier reads those
         // messages as success green even though the footer paints them red.
+        // Use the same helper the Save handler calls, so a future refactor that
+        // drops the prefix fails here instead of silently turning errors green.
         let messages = [
             "無効なキーマップ指定: ctrl+x".to_string(),
             format!("上書きは最大 {MAX_KEYMAP_OVERRIDES} 件までです"),
@@ -10834,7 +10932,12 @@ mod tests {
         ];
         for message in messages {
             assert_eq!(status_color(&message), C_GREEN, "unprefixed: {message}");
-            let mirrored = format!("{STATUS_ERROR_PREFIX}{message}");
+            let mirrored = settings_validation_status(&message);
+            assert!(
+                mirrored.starts_with(STATUS_ERROR_PREFIX),
+                "handler composition lost the prefix: {mirrored}"
+            );
+            assert_eq!(mirrored, format!("{STATUS_ERROR_PREFIX}{message}"));
             assert_eq!(status_color(&mirrored), C_RED, "mirrored: {mirrored}");
         }
     }
@@ -10848,6 +10951,7 @@ mod tests {
         let cases = [
             (STATUS_SEARCH_STALE, dark.yellow, light.yellow),
             (STATUS_CANCELLED, dark.yellow, light.yellow),
+            (STATUS_SETTINGS_READ_ONLY, dark.yellow, light.yellow),
             (STATUS_TRASH_NO_COPY, dark.yellow, light.yellow),
             (STATUS_ERROR_PREFIX, dark.red, light.red),
             (STATUS_SETTINGS_SAVE_FAILED, dark.red, light.red),
@@ -12315,6 +12419,29 @@ mod tests {
     }
 
     #[test]
+    fn bookmark_toggle_rejects_empty_nul_and_oversized_paths() {
+        // `can_persist_path` is `sane_path`: non-empty, byte-bounded, NUL-free
+        // and UTF-8. Every violation must be rejected before the toggle touches
+        // bookmarks, not just the non-UTF-8 case (G14).
+        let rejected = Some(STATUS_BOOKMARK_NOT_PERSISTABLE.to_string());
+        assert_eq!(bookmark_toggle_rejection(&PathBuf::new()), rejected);
+        assert_eq!(
+            bookmark_toggle_rejection(&PathBuf::from("tmp\0dir")),
+            rejected
+        );
+        assert_eq!(
+            bookmark_toggle_rejection(&PathBuf::from(
+                "x".repeat(crate::settings::MAX_PATH_BYTES + 1)
+            )),
+            rejected
+        );
+        assert_eq!(
+            bookmark_toggle_rejection(&PathBuf::from("/tmp/valid")),
+            None
+        );
+    }
+
+    #[test]
     fn properties_error_reaction_distinguishes_not_found_denied_and_other() {
         let path = PathBuf::from("/tmp/props");
         let io_error =
@@ -12402,6 +12529,38 @@ mod tests {
                 settings_write_status(&skipped, true, success.clone()),
                 STATUS_SETTINGS_READ_ONLY
             );
+            // A skipped write must win over a failed one: reporting
+            // `STATUS_SETTINGS_SAVE_FAILED` here would wrongly tell a read-only
+            // user a file write was attempted and failed (G12).
+            assert_eq!(
+                settings_write_status(&skipped, false, success.clone()),
+                STATUS_SETTINGS_READ_ONLY,
+                "skipped writes take precedence over saved=false"
+            );
+        }
+    }
+
+    // G08: Ctrl+Tab / Ctrl+Shift+Tab step the settings TabBar with wrap-around.
+    #[test]
+    fn settings_tab_step_wraps_in_both_directions() {
+        assert_eq!(
+            settings_tab_step(SettingsTab::Appearance, 1),
+            SettingsTab::Files
+        );
+        assert_eq!(
+            settings_tab_step(SettingsTab::Personalize, 1),
+            SettingsTab::Appearance
+        );
+        assert_eq!(
+            settings_tab_step(SettingsTab::Appearance, -1),
+            SettingsTab::Personalize
+        );
+        assert_eq!(
+            settings_tab_step(SettingsTab::Files, -1),
+            SettingsTab::Appearance
+        );
+        for tab in SettingsTab::ALL {
+            assert_eq!(settings_tab_step(tab, SettingsTab::ALL.len() as isize), tab);
         }
     }
 

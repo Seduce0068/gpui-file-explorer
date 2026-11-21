@@ -162,6 +162,14 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("F1", "このヘルプ"),
             ("Ctrl+,", "設定を開く"),
+            (
+                "設定ダイアログ",
+                "Enter で保存 / Esc でキャンセル / 上部の検索欄で設定項目を絞り込み",
+            ),
+            (
+                "設定ダイアログのタブ",
+                "Ctrl+Tab / Ctrl+Shift+Tab で次 / 前のタブへ移動",
+            ),
             ("F4", "選択中のフォルダでターミナルを開く"),
             ("Alt+T", "F4 で開くターミナルの起動コマンドを設定"),
             (
@@ -452,6 +460,34 @@ mod tests {
                 "{expected} must be listed in F1 help"
             );
         }
+    }
+
+    #[test]
+    fn help_lists_settings_dialog_keys() {
+        let entries: Vec<(&str, &str)> = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, entries)| *entries)
+            .copied()
+            .collect();
+        let find = |wanted: &str| {
+            entries
+                .iter()
+                .find(|(key, _)| *key == wanted)
+                .map(|(_, description)| *description)
+        };
+        let dialog = find("設定ダイアログ").expect("settings dialog keys must be in F1 help");
+        assert!(
+            dialog.contains("Enter") && dialog.contains("保存"),
+            "{dialog}"
+        );
+        assert!(
+            dialog.contains("Esc") && dialog.contains("キャンセル"),
+            "{dialog}"
+        );
+        assert!(dialog.contains("検索"), "{dialog}");
+        let tabs = find("設定ダイアログのタブ").expect("settings tab keys must be in F1 help");
+        assert!(tabs.contains("Ctrl+Tab"), "{tabs}");
+        assert!(tabs.contains("Ctrl+Shift+Tab"), "{tabs}");
     }
 
     #[test]
