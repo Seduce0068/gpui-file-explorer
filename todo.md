@@ -1053,6 +1053,34 @@ status: current
 - [x] **Y12** F1 Alt+K 行に unbind 構文と Enter/Esc の説明なし — 対応: loop22-ux
   — strings.rs:217
 
+### 優先度: 高（ループ R21・confirmed）
+
+- [ ] **Z01** 検索0件ヒントの Ctrl+F が検索ビューで無効（V13 同型）
+  — strings.rs:282 / main.rs:253
+- [ ] **Z02** STATUS_RESCAN_FAILED が STATUS_CHANGED で上書きされる
+  — main.rs:3639
+- [ ] **Z03** 混在スキップ時に same_dir 理由が最終通知から消える
+  — main.rs:5452
+
+### 優先度: 中（ループ R21）
+
+- [ ] **Z04** ops.rs partial 名の create_new リトライ/枯渇が無テスト
+- [ ] **Z05** watcher.rs 同一セット+last_error ありの再監視が無テスト
+- [ ] **Z06** system_icons.rs new() の XDG テーマ順序が無テスト
+- [ ] **Z07** 予約キー一覧が README/F1/設定ヒントに伝播せず
+  — strings.rs:268
+- [ ] **Z08** 設定検索0件の復帰導線が F1 に未反映 — strings.rs:203
+- [ ] **Z09** ダイアログ脚文の Enter/Esc 表記が F1/README と不一致
+  — main.rs:4501
+
+### 優先度: 低（ループ R21）
+
+- [ ] **Z10** ops.rs unique_path の10,000回枯渇が無テスト
+- [ ] **Z11** ops.rs with_cleanup_failure の Io 元パス分岐が無テスト
+- [ ] **Z12** キーマップ上限64件が入力前ヒントに未記載
+  — strings.rs:270
+- [ ] **Z13** KeyMap::reset が設定 UI から操作できない
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
