@@ -224,7 +224,7 @@ pub const EMPTY_TRASH: (&str, &str) = (
 );
 pub const EMPTY_SEARCH: (&str, &str) = (
     "一致する項目がありません",
-    "検索語や絞り込みを変更してください",
+    "検索語や絞り込みを変更してください（Ctrl+F で再検索）",
 );
 pub const EMPTY_DIRECTORY: (&str, &str) = (
     "このフォルダは空です",
@@ -232,7 +232,7 @@ pub const EMPTY_DIRECTORY: (&str, &str) = (
 );
 pub const EMPTY_FILTERED: (&str, &str) = (
     "絞り込みで全て除外されました",
-    "種別や拡張子の条件を変更してください",
+    "種別や拡張子、名前（Ctrl+Shift+F）の条件を変更してください",
 );
 pub const LOADING: &str = "読み込み中…";
 /// Recovery hint shown under a load error in the empty-state overlay (U-20).
@@ -286,6 +286,22 @@ pub const STATUS_PATH_GONE: &str = "対象が存在しません";
 pub const STATUS_NOT_DIRECTORY: &str = "ディレクトリではありません";
 pub const STATUS_UNDO_FAILED: &str = "元に戻せません";
 pub const STATUS_REDO_NO_TARGET: &str = "やり直せません: 対象が存在しません";
+
+// ---------------------------------------------------------------------------
+// P08: 拒否文言の正規定義（呼び出し側のインラインリテラルを置き換える）
+// ---------------------------------------------------------------------------
+
+/// デバイス / ソケット / FIFO など安全にコピーできない特殊ファイルの拒否。
+/// `main.rs::drop_external_into` のインラインリテラルを置き換える。
+pub const STATUS_SPECIAL_FILE_NO_COPY: &str = "特殊ファイルのためコピーできません";
+/// 切り取り元と貼り付け先が同じフォルダのときの通知（移動版）。
+/// `main.rs::paste` のインラインリテラルを置き換える。
+pub const STATUS_SAME_DIRECTORY_NO_MOVE: &str = "同じフォルダのため移動しません";
+/// ディレクトリ行のプレビュー拒否。`main.rs::open_preview_selected` 用。
+pub const STATUS_FOLDER_NO_PREVIEW: &str = "フォルダはプレビューできません";
+/// シンボリックリンクのプレビュー拒否。`main.rs::open_preview_selected` と
+/// `preview.rs::read_preview` / `read_image_preview` の 3 箇所で共用する。
+pub const STATUS_SYMLINK_NO_PREVIEW: &str = "シンボリックリンクはプレビューできません";
 
 // ---------------------------------------------------------------------------
 // 操作完了サマリ
@@ -358,8 +374,9 @@ pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開�
 /// 情報量ルール (F6-36) の「復帰導線」に従い、設定を開き直す操作を併記する（I06）。
 pub const STATUS_SETTINGS_DISCARDED: &str =
     "未保存の変更を破棄しました（Ctrl+, で設定を開き直せます）";
-/// 未保存の変更がある設定ダイアログのヒント。ターミナル欄と共通フッターの
-/// 両方で使い、文言の重複・ゆれを防ぐ（J08）。
+/// 設定ダイアログの共通フッターに表示する「保存」操作の案内。
+/// K13 でターミナル欄の重複表示は削除され、共有フッターの未変更時
+/// （dirty = false）にのみ表示される。唯一の定義として文言のゆれを防ぐ（J08）。
 pub const STATUS_SETTINGS_UNSAVED_HINT: &str = "変更は「保存」を押すまで反映されません。";
 /// タブ復元の成否。
 pub const STATUS_TAB_RESTORED: &str = "タブを復元しました";
@@ -395,6 +412,9 @@ pub const STATUS_RESTORE_FAILED: &str = "復元できません";
 pub const STATUS_RESTORE_EMPTY: &str = "復元対象がありません";
 /// 空の検索語を実行したときの拒否通知（N09）。
 pub const STATUS_SEARCH_EMPTY_QUERY: &str = "検索語が空です";
+/// 検索を開かずに名前フィルタへフォーカスしようとしたときの案内（P03）。
+/// 「先に … してください」は拒否なので warning として色分けする。
+pub const STATUS_SEARCH_NOT_OPEN: &str = "先に Ctrl+F で検索を開いてください";
 
 /// 表示層の優先順位（高い順）。狭いステータスバーでは後ろから省略する。
 /// 実行時のスロットではなく、競合時に参照する規約データ（r5-render-09）。
@@ -603,6 +623,26 @@ mod tests {
     }
 
     #[test]
+    fn empty_state_hints_name_every_filter_and_recovery_key() {
+        // P05: 空状態でも「どの条件を変えるか」と「どうやって戻るか」を
+        // ユーザーに示さなければならない（EMPTY_DIRECTORY は従来からキーを列挙）。
+        let (_, search) = EMPTY_SEARCH;
+        for token in ["検索語", "Ctrl+F", "再検索"] {
+            assert!(search.contains(token), "search hint: {search}");
+        }
+
+        let (_, filtered) = EMPTY_FILTERED;
+        for token in ["種別", "拡張子", "名前（Ctrl+Shift+F）"] {
+            assert!(filtered.contains(token), "filtered hint: {filtered}");
+        }
+
+        let (_, directory) = EMPTY_DIRECTORY;
+        for token in ["Ctrl+Shift+N", "Ctrl+V"] {
+            assert!(directory.contains(token), "directory hint: {directory}");
+        }
+    }
+
+    #[test]
     fn canonical_words_are_not_english() {
         for word in [
             LABEL_CANCEL,
@@ -724,6 +764,10 @@ mod tests {
             STATUS_DROP_SAME_DIRECTORY,
             STATUS_DROP_NOT_FOUND,
             STATUS_DROP_EMPTY,
+            STATUS_SPECIAL_FILE_NO_COPY,
+            STATUS_SAME_DIRECTORY_NO_MOVE,
+            STATUS_FOLDER_NO_PREVIEW,
+            STATUS_SYMLINK_NO_PREVIEW,
             STATUS_TRASH_LOADING,
             STATUS_FOLDER_CREATING,
             STATUS_TARGET_GONE,
@@ -775,6 +819,7 @@ mod tests {
             STATUS_RESTORE_FAILED,
             STATUS_RESTORE_EMPTY,
             STATUS_SEARCH_EMPTY_QUERY,
+            STATUS_SEARCH_NOT_OPEN,
             STATUS_THEME_CHANGED_PREFIX,
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
@@ -901,6 +946,8 @@ mod tests {
                 STATUS_SEARCH_EMPTY_QUERY,
                 "warning",
             ),
+            // P03: 検索を開く前の操作を求める案内も拒否なので warning。
+            ("STATUS_SEARCH_NOT_OPEN", STATUS_SEARCH_NOT_OPEN, "warning"),
         ];
         // L06 / N02 / N03 / N08 / N09 の指摘で main.rs 側への登録が必要な定数名
         // （重複・脱落を防止）。全て warning として分類されなければならない。
@@ -941,7 +988,9 @@ mod tests {
                     // N09: 空入力の拒否（「検索語が空です」）。
                     || message.contains("空です")
                     // N08: 上限拒否の接頭辞（「タブは最大 {n} 個までです」）。
-                    || message.contains("最大"),
+                    || message.contains("最大")
+                    // P03: 事前操作を求める案内（「先に Ctrl+F で … してください」）。
+                    || message.contains("ください"),
                 "{name} is not refusal-worded: {message}"
             );
             assert!(
@@ -974,8 +1023,8 @@ mod tests {
 
     #[test]
     fn settings_unsaved_hint_has_one_canonical_wording() {
-        // J08: ターミナル欄と共通フッターで同じ文言を共有し、「保存」ボタンを
-        // 明示した丁寧形を正規文言として固定する。
+        // J08 / K13: ターミナル欄の重複は削除され、共有フッターの未変更時に
+        // 表示される唯一の文言として、「保存」ボタンを明示した丁寧形を固定する。
         assert_eq!(
             STATUS_SETTINGS_UNSAVED_HINT,
             "変更は「保存」を押すまで反映されません。"
@@ -1076,6 +1125,8 @@ mod tests {
         assert!(!STATUS_CANNOT_OPEN_SUFFIX.contains(STATUS_OP_FAILED_SUFFIX));
         assert_eq!(STATUS_RESTORE_EMPTY, "復元対象がありません");
         assert_eq!(STATUS_SEARCH_EMPTY_QUERY, "検索語が空です");
+        // P03: warning マーカーとして登録する案内文言を固定する（green 回帰防止）。
+        assert_eq!(STATUS_SEARCH_NOT_OPEN, "先に Ctrl+F で検索を開いてください");
     }
 
     #[test]

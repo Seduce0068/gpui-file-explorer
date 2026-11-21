@@ -962,6 +962,34 @@ mod content_tests {
         assert!(found.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn already_cancelled_line_loop_returns_none_before_reading_a_match() {
+        use super::first_matching_line_in_file;
+
+        let dir = scratch("cancel-line-loop");
+        let file = dir.join("match.txt");
+        write(&file, b"TARGET on the very first line\nplain second line\n");
+
+        // Positive control: the fixture really has a match on line 1, so the
+        // cancelled result below is caused by the flag, not by the file data.
+        let live = AtomicBool::new(false);
+        assert_eq!(
+            first_matching_line_in_file(&file, "target", 1024, &live).unwrap(),
+            Some(1)
+        );
+
+        // `search_contents` checks cancellation in its outer loops, so a
+        // pre-cancelled flag there never reaches the per-line check inside
+        // `first_matching_line_in_file`. Calling it directly covers that branch.
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            first_matching_line_in_file(&file, "target", 1024, &cancelled).unwrap(),
+            None
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

@@ -16,6 +16,8 @@ use std::path::Path;
 
 use gpui_kit::ImageFormat;
 
+use crate::strings::STATUS_SYMLINK_NO_PREVIEW;
+
 /// Default maximum number of bytes read for a text preview.
 pub const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
 /// Maximum image size loaded for an image preview (8 MiB).
@@ -115,7 +117,7 @@ pub fn read_image_preview(
     let link_metadata =
         std::fs::symlink_metadata(path).map_err(|error| format!("読めません: {error}"))?;
     if link_metadata.file_type().is_symlink() {
-        return Err("シンボリックリンクはプレビューできません".to_string());
+        return Err(STATUS_SYMLINK_NO_PREVIEW.to_string());
     }
     if !link_metadata.is_file() {
         return Err("ファイルではありません".to_string());
@@ -173,7 +175,7 @@ pub fn read_preview(path: &Path, max_bytes: u64) -> Result<Preview, String> {
     let link_metadata =
         std::fs::symlink_metadata(path).map_err(|error| format!("読めません: {error}"))?;
     if link_metadata.file_type().is_symlink() {
-        return Err("シンボリックリンクはプレビューできません".to_string());
+        return Err(STATUS_SYMLINK_NO_PREVIEW.to_string());
     }
     if !link_metadata.is_file() {
         return Err("ファイルではありません".to_string());
@@ -373,6 +375,20 @@ mod image_tests {
         );
         assert_eq!(sniff_image_format(b"hello world"), None);
         assert_eq!(sniff_image_format(b""), None);
+    }
+
+    #[test]
+    fn sniff_image_format_ignores_svg_past_the_first_kib() {
+        // The sniffer only decodes the leading 1024 bytes. Keep the positive
+        // control on one side of that boundary and the negative case exactly on
+        // the other, with otherwise identical ASCII fixtures.
+        let mut within = vec![b'a'; 1020];
+        within.extend_from_slice(br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#);
+        assert_eq!(sniff_image_format(&within), Some(ImageFormat::Svg));
+
+        let mut beyond = vec![b'a'; 1024];
+        beyond.extend_from_slice(br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#);
+        assert_eq!(sniff_image_format(&beyond), None);
     }
 
     #[test]
