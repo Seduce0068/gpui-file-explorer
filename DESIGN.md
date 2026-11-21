@@ -984,6 +984,13 @@ app/
 | 実機 GUI スモーク | 起動・描画・操作・監視・ゴミ箱 | KWin D-Bus + XDG Portal スクショ（§10.3） | ✅ 必須 |
 | 性能 | 1k/10k 件の初回表示・スクロール・監視反映 | 手動 + `date`/スクショ + `/proc/<pid>/status` | △（1k のみ） |
 
+**as-built スナップショット（2026-11-21 実行、現在値は README / 実行結果を参照）**:
+単体テストは `cargo test --all-targets --locked` が 450 passed / 0 failed（app）。
+実機 GUI は KWin D-Bus + XDG Portal で起動・描画・監視・ゴミ箱を確認済み。
+`DISPLAY=:1 WAYLAND_DISPLAY=wayland-0` + spectacle + kdotool でスクショ取得可だが、
+実キー入力は KWin ポータル制約で未検証。UI ヘッドレスは未実装（P2 先送り）、
+性能実測は [`notes/perf-baseline.md`](notes/perf-baseline.md) を参照（200 MB 目標は未達）。
+
 - **注意（✅ POC 実測）**: `use gpui_kit::*` は GPUI の `test` マクロを glob import し、組み込み `#[test]` を shadow する（"recursion limit reached"）。**テストモジュールでは明示 import を使い、`use super::*;` を避ける**（[`notes/poc-report.md`](notes/poc-report.md) §4-2 / [`poc/src/main.rs`](poc/src/main.rs) 420-425 行）。
 
 ### 10.2 単体テスト一覧（最低ライン）

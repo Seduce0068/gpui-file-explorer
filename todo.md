@@ -636,27 +636,31 @@ status: current
 
 ### 優先度: 高（ループ R4・confirmed）
 
-- [ ] **H01** set_view 保存失敗時に view がロールバックされない（7経路目の漏れ）
+- [x] **H01** set_view 保存失敗時に view がロールバックされない（7経路目の漏れ） — 対応: loop6-core
   — main.rs:3769
-- [ ] **H02** STATUS_ACCESS_DENIED が成功色（緑）表示 — main.rs:363
-- [ ] **H03** dirty な設定の Esc/背景クリックが無警告で破棄される
+- [x] **H02** STATUS_ACCESS_DENIED が成功色（緑）表示 — main.rs:363 — 対応: loop6-core
+- [x] **H03** dirty な設定の Esc/背景クリックが無警告で破棄される — 対応: loop6-ux
   — settings_ui.rs:785 / main.rs:10174
-- [ ] **H04** 設定キーマップ欄が全置換・unbind 不可を説明していない
+- [x] **H04** 設定キーマップ欄が全置換・unbind 不可を説明していない — 対応: loop6-ux
   — settings_ui.rs:608
 
 ### 優先度: 中（ループ R4）
 
-- [ ] **H05** set_view が write_was_skipped を検査せず read_only 未通知 — main.rs:3774
-- [ ] **H06** 6経路ロールバックテストが純関数のみで呼び出し漏れを検出不可 — main.rs:12570
-- [ ] **H07** プロパティ STATUS_PATH_GONE の分類が未定義 — main.rs:2099
-- [ ] **H08** テーマ表示名が strings.rs 定数ではなくハードコード — main.rs:10342
-- [ ] **H09** 設定検索がキー名 (Alt+K 等) にマッチしない — settings_ui.rs:345
-- [ ] **H10** XDG Portal readiness 判定の log 時刻が期限切れ — main.rs:9071
-- [ ] **H11** OFFLINE/headless 検証手順が README にない — README.md:157
-- [ ] **H12** テスト数 450 がドキュメント未同期 — README.md:26
-- [ ] **H13** review-report markdownlint 4件が SNAPSHOT 注記と矛盾 — review-report.md:656
-- [ ] **H14** 全切替操作で settings 保存失敗時にエラー表示なし — main.rs:3774
-- [ ] **H15** set_view の read_only/ephemeral テストなし — main.rs:12570
+- [x] **H05** set_view が write_was_skipped を検査せず read_only 未通知
+  main.rs:3774 — 対応: loop6-core
+- [x] **H06** 6経路ロールバックテストが純関数のみで呼び出し漏れを検出不可 — main.rs:12570 — 対応: loop6-core
+- [x] **H07** プロパティ STATUS_PATH_GONE の分類が未定義 — main.rs:2099 — 対応: loop6-core
+- [x] **H08** テーマ表示名が strings.rs 定数ではなくハードコード — main.rs:10342 — 対応: loop6-ux
+- [x] **H09** 設定検索がキー名 (Alt+K 等) にマッチしない — settings_ui.rs:345 — 対応: loop6-ux
+- [x] **H10** XDG Portal readiness 判定の log 時刻が期限切れ
+  main.rs:9071 — 対応: loop6-docs
+- [x] **H11** OFFLINE/headless 検証手順が README にない — README.md:157 — 対応: loop6-docs
+- [x] **H12** テスト数 450 がドキュメント未同期 — README.md:26 — 対応: loop6-docs
+- [x] **H13** review-report markdownlint 4件が SNAPSHOT 注記と矛盾
+  review-report.md:656 — 対応: loop6-docs
+- [x] **H14** 全切替操作で settings 保存失敗時にエラー表示なし — main.rs:3774 — 対応: loop6-core
+- [x] **H15** set_view の read_only/ephemeral テストなし
+  main.rs:12570 — 対応: loop6-core
 
 ### 優先度: 低（調査タスク）
 

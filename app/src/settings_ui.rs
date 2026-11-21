@@ -348,8 +348,36 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "keymap",
     "キーバインド",
     "割り当て",
+    // Users search by the chord they remember, not by the row label (H09).
+    "Alt+K",
+    "Ctrl+,",
+    "Ctrl+Tab",
+    "Ctrl+Shift+Tab",
+    "F1",
 ];
-const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &["既定", "default", "ショートカット", "キー"];
+const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
+    "既定",
+    "default",
+    "ショートカット",
+    "キー",
+    "Alt+K",
+    "Alt+T",
+    "Ctrl+,",
+    "Ctrl+F",
+    "Ctrl+L",
+    "F1",
+    "F4",
+    "Ctrl+Shift+L",
+    "Ctrl+Space",
+    "Ctrl+Shift+C",
+    "Ctrl+Tab",
+    "Ctrl+Shift+Tab",
+];
+
+/// Shortcuts-tab keymap hint. Unlike the Alt+K dialog this field replaces the
+/// whole override list on Save and has no `unbind` syntax, so both consequences
+/// must be spelled out where the user is typing (H04).
+const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。1件ずつの解除は Alt+K の unbind を使用してください。";
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &["ターミナル", "terminal", "コマンド", "起動"];
 const PERSONALIZE_PALETTE_KEYWORDS: &[&str] = &["個人化", "パレット", "色", "カラー", "theme"];
 const PERSONALIZE_INFO_KEYWORDS: &[&str] = &["個人化", "情報", "about", "設定", "バージョン"];
@@ -609,9 +637,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                             .w_full()
                             .text_xs()
                             .text_color(rgb(palette.subtext))
-                            .child(
-                                "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）",
-                            ),
+                            .child(SETTINGS_KEYMAP_INPUT_HINT),
                     )
                     .child(Input::new(&state.keymap_input).w_full());
             }
@@ -854,7 +880,7 @@ mod tests {
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
         cancel_label, matches_query, selected_index, tabs_matching_query, SettingsTab,
-        SettingsUiAction, SettingsUiPalette,
+        SettingsUiAction, SettingsUiPalette, SETTINGS_KEYMAP_INPUT_HINT,
     };
 
     #[test]
@@ -958,6 +984,47 @@ mod tests {
             tabs_matching_query("theme"),
             vec![SettingsTab::Appearance, SettingsTab::Personalize]
         );
+    }
+
+    #[test]
+    fn settings_keymap_hint_explains_replace_and_unbind_route() {
+        // H04: the shared field looks like an additive editor, so the hint must
+        // say Save replaces everything and that per-entry removal lives in Alt+K.
+        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("「操作=キー」形式で入力します"));
+        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("; で区切ります"));
+        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("置き換わります（一部追加ではありません）"));
+        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("Alt+K の unbind を使用してください"));
+    }
+
+    #[test]
+    fn tabs_matching_query_finds_shortcut_key_names() {
+        // H09: chord names are the way users refer to shortcuts, so every one
+        // displayed on the Shortcuts tab must surface that tab on its own.
+        for key in [
+            "Alt+K",
+            "Alt+T",
+            "Ctrl+,",
+            "Ctrl+F",
+            "Ctrl+L",
+            "F1",
+            "F4",
+            "Ctrl+Shift+L",
+            "Ctrl+Space",
+            "Ctrl+Shift+C",
+            "Ctrl+Tab",
+        ] {
+            assert_eq!(
+                tabs_matching_query(key),
+                vec![SettingsTab::Shortcuts],
+                "query {key} must surface the Shortcuts tab"
+            );
+            // Lowercase input is normalized by `matches_query`.
+            assert_eq!(
+                tabs_matching_query(&key.to_lowercase()),
+                vec![SettingsTab::Shortcuts],
+                "lowercase query {key} must surface the Shortcuts tab"
+            );
+        }
     }
 
     #[test]
