@@ -1028,6 +1028,31 @@ status: current
   — settings_ui.rs:713
 - [x] **X15** README キー表と F1 の自動同期テストなし — 対応: loop21-ux
 
+### 優先度: 中（ループ R20・confirmed）
+
+- [ ] **Y01** 色分類の strings.rs↔main.rs 相互検証テストなし
+  — strings.rs:1126 / main.rs:330
+- [ ] **Y02** スキップ理由語が main.rs インライン残存 — main.rs:5452,5749
+- [ ] **Y03** mounts.rs path_is_visible が非vacuousに検証されず
+  — mounts.rs:59
+- [ ] **Y04** 設定検索が並び順選択肢名と昇順/降順をキーワードに欠く
+  — settings_ui.rs:458
+- [ ] **Y05** キー凡例と README/F1 の同期保証なし — settings_ui.rs:396
+- [ ] **Y06** ゴミ箱空状態テストがローカル副本を検証 — settings_ui.rs:1722
+
+### 優先度: 低（ループ R20）
+
+- [ ] **Y07** タブ上限拒否の接尾辞「 個までです」がインライン
+  — main.rs:3788
+- [ ] **Y08** STATUS_WATCH_INIT_FAILED が分類表・マーカーから漏れ
+  — strings.rs:440
+- [ ] **Y09** watcher.rs 旧監視解除失敗の集約が未検証 — watcher.rs:244
+- [ ] **Y10** search_roots の canonicalize 異表記重複排除が未検証
+  — search.rs:227
+- [ ] **Y11** F1「設定ダイアログ」行に他タブ一致案内なし — strings.rs:186
+- [ ] **Y12** F1 Alt+K 行に unbind 構文と Enter/Esc の説明なし
+  — strings.rs:217
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
