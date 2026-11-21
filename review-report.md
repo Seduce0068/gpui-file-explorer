@@ -38,8 +38,10 @@ status: complete
 
 ## スコープと方法
 
-- 対象: `app/src/*.rs`（13 ファイル）、`poc/src/main.rs`、各 `build.rs`、
-  `Cargo.toml`、`scripts/`、`packaging/linux/`、`.github/workflows/ci.yml`、
+- 対象: `app/src/*.rs`（13 ファイルは初回レビュー時点のスナップショット、
+  現在は 17 ファイル。最新構成は `app/README.md` の「アーキテクチャ」表を参照）、
+  `poc/src/main.rs`、各 `build.rs`、`Cargo.toml`、`scripts/`、
+  `packaging/linux/`、`.github/workflows/ci.yml`、
   `DESIGN.md` / `README.md` / `app/README.md` / `app/PROGRESS.md`
 - 観点: セキュリティ、アーキテクチャ、運用・保守の並列レビュー
 - エージェント結果:
@@ -633,7 +635,9 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
   コンパイルアウト（前回判断を as-built 反映し、README に明記済み）。
 - `ConflictPolicy::Fail` / `Skip` が本番未使用。
 - UI 文言リテラルが `strings.rs` に集約しきれていない。
-- DESIGN.md の変更履歴が v0.1 のまま（as-built 差分未反映）。
+- DESIGN.md の変更履歴が v0.1 のまま（as-built 差分未反映）→ 解消済み:
+  `DESIGN.md:1198-1199` に `0.1-as-built` 行を追加（2026-11-17 の P1 機能、
+  2026-11-21 の OS アイコン反映）。詳細は DESIGN.md「変更履歴」を参照。
 - UI ヘッドレステスト不在（設計上 P2 先送りで合意済み）。
 - `build-deb.sh` の `out_dir="/"` 指定を拒否していない。
 - 設定の平文永続化（参考情報）。

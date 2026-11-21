@@ -790,7 +790,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
             if show_terminal_command {
                 column = column.child(info_line(
                     palette,
-                    "変更は「保存」を押すまで反映されません。",
+                    crate::strings::STATUS_SETTINGS_UNSAVED_HINT,
                 ));
             }
             column
@@ -936,7 +936,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                 .child(if state.dirty {
                     "未保存の変更があります"
                 } else {
-                    "変更は保存するまで反映されません"
+                    crate::strings::STATUS_SETTINGS_UNSAVED_HINT
                 }),
         )
         .child(
@@ -1173,6 +1173,11 @@ mod tests {
             settings_focus_order(SettingsTab::Files, ""),
             vec![Search, Cancel, Save]
         );
+        // Personalize has only radio/switch rows, never a text editor.
+        assert_eq!(
+            settings_focus_order(SettingsTab::Personalize, ""),
+            vec![Search, Cancel, Save]
+        );
         // The Shortcuts/Terminal editor joins the cycle only when its row is
         // actually rendered (empty or matching query).
         assert_eq!(
@@ -1200,6 +1205,16 @@ mod tests {
             settings_focus_order(SettingsTab::Terminal, "zzz"),
             vec![Search, Cancel, Save]
         );
+        // "Alt+T" / "既定" only match the default-list row, not the keymap
+        // editor row, so the editor must stay out of the focus cycle.
+        assert_eq!(
+            settings_focus_order(SettingsTab::Shortcuts, "Alt+T"),
+            vec![Search, Cancel, Save]
+        );
+        assert_eq!(
+            settings_focus_order(SettingsTab::Shortcuts, "既定"),
+            vec![Search, Cancel, Save]
+        );
     }
 
     #[test]
@@ -1225,6 +1240,12 @@ mod tests {
             next_settings_focus(&order, Some(SettingsFocusTarget::Terminal), false),
             Some(Search)
         );
+        // Backwards from an unknown handle starts at the last entry.
+        assert_eq!(
+            next_settings_focus(&order, Some(SettingsFocusTarget::Terminal), true),
+            Some(Save)
+        );
         assert_eq!(next_settings_focus(&[], Some(Search), false), None);
+        assert_eq!(next_settings_focus(&[], Some(Search), true), None);
     }
 }

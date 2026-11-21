@@ -170,6 +170,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "設定ダイアログのタブ",
                 "Ctrl+Tab / Ctrl+Shift+Tab で次 / 前のタブへ移動",
             ),
+            (
+                "設定ダイアログの操作",
+                "Tab / Shift+Tab で検索欄 → 入力欄 → キャンセル / 保存へフォーカス移動（循環）",
+            ),
             ("F4", "選択中のフォルダでターミナルを開く"),
             ("Alt+T", "F4 で開くターミナルの起動コマンドを設定"),
             (
@@ -318,6 +322,9 @@ pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開�
 /// 情報量ルール (F6-36) の「復帰導線」に従い、設定を開き直す操作を併記する（I06）。
 pub const STATUS_SETTINGS_DISCARDED: &str =
     "未保存の変更を破棄しました（Ctrl+, で設定を開き直せます）";
+/// 未保存の変更がある設定ダイアログのヒント。ターミナル欄と共通フッターの
+/// 両方で使い、文言の重複・ゆれを防ぐ（J08）。
+pub const STATUS_SETTINGS_UNSAVED_HINT: &str = "変更は「保存」を押すまで反映されません。";
 /// タブ復元の成否。
 pub const STATUS_TAB_RESTORED: &str = "タブを復元しました";
 pub const STATUS_TAB_RESTORE_EMPTY: &str = "復元できるタブがありません";
@@ -497,6 +504,13 @@ mod tests {
         let tabs = find("設定ダイアログのタブ").expect("settings tab keys must be in F1 help");
         assert!(tabs.contains("Ctrl+Tab"), "{tabs}");
         assert!(tabs.contains("Ctrl+Shift+Tab"), "{tabs}");
+        let focus = find("設定ダイアログの操作")
+            .expect("settings dialog focus-cycling keys must be in F1 help");
+        assert!(focus.contains("Tab / Shift+Tab"), "{focus}");
+        assert!(
+            focus.contains("検索欄") && focus.contains("フォーカス移動"),
+            "{focus}"
+        );
     }
 
     #[test]
@@ -615,7 +629,38 @@ mod tests {
 
     #[test]
     fn status_message_constants_are_nonempty() {
+        // Every `pub const STATUS_*` string in this module belongs here except
+        // `STATUS_PRIORITY` (a label slice with its own test below). A single
+        // explicit inventory keeps the F6-36 non-empty check from silently
+        // skipping a newly added message (J02).
         for message in [
+            STATUS_CHANGED,
+            STATUS_SEARCH_STALE,
+            STATUS_TABS_ONLY_DIRECTORY,
+            STATUS_BOOKMARKS_ONLY_DIRECTORY,
+            STATUS_LAST_TAB,
+            STATUS_TAB_MOVED_LEFT,
+            STATUS_TAB_MOVED_RIGHT,
+            STATUS_TRASH_NO_COPY,
+            STATUS_TRASH_NO_CUT,
+            STATUS_TRASH_NO_PASTE,
+            STATUS_TRASH_NO_RENAME,
+            STATUS_TRASH_NO_PURGE,
+            STATUS_CANCELLING,
+            STATUS_NO_CLIPBOARD,
+            STATUS_OP_RUNNING,
+            STATUS_DROP_ONLY_DIRECTORY,
+            STATUS_DROP_NO_DESTINATION,
+            STATUS_DROP_SAME_DIRECTORY,
+            STATUS_DROP_NOT_FOUND,
+            STATUS_DROP_EMPTY,
+            STATUS_TRASH_LOADING,
+            STATUS_FOLDER_CREATING,
+            STATUS_TARGET_GONE,
+            STATUS_PATH_GONE,
+            STATUS_NOT_DIRECTORY,
+            STATUS_UNDO_FAILED,
+            STATUS_REDO_NO_TARGET,
             STATUS_ERROR_PREFIX,
             STATUS_PARTIAL_FAILURE_SUFFIX,
             STATUS_OP_FAILED_SUFFIX,
@@ -635,6 +680,7 @@ mod tests {
             STATUS_SETTINGS_SAVE_FAILED,
             STATUS_SETTINGS_READ_ONLY,
             STATUS_SETTINGS_DISCARDED,
+            STATUS_SETTINGS_UNSAVED_HINT,
             STATUS_TAB_RESTORED,
             STATUS_TAB_RESTORE_EMPTY,
             STATUS_FOLDER_CREATED,
@@ -669,6 +715,18 @@ mod tests {
             STATUS_SETTINGS_DISCARDED.ends_with('）') && STATUS_SETTINGS_DISCARDED.contains('（'),
             "recovery hint must be a parenthesized suffix: {STATUS_SETTINGS_DISCARDED}"
         );
+    }
+
+    #[test]
+    fn settings_unsaved_hint_has_one_canonical_wording() {
+        // J08: ターミナル欄と共通フッターで同じ文言を共有し、「保存」ボタンを
+        // 明示した丁寧形を正規文言として固定する。
+        assert_eq!(
+            STATUS_SETTINGS_UNSAVED_HINT,
+            "変更は「保存」を押すまで反映されません。"
+        );
+        assert!(STATUS_SETTINGS_UNSAVED_HINT.contains("「保存」"));
+        assert!(STATUS_SETTINGS_UNSAVED_HINT.ends_with('。'));
     }
 
     #[test]

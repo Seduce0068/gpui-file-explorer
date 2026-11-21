@@ -3402,9 +3402,11 @@ impl Explorer {
         self.settings.record_recent(&self.cwd);
         self.persist_tabs();
         let saved = self.save_settings();
-        if !saved {
-            self.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
-        }
+        // `load_tab` clears the status above, so no success caption precedes
+        // the write. Route through the shared helper anyway: in a read-only /
+        // ephemeral session `save()` reports success without writing, and the
+        // caller must see the dedicated notice (J01).
+        self.status = settings_write_status(&self.settings, saved, true, String::new());
         self.reload(cx);
         saved
     }
@@ -3664,9 +3666,11 @@ impl Explorer {
         self.settings.last_dir = Some(self.cwd.clone());
         self.settings.record_recent(&self.cwd);
         self.persist_tabs();
-        if !self.save_settings() {
-            self.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
-        }
+        let saved = self.save_settings();
+        // No success caption is shown by navigation itself; still surface a
+        // skipped write (read-only / ephemeral session) instead of staying
+        // silent (J01).
+        self.status = settings_write_status(&self.settings, saved, true, String::new());
         self.reload(cx);
     }
 
@@ -4807,13 +4811,11 @@ impl Explorer {
                 self.rebuild_view(keep);
             }
         }
-        // `set_sort` has no success caption; still make a skipped write visible
-        // instead of leaving an earlier success status on the bar (F04).
-        if self.settings.write_was_skipped() {
-            self.status = STATUS_SETTINGS_READ_ONLY.to_string();
-        } else if !saved {
-            self.status = STATUS_SETTINGS_SAVE_FAILED.to_string();
-        }
+        // `set_sort` has no success caption: keep the current status on a real
+        // write, but make a skipped write visible instead of leaving an earlier
+        // success status on the bar (F04/J01).
+        let success = self.status.clone();
+        self.status = settings_write_status(&self.settings, saved, true, success);
         cx.notify();
     }
 
@@ -10570,17 +10572,15 @@ impl SettingsUiHost for Explorer {
                 }
                 self.settings_ui = None;
                 self.focus_list_on_next_render = true;
-                self.status = if !saved {
-                    STATUS_SETTINGS_SAVE_FAILED.to_string()
-                } else if self.settings.write_was_skipped() {
-                    // `save()` reports success without writing in a read-only /
-                    // ephemeral session, so don't claim the settings were saved.
-                    STATUS_SETTINGS_READ_ONLY.to_string()
-                } else if theme_changed {
+                let success = if theme_changed {
                     format!("{STATUS_THEME_CHANGED_PREFIX}{}", theme_choice_label(theme))
                 } else {
                     "設定を保存しました".to_string()
                 };
+                // One write-status path for every settings write: skipped
+                // (read-only / ephemeral) and failed writes must not be masked
+                // by the success caption (F04/J01).
+                self.status = settings_write_status(&self.settings, saved, true, success);
                 cx.notify();
             }
         }
@@ -13348,6 +13348,21 @@ mod tests {
         assert_eq!(keymap.resolve("p", true, false, false), FuzzyJump);
         assert_eq!(keymap.resolve("p", true, true, false), KeyAction::None);
         assert_eq!(keymap.resolve("x", false, false, false), KeyAction::None);
+    }
+
+    #[test]
+    fn ctrl_comma_resolves_to_open_settings() {
+        // `STATUS_SETTINGS_DISCARDED` tells the user to reopen settings with
+        // Ctrl+,; the shipped keymap must actually bind that chord (J06).
+        let keymap = KeyMap::default_keymap();
+        assert_eq!(
+            keymap.resolve(",", true, false, false),
+            KeyAction::OpenSettings
+        );
+        // The hint promises the unshifted chord, and a bare comma stays a
+        // no-op so ordinary text input is not hijacked.
+        assert_eq!(keymap.resolve(",", true, true, false), KeyAction::None);
+        assert_eq!(keymap.resolve(",", false, false, false), KeyAction::None);
     }
 
     #[test]
