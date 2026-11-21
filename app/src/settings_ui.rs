@@ -315,6 +315,17 @@ fn matches_query(query: &str, keywords: &[&str]) -> bool {
         .any(|candidate| candidate.to_lowercase().contains(&needle))
 }
 
+/// Caption of the dismiss button. With unsaved edits the neutral `キャンセル`
+/// would hide the fact that closing discards them, so the label names the
+/// consequence instead (`E12`).
+fn cancel_label(dirty: bool) -> &'static str {
+    if dirty {
+        "保存せず閉じる"
+    } else {
+        crate::strings::LABEL_CANCEL
+    }
+}
+
 // Search keyword sets, one per visible row. They are shared by the per-row
 // filter in `render_settings_content` and by `tabs_matching_query`, so a row and
 // the cross-tab hint derived from it can never drift apart.
@@ -630,15 +641,8 @@ pub fn render_settings_content<V: SettingsUiHost>(
                     )
                     .child(Input::new(&state.terminal_input).w_full());
             }
-            if let Some(error) = &state.error {
-                column = column.child(
-                    div()
-                        .w_full()
-                        .text_xs()
-                        .text_color(rgb(palette.red))
-                        .child(error.clone()),
-                );
-            }
+            // Validation errors are rendered once in the shared footer below,
+            // so they stay visible on every tab (including Shortcuts).
             if show_terminal_command {
                 column = column.child(info_line(
                     palette,
@@ -692,14 +696,17 @@ pub fn render_settings_content<V: SettingsUiHost>(
                 column = column
                     .child(divider(palette))
                     .child(section_title(palette, "このアプリについて"))
-                    .child(info_line(palette, "gpui-file-explorer — GPUI 製のファイルマネージャー"))
+                    .child(info_line(
+                        palette,
+                        "gpui-file-explorer — GPUI 製のファイルマネージャー",
+                    ))
                     .child(info_line(
                         palette,
                         "設定は ~/.config/gpui-file-explorer/settings.json に保存されます。",
                     ))
                     .child(info_line(
                         palette,
-                        "配色はテーマ設定に連動し、ダーク／ライトを切り替えると自動で更新されます。",
+                        "配色はテーマ設定に連動し、変更は保存時に反映されます。",
                     ));
             }
             column
@@ -768,7 +775,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
         .on_click(tab_click)
         .w_full();
 
-    let footer = div()
+    let actions = div()
         .w_full()
         .flex()
         .items_center()
@@ -790,7 +797,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
         )
         .child(
             Button::new("settings-cancel")
-                .label("キャンセル")
+                .label(cancel_label(state.dirty))
                 .on_click(cancel_click),
         )
         .child(
@@ -799,6 +806,21 @@ pub fn render_settings_content<V: SettingsUiHost>(
                 .primary()
                 .on_click(save_click),
         );
+
+    // Validation / save errors live in one shared footer above the buttons so
+    // they remain visible on every tab (E01). Rendering them here instead of in
+    // a single tab also avoids a duplicate display on Terminal.
+    let mut footer = div().w_full().flex().flex_col().gap_2();
+    if let Some(error) = &state.error {
+        footer = footer.child(
+            div()
+                .w_full()
+                .text_xs()
+                .text_color(rgb(palette.red))
+                .child(error.clone()),
+        );
+    }
+    let footer = footer.child(actions);
 
     div()
         .id("settings-card-scroll")
@@ -831,8 +853,8 @@ mod tests {
     // Explicit imports only: the module-level `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
-        matches_query, selected_index, tabs_matching_query, SettingsTab, SettingsUiAction,
-        SettingsUiPalette,
+        cancel_label, matches_query, selected_index, tabs_matching_query, SettingsTab,
+        SettingsUiAction, SettingsUiPalette,
     };
 
     #[test]
@@ -884,6 +906,16 @@ mod tests {
         assert_eq!(light.muted, 0x6c6f85);
         assert_eq!(light.green, 0x40a02b);
         assert_eq!(light.red, 0xd20f39);
+    }
+
+    #[test]
+    fn cancel_label_makes_unsaved_changes_explicit() {
+        // Clean form keeps the canonical, neutral label (E13).
+        assert_eq!(cancel_label(false), crate::strings::LABEL_CANCEL);
+        assert_eq!(cancel_label(false), "キャンセル");
+        // Dirty form names the consequence so closing is not mistaken for a
+        // reversible cancel (E12).
+        assert_eq!(cancel_label(true), "保存せず閉じる");
     }
 
     #[test]

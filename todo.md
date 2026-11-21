@@ -549,34 +549,34 @@ status: current
 
 ### 優先度: 高（ループ R1・confirmed）
 
-- [ ] **E01** 設定カード Shortcuts タブに検証エラーが表示されない
+- [x] **E01** 設定カード Shortcuts タブに検証エラーが表示されない — 対応: loop3-error
   — settings_ui.rs:591-618 / error は Terminal タブのみ
-- [ ] **E02** Alt+K 保存失敗時に keymap がロールバックされない
+- [x] **E02** Alt+K 保存失敗時に keymap がロールバックされない — 対応: loop3-rollback
   — main.rs:4044-4074
-- [ ] **E03** Alt+T 保存失敗時に terminal_command がロールバックされない
+- [x] **E03** Alt+T 保存失敗時に terminal_command がロールバックされない — 対応: loop3-rollback
   — main.rs:3873-3887
-- [ ] **E04** ウィンドウクローズ時の保存失敗が完全に無視される
+- [x] **E04** ウィンドウクローズ時の保存失敗が完全に無視される — 対応: loop3-rollback
   — main.rs:10641-10644 / Ctrl+Q はログ出力済み
 
 ### 優先度: 中（ループ R1）
 
-- [ ] **E05** toggle_bookmark_path が非UTF-8事前拒否を通らない
+- [x] **E05** toggle_bookmark_path が非UTF-8事前拒否を通らない — 対応: loop3-rollback
   — main.rs:2836-2850
-- [ ] **E06** DESIGN §2 テーマ行が2値・ダーク固定のまま
+- [x] **E06** DESIGN §2 テーマ行が2値・ダーク固定のまま — 対応: loop3-docs
   — DESIGN.md:108
-- [ ] **E07** review-report の「todo.md 参照」が空振り / 167 tests 断言
+- [x] **E07** review-report の「todo.md 参照」が空振り / 167 tests 断言 — 対応: loop3-docs
   — review-report.md:30,86,606,659
-- [ ] **E08** DESIGN as-built 差分表の見出し日付が初版のまま
+- [x] **E08** DESIGN as-built 差分表の見出し日付が初版のまま — 対応: loop3-docs
   — DESIGN.md:336
-- [ ] **E09** bookmark_label_is_settable が sane_path 条件を反映せず偽陽性
+- [x] **E09** bookmark_label_is_settable が sane_path 条件を反映せず偽陽性 — 対応: loop3-docs
   — main.rs:565-571 / settings.rs:882
-- [ ] **E10** read_only セッションで「設定を保存しました」と誤表示
+- [x] **E10** read_only セッションで「設定を保存しました」と誤表示 — 対応: loop3-rollback
   — settings.rs:1346 / main.rs:10294
-- [ ] **E11** 設定画面のテーマ案内が「自動更新」で実際は保存時
+- [x] **E11** 設定画面のテーマ案内が「自動更新」で実際は保存時 — 対応: loop3-error
   — settings_ui.rs:700-703
-- [ ] **E12** 未保存編集のキャンセル/Esc/背景クリックに確認なし
+- [x] **E12** 未保存編集のキャンセル/Esc/背景クリックに確認なし — 対応: loop3-error
   — main.rs:10165 / settings_ui.rs:785
-- [ ] **E13** 設定UI文言が strings.rs 正規定数を迂回（LABEL_CANCEL 等）
+- [x] **E13** 設定UI文言が strings.rs 正規定数を迂回（LABEL_CANCEL 等） — 対応: loop3-error
   — settings_ui.rs:792 / main.rs:10294
 
 ### 優先度: 低（調査タスク）
