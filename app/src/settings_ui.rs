@@ -482,48 +482,97 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "unbind",
     "置き換え",
 ];
+/// Searchable keywords of the "既定のショートカット" row group.
+///
+/// T07: every *chord* keyword below is a substring of a row rendered from
+/// [`SHORTCUTS_DEFAULT_LINES`] (enforced by
+/// `tests::every_shortcut_keyword_is_rendered`). Without that invariant a
+/// search could report "一致があります" for a tab that never shows the typed
+/// chord — the failure mode the `no_match_hint` comment warns about. The
+/// leading non-chord aliases are search-only synonyms of visible wording
+/// (section title / row text) and are listed in `tests::SEARCH_ALIAS_KEYWORDS`.
 const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
+    // Search-only wording aliases (visible as the section title / row text).
     "既定",
     "default",
     "ショートカット",
     "キー",
-    "Alt+K",
-    "Alt+T",
-    "Alt+S",
-    // R12: the global theme chord is listed in F1 help and README, so the
-    // Shortcuts tab must expose it too (and keep this array in sync).
+    "主な",
+    "タブ",
+    "直接移動",
+    "Alt+数字",
+    "ヘルプ",
+    "キー一覧",
+    "場所",
+    "設定を開く",
+    // Chords from the F1 help "ナビゲーション" section.
+    "Enter",
+    "↑",
+    "↓",
+    "Ctrl+L",
+    "Alt+←",
+    "Alt+→",
+    "Alt+↑",
+    "Backspace",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "Ctrl+P",
+    "Ctrl+Shift+L",
+    // Chords from the F1 help "選択" section.
+    "Ctrl+A",
+    "Ctrl+Space",
+    "Shift+↑↓",
+    // Chords from the F1 help "ファイル操作" section.
+    "Ctrl+C",
+    "Ctrl+X",
+    "Ctrl+V",
+    "Ctrl+Shift+C",
+    "F2",
+    "Delete",
+    "R",
+    "Ctrl+Enter",
+    "Ctrl+Shift+N",
+    "Ctrl+Z",
+    "Ctrl+Shift+Z",
+    "Ctrl+Shift+U",
+    // Chords from the F1 help "表示" section.
+    "Ctrl+1",
+    "Ctrl+2",
+    "Ctrl+H",
+    "Ctrl+R",
+    "F5",
+    "Ctrl+F",
+    "Ctrl+Shift+F",
+    "Ctrl+I",
+    "Space",
+    "F3",
     "Alt+Shift+T",
-    // Settings-dialog tab navigation, listed in F1 help and the default-shortcut
-    // list below (L03/L07). Keep the array in sync with SHORTCUTS_DEFAULT_LINES.
+    // Chords from the F1 help "タブ・ブックマーク" section.
+    "Ctrl+T",
+    "Ctrl+W",
+    "Ctrl+Shift+T",
+    "Ctrl+Tab",
+    "Ctrl+Shift+Tab",
+    "Ctrl+Shift+PageUp",
+    "Ctrl+D",
+    // Chords from the F1 help "その他" section, plus the settings-dialog
+    // chords rendered on this tab (they live in dialog descriptions in F1).
+    "F1",
+    "F4",
+    "Alt+T",
+    "Alt+K",
+    "Esc",
+    "Ctrl+Q",
+    "Ctrl+,",
     "Alt+1",
     "Alt+2",
     "Alt+3",
     "Alt+4",
     "Alt+5",
-    "Alt+数字",
-    "Ctrl+,",
-    "Ctrl+F",
-    // S05: Ctrl+Shift+F narrows already-fetched results by name. F1 help and
-    // README list it, so the Shortcuts tab must surface for that chord too.
-    "Ctrl+Shift+F",
-    "Ctrl+L",
-    "F1",
-    "F4",
-    "Ctrl+Shift+L",
-    "Ctrl+Space",
-    "Ctrl+Shift+C",
-    "Ctrl+Tab",
-    "Ctrl+Shift+Tab",
-    // "主な既定のショートカット" and the rendered default list. The display
-    // form "Alt+1〜5" is searchable verbatim in addition to each digit (M09).
-    "主な",
-    "タブ",
-    "直接移動",
     "Alt+1〜5",
-    "ヘルプ",
-    "キー一覧",
-    "場所",
-    "設定を開く",
+    "Alt+S",
 ];
 
 /// Placeholder of the settings-page search field. Chord names such as `Alt+K`
@@ -558,17 +607,67 @@ const FILES_SORT_DESCRIPTION: &str =
 /// Shortcuts tab, F1 help (`strings::HELP_SECTIONS`) and README cannot drift
 /// apart. The chord names are also searchable via `SHORTCUTS_DEFAULTS_KEYWORDS`
 /// (L03/L07).
+///
+/// T06: this is a full 1:1 mirror of the keyboard rows in F1 help, not a loose
+/// sample — `tests::shortcut_rows_and_f1_help_keys_are_bidirectional` checks
+/// both directions. Each row puts the F1 help key verbatim before the ` … `
+/// separator so the mirror is mechanical. Two groups are documented exceptions:
+///
+/// * Prose / mouse / metadata help rows (gestures, "ゴミ箱ビュー", the dialog
+///   guidance entries and the license row) have no chord to render.
+/// * `Alt+1〜5` and `Alt+S` appear in F1 help *descriptions* of the dialog
+///   entries rather than as keys, because F1 is swallowed while the settings
+///   dialog owns the keyboard; they are still shown here so the user can find
+///   the dialog's own keys before opening it.
 const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
+    // ナビゲーション
     "F1 … ヘルプ / キー一覧",
+    "Enter … 選択項目を開く",
+    "↑ / ↓ … 選択項目を上下に移動",
     "Ctrl+L … 場所を入力",
+    "Alt+← / Alt+→ … 戻る / 進む",
+    "Alt+↑ / Backspace … 親フォルダ",
+    "Home / End … 先頭 / 末尾へ",
+    "PageUp / PageDown … ページ単位で移動",
+    "Ctrl+P … クイックジャンプ",
+    "Ctrl+Shift+L … サイドバーのホームへ移動",
+    // 選択
+    "Ctrl+A … 全選択",
+    "Ctrl+Space … フォーカス行の選択を切替（非連続選択）",
+    "Shift+↑↓ … 範囲選択",
+    // ファイル操作
+    "Ctrl+C / Ctrl+X / Ctrl+V … コピー / 切り取り / 貼り付け",
+    "Ctrl+Shift+C … フォーカス行のパスをコピー",
+    "F2 … 名前変更",
+    "Delete … ゴミ箱へ移動（完全削除なし）",
+    "R / Ctrl+Enter … 選択項目を元の場所へ復元（ゴミ箱ビュー）",
+    "Ctrl+Shift+N … 新規フォルダ",
+    "Ctrl+Z / Ctrl+Shift+Z … 元に戻す / やり直す（名前変更・ゴミ箱のみ）",
+    "Ctrl+Shift+U … 操作の履歴を表示",
+    // 表示
+    "Ctrl+1 / Ctrl+2 … 詳細リスト / アイコングリッド",
+    "Ctrl+H … 隠しファイルの表示切替",
+    "Ctrl+R / F5 … 再読込",
     "Ctrl+F … ファイルを検索",
     "Ctrl+Shift+F … 検索結果を名前で絞り込み",
+    "Ctrl+I … プロパティ",
+    "Space / F3 … テキストプレビュー",
+    "Alt+Shift+T … テーマをダーク / ライト / システムで切替",
+    // タブ・ブックマーク
+    "Ctrl+T / Ctrl+W … タブを開く / 閉じる",
+    "Ctrl+Shift+T … 閉じたタブを復元",
+    "Ctrl+Tab / Ctrl+Shift+Tab … 次のタブ / 前のタブ",
+    "Ctrl+Shift+PageUp / PageDown … タブを左 / 右へ移動",
+    "Ctrl+D … 現在のディレクトリをブックマーク",
+    // その他 / 設定ダイアログ（F1 はダイアログ内で無効なのでここに掲載）
     "F4 … ターミナルを開く",
     "Alt+T … ターミナル起動コマンドの設定",
+    "Alt+K … キーボードショートカットを設定",
+    "Esc … キャンセル / ダイアログを閉じる",
+    "Ctrl+Q … 終了",
     "Ctrl+, … 設定を開く",
     "Alt+1〜5 … 設定ダイアログのタブへ直接移動",
     "Alt+S … ファイルタブの並び順を切替",
-    "Alt+Shift+T … テーマをダーク / ライト / システムで切替",
 ];
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &[
     "ターミナル",
@@ -1891,6 +1990,160 @@ mod tests {
             assert!(
                 SHORTCUTS_DEFAULTS_KEYWORDS.contains(&key.as_str()),
                 "default shortcut keywords must contain {key}"
+            );
+        }
+    }
+
+    /// F1 help rows with no keyboard chord to render on the Shortcuts tab:
+    /// mouse gestures, prose notes, dialog-only guidance (F1 is swallowed by
+    /// the settings dialog, so those are surfaced in the dialog footer) and
+    /// the license/source metadata row (T06).
+    const HELP_KEY_EXCEPTIONS: &[&str] = &[
+        "Ctrl+クリック / Shift+クリック",
+        "ゴミ箱ビュー",
+        "ドラッグ&ドロップ",
+        "ミドルクリック",
+        "設定ダイアログ",
+        "設定ダイアログのタブ",
+        "設定ダイアログのタブ（直接）",
+        "設定ダイアログの並び順",
+        "設定ダイアログの行ショートカット",
+        "設定ダイアログの操作",
+        "AGPL-3.0-or-later",
+    ];
+
+    /// Rows shown on the Shortcuts tab whose chord appears in an F1 help
+    /// *description* (the dialog guidance) rather than as a help key (T06).
+    const SETTINGS_ONLY_KEYS: &[&str] = &["Alt+1〜5", "Alt+S"];
+
+    /// Search-only synonyms that are not literal chord rows. `default` is the
+    /// English alias of "既定"; `Alt+数字` is the generic wording of the
+    /// `Alt+1〜5` row. Everything else here is visible in the section title
+    /// or in a row description (T07).
+    const SEARCH_ALIAS_KEYWORDS: &[&str] = &[
+        "既定",
+        "default",
+        "ショートカット",
+        "キー",
+        "主な",
+        "タブ",
+        "直接移動",
+        "Alt+数字",
+        "ヘルプ",
+        "キー一覧",
+        "場所",
+        "設定を開く",
+    ];
+
+    /// The `Alt+1〜5` display row expands to these five searchable chords;
+    /// the digits are not literal substrings of that row (T07/M09).
+    const ALT_DIGIT_KEYWORDS: &[&str] = &["Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5"];
+
+    /// The part of a rendered row before the ` … ` separator: its F1 help key.
+    fn rendered_shortcut_key(line: &str) -> &str {
+        line.split_once(" … ").map_or(line, |(key, _)| key).trim()
+    }
+
+    /// Every atomic chord from the F1 help keyboard rows (T07).
+    fn help_chords() -> Vec<&'static str> {
+        crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().map(|(key, _)| *key))
+            .filter(|key| !HELP_KEY_EXCEPTIONS.contains(key))
+            .flat_map(|key| key.split(" / "))
+            .map(str::trim)
+            .filter(|chord| !chord.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn shortcut_rows_and_f1_help_keys_are_bidirectional() {
+        // T06: fail on drift in either direction. HELP_SECTIONS is the source
+        // of truth for F1 help and README; the Shortcuts tab must mirror every
+        // keyboard row, and must not advertise a chord F1 help cannot explain.
+        let help_keys: Vec<&str> = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().map(|(key, _)| *key))
+            .filter(|key| !HELP_KEY_EXCEPTIONS.contains(key))
+            .collect();
+        let rendered: Vec<&str> = SHORTCUTS_DEFAULT_LINES
+            .iter()
+            .map(|line| rendered_shortcut_key(line))
+            .collect();
+
+        for key in &help_keys {
+            assert!(
+                rendered.contains(key),
+                "F1 help key {key} must be rendered on the Shortcuts tab"
+            );
+        }
+
+        let help_text = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().flat_map(|(key, text)| [*key, *text]))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for key in &rendered {
+            assert!(
+                help_text.contains(key),
+                "rendered shortcut {key} is undocumented in F1 help"
+            );
+            assert!(
+                help_keys.contains(key) || SETTINGS_ONLY_KEYS.contains(key),
+                "rendered shortcut {key} needs a documented exception"
+            );
+        }
+
+        let mut actual = rendered;
+        actual.sort_unstable();
+        let mut expected = help_keys;
+        expected.extend_from_slice(SETTINGS_ONLY_KEYS);
+        expected.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "Shortcuts rows must be a 1:1 mirror of F1 help keyboard rows"
+        );
+    }
+
+    #[test]
+    fn default_shortcut_keywords_cover_every_f1_help_chord() {
+        // T07: a chord shown in F1 help must be searchable from the Shortcuts
+        // tab. Bare letters (e.g. "R") may also match another tab's keyword, so
+        // only containment in the Shortcuts result is asserted here.
+        for chord in help_chords() {
+            assert!(
+                SHORTCUTS_DEFAULTS_KEYWORDS.contains(&chord),
+                "default shortcut keywords must contain F1 help chord {chord}"
+            );
+            assert!(
+                tabs_matching_query(chord).contains(&SettingsTab::Shortcuts),
+                "query {chord} must surface the Shortcuts tab"
+            );
+        }
+    }
+
+    #[test]
+    fn every_shortcut_keyword_is_rendered() {
+        // T07/M09: a chord keyword that is absent from every rendered row
+        // makes no_match_hint point at a tab that never shows the typed text.
+        for keyword in SHORTCUTS_DEFAULTS_KEYWORDS {
+            if SEARCH_ALIAS_KEYWORDS.contains(keyword) {
+                continue;
+            }
+            if ALT_DIGIT_KEYWORDS.contains(keyword) {
+                assert!(
+                    SHORTCUTS_DEFAULT_LINES
+                        .iter()
+                        .any(|line| line.contains("Alt+1〜5")),
+                    "Alt+digit chords must be covered by the Alt+1〜5 row"
+                );
+                continue;
+            }
+            assert!(
+                SHORTCUTS_DEFAULT_LINES
+                    .iter()
+                    .any(|line| line.contains(keyword)),
+                "keyword {keyword} must appear in a rendered shortcut row"
             );
         }
     }

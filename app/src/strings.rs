@@ -237,6 +237,18 @@ pub const EMPTY_FILTERED: (&str, &str) = (
 pub const LOADING: &str = "読み込み中…";
 /// Recovery hint shown under a load error in the empty-state overlay (U-20).
 pub const LOAD_ERROR_HINT: &str = "F5 で再読込 / Ctrl+L で別のパスへ移動";
+/// Hidden-files-only empty state (T13): `{count}` is replaced by
+/// [`empty_hidden_only`]. The recovery key `Ctrl+H` lives here, next to the
+/// other empty-state hints, so it can be checked by the same regression test.
+pub const EMPTY_HIDDEN_ONLY: &str = "隠しファイル {count} 件を非表示にしています（Ctrl+H で表示）";
+
+/// Render the hidden-files-only empty-state message (T13).
+///
+/// `format!` requires a literal format string, so a `const` template cannot be
+/// passed to it directly; the caller should use this helper instead.
+pub fn empty_hidden_only(count: usize) -> String {
+    EMPTY_HIDDEN_ONLY.replace("{count}", &count.to_string())
+}
 
 // ---------------------------------------------------------------------------
 // ステータスバー（共通・タブ・ゴミ箱）
@@ -283,6 +295,9 @@ pub const STATUS_FOLDER_CREATING: &str = "フォルダを作成中…";
 /// Repeated format-string prefixes (the dynamic suffix stays at the call site).
 pub const STATUS_TARGET_GONE: &str = "移動先が存在しません";
 pub const STATUS_PATH_GONE: &str = "対象が存在しません";
+/// サイドバーの登録済み場所が消えたときのツールチップ（T09）。
+/// `F5` での再確認を案内する固定文言を一箇所に集約する。
+pub const STATUS_PLACE_GONE_HINT: &str = "フォルダがありません（F5 で再確認）";
 pub const STATUS_NOT_DIRECTORY: &str = "ディレクトリではありません";
 pub const STATUS_UNDO_FAILED: &str = "元に戻せません";
 pub const STATUS_REDO_NO_TARGET: &str = "やり直せません: 対象が存在しません";
@@ -305,7 +320,17 @@ pub const STATUS_SYMLINK_NO_PREVIEW: &str = "シンボリックリンクはプ�
 /// Ctrl+D のブックマーク切り替えが永続化できないパス（空 / NUL / 非 UTF-8 /
 /// サイズ超過）を拒否するときの通知。`main.rs::bookmark_toggle_rejection` が
 /// 呼び出す（Q03: 以前は main.rs ローカルだったが、色分類表と一元化した）。
-pub const STATUS_BOOKMARK_NOT_PERSISTABLE: &str = "このパスはブックマークできません（非UTF-8）";
+/// T04: 以前の「（非UTF-8）」は 4 つの拒否条件のうち 1 つしか示しておらず、
+/// 空パスや NUL 含有では誤った理由を表示していた。全条件に共通する
+/// 「保存できない形式」という表現に改める。
+pub const STATUS_BOOKMARK_NOT_PERSISTABLE: &str =
+    "このパスはブックマークできません（保存できない形式です）";
+/// F2 リネームで対象の親ディレクトリが解決できないときの拒否（T03）。
+/// `main.rs::confirm_rename` のインラインリテラルを置き換える。
+pub const STATUS_RENAME_NO_PARENT: &str = "親ディレクトリがありません";
+/// F2 リネームで同名の宛先が既にあるときの拒否接頭辞（T03）。
+/// 動的な `{path}` が後続するため接頭辞自体を共有する。
+pub const STATUS_RENAME_EXISTS_PREFIX: &str = "既に存在します: ";
 
 // ---------------------------------------------------------------------------
 // 操作完了サマリ
@@ -336,10 +361,11 @@ pub const STATUS_OP_FAILED_SUFFIX: &str = "できません";
 /// 「できません」を含まないため単独では成功 green に落ちていた。
 /// main.rs の warning マーカーとして登録し、全ての呼び出し側がこれを連結する。
 pub const STATUS_CANNOT_OPEN_SUFFIX: &str = "開けません";
-/// スキップ件数の括弧（`{status}` に続く）。
-#[allow(dead_code)]
-pub const STATUS_SKIPPED_PREFIX: &str = "（存在しない項目 ";
-#[allow(dead_code)]
+/// スキップ件数通知の開き括弧。`main.rs::transfer_skip_notice` が
+/// 「{理由} {N} 件をスキップ」を囲むために使う（T02）。
+pub const STATUS_SKIPPED_PREFIX: &str = "（";
+/// スキップ件数通知の閉じ括弧。件数に続く「件をスキップ」と一体化させ、
+/// コピー／移動／ドロップの 3 箇所で同じ文言になるよう共有する（T02）。
 pub const STATUS_SKIPPED_SUFFIX: &str = " 件をスキップ）";
 /// 操作中止の完了通知（進行中の `STATUS_CANCELLING` とは別フェーズ）。
 pub const STATUS_CANCELLED: &str = "キャンセルしました";
@@ -395,7 +421,11 @@ pub const STATUS_MISSING_COUNT_SUFFIX: &str = " 件は既に存在しません";
 /// 動的な `{name}` が後続するため、接尾自体を色判定のマーカーとして登録する。
 pub const STATUS_NOT_FOUND_SUFFIX: &str = "が見つかりません";
 /// Undo / Redo の「対象なし」と失敗。
-pub const STATUS_UNDO_EMPTY: &str = "元に戻せる操作がありません";
+/// T09: 操作履歴ダイアログ側は「元に戻せる操作はありません」だったため、
+/// 助詞を「は」に統一する（状態を説明する文として自然な形）。
+pub const STATUS_UNDO_EMPTY: &str = "元に戻せる操作はありません";
+/// 操作履歴ダイアログが空のときの補足（T09）。`STATUS_UNDO_EMPTY` に連結する。
+pub const STATUS_UNDO_HISTORY_HINT: &str = "（名前変更とゴミ箱のみ記録します）";
 pub const STATUS_UNDO_EXISTS_SUFFIX: &str = " が既に存在します";
 pub const STATUS_REDO_EMPTY: &str = "やり直せる操作がありません";
 pub const STATUS_REDO_FAILED: &str = "やり直せません";
@@ -411,6 +441,10 @@ pub const THEME_LABEL_SYSTEM: &str = "システム";
 pub const STATUS_TRASH_ALL_FAILED: &str = "ゴミ箱へ移動できません";
 pub const STATUS_TRASH_PARTIAL_FAILED: &str = " 件失敗: ";
 pub const STATUS_RESTORE_FAILED: &str = "復元できません";
+/// ゴミ箱に復元対象が残っていない理由フラグメント（T08）。
+/// `main.rs::trash_undo_status` の全件失敗（「項目が…」）と一部失敗
+/// （「{n} 件は…」）の両方で共有し、理由の文言を一箇所に固定する。
+pub const STATUS_TRASH_MISSING_REASON: &str = "ゴミ箱にありません";
 /// 復元対象が空のときの拒否通知（N08）。`STATUS_TAB_RESTORE_EMPTY` と異なり
 /// 「できません / ありません」のどちらもマーカーに登録されていなかった。
 pub const STATUS_RESTORE_EMPTY: &str = "復元対象がありません";
@@ -707,6 +741,25 @@ mod tests {
                 "load error hint: {LOAD_ERROR_HINT}"
             );
         }
+
+        // T13: the hidden-files-only empty state also has to name the key that
+        // recovers the hidden entries. The count is rendered, not a literal in
+        // the template, so check both the template and one rendered instance.
+        for token in ["Ctrl+H", "で表示"] {
+            assert!(
+                EMPTY_HIDDEN_ONLY.contains(token),
+                "hidden-only hint: {EMPTY_HIDDEN_ONLY}"
+            );
+        }
+        let hidden_only = empty_hidden_only(3);
+        assert!(
+            hidden_only.contains("3 件"),
+            "hidden-only hint: {hidden_only}"
+        );
+        assert!(
+            hidden_only.contains("Ctrl+H"),
+            "hidden-only hint: {hidden_only}"
+        );
     }
 
     #[test]
@@ -836,10 +889,13 @@ mod tests {
             STATUS_FOLDER_NO_PREVIEW,
             STATUS_SYMLINK_NO_PREVIEW,
             STATUS_BOOKMARK_NOT_PERSISTABLE,
+            STATUS_RENAME_NO_PARENT,
+            STATUS_RENAME_EXISTS_PREFIX,
             STATUS_TRASH_LOADING,
             STATUS_FOLDER_CREATING,
             STATUS_TARGET_GONE,
             STATUS_PATH_GONE,
+            STATUS_PLACE_GONE_HINT,
             STATUS_NOT_DIRECTORY,
             STATUS_UNDO_FAILED,
             STATUS_REDO_NO_TARGET,
@@ -875,6 +931,7 @@ mod tests {
             STATUS_MISSING_COUNT_SUFFIX,
             STATUS_NOT_FOUND_SUFFIX,
             STATUS_UNDO_EMPTY,
+            STATUS_UNDO_HISTORY_HINT,
             STATUS_UNDO_EXISTS_SUFFIX,
             STATUS_REDO_EMPTY,
             STATUS_REDO_FAILED,
@@ -885,6 +942,7 @@ mod tests {
             STATUS_TRASH_NO_SORT,
             STATUS_TRASH_PARTIAL_FAILED,
             STATUS_RESTORE_FAILED,
+            STATUS_TRASH_MISSING_REASON,
             STATUS_RESTORE_EMPTY,
             STATUS_SEARCH_EMPTY_QUERY,
             STATUS_SEARCH_NOT_OPEN,
@@ -938,6 +996,9 @@ mod tests {
             ("STATUS_REDO_FAILED", STATUS_REDO_FAILED, "error"),
             ("STATUS_RENAME_FAILED", STATUS_RENAME_FAILED, "error"),
             ("STATUS_TARGET_GONE", STATUS_TARGET_GONE, "error"),
+            // T10: 汎用の「対象が存在しません」も main.rs の error マーカーに
+            // 登録済み（C_RED）なので、色分類表にも明示的に載せる。
+            ("STATUS_PATH_GONE", STATUS_PATH_GONE, "error"),
             ("STATUS_TARGET_MISSING", STATUS_TARGET_MISSING, "error"),
             ("STATUS_DROP_NOT_FOUND", STATUS_DROP_NOT_FOUND, "error"),
             ("STATUS_NOT_DIRECTORY", STATUS_NOT_DIRECTORY, "error"),
@@ -1236,6 +1297,94 @@ mod tests {
             .contains(STATUS_KEYMAP_NO_UNBIND_PREFIX));
         assert!(format!("保存検索{STATUS_NOT_FOUND_SUFFIX}: foo").contains(STATUS_NOT_FOUND_SUFFIX));
         assert!(format!("3{STATUS_MISSING_COUNT_SUFFIX}").contains(STATUS_MISSING_COUNT_SUFFIX));
+    }
+
+    #[test]
+    fn skip_notice_wording_is_shared() {
+        // T02: コピー／移動／外部ドロップのスキップ通知は、main.rs の
+        // `transfer_skip_notice` を通してこの定数だけを使う。括弧と件数接尾の
+        // 定義を一箇所に固定し、3 通りのinline文言が再び増えるのを防ぐ。
+        assert_eq!(STATUS_SKIPPED_PREFIX, "（");
+        assert_eq!(STATUS_SKIPPED_SUFFIX, " 件をスキップ）");
+        assert_eq!(
+            format!("{STATUS_SKIPPED_PREFIX}存在しない項目 2{STATUS_SKIPPED_SUFFIX}"),
+            "（存在しない項目 2 件をスキップ）"
+        );
+        assert_eq!(
+            format!("{STATUS_SKIPPED_PREFIX}特殊ファイル 1{STATUS_SKIPPED_SUFFIX}"),
+            "（特殊ファイル 1 件をスキップ）"
+        );
+    }
+
+    #[test]
+    fn undo_empty_wording_is_unified_across_call_sites() {
+        // T09: ステータスバーと操作履歴ダイアログで助詞が違っていた（が / は）のを
+        // 「は」に統一し、ダイアログ側の補足も定数経由で連結する。
+        assert_eq!(STATUS_UNDO_EMPTY, "元に戻せる操作はありません");
+        assert_eq!(
+            format!("{STATUS_UNDO_EMPTY}{STATUS_UNDO_HISTORY_HINT}"),
+            "元に戻せる操作はありません（名前変更とゴミ箱のみ記録します）"
+        );
+        assert_eq!(
+            STATUS_PLACE_GONE_HINT,
+            "フォルダがありません（F5 で再確認）"
+        );
+        let source = include_str!("main.rs");
+        assert!(
+            !source.contains("\"元に戻せる操作はありません（名前変更とゴミ箱のみ記録します）\""),
+            "the undo history hint must be composed from constants"
+        );
+        assert!(
+            !source.contains("Tooltip::new(\"フォルダがありません（F5 で再確認）\")"),
+            "the sidebar tooltip must use STATUS_PLACE_GONE_HINT"
+        );
+    }
+
+    #[test]
+    fn trash_missing_reason_fragment_is_shared() {
+        // T08: `trash_undo_status` の全件失敗と一部失敗が同じ断片を連結する。
+        assert_eq!(STATUS_TRASH_MISSING_REASON, "ゴミ箱にありません");
+        assert_eq!(
+            format!("項目が{STATUS_TRASH_MISSING_REASON}"),
+            "項目がゴミ箱にありません"
+        );
+        assert_eq!(
+            format!("1 件は{STATUS_TRASH_MISSING_REASON}"),
+            "1 件はゴミ箱にありません"
+        );
+    }
+
+    #[test]
+    fn bookmark_rejection_reason_is_generic() {
+        // T04: `sane_path` rejects empty / NUL / non-UTF-8 / oversized paths.
+        // Naming only "非UTF-8" in the notice would misreport the other three.
+        assert_eq!(
+            STATUS_BOOKMARK_NOT_PERSISTABLE,
+            "このパスはブックマークできません（保存できない形式です）"
+        );
+        assert!(!STATUS_BOOKMARK_NOT_PERSISTABLE.contains("非UTF-8"));
+        assert!(STATUS_BOOKMARK_NOT_PERSISTABLE.contains("保存できない形式"));
+    }
+
+    #[test]
+    fn rename_refusal_wording_is_centralized() {
+        // T03: F2 リネームの 2 つの拒否文言は strings.rs に集約し、
+        // main.rs::confirm_rename は定数経由でのみ表示する。
+        assert_eq!(STATUS_RENAME_NO_PARENT, "親ディレクトリがありません");
+        assert_eq!(STATUS_RENAME_EXISTS_PREFIX, "既に存在します: ");
+        assert_eq!(
+            format!("{STATUS_RENAME_EXISTS_PREFIX}/tmp/target"),
+            "既に存在します: /tmp/target"
+        );
+        let source = include_str!("main.rs");
+        assert!(
+            !source.contains("set_rename_error(\"親ディレクトリがありません\""),
+            "the parent rejection must go through STATUS_RENAME_NO_PARENT"
+        );
+        assert!(
+            !source.contains("format!(\"既に存在します: {}\""),
+            "the exists rejection must go through STATUS_RENAME_EXISTS_PREFIX"
+        );
     }
 
     #[test]

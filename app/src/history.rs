@@ -77,8 +77,14 @@ impl History {
     /// recent entries, preserving the invariant [`History::visit`] maintains
     /// for histories built through navigation.
     pub fn restore(&mut self, snapshot: HistorySnapshot) {
+        // `snapshot.forward` is next-first, so the reversed internal stack has
+        // the farthest entry first. Drop the excess from that front: the nearest
+        // entries (the next go_forward targets) must survive, as documented
+        // above and as the back-stack rule below does for recent entries.
         let mut forward: Vec<PathBuf> = snapshot.forward.into_iter().rev().collect();
-        forward.truncate(self.max_back);
+        if forward.len() > self.max_back {
+            forward.drain(..forward.len() - self.max_back);
+        }
         let back_budget = self.max_back.saturating_sub(forward.len());
         let mut back = snapshot.back;
         if back.len() > back_budget {
@@ -329,6 +335,26 @@ mod tests {
         });
         assert_eq!(history.snapshot().back, vec![p("/a"), p("/b")]);
         assert_eq!(history.snapshot().forward, vec![p("/next")]);
+    }
+
+    #[test]
+    fn restore_truncates_forward_to_the_nearest_entries() {
+        let mut history = History::new();
+        history.max_back = 3;
+        history.restore(super::HistorySnapshot {
+            back: vec![p("/base")],
+            // snapshot.forward は next-first（先頭が次の go_forward ターゲット）。
+            forward: vec![p("/f1"), p("/f2"), p("/f3"), p("/f4"), p("/f5")],
+        });
+        // 上限 3 を超えた分は遠い方から捨てられ、直近の 3 件が残る。
+        assert_eq!(
+            history.snapshot().forward,
+            vec![p("/f1"), p("/f2"), p("/f3")]
+        );
+        assert_eq!(history.snapshot().back, Vec::<PathBuf>::new());
+        // 残った先頭が実際の go_forward ターゲットになる。
+        assert_eq!(history.go_forward(p("/base")), Some(p("/f1")));
+        assert_eq!(history.go_forward(p("/f1")), Some(p("/f2")));
     }
 
     #[test]

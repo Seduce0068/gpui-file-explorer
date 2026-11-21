@@ -428,6 +428,14 @@ fn chord_tokens_sane(chord: &str) -> bool {
 /// `shift+ctrl+p` share one dedupe key. Unparseable chords fall back to the
 /// trimmed lowercase string. Kept local because `main.rs` depends on this
 /// module, not the other way around (M02).
+///
+/// T01: `KeyMap::binding_matches` treats `alt` as a don't-care for Ctrl
+/// bindings, so `ctrl+p` and `ctrl+alt+p` are the same keystroke at dispatch
+/// time. Drop `alt` whenever `ctrl` is set to mirror that semantics: otherwise
+/// `validate()` keeps both spellings while `KeyMap::from_settings` silently
+/// evicts the earlier one, leaving the file and the dispatcher in disagreement
+/// (S06 load-time path). An omitted `shift` already resolves to `false` here,
+/// matching `from_settings`, so `ctrl+shift+p` stays a distinct chord.
 fn canonical_chord_key(chord: &str) -> String {
     let lowered = chord.trim().to_ascii_lowercase();
     let (mut ctrl, mut alt, mut shift) = (false, false, false);
@@ -448,6 +456,12 @@ fn canonical_chord_key(chord: &str) -> String {
     let Some(key) = key else {
         return lowered;
     };
+    // T01: Ctrl bindings ignore Alt at dispatch (`binding_matches`), so the
+    // Alt variant is not a distinct chord. Fold it into the Ctrl key here to
+    // keep persisted dedupe identical to runtime eviction.
+    if ctrl {
+        alt = false;
+    }
     let mut canonical = String::new();
     if ctrl {
         canonical.push_str("ctrl+");
@@ -1383,10 +1397,12 @@ impl Settings {
         // Keymap overrides get the same harden-on-load treatment: trim both
         // sides, drop unusable/reserved entries, cap the count and keep only
         // the first override per action AND per chord (compared canonically,
-        // so equivalent modifier spellings collapse). Two actions bound to
-        // the same chord would make key resolution depend on iteration order,
-        // so a later entry with a duplicate chord is dropped. Unknown action
-        // names are kept; the application ignores them when building the map.
+        // so equivalent modifier spellings — including ctrl+key vs
+        // ctrl+alt+key, which dispatch treats identically (T01) — collapse).
+        // Two actions bound to the same chord would make key resolution depend
+        // on iteration order, so a later entry with a duplicate chord is
+        // dropped. Unknown action names are kept; the application ignores them
+        // when building the map.
         let mut keymap = Vec::new();
         let mut seen_actions = HashSet::new();
         let mut seen_chords = HashSet::new();
@@ -1399,9 +1415,12 @@ impl Settings {
             };
             // Dedupe by canonical spelling: `parse_chord` treats modifier order
             // and case as irrelevant, so `ctrl+shift+p` and `shift+ctrl+p` are
-            // the same keystroke (M02). Reserve the chord first: a duplicate
-            // chord must not reserve the action, otherwise a later (valid)
-            // rebind of that action to a different chord would be dropped.
+            // the same keystroke (M02). `canonical_chord_key` also folds the
+            // Alt variant of a Ctrl chord into the plain Ctrl key, matching
+            // `KeyMap::binding_matches` (T01 / S06 load-time path). Reserve the
+            // chord first: a duplicate chord must not reserve the action,
+            // otherwise a later (valid) rebind of that action to a different
+            // chord would be dropped.
             let chord_key = canonical_chord_key(&chord);
             if !seen_chords.insert(chord_key.clone()) {
                 continue;
@@ -4164,6 +4183,55 @@ mod keymap_settings_tests {
                 ("other".to_string(), "alt+shift+k".to_string()),
             ],
             "equivalent chord spellings must collapse to the first entry"
+        );
+    }
+
+    #[test]
+    fn canonical_chord_key_ignores_alt_for_ctrl_bindings() {
+        // T01: dispatch (`KeyMap::binding_matches`) treats Alt as a don't-care
+        // for Ctrl chords, so the dedupe key must do the same.
+        assert_eq!(
+            canonical_chord_key("ctrl+alt+p"),
+            canonical_chord_key("ctrl+p")
+        );
+        assert_eq!(
+            canonical_chord_key("ctrl+shift+alt+p"),
+            canonical_chord_key("ctrl+shift+p")
+        );
+        assert_eq!(
+            canonical_chord_key("alt+ctrl+p"),
+            canonical_chord_key("ctrl+p")
+        );
+        // An explicit shift still selects a different keystroke.
+        assert_ne!(
+            canonical_chord_key("ctrl+p"),
+            canonical_chord_key("ctrl+shift+p")
+        );
+        // Without Ctrl, Alt remains significant (Alt+Left must stay working).
+        assert_ne!(canonical_chord_key("alt+p"), canonical_chord_key("p"));
+    }
+
+    #[test]
+    fn keymap_validation_collapses_ctrl_alt_variant_of_the_same_chord() {
+        // T01 / S06: the load-time path must dedupe `ctrl+p` and `ctrl+alt+p`
+        // into one persisted entry, just like the dialog's upsert path does.
+        let mut settings = Settings {
+            keymap: vec![
+                ("fuzzy_jump".to_string(), "ctrl+p".to_string()),
+                ("open_preview".to_string(), "ctrl+alt+p".to_string()),
+                ("other".to_string(), "ctrl+shift+p".to_string()),
+                ("shift_alt".to_string(), "CTRL+ALT+SHIFT+P".to_string()),
+            ],
+            ..Settings::default()
+        };
+        settings.validate();
+        assert_eq!(
+            settings.keymap,
+            vec![
+                ("fuzzy_jump".to_string(), "ctrl+p".to_string()),
+                ("other".to_string(), "ctrl+shift+p".to_string()),
+            ],
+            "the Alt variant must collapse; explicit Shift stays distinct"
         );
     }
 

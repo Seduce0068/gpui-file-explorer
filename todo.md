@@ -909,28 +909,29 @@ status: current
 
 ### 優先度: 中（ループ R15・confirmed）
 
-- [ ] **T01** settings.rs validate が Ctrl alt don't-care に未追従（S06 ロード時）
+- [x] **T01** settings.rs validate が Ctrl alt don't-care に未追従（S06 ロード時） — 対応: loop17-core（実バグ修正）
   — settings.rs:431
-- [ ] **T02** スキップ通知文言が STATUS_SKIPPED_* を迂回し揺れている
+- [x] **T02** スキップ通知文言が STATUS_SKIPPED_* を迂回し揺れている — 対応: loop17-core
   — main.rs:5303,5604
-- [ ] **T03** 名前変更ダイアログの拒否リテラル未定数化 — main.rs:7375
-- [ ] **T04** ブックマーク拒否が原因を「非UTF-8」と誤表示 — strings.rs:308
-- [ ] **T05** ops.rs 件数の grep 計上が review-report 訂正と矛盾
+- [x] **T03** 名前変更ダイアログの拒否リテラル未定数化 — main.rs:7375 — 対応: loop17-core
+- [x] **T04** ブックマーク拒否が原因を「非UTF-8」と誤表示 — strings.rs:308 — 対応: loop17-core（実バグ修正）
+- [x] **T05** ops.rs 件数の grep 計上が review-report 訂正と矛盾 — 対応: loop17-tests
   — app/README.md:294 / DESIGN.md:366
-- [ ] **T06** ショートカット一覧が F1/README と乖離 — settings_ui.rs:557
-- [ ] **T07** 設定検索キーワードが表示されないキー名を広告
+- [x] **T06** ショートカット一覧が F1/README と乖離 — settings_ui.rs:557 — 対応: loop17-ux
+- [x] **T07** 設定検索キーワードが表示されないキー名を広告 — 対応: loop17-ux
   — settings_ui.rs:485
 
 ### 優先度: 低（ループ R15）
 
-- [ ] **T08** trash_undo_status の失敗理由がインライン断片 — main.rs:673
-- [ ] **T09** 履歴空状態/パスツールチップの拒否文言残存 — main.rs:5666
-- [ ] **T10** strings.rs 色分類表に STATUS_PATH_GONE 未登録
+- [x] **T08** trash_undo_status の失敗理由がインライン断片 — main.rs:673 — 対応: loop17-core
+- [x] **T09** 履歴空状態/パスツールチップの拒否文言残存 — main.rs:5666 — 対応: loop17-core
+- [x] **T10** strings.rs 色分類表に STATUS_PATH_GONE 未登録 — 対応: loop17-core
   — strings.rs:914
-- [ ] **T11** chords_collide / canonical_chord の解析不能フォールバック未テスト
+- [x] **T11** chords_collide / canonical_chord の解析不能フォールバック未テスト — 対応: loop17-core
   — main.rs:1139,1117
-- [ ] **T12** History::restore の forward truncation 分岐未テスト — history.rs:80
-- [ ] **T13** 隠しファイルのみ空状態が復帰キーテスト対象外 — main.rs:1773
+- [x] **T12** History::restore の forward truncation 分岐未テスト（実バグ修正）
+  — history.rs:80 / 対応: loop17-tests
+- [x] **T13** 隠しファイルのみ空状態が復帰キーテスト対象外 — main.rs:1773 — 対応: loop17-ux
 
 ### 優先度: 低（調査タスク）
 
