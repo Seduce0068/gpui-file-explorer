@@ -705,6 +705,18 @@ pub struct WindowSession {
     pub active_tab: usize,
 }
 
+/// Why a settings write failed, so callers can show an accurate recovery hint
+/// instead of a generic "check permissions or disk space" message (U03).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsSaveError {
+    /// Serialized settings exceeded `MAX_SETTINGS_BYTES`.
+    TooLarge,
+    /// Another instance held the lock file (or the lock could not be acquired).
+    Locked,
+    /// Any other I/O failure, including an unavailable config directory.
+    Io,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -790,12 +802,18 @@ pub struct Settings {
     /// When set (debug hooks active), never write to disk. Not persisted.
     #[serde(skip)]
     pub ephemeral: bool,
+    /// Reason for the most recent failed `save_with_reason()` call, kept in a
+    /// `Cell` so `save(&self)` can record it without a mutable borrow. Used by
+    /// the UI to show an accurate recovery hint (U03). Not persisted.
+    #[serde(skip)]
+    pub last_save_error: std::cell::Cell<Option<SettingsSaveError>>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             version: SCHEMA_VERSION,
+            last_save_error: std::cell::Cell::new(None),
             last_dir: None,
             sort: SortSpec::default(),
             show_hidden: false,
@@ -1457,26 +1475,48 @@ impl Settings {
     /// ephemeral sessions still count as success: nothing was expected to be
     /// saved, and `save_to()` keeps handling those cases itself. Failure is
     /// reported on stderr (journald on Linux) but never breaks the UI.
+    #[allow(dead_code)] // Kept as the simple compatibility API; production uses `save_with_reason`.
     pub fn save(&self) -> bool {
+        self.save_with_reason().is_ok()
+    }
+
+    /// Save and report WHY it failed, so the UI can show an accurate notice
+    /// (U03). `Ok(())` also covers read-only / ephemeral sessions where no
+    /// file is written by design.
+    pub fn save_with_reason(&self) -> Result<(), SettingsSaveError> {
         let path = Self::config_path();
-        self.save_to_optional_path(path.as_deref())
+        self.save_to_optional_path_with_reason(path.as_deref())
+    }
+
+    fn save_to_optional_path_with_reason(
+        &self,
+        path: Option<&Path>,
+    ) -> Result<(), SettingsSaveError> {
+        let result = (|| {
+            let Some(path) = path else {
+                if self.write_was_skipped() {
+                    return Ok(());
+                }
+                error!("設定ディレクトリを特定できないため、設定を保存できません");
+                return Err(SettingsSaveError::Io);
+            };
+            self.save_to(path).map_err(|error| match error.kind() {
+                std::io::ErrorKind::InvalidData => SettingsSaveError::TooLarge,
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AlreadyExists => {
+                    SettingsSaveError::Locked
+                }
+                _ => SettingsSaveError::Io,
+            })
+        })();
+        self.last_save_error.set(result.as_ref().err().copied());
+        result
     }
 
     /// `save()` with an injectable path so the "no config directory" branch is
     /// testable without unsetting HOME.
+    #[allow(dead_code)] // Test-only compatibility shim for the injectable-path save tests.
     fn save_to_optional_path(&self, path: Option<&Path>) -> bool {
-        let Some(path) = path else {
-            if self.write_was_skipped() {
-                return true;
-            }
-            error!("設定ディレクトリを特定できないため、設定を保存できません");
-            return false;
-        };
-        if let Err(error) = self.save_to(path) {
-            error!(path = %path.display(), %error, "failed to save settings");
-            return false;
-        }
-        true
+        self.save_to_optional_path_with_reason(path).is_ok()
     }
 
     /// Serialize concurrent saves from multiple app instances. A lock file
@@ -1649,8 +1689,8 @@ mod tests {
     // Explicit imports only: the crate root glob re-exports GPUI's `test`
     // proc-macro which would shadow the built-in `#[test]`.
     use super::{
-        next_theme, next_theme_choice, resolve_theme, Settings, ThemeChoice, ViewLayout, APP_DIR,
-        LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES, SCHEMA_VERSION,
+        next_theme, next_theme_choice, resolve_theme, Settings, SettingsSaveError, ThemeChoice,
+        ViewLayout, APP_DIR, LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES, SCHEMA_VERSION,
     };
     use crate::model::{SortDir, SortKey, SortSpec};
     use gpui_kit::component::ThemeMode;
@@ -1879,6 +1919,25 @@ mod tests {
             .expect("an unavailable config dir must be reported");
         assert!(!reason.is_empty());
         assert!(reason.contains("設定"));
+    }
+
+    #[test]
+    fn save_with_reason_records_the_failure_reason() {
+        let settings = Settings::default();
+        assert_eq!(settings.last_save_error.get(), None);
+        // No config path available -> Io reason must be recorded for the UI.
+        assert_eq!(
+            settings.save_to_optional_path_with_reason(None),
+            Err(SettingsSaveError::Io)
+        );
+        assert_eq!(settings.last_save_error.get(), Some(SettingsSaveError::Io));
+        // A skipped write clears the stale reason.
+        let read_only = Settings {
+            read_only: true,
+            ..Settings::default()
+        };
+        assert!(read_only.save_to_optional_path_with_reason(None).is_ok());
+        assert_eq!(read_only.last_save_error.get(), None);
     }
 
     #[test]

@@ -939,7 +939,7 @@ status: current
   — settings.rs:1366,686
 - [x] **U02** 保存検索の上限以外拒否が「上限に達しました」と誤通知 — 対応: loop18-history
   — main.rs:8419 / settings.rs:913
-- [ ] **U03** 設定保存失敗の汎用メッセージが原因を誤案内 （Settings::save() が bool 返しのため理由判別は次ラウンド）
+- [x] **U03** 設定保存失敗の汎用メッセージが原因を誤案内 — 対応: 親（save_with_reason で理由判別）
   — strings.rs:399 / settings.rs:1585
 
 ### 優先度: 中（ループ R16）

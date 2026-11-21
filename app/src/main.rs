@@ -57,8 +57,8 @@ use crate::search::{
     ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
 };
 use crate::settings::{
-    next_theme_choice, resolve_theme, Settings, TabSession, ThemeChoice, ViewLayout,
-    WindowBoundsState, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES, MAX_TABS,
+    next_theme_choice, resolve_theme, Settings, SettingsSaveError, TabSession, ThemeChoice,
+    ViewLayout, WindowBoundsState, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES, MAX_TABS,
 };
 use crate::system_icons::SystemIconResolver;
 use crate::tabs::{Tab, Tabs};
@@ -616,6 +616,15 @@ fn settings_save_status(saved: bool, success: String) -> String {
     }
 }
 
+/// Pure mapping from a save error to an accurate user-facing notice (U03).
+fn settings_save_error_status(error: Option<SettingsSaveError>) -> Option<String> {
+    match error {
+        Some(SettingsSaveError::TooLarge) => Some(STATUS_SETTINGS_SAVE_TOO_LARGE.to_string()),
+        Some(SettingsSaveError::Locked) => Some(STATUS_SETTINGS_SAVE_LOCKED.to_string()),
+        Some(SettingsSaveError::Io) | None => None,
+    }
+}
+
 /// Status shown after a settings write, accounting for skipped writes (F04).
 /// `save()` returns `true` for read-only / ephemeral sessions even though no
 /// file was written, so those sessions must get the dedicated read-only notice
@@ -638,6 +647,10 @@ fn settings_write_status(
     }
     if settings.write_was_skipped() {
         STATUS_SETTINGS_READ_ONLY.to_string()
+    } else if !saved {
+        // U03: prefer the concrete reason recorded by `save_with_reason`.
+        settings_save_error_status(settings.last_save_error.get())
+            .unwrap_or_else(|| settings_save_status(saved, success))
     } else {
         settings_save_status(saved, success)
     }
@@ -1885,18 +1898,18 @@ use crate::strings::{
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
     STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
-    STATUS_SETTINGS_SAVE_FAILED, STATUS_SKIPPED_PREFIX, STATUS_SKIPPED_SUFFIX,
-    STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY,
-    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY,
-    STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT,
-    STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED,
-    STATUS_TRASH_LOADING, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
-    STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
-    STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
-    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
-    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
-    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
-    THEME_LABEL_SYSTEM,
+    STATUS_SETTINGS_SAVE_FAILED, STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE,
+    STATUS_SKIPPED_PREFIX, STATUS_SKIPPED_SUFFIX, STATUS_SPECIAL_FILE_NO_COPY,
+    STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
+    STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
+    STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
+    STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
+    STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+    STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
+    STATUS_UNDO_HISTORY_HINT, STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED,
+    STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, THEME_LABEL_DARK,
+    THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -3680,7 +3693,7 @@ impl Explorer {
         if let Some(bounds) = self.window_bounds {
             self.settings.primary_window_mut().bounds = Some(bounds);
         }
-        self.settings.save()
+        self.settings.save_with_reason().is_ok()
     }
 
     /// Load a tab's directory/history into the explorer. Returns whether the
@@ -11340,45 +11353,47 @@ mod tests {
         parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
         remove_keymap_override, saved_search_caption, saved_search_save_status,
         search_filter_status, set_view_status, settings_discard_status, settings_row_key_is_bare,
-        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
-        settings_validation_status, settings_write_needs_rollback, settings_write_status,
-        startup_dir_from, status_color, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
-        transfer_progress_status, transfer_skip_notice, trash_batch, trash_delete_status,
-        trash_key_action, trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
-        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
-        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
-        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers,
-        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, UndoAction,
-        ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX,
-        GRID_GAP_PX, GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX,
-        STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
-        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-        STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER,
-        STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY,
-        STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
-        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
-        STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY,
-        STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
-        STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX,
-        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PREVIEW_ONLY_DIRECTORY,
-        STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED,
+        settings_save_error_status, settings_save_status, settings_sort_next,
+        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
+        settings_write_needs_rollback, settings_write_status, startup_dir_from, status_color,
+        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
+        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
+        theme_choice_label, transfer_log_level, transfer_progress_status, transfer_skip_notice,
+        trash_batch, trash_delete_status, trash_key_action, trash_load_error_status,
+        trash_redo_cancelled_status, trash_undo_status, undo_missing_status,
+        upsert_keymap_override, validate_cli_dir, version_label, visible_secondary_slots,
+        AppPalette, CliAction, DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource,
+        KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction,
+        SecondarySlot, SettingsTab, SortKey, TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM,
+        C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
+        GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCEL_HINT,
+        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
+        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FOLDER_NO_PREVIEW,
+        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_NO_UNBIND_PREFIX,
+        STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
+        STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
+        STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX, STATUS_PARTIAL_FAILURE_SUFFIX,
+        STATUS_PATH_GONE, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
+        STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED,
         STATUS_REDO_NO_TARGET, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED,
         STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
         STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
-        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY,
-        STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
-        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT,
-        STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_MISSING_REASON,
-        STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED, STATUS_UNDO_MISSING_SUFFIX,
-        STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SETTINGS_SAVE_LOCKED,
+        STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW,
+        STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
+        STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
+        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY,
+        STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WARNING_MARKERS,
+        THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
     use crate::ops::{OpError, OpStats};
-    use crate::settings::{Settings, ThemeChoice, MAX_KEYMAP_OVERRIDES};
+    use crate::settings::{Settings, SettingsSaveError, ThemeChoice, MAX_KEYMAP_OVERRIDES};
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -13287,6 +13302,30 @@ mod tests {
             !reload,
             "an unrelated io error must keep the current listing"
         );
+    }
+
+    // U03: distinguish oversized serialization from lock contention instead
+    // of showing a generic permissions/disk-space hint for every failure.
+    #[test]
+    fn save_failure_status_uses_the_recorded_reason() {
+        assert_eq!(
+            settings_save_error_status(Some(SettingsSaveError::TooLarge)),
+            Some(STATUS_SETTINGS_SAVE_TOO_LARGE.to_string())
+        );
+        assert_eq!(
+            settings_save_error_status(Some(SettingsSaveError::Locked)),
+            Some(STATUS_SETTINGS_SAVE_LOCKED.to_string())
+        );
+        assert_eq!(
+            settings_save_error_status(Some(SettingsSaveError::Io)),
+            None
+        );
+        assert_eq!(settings_save_error_status(None), None);
+        // Reason-specific notices must be classified as errors in the bar.
+        for reason in [SettingsSaveError::TooLarge, SettingsSaveError::Locked] {
+            let status = settings_save_error_status(Some(reason)).expect("reason notice");
+            assert_eq!(status_color(&status), C_RED);
+        }
     }
 
     // L01: a discarded settings-write result must never be reported as a
