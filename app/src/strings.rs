@@ -432,9 +432,19 @@ pub const STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX: &str = "検索を保存でき�
 /// 保存検索の上限拒否に添える理由と復帰導線（R04）。
 pub const STATUS_SAVED_SEARCH_CAP_HINT: &str =
     "（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）";
+/// 保存検索で名前が空のときの入力必須エラー（S01）。
+/// `STATUS_ERROR_PREFIX` と連結して表示する（例: 「エラー: 保存する検索名を入力してください」）。
+pub const STATUS_SAVED_SEARCH_NAME_REQUIRED: &str = "保存する検索名を入力してください";
+/// 保存検索で検索語が空のときの入力必須エラー（S01）。
+/// 同じく `STATUS_ERROR_PREFIX` と連結して表示する。
+pub const STATUS_SAVED_SEARCH_QUERY_REQUIRED: &str = "検索語を入力してから保存してください";
 /// ブックマークラベルの設定失敗の接頭辞（R05）。動的なパスが後続するため、
 /// 接頭辞自体を error マーカーとして登録する。
 pub const STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX: &str = "ラベルを設定できませんでした: ";
+/// ターミナルが無効な理由と復帰導線（S07）。`STATUS_CANNOT_OPEN_SUFFIX` と
+/// 連結して `terminal_disabled_status()` の文言を組み立てる。
+pub const STATUS_TERMINAL_DISABLED_HINT: &str =
+    ": 起動コマンドが未設定です（設定の terminal_command を確認）";
 
 /// 表示層の優先順位（高い順）。狭いステータスバーでは後ろから省略する。
 /// 実行時のスロットではなく、競合時に参照する規約データ（r5-render-09）。
@@ -882,8 +892,11 @@ mod tests {
             // R02〜R05: strings.rs へ集約した拒否・失敗文言。
             STATUS_ACCESS_DENIED,
             STATUS_TERMINAL_START_PREFIX,
+            STATUS_TERMINAL_DISABLED_HINT,
             STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
             STATUS_SAVED_SEARCH_CAP_HINT,
+            STATUS_SAVED_SEARCH_NAME_REQUIRED,
+            STATUS_SAVED_SEARCH_QUERY_REQUIRED,
             STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
@@ -1241,6 +1254,48 @@ mod tests {
             format!("{STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX}/tmp/target"),
             "ラベルを設定できませんでした: /tmp/target"
         );
+    }
+
+    #[test]
+    fn saved_search_input_errors_keep_canonical_wording() {
+        // S01: 入力必須エラーは strings.rs の定数を経由し、呼び出し側では
+        // `STATUS_ERROR_PREFIX` と連結する。従来の表示文言をここで固定する。
+        assert_eq!(
+            STATUS_SAVED_SEARCH_NAME_REQUIRED,
+            "保存する検索名を入力してください"
+        );
+        assert_eq!(
+            STATUS_SAVED_SEARCH_QUERY_REQUIRED,
+            "検索語を入力してから保存してください"
+        );
+        assert_eq!(
+            format!("{STATUS_ERROR_PREFIX}{STATUS_SAVED_SEARCH_NAME_REQUIRED}"),
+            "エラー: 保存する検索名を入力してください"
+        );
+        assert_eq!(
+            format!("{STATUS_ERROR_PREFIX}{STATUS_SAVED_SEARCH_QUERY_REQUIRED}"),
+            "エラー: 検索語を入力してから保存してください"
+        );
+        // 回帰防止: main.rs にインライン字面が戻っていないことを確認する。
+        let source = include_str!("main.rs");
+        assert!(!source.contains("\"保存する検索名を入力してください\""));
+        assert!(!source.contains("\"検索語を入力してから保存してください\""));
+    }
+
+    #[test]
+    fn terminal_disabled_hint_keeps_canonical_wording() {
+        // S07: 理由と復帰導線を定数化し、「開けません」接尾と連結する。
+        assert_eq!(
+            STATUS_TERMINAL_DISABLED_HINT,
+            ": 起動コマンドが未設定です（設定の terminal_command を確認）"
+        );
+        assert_eq!(
+            format!("ターミナルを{STATUS_CANNOT_OPEN_SUFFIX}{STATUS_TERMINAL_DISABLED_HINT}"),
+            "ターミナルを開けません: 起動コマンドが未設定です（設定の terminal_command を確認）"
+        );
+        // 回帰防止: main.rs に理由・復帰導線の字面が戻っていないことを確認する。
+        let source = include_str!("main.rs");
+        assert!(!source.contains("起動コマンドが未設定です"));
     }
 
     #[test]
