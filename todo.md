@@ -981,6 +981,31 @@ status: current
   — main.rs:1871
 - [x] **V14** STATUS_RESCAN_FAILED に復帰導線なし — strings.rs:380 — 対応: loop19-core
 
+### 優先度: 中（ループ R18・confirmed）
+
+- [ ] **W01** ターミナル/新タブ拒否文の前半が main.rs インライン残存
+  — main.rs:4298,6453
+- [ ] **W02** 検索開始案内が未定数化 — main.rs:8089
+- [ ] **W03** DESIGN §8.4 が存在しない EMPTY_DIR を例示 — DESIGN.md:916
+- [ ] **W04** KeyMap::reset「データ層のみ」記述が配置誤り
+  — app/README.md:530
+- [ ] **W05** review-report Windows3件フォローアップが解消後も未処理
+  — review-report.md:686
+- [ ] **W06** STATUS_RESCAN_FAILED が色分類テーブルから漏れ
+  — strings.rs:393
+- [ ] **W07** 行ショートカットの入力中無効がダイアログ内で案内なし
+  — settings_ui.rs:606
+- [ ] **W08** read_only 通知に理由と復帰導線なし — main.rs:654
+- [ ] **W09** F1 がディレクトリ表示限定キーの制約を説明せず
+  — strings.rs:88
+
+### 優先度: 低（ループ R18）
+
+- [ ] **W10** STATUS_CANCELLING が色分類から漏れ（進行中は緑の意図か）
+  — main.rs:330
+- [ ] **W11** DESIGN §8.4「すべて集約・散在禁止」が as-built と未同期
+  — DESIGN.md:916
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
