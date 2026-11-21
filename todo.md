@@ -935,24 +935,24 @@ status: current
 
 ### 優先度: 高（ループ R16・confirmed）
 
-- [ ] **U01** 設定ロード時の back スタック truncate が直近履歴を失う（実バグ）
+- [x] **U01** 設定ロード時の back スタック truncate が直近履歴を失う（実バグ） — 対応: loop18-history（実バグ修正）
   — settings.rs:1366,686
-- [ ] **U02** 保存検索の上限以外拒否が「上限に達しました」と誤通知
+- [x] **U02** 保存検索の上限以外拒否が「上限に達しました」と誤通知 — 対応: loop18-history
   — main.rs:8419 / settings.rs:913
-- [ ] **U03** 設定保存失敗の汎用メッセージが原因を誤案内
+- [ ] **U03** 設定保存失敗の汎用メッセージが原因を誤案内 （Settings::save() が bool 返しのため理由判別は次ラウンド）
   — strings.rs:399 / settings.rs:1585
 
 ### 優先度: 中（ループ R16）
 
-- [ ] **U04** ブックマークラベル設定拒否に理由なし — main.rs:734
-- [ ] **U05** ラベル未設定拒否がインライン字面で緑 — main.rs:3269
-- [ ] **U06** ゴミ箱読み込み失敗リテラル残存 — main.rs:2944
-- [ ] **U07** Undo「が存在しません」断片未定数化 — main.rs:5876
-- [ ] **U08** 転送進捗が STATUS_CANCEL_HINT を迂回 — main.rs:5379
+- [x] **U04** ブックマークラベル設定拒否に理由なし — main.rs:734 — 対応: loop18-history + loop18-status
+- [x] **U05** ラベル未設定拒否がインライン字面で緑 — main.rs:3269 — 対応: loop18-status（実バグ修正）
+- [x] **U06** ゴミ箱読み込み失敗リテラル残存 — main.rs:2944 — 対応: loop18-status
+- [x] **U07** Undo「が存在しません」断片未定数化 — main.rs:5876 — 対応: loop18-status
+- [x] **U08** 転送進捗が STATUS_CANCEL_HINT を迂回 — main.rs:5379 — 対応: loop18-status
 
 ### 優先度: 低（ループ R16）
 
-- [ ] **U09** undo_action_detail の4分岐が無テスト — main.rs:5769
+- [x] **U09** undo_action_detail の4分岐が無テスト — main.rs:5769 — 対応: loop18-status
 
 ### 優先度: 低（調査タスク）
 
