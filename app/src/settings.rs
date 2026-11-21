@@ -70,7 +70,7 @@ use serde::{Deserialize, Serialize};
 use gpui_kit::component::ThemeMode;
 use gpui_kit::{bounds, point, px, size, Window, WindowBounds};
 
-use crate::history::{History, HistorySnapshot};
+use crate::history::{retain_last_n, History, HistorySnapshot};
 use crate::model::SortSpec;
 use crate::tabs::Tab;
 // Personalization types live in `model` (GPUI-free) but are re-exported here
@@ -676,6 +676,9 @@ impl TabSession {
             .filter(|path| sane_path(path))
             .cloned()
             .collect();
+        // `forward` is next-first, so plain `truncate` keeps the nearest
+        // entries. `back` is oldest-first: `truncate` would drop the recent
+        // tail, so keep the last n, exactly as `History::restore` does on load.
         forward.truncate(MAX_HISTORY_ENTRIES);
         let mut back: Vec<PathBuf> = self
             .back
@@ -683,7 +686,7 @@ impl TabSession {
             .filter(|path| sane_path(path))
             .cloned()
             .collect();
-        back.truncate(MAX_HISTORY_ENTRIES.saturating_sub(forward.len()));
+        retain_last_n(&mut back, MAX_HISTORY_ENTRIES.saturating_sub(forward.len()));
 
         let mut history = History::new();
         history.restore(HistorySnapshot { back, forward });
@@ -1363,7 +1366,8 @@ impl Settings {
                 tab.back.retain(|path| sane_path(path));
                 tab.forward.retain(|path| sane_path(path));
                 tab.forward.truncate(MAX_HISTORY_ENTRIES);
-                tab.back.truncate(MAX_HISTORY_ENTRIES - tab.forward.len());
+                // `back` is oldest-first: keep the recent tail, as `restore` does.
+                retain_last_n(&mut tab.back, MAX_HISTORY_ENTRIES - tab.forward.len());
             }
             session.active_tab = session.active_tab.min(session.tabs.len().saturating_sub(1));
         }
@@ -3347,7 +3351,7 @@ mod window_session_tests {
         Settings, TabSession, WindowBoundsState, WindowMode, WindowSession, MAX_HISTORY_ENTRIES,
         MAX_WINDOW_SESSIONS,
     };
-    use crate::history::History;
+    use crate::history::{History, HistorySnapshot};
     use crate::tabs::Tab;
     use std::path::PathBuf;
 
@@ -3590,6 +3594,68 @@ mod window_session_tests {
         let tab = &settings.primary_window().unwrap().tabs[0];
         assert_eq!(tab.forward.len(), 10);
         assert_eq!(tab.back.len(), MAX_HISTORY_ENTRIES - 10);
+    }
+
+    #[test]
+    fn validate_keeps_the_recent_back_tail_when_over_cap() {
+        // U01: `back` is oldest-first. Truncating the front used to keep the
+        // stale paths and drop exactly the recent ones the user wants to
+        // revisit, while `History::restore` keeps the recent tail.
+        let total = MAX_HISTORY_ENTRIES + 20;
+        let forward_len = 10;
+        let mut settings = Settings::default();
+        settings.primary_window_mut().tabs = vec![TabSession {
+            cwd: p("/tmp"),
+            back: (0..total).map(|i| p(&format!("/back-{i}"))).collect(),
+            forward: (0..forward_len)
+                .map(|i| p(&format!("/forward-{i}")))
+                .collect(),
+        }];
+        settings.validate();
+
+        let tab = &settings.primary_window().unwrap().tabs[0];
+        let keep = MAX_HISTORY_ENTRIES - forward_len;
+        let expected_back: Vec<_> = (total - keep..total)
+            .map(|i| p(&format!("/back-{i}")))
+            .collect();
+        assert_eq!(tab.back, expected_back, "the oldest back entries must go");
+        let expected_forward: Vec<_> = (0..forward_len)
+            .map(|i| p(&format!("/forward-{i}")))
+            .collect();
+        assert_eq!(
+            tab.forward, expected_forward,
+            "next-first forward is unchanged"
+        );
+    }
+
+    #[test]
+    fn tab_session_to_history_keeps_recent_tail_and_matches_restore() {
+        // U01: the settings boundary and `History::restore` must keep the same
+        // back entries when a persisted session exceeds the combined budget.
+        let total = MAX_HISTORY_ENTRIES + 20;
+        let forward_len = 7;
+        let session = TabSession {
+            cwd: p("/tmp"),
+            back: (0..total).map(|i| p(&format!("/back-{i}"))).collect(),
+            forward: (0..forward_len)
+                .map(|i| p(&format!("/forward-{i}")))
+                .collect(),
+        };
+        let keep = MAX_HISTORY_ENTRIES - forward_len;
+        let expected_back: Vec<_> = (total - keep..total)
+            .map(|i| p(&format!("/back-{i}")))
+            .collect();
+
+        let history = session.to_history();
+        assert_eq!(history.snapshot().back, expected_back);
+
+        let mut restored = History::new();
+        restored.restore(HistorySnapshot {
+            back: session.back.clone(),
+            forward: session.forward.clone(),
+        });
+        assert_eq!(history, restored, "settings and restore must agree");
+        assert_eq!(restored.snapshot().back, expected_back);
     }
 }
 

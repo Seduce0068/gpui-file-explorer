@@ -7,6 +7,19 @@ use std::path::{Path, PathBuf};
 /// [`History::default`] so the two constructors cannot drift apart.
 const DEFAULT_MAX_BACK: usize = 200;
 
+/// Drop the oldest elements so at most `keep` remain.
+///
+/// `Vec::truncate` keeps the *front* of a vector. That is wrong for the
+/// oldest-first back stack: it would throw away exactly the recent paths the
+/// user wants to navigate back to. Keeping the tail is the rule here and at
+/// the settings boundary, so both go through this helper and cannot drift.
+pub(crate) fn retain_last_n<T>(items: &mut Vec<T>, keep: usize) {
+    let len = items.len();
+    if len > keep {
+        items.drain(..len - keep);
+    }
+}
+
 /// Intent of a navigation (DESIGN.md §5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavMode {
@@ -82,14 +95,10 @@ impl History {
         // entries (the next go_forward targets) must survive, as documented
         // above and as the back-stack rule below does for recent entries.
         let mut forward: Vec<PathBuf> = snapshot.forward.into_iter().rev().collect();
-        if forward.len() > self.max_back {
-            forward.drain(..forward.len() - self.max_back);
-        }
+        retain_last_n(&mut forward, self.max_back);
         let back_budget = self.max_back.saturating_sub(forward.len());
         let mut back = snapshot.back;
-        if back.len() > back_budget {
-            back.drain(..back.len() - back_budget);
-        }
+        retain_last_n(&mut back, back_budget);
         self.back = back;
         self.forward = forward;
     }
@@ -179,6 +188,17 @@ mod tests {
 
     fn p(value: &str) -> PathBuf {
         PathBuf::from(value)
+    }
+
+    #[test]
+    fn retain_last_n_drops_the_oldest_elements() {
+        let mut values: Vec<i32> = (0..5).collect();
+        super::retain_last_n(&mut values, 3);
+        assert_eq!(values, vec![2, 3, 4], "the recent tail must survive");
+        super::retain_last_n(&mut values, 10);
+        assert_eq!(values, vec![2, 3, 4], "a larger budget must be a no-op");
+        super::retain_last_n(&mut values, 0);
+        assert!(values.is_empty());
     }
 
     #[test]

@@ -396,8 +396,22 @@ pub const STATUS_KEYMAP_NO_UNBIND_PREFIX: &str = "解除する設定はありま
 /// 動的な `{n}` を連結するため、M05 と同じく接頭辞自体を warning マーカーに登録する。
 pub const STATUS_MAX_TABS_PREFIX: &str = "タブは最大 ";
 /// 設定の失敗／退避（読み込み失敗と情報量を揃える）。
+/// U03: 保存失敗は権限・空き容量だけでなく、MAX_SETTINGS_BYTES 超過や
+/// ロックタイムアウトでも起きる。理由を判別できない汎用経路では
+/// 特定の原因を断言しない表現にする。
 pub const STATUS_SETTINGS_SAVE_FAILED: &str =
-    "設定を保存できませんでした（権限や空き容量を確認して再試行してください）";
+    "設定を保存できませんでした（ファイルの状態を確認して再試行してください）";
+/// シリアライズ結果が MAX_SETTINGS_BYTES を超えたときの理由（U03）。
+/// 保存は行われず、変更はメモリ上に残る。
+/// main.rs の理由判別配線は後続ラウンド（save() が bool を返す限り判別不可）。
+#[allow(dead_code)]
+pub const STATUS_SETTINGS_SAVE_TOO_LARGE: &str =
+    "設定を保存できませんでした（設定データが大きすぎます。不要な履歴や保存項目を減らしてから再試行してください）";
+/// 保存ロックがタイムアウトしたときの理由（U03）。
+/// 別インスタンスが編集中なので、待ってから再試行する導線を示す。
+#[allow(dead_code)]
+pub const STATUS_SETTINGS_SAVE_LOCKED: &str =
+    "設定を保存できませんでした（別の gpui-file-explorer が設定を編集中です。少し待ってから再試行してください）";
 pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
 /// Esc / 背景クリックで未保存の設定変更を破棄したときの通知（H03）。
 /// フッターの「保存せず閉じる」ボタンと違い、これらの操作は事前の警告がない。
@@ -463,9 +477,18 @@ pub const STATUS_TERMINAL_START_PREFIX: &str = "ターミナルを起動";
 /// 保存検索の保存失敗（上限超過）の接頭辞（R04）。動的な `{name}` が後続するため、
 /// 接頭辞自体を error マーカーとして登録する。
 pub const STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX: &str = "検索を保存できませんでした: ";
-/// 保存検索の上限拒否に添える理由と復帰導線（R04）。
+/// 保存検索が拒否された理由の一般表現（U02）。
+/// `SavedSearch::new` は上限だけでなく、名前／検索語が空・長すぎる・NUL を含む
+/// 場合も `None` を返す。呼び出し側が理由を判別できない現状では、上限だけを
+/// 断言する文言は誤報になるため、両方を含む表現に統一する。
+/// 将来 `save_search` が理由を返すようになったときの個別表示方法として保持。
+#[allow(dead_code)]
+pub const STATUS_SAVED_SEARCH_INVALID_INPUT: &str =
+    "保存できる検索の上限に達したか、名前または検索語が無効です。既存の保存検索を削除するか、入力を見直してください";
+/// 保存検索の拒否に添える理由と復帰導線（R04 / U02）。
+/// 名前は履歴上の `CAP_HINT` のまま（main.rs の既存呼び出し互換）。
 pub const STATUS_SAVED_SEARCH_CAP_HINT: &str =
-    "（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）";
+    "（保存できる検索の上限に達したか、名前または検索語が無効です。既存の保存検索を削除するか、入力を見直してください）";
 /// 保存検索で名前が空のときの入力必須エラー（S01）。
 /// `STATUS_ERROR_PREFIX` と連結して表示する（例: 「エラー: 保存する検索名を入力してください」）。
 pub const STATUS_SAVED_SEARCH_NAME_REQUIRED: &str = "保存する検索名を入力してください";
@@ -475,6 +498,24 @@ pub const STATUS_SAVED_SEARCH_QUERY_REQUIRED: &str = "検索語を入力して�
 /// ブックマークラベルの設定失敗の接頭辞（R05）。動的なパスが後続するため、
 /// 接頭辞自体を error マーカーとして登録する。
 pub const STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX: &str = "ラベルを設定できませんでした: ";
+/// ブックマークラベルの拒否理由（U04）。
+/// `Settings::set_bookmark_label` は bool しか返さないため、main.rs の
+/// `bookmark_label_rejection_reason` が設定側と同じ条件を事前検証して
+/// 接頭辞 + パスの後へ連結する。空ラベルは削除扱いで成功するため、
+/// 拒否理由には含まれない。
+pub const STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH: &str =
+    "（保存できる形式のパスではありません。別のディレクトリを指定してください）";
+/// サイズ超過と NUL を含む場合の両方をまとめた、現状の API で使える表現。
+pub const STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL: &str =
+    "（ラベルが長すぎるか、使用できない文字を含みます。短いラベルに変更してください）";
+/// 将来 `set_bookmark_label` が理由 enum を返すようになった場合の細分化。
+#[allow(dead_code)]
+pub const STATUS_BOOKMARK_LABEL_REASON_TOO_LONG: &str =
+    "（ラベルが長すぎます。短いラベルに変更してください）";
+#[allow(dead_code)]
+pub const STATUS_BOOKMARK_LABEL_REASON_NUL: &str = "（ラベルに使用できない文字が含まれています）";
+pub const STATUS_BOOKMARK_LABEL_REASON_LIMIT: &str =
+    "（ラベルの保存件数が上限に達しました。不要なラベルを削除してから再試行してください）";
 /// ターミナルが無効な理由と復帰導線（S07）。`STATUS_CANNOT_OPEN_SUFFIX` と
 /// 連結して `terminal_disabled_status()` の文言を組み立てる。
 pub const STATUS_TERMINAL_DISABLED_HINT: &str =
@@ -920,6 +961,8 @@ mod tests {
             STATUS_KEYMAP_NO_UNBIND_PREFIX,
             STATUS_MAX_TABS_PREFIX,
             STATUS_SETTINGS_SAVE_FAILED,
+            STATUS_SETTINGS_SAVE_TOO_LARGE,
+            STATUS_SETTINGS_SAVE_LOCKED,
             STATUS_SETTINGS_READ_ONLY,
             STATUS_SETTINGS_DISCARDED,
             STATUS_SETTINGS_UNSAVED_HINT,
@@ -952,10 +995,16 @@ mod tests {
             STATUS_TERMINAL_START_PREFIX,
             STATUS_TERMINAL_DISABLED_HINT,
             STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
+            STATUS_SAVED_SEARCH_INVALID_INPUT,
             STATUS_SAVED_SEARCH_CAP_HINT,
             STATUS_SAVED_SEARCH_NAME_REQUIRED,
             STATUS_SAVED_SEARCH_QUERY_REQUIRED,
             STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+            STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
+            STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+            STATUS_BOOKMARK_LABEL_REASON_TOO_LONG,
+            STATUS_BOOKMARK_LABEL_REASON_NUL,
+            STATUS_BOOKMARK_LABEL_REASON_LIMIT,
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
         }
@@ -1005,6 +1054,16 @@ mod tests {
             (
                 "STATUS_SETTINGS_SAVE_FAILED",
                 STATUS_SETTINGS_SAVE_FAILED,
+                "error",
+            ),
+            (
+                "STATUS_SETTINGS_SAVE_TOO_LARGE",
+                STATUS_SETTINGS_SAVE_TOO_LARGE,
+                "error",
+            ),
+            (
+                "STATUS_SETTINGS_SAVE_LOCKED",
+                STATUS_SETTINGS_SAVE_LOCKED,
                 "error",
             ),
             ("STATUS_TRASH_ALL_FAILED", STATUS_TRASH_ALL_FAILED, "error"),
@@ -1395,13 +1454,66 @@ mod tests {
             format!("{STATUS_TERMINAL_START_PREFIX}{STATUS_OP_FAILED_SUFFIX}"),
             "ターミナルを起動できません"
         );
+        // U02: 上限以外（名前／検索語が無効）でも同じ経路を通るため、
+        // 上限だけを断言する文言に戻してはならない。
+        assert_eq!(
+            STATUS_SAVED_SEARCH_INVALID_INPUT,
+            "保存できる検索の上限に達したか、名前または検索語が無効です。既存の保存検索を削除するか、入力を見直してください"
+        );
+        assert!(
+            STATUS_SAVED_SEARCH_CAP_HINT.contains(STATUS_SAVED_SEARCH_INVALID_INPUT),
+            "the composed hint must stay in sync with the standalone reason"
+        );
+        assert!(!STATUS_SAVED_SEARCH_CAP_HINT.contains("上限に達しました"));
         assert_eq!(
             format!("{STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX}仕事{STATUS_SAVED_SEARCH_CAP_HINT}"),
-            "検索を保存できませんでした: 仕事（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）"
+            "検索を保存できませんでした: 仕事（保存できる検索の上限に達したか、名前または検索語が無効です。既存の保存検索を削除するか、入力を見直してください）"
         );
         assert_eq!(
             format!("{STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX}/tmp/target"),
             "ラベルを設定できませんでした: /tmp/target"
+        );
+    }
+
+    #[test]
+    fn bookmark_label_rejection_reasons_are_accurate_and_recoverable() {
+        // U04: 理由のない接頭辞だけでは原因が分からない。各拒否理由に
+        // 対処法（別パス／短いラベル／既存ラベルの削除）を添える。
+        assert!(STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH.contains("別のディレクトリ"));
+        assert!(STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL.contains("長すぎる"));
+        assert!(STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL.contains("使用できない文字"));
+        assert!(STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL.contains("短いラベルに変更"));
+        assert!(STATUS_BOOKMARK_LABEL_REASON_TOO_LONG.contains("短いラベルに変更"));
+        assert!(STATUS_BOOKMARK_LABEL_REASON_NUL.contains("使用できない文字"));
+        assert!(STATUS_BOOKMARK_LABEL_REASON_LIMIT.contains("上限に達しました"));
+        assert!(STATUS_BOOKMARK_LABEL_REASON_LIMIT.contains("削除してから再試行"));
+        assert_eq!(
+            format!(
+                "{STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX}/tmp/target{}",
+                STATUS_BOOKMARK_LABEL_REASON_LIMIT
+            ),
+            "ラベルを設定できませんでした: /tmp/target（ラベルの保存件数が上限に達しました。不要なラベルを削除してから再試行してください）"
+        );
+    }
+
+    #[test]
+    fn settings_save_failures_have_accurate_reason_wording() {
+        // U03: 汎用文言は特定の原因（権限／空き容量）を断言しない。
+        assert_eq!(
+            STATUS_SETTINGS_SAVE_FAILED,
+            "設定を保存できませんでした（ファイルの状態を確認して再試行してください）"
+        );
+        assert!(!STATUS_SETTINGS_SAVE_FAILED.contains("権限"));
+        assert!(!STATUS_SETTINGS_SAVE_FAILED.contains("空き容量"));
+        // 理由が判別できた場合は具体的な導線を出す。
+        assert!(STATUS_SETTINGS_SAVE_TOO_LARGE.contains("大きすぎます"));
+        assert!(STATUS_SETTINGS_SAVE_TOO_LARGE.contains("減らしてから再試行"));
+        assert!(STATUS_SETTINGS_SAVE_LOCKED.contains("編集中です"));
+        assert!(STATUS_SETTINGS_SAVE_LOCKED.contains("少し待ってから再試行"));
+        let source = include_str!("main.rs");
+        assert!(
+            !source.contains("権限や空き容量を確認して再試行してください"),
+            "the misleading generic hint must not reappear in main.rs"
         );
     }
 

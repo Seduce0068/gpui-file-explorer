@@ -703,14 +703,19 @@ fn labeled_display_name(base: &str, label: Option<&str>) -> String {
     }
 }
 
-/// Pure pre-flight check for `commit_label_editor`: would `set_bookmark_label`
-/// accept this label? It mirrors `BookmarkLabel::new` (trim/length/NUL rules),
-/// the path rules of `Settings::sane_path` (non-empty, bounded, NUL-free,
-/// valid UTF-8) and the `MAX_BOOKMARK_LABELS` cap, which does not apply when
-/// the path already owns an entry (that entry is replaced in place). Validating
-/// before `ensure_bookmark_for_label` keeps a rejected label from leaving
-/// behind a bookmark with no label attached.
-fn bookmark_label_is_settable(settings: &Settings, path: &std::path::Path, label: &str) -> bool {
+/// Why would `set_bookmark_label` refuse this input? (U04)
+///
+/// Mirrors the same three checks as the `bookmark_label_is_settable` pre-flight
+/// (the path rules of `Settings::sane_path`, `BookmarkLabel::new`, then the
+/// `MAX_BOOKMARK_LABELS` cap which does not apply to an existing entry), in the
+/// same order. Returning the exact reason instead of a bare `bool` lets the
+/// rejection caption tell the user how to recover. Kept pure for regression
+/// tests; the wording comes from `strings.rs`.
+fn bookmark_label_rejection_reason(
+    settings: &Settings,
+    path: &std::path::Path,
+    label: &str,
+) -> Option<&'static str> {
     // `sane_path` is private to `settings.rs`; replicate its contract here so
     // this pre-flight agrees with the real setter on unsanitary paths (E09).
     let bytes = path.as_os_str().as_encoded_bytes();
@@ -719,21 +724,80 @@ fn bookmark_label_is_settable(settings: &Settings, path: &std::path::Path, label
         || bytes.contains(&0)
         || path.to_str().is_none()
     {
-        return false;
+        return Some(STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH);
     }
     if crate::model::BookmarkLabel::new(path, label).is_none() {
-        return false;
+        return Some(STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL);
     }
-    settings.bookmark_label(path).is_some()
-        || settings.bookmark_labels.len() < crate::model::MAX_BOOKMARK_LABELS
+    if settings.bookmark_label(path).is_none()
+        && settings.bookmark_labels.len() >= crate::model::MAX_BOOKMARK_LABELS
+    {
+        return Some(STATUS_BOOKMARK_LABEL_REASON_LIMIT);
+    }
+    None
 }
 
-/// Rejection caption when a bookmark label cannot be set (R05). Kept pure so
-/// the composed wording and its red colour classification can be regression
-/// tested against the exact string the editor handler emits.
-fn bookmark_label_set_rejection(path: &std::path::Path) -> String {
-    format!(
+/// Pure pre-flight check for `commit_label_editor`: would `set_bookmark_label`
+/// accept this label? Validating before `ensure_bookmark_for_label` keeps a
+/// rejected label from leaving behind a bookmark with no label attached.
+fn bookmark_label_is_settable(settings: &Settings, path: &std::path::Path, label: &str) -> bool {
+    bookmark_label_rejection_reason(settings, path, label).is_none()
+}
+
+/// Rejection caption when a bookmark label cannot be set (R05 / U04). Kept pure
+/// so the composed wording and its red colour classification can be regression
+/// tested against the exact string the editor handler emits. `reason` is `None`
+/// only when the setter refused for a cause the pre-flight cannot see.
+fn bookmark_label_set_rejection(path: &std::path::Path, reason: Option<&'static str>) -> String {
+    let base = format!(
         "{STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX}{}",
+        display_path(path)
+    );
+    match reason {
+        Some(reason) => format!("{base}{reason}"),
+        None => base,
+    }
+}
+
+/// Rejection caption when no bookmark label was set (U05). Both the label
+/// editor and the row context menu emit this text; composing it with
+/// `STATUS_ERROR_PREFIX` keeps the refusal red instead of letting the inline
+/// literal fall through to success green. Kept pure so the exact handler copy
+/// can be regression-tested.
+fn bookmark_label_not_set_status(path: &std::path::Path) -> String {
+    format!(
+        "{STATUS_ERROR_PREFIX}ラベルは設定されていません: {}",
+        display_path(path)
+    )
+}
+
+/// Error text for a failed trash listing (U06). Kept pure so the wording and
+/// its red colour classification can be regression-tested.
+fn trash_load_error_status(error: &str) -> String {
+    format!("{STATUS_ERROR_PREFIX}ゴミ箱を読み込めません: {error}")
+}
+
+/// Display text of a load error: add the shared error prefix exactly once
+/// (U06). Some load errors already carry it at their source (the trash path),
+/// so a blind `format!` at the render site would print "エラー: エラー: …".
+fn load_error_display_text(error: &str) -> String {
+    if error.starts_with(STATUS_ERROR_PREFIX) {
+        error.to_string()
+    } else {
+        format!("{STATUS_ERROR_PREFIX}{error}")
+    }
+}
+
+/// Undo refusal when the current rename target no longer exists (U07). The
+/// suffix is local to main.rs because it is used only by this refusal; the
+/// shared `STATUS_UNDO_EXISTS_SUFFIX` covers the inverse case (target present).
+const STATUS_UNDO_MISSING_SUFFIX: &str = " が存在しません";
+
+/// Compose the missing-target undo refusal so its wording and red colour can
+/// be regression-tested without a live GPUI `Context`.
+fn undo_missing_status(path: &std::path::Path) -> String {
+    format!(
+        "{STATUS_UNDO_FAILED}: {}{STATUS_UNDO_MISSING_SUFFIX}",
         display_path(path)
     )
 }
@@ -785,6 +849,17 @@ fn transfer_log_level(first_error: &Option<OpError>, cancelled: bool) -> Level {
     } else {
         Level::ERROR
     }
+}
+
+/// Status text for a byte-progress update during a transfer (U08). Building it
+/// here keeps the parenthesised cancel guidance on the shared
+/// `STATUS_CANCEL_HINT` constant instead of a hand-copied inline literal.
+fn transfer_progress_status(verb: &str, done: u64, total: u64) -> String {
+    format!(
+        "{verb}中… {} / {} {STATUS_CANCEL_HINT}",
+        human_size(done),
+        human_size(total)
+    )
 }
 
 /// Emit an event at a runtime-selected level. `tracing::event!` requires a
@@ -1790,7 +1865,9 @@ use crate::strings::{
     EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE,
     FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT,
     OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
-    STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+    STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+    STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
+    STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
     STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
     STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
     STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
@@ -2941,7 +3018,7 @@ impl Explorer {
                         this.selection.clear();
                         this.load = LoadState::Error {
                             generation,
-                            error: format!("ゴミ箱を読み込めません: {error}"),
+                            error: trash_load_error_status(&error),
                         };
                     }
                 }
@@ -3266,12 +3343,15 @@ impl Explorer {
                 if changed {
                     format!("ラベルを削除しました: {}", display_path(&path))
                 } else {
-                    format!("ラベルは設定されていません: {}", display_path(&path))
+                    bookmark_label_not_set_status(&path)
                 }
             } else if changed {
                 format!("ラベルを設定しました: {label}（{}）", display_path(&path))
             } else {
-                bookmark_label_set_rejection(&path)
+                bookmark_label_set_rejection(
+                    &path,
+                    bookmark_label_rejection_reason(&self.settings, &path, &label),
+                )
             },
         );
         cx.notify();
@@ -3290,7 +3370,7 @@ impl Explorer {
             if removed {
                 format!("ラベルを削除しました: {}", display_path(path))
             } else {
-                format!("ラベルは設定されていません: {}", display_path(path))
+                bookmark_label_not_set_status(path)
             },
         );
         cx.notify();
@@ -5375,11 +5455,7 @@ impl Explorer {
                         return;
                     }
                     this.op_progress = Some((done, total));
-                    this.status = format!(
-                        "{progress_verb}中… {} / {}（Esc でキャンセル）",
-                        human_size(done),
-                        human_size(total)
-                    );
+                    this.status = transfer_progress_status(progress_verb, done, total);
                     cx.notify();
                 });
             }
@@ -5872,10 +5948,7 @@ impl Explorer {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 if !path_present(&current) {
-                    self.status = format!(
-                        "{STATUS_UNDO_FAILED}: {} が存在しません",
-                        display_path(&current)
-                    );
+                    self.status = undo_missing_status(&current);
                     // Keep the action so a later retry or other undo is possible.
                     self.undo.push_undo(retry.clone());
                     cx.notify();
@@ -9891,7 +9964,7 @@ impl Explorer {
             .child(if let Some(error) = self.load.error_message() {
                 div()
                     .text_color(rgb(p.red))
-                    .child(format!("{STATUS_ERROR_PREFIX}{error}"))
+                    .child(load_error_display_text(error))
                     .into_any_element()
             } else if self.load.is_loading() {
                 div()
@@ -11256,30 +11329,34 @@ mod tests {
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
         active_keymap_overrides, apply_debug_settings_overrides, bookmark_label_is_settable,
+        bookmark_label_not_set_status, bookmark_label_rejection_reason,
         bookmark_label_set_rejection, bookmark_toggle_rejection, build_places, canonical_chord,
         chord_for_action, chords_collide, classify_cli, clear_dialog_error, clear_op_token,
         format_chord, format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
         help_overrides_line, icon_button_text_color, install_op_token, internal_drop_paths,
         join_status_notices, keymap_action_name, keymap_bind_caption, keymap_chord_reserved,
-        keymap_unbind_caption, kind_color, labeled_display_name, middle_click_tab_dir,
-        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
-        pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
-        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
-        settings_discard_status, settings_row_key_is_bare, settings_save_status,
-        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        keymap_unbind_caption, kind_color, labeled_display_name, load_error_display_text,
+        middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
+        parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
+        remove_keymap_override, saved_search_caption, saved_search_save_status,
+        search_filter_status, set_view_status, settings_discard_status, settings_row_key_is_bare,
+        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
         settings_validation_status, settings_write_needs_rollback, settings_write_status,
         startup_dir_from, status_color, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
-        transfer_skip_notice, trash_batch, trash_delete_status, trash_key_action,
-        trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override, validate_cli_dir,
-        version_label, visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides,
-        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
-        Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction,
+        transfer_progress_status, transfer_skip_notice, trash_batch, trash_delete_status,
+        trash_key_action, trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
+        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
+        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
+        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers,
+        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, UndoAction,
         ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX,
         GRID_GAP_PX, GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX,
-        STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_NOT_PERSISTABLE,
-        STATUS_CANCELLED, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER,
+        STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
+        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+        STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER,
         STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY,
         STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
         STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
@@ -11295,8 +11372,8 @@ mod tests {
         STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
         STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT,
         STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_MISSING_REASON,
-        STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK,
-        THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED, STATUS_UNDO_MISSING_SUFFIX,
+        STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -13280,7 +13357,7 @@ mod tests {
     // cap, …) is lost behind the generic read-only notice.
     #[test]
     fn settings_write_status_noop_keeps_caller_rejection_message() {
-        let rejection = bookmark_label_set_rejection(std::path::Path::new("/tmp/target"));
+        let rejection = bookmark_label_set_rejection(std::path::Path::new("/tmp/target"), None);
         let skipped = Settings {
             read_only: true,
             ..Settings::default()
@@ -13310,9 +13387,12 @@ mod tests {
             }
         }
 
-        // The concrete saved-search cap reason must also survive a no-op.
+        // The concrete saved-search rejection reason must also survive a no-op.
         let cap_reason = saved_search_save_status("仕事", false);
-        assert!(cap_reason.contains("上限に達しました"), "{cap_reason}");
+        assert!(
+            cap_reason.contains("上限に達したか") && cap_reason.contains("無効"),
+            "{cap_reason}"
+        );
         assert_eq!(
             settings_write_status(
                 &Settings {
@@ -13552,17 +13632,18 @@ mod tests {
         let ok = saved_search_save_status("Todos", true);
         let rejected = saved_search_save_status("Todos", false);
         assert!(ok.contains("Todos") && ok.contains("保存しました"), "{ok}");
-        // 失敗時は「名前または検索語が無効」ではなく上限到達を案内する。
+        // 失敗時は上限到達か入力無効の両方があり得ることを正直に案内する（U02）。
         assert!(
             rejected.contains("Todos")
                 && rejected.contains("できませんでした")
-                && rejected.contains("上限に達しました")
+                && rejected.contains("上限に達したか")
+                && rejected.contains("無効です")
                 && rejected.contains("削除"),
             "{rejected}"
         );
         assert!(
-            !rejected.contains("無効"),
-            "stored=false は上限到達として報告する: {rejected}"
+            !rejected.contains("上限に達しました。"),
+            "上限だけを断言してはならない: {rejected}"
         );
     }
 
@@ -13920,7 +14001,7 @@ mod tests {
         let rejected = saved_search_save_status("仕事", false);
         assert_eq!(
             rejected,
-            "検索を保存できませんでした: 仕事（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）",
+            "検索を保存できませんでした: 仕事（保存できる検索の上限に達したか、名前または検索語が無効です。既存の保存検索を削除するか、入力を見直してください）",
             "{rejected}"
         );
         assert_eq!(status_color(&rejected), C_RED, "{rejected}");
@@ -13929,9 +14010,142 @@ mod tests {
     #[test]
     fn bookmark_label_rejection_keeps_wording_and_is_red() {
         // R05: ラベル設定拒否は strings.rs の接頭辞から組み立てられ、赤に分類される。
-        let rejection = bookmark_label_set_rejection(std::path::Path::new("/tmp/target"));
+        let rejection = bookmark_label_set_rejection(std::path::Path::new("/tmp/target"), None);
         assert_eq!(rejection, "ラベルを設定できませんでした: /tmp/target");
         assert_eq!(status_color(&rejection), C_RED, "{rejection}");
+    }
+
+    #[test]
+    fn bookmark_label_not_set_rejection_keeps_wording_and_is_red() {
+        // U05: 未設定拒否も共通エラー接頭辞を持ち、緑に落ちない。
+        let status = bookmark_label_not_set_status(std::path::Path::new("/tmp/target"));
+        assert_eq!(status, "エラー: ラベルは設定されていません: /tmp/target");
+        assert!(status.contains(STATUS_ERROR_PREFIX), "{status}");
+        assert_eq!(status_color(&status), C_RED, "{status}");
+    }
+
+    #[test]
+    fn bookmark_label_rejection_reports_recoverable_reason() {
+        // U04: 拒否理由を添えて、ユーザーが対処できるようにする。
+        use crate::model::{BookmarkLabel, MAX_BOOKMARK_LABELS, MAX_BOOKMARK_LABEL_BYTES};
+
+        let settings = Settings::default();
+        let path = std::path::Path::new("/tmp/target");
+        assert_eq!(
+            bookmark_label_rejection_reason(&settings, path, "work"),
+            None
+        );
+        assert_eq!(
+            bookmark_label_set_rejection(path, None),
+            "ラベルを設定できませんでした: /tmp/target"
+        );
+        assert_eq!(
+            bookmark_label_rejection_reason(&settings, std::path::Path::new(""), "work"),
+            Some(STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH)
+        );
+        let too_long = "x".repeat(MAX_BOOKMARK_LABEL_BYTES + 1);
+        assert_eq!(
+            bookmark_label_rejection_reason(&settings, path, &too_long),
+            Some(STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL)
+        );
+
+        // 上限超過の新規ラベルだけが LIMIT。既存ラベルの置換は許可されたまま。
+        let mut full = Settings::default();
+        assert!(full.set_bookmark_label(path, "seed"));
+        for index in 0..MAX_BOOKMARK_LABELS - 1 {
+            full.bookmark_labels.push(BookmarkLabel {
+                path: PathBuf::from(format!("/other/{index}")),
+                label: format!("label {index}"),
+            });
+        }
+        assert_eq!(
+            bookmark_label_rejection_reason(&full, std::path::Path::new("/fresh"), "work"),
+            Some(STATUS_BOOKMARK_LABEL_REASON_LIMIT)
+        );
+        assert_eq!(bookmark_label_rejection_reason(&full, path, "new"), None);
+        let rejection =
+            bookmark_label_set_rejection(path, Some(STATUS_BOOKMARK_LABEL_REASON_LIMIT));
+        assert_eq!(
+            rejection,
+            "ラベルを設定できませんでした: /tmp/target（ラベルの保存件数が上限に達しました。不要なラベルを削除してから再試行してください）"
+        );
+        assert_eq!(status_color(&rejection), C_RED, "{rejection}");
+    }
+
+    #[test]
+    fn trash_load_error_is_prefixed_once_and_red() {
+        // U06: ゴミ箱読み込み失敗は発生時に接頭辞付きで組み立てられ、
+        // ステータスバー描画側での二重付与も起きない。
+        let error = trash_load_error_status("permission denied");
+        assert_eq!(error, "エラー: ゴミ箱を読み込めません: permission denied");
+        assert_eq!(status_color(&error), C_RED, "{error}");
+
+        let plain = "読み込み失敗";
+        assert_eq!(
+            load_error_display_text(plain),
+            format!("{STATUS_ERROR_PREFIX}{plain}")
+        );
+        assert_eq!(load_error_display_text(&error), error);
+        let doubled = format!("{STATUS_ERROR_PREFIX}{STATUS_ERROR_PREFIX}");
+        assert!(!load_error_display_text(&error).starts_with(&doubled));
+    }
+
+    #[test]
+    fn undo_missing_status_keeps_wording_and_is_red() {
+        // U07: 「が存在しません」はローカル定数経由で組み立てられ、赤に分類される。
+        assert_eq!(STATUS_UNDO_MISSING_SUFFIX, " が存在しません");
+        let status = undo_missing_status(std::path::Path::new("/tmp/current"));
+        assert_eq!(status, "元に戻せません: /tmp/current が存在しません");
+        assert!(status.contains(STATUS_UNDO_FAILED), "{status}");
+        assert_eq!(status_color(&status), C_RED, "{status}");
+    }
+
+    #[test]
+    fn transfer_progress_status_shares_the_cancel_hint() {
+        // U08: 転送進捗のキャンセル案内は STATUS_CANCEL_HINT を共有する。
+        let status = transfer_progress_status("コピー", 1024, 2048);
+        assert_eq!(status, "コピー中… 1.0 K / 2.0 K （Esc でキャンセル）");
+        assert!(status.ends_with(STATUS_CANCEL_HINT), "{status}");
+        assert_eq!(STATUS_CANCEL_HINT, "（Esc でキャンセル）");
+    }
+
+    #[test]
+    fn undo_action_detail_covers_all_four_branches() {
+        // U09: Rename（file_name あり／なし）と Trash（単件／複数件）を網羅する。
+        let rename = UndoAction::Rename {
+            from: PathBuf::from("/tmp/old/old.txt"),
+            to: PathBuf::from("/tmp/new/new.txt"),
+        };
+        assert_eq!(Explorer::undo_action_detail(&rename), "old.txt → new.txt");
+
+        // file_name() が無い側は display_path() にフォールバックする。
+        let rename_from_root = UndoAction::Rename {
+            from: PathBuf::from("/"),
+            to: PathBuf::from("/tmp/new.txt"),
+        };
+        assert_eq!(
+            Explorer::undo_action_detail(&rename_from_root),
+            "/ → new.txt"
+        );
+
+        let rename_to_root = UndoAction::Rename {
+            from: PathBuf::from("/tmp/old.txt"),
+            to: PathBuf::from("/"),
+        };
+        assert_eq!(Explorer::undo_action_detail(&rename_to_root), "old.txt → /");
+
+        let trash_single = UndoAction::Trash {
+            items: vec![(PathBuf::from("/tmp/a.txt"), OsString::from("id-a"))],
+        };
+        assert_eq!(Explorer::undo_action_detail(&trash_single), "/tmp/a.txt");
+
+        let trash_multiple = UndoAction::Trash {
+            items: vec![
+                (PathBuf::from("/tmp/a.txt"), OsString::from("id-a")),
+                (PathBuf::from("/tmp/b.txt"), OsString::from("id-b")),
+            ],
+        };
+        assert_eq!(Explorer::undo_action_detail(&trash_multiple), "2 件");
     }
 
     #[test]
