@@ -548,6 +548,20 @@ fn labeled_display_name(base: &str, label: Option<&str>) -> String {
     }
 }
 
+/// Pure pre-flight check for `commit_label_editor`: would `set_bookmark_label`
+/// accept this label? It mirrors `BookmarkLabel::new` (trim/length/NUL rules)
+/// and the `MAX_BOOKMARK_LABELS` cap, which does not apply when the path already
+/// owns an entry (that entry is replaced in place). Validating before
+/// `ensure_bookmark_for_label` keeps a rejected label from leaving behind a
+/// bookmark with no label attached.
+fn bookmark_label_is_settable(settings: &Settings, path: &std::path::Path, label: &str) -> bool {
+    if crate::model::BookmarkLabel::new(path, label).is_none() {
+        return false;
+    }
+    settings.bookmark_label(path).is_some()
+        || settings.bookmark_labels.len() < crate::model::MAX_BOOKMARK_LABELS
+}
+
 /// Label for a tab: the directory's last component, or "ルート" for `/`.
 fn tab_label(path: &std::path::Path) -> String {
     if path == std::path::Path::new("/") {
@@ -808,6 +822,12 @@ struct KeyBinding {
 /// `shift` stays `None` (it becomes a concrete `false` when applied through
 /// `rebind`), while an explicit `shift+` yields `Some(true)`.
 fn parse_chord(chord: &str) -> Option<(String, bool, Option<bool>, bool)> {
+    // Persisted entries are `action=chord;` joined by ';'. A chord containing
+    // ';' would round-trip as `action=ctrl+;;` and fail to parse on reload, so
+    // reject it here as well as at the keymap-input boundary.
+    if chord.contains(';') {
+        return None;
+    }
     let (mut ctrl, mut shift, mut alt) = (false, None, false);
     let mut key = None;
     for token in chord.split('+') {
@@ -856,6 +876,11 @@ enum KeymapInput {
 /// The `unbind` form needs no chord because it removes an existing override,
 /// restoring the default binding for that action.
 fn parse_keymap_input(input: &str) -> Option<KeymapInput> {
+    // ';' is the persisted entry separator, never part of a chord. Rejecting it
+    // before tokenizing keeps every accepted input string round-trippable.
+    if input.contains(';') {
+        return None;
+    }
     let mut fields = input.split_whitespace();
     let first = fields.next()?;
     let second = fields.next()?;
@@ -2374,6 +2399,10 @@ impl Explorer {
         let restored_bounds = settings.primary_window().and_then(|window| window.bounds);
         // Apply persisted overrides before `settings` moves into `Self`.
         let keymap = KeyMap::from_settings(&settings);
+        // Seed the icon theme order from the resolved startup mode so the first
+        // render already uses breeze-dark on a dark theme.
+        let mut system_icon_resolver = SystemIconResolver::new();
+        system_icon_resolver.set_prefer_dark(effective_theme.is_dark());
         let mut this = Self {
             settings,
             palette,
@@ -2383,7 +2412,7 @@ impl Explorer {
             cwd: start_dir,
             all_entries: Vec::new(),
             entries: Vec::new(),
-            system_icon_resolver: SystemIconResolver::new(),
+            system_icon_resolver,
             selected: 0,
             selection: Selection::default(),
             implicit_selection: true,
@@ -2857,11 +2886,15 @@ impl Explorer {
         // "ラベルを設定…" menu entry is available for any directory, so
         // auto-bookmark a path that is not bookmarked yet. Clearing a label
         // never creates a bookmark.
-        let auto_bookmarked = if label.is_empty() {
-            false
-        } else {
-            self.settings.ensure_bookmark_for_label(&path)
-        };
+        //
+        // Validate first: an oversized/NUL label or a full label list would
+        // otherwise leave a fresh bookmark behind with no label attached.
+        let auto_bookmarked =
+            if label.is_empty() || !bookmark_label_is_settable(&self.settings, &path, &label) {
+                false
+            } else {
+                self.settings.ensure_bookmark_for_label(&path)
+            };
         let changed = if label.is_empty() {
             self.settings.remove_bookmark_label(&path)
         } else {
@@ -4465,6 +4498,9 @@ impl Explorer {
     fn apply_theme_mode(&mut self, mode: ThemeMode, cx: &mut Context<Self>) {
         self.settings.theme = mode;
         self.palette = AppPalette::for_mode(mode);
+        // A dark app theme must resolve Breeze icons from breeze-dark first;
+        // this also drops cached paths resolved under the previous mode.
+        self.system_icon_resolver.set_prefer_dark(mode.is_dark());
         Theme::change(mode, None, cx);
         cx.notify();
     }
@@ -4498,6 +4534,8 @@ impl Explorer {
             Theme::sync_system_appearance(None, cx);
             self.settings.theme = resolved;
             self.palette = AppPalette::for_mode(resolved);
+            self.system_icon_resolver
+                .set_prefer_dark(resolved.is_dark());
         } else {
             self.apply_theme_mode(resolved, cx);
         }
@@ -9960,14 +9998,26 @@ impl Explorer {
         for input in [state.terminal_input.clone(), state.keymap_input.clone()] {
             let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
+                    let mut had_error = false;
                     if let Some(state) = this.settings_ui.as_mut() {
                         state.dirty = true;
+                        had_error = clear_dialog_error(&mut state.error);
+                    }
+                    if had_error {
+                        // Save mirrors the validation error into the status bar;
+                        // drop that stale message once the input is corrected.
+                        this.status.clear();
                     }
                     cx.notify();
                 }
             });
             state.subscriptions.push(subscription);
         }
+        // The global key guard swallows keys while the overlay is open, so the
+        // card must own focus. The search box is present on every tab and has
+        // no default value, making it the safest representative input.
+        let focus = state.search_input.read(cx).focus_handle(cx).clone();
+        focus.focus(window, cx);
         self.settings_ui = Some(state);
         cx.notify();
     }
@@ -10035,6 +10085,12 @@ impl SettingsUiHost for Explorer {
             SettingsUiAction::Tab(tab) => {
                 if let Some(state) = self.settings_ui.as_mut() {
                     state.select_tab(tab);
+                    let had_error = clear_dialog_error(&mut state.error);
+                    if had_error {
+                        // An error raised on another tab no longer applies to
+                        // the newly selected page (or its status-bar copy).
+                        self.status.clear();
+                    }
                     cx.notify();
                 }
             }
@@ -10112,7 +10168,12 @@ impl SettingsUiHost for Explorer {
                                 break;
                             }
                         }
-                        _ => {
+                        Some(KeymapInput::Unbind { action }) => {
+                            // Same semantics as the Alt+K dialog: removing an
+                            // override that does not exist is a harmless no-op.
+                            remove_keymap_override(&mut overrides, &action);
+                        }
+                        None => {
                             error = Some(format!("無効なキーマップ指定: {entry}"));
                             break;
                         }
@@ -10558,29 +10619,30 @@ mod tests {
     // Explicit imports only: the crate-root `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in via `use super::*`.
     use super::{
-        active_keymap_overrides, apply_debug_settings_overrides, bookmark_toggle_rejection,
-        build_places, canonical_chord, chord_for_action, classify_cli, clear_dialog_error,
-        clear_op_token, format_chord, format_selected, fuzzy_candidates, fuzzy_score,
-        grid_columns_for_width, help_overrides_line, icon_button_text_color, install_op_token,
-        internal_drop_paths, join_status_notices, keymap_action_name, keymap_chord_reserved,
-        kind_color, labeled_display_name, middle_click_tab_dir, normalize_terminal_command,
-        op_is_active, parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
-        read_properties_snapshot, remove_keymap_override, saved_search_caption,
-        saved_search_save_status, search_filter_status, settings_save_status, startup_dir_from,
-        status_color, summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
-        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
-        transfer_log_level, transfer_skip_notice, trash_batch, trash_delete_status,
-        trash_key_action, trash_redo_cancelled_status, trash_undo_status, upsert_keymap_override,
-        validate_cli_dir, version_label, visible_secondary_slots, AppPalette, CliAction,
-        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
-        KeyMap, KeymapInput, PropertiesErrorReaction, SecondarySlot, SortKey, TrashKeyAction,
-        C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
-        GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        active_keymap_overrides, apply_debug_settings_overrides, bookmark_label_is_settable,
+        bookmark_toggle_rejection, build_places, canonical_chord, chord_for_action, classify_cli,
+        clear_dialog_error, clear_op_token, format_chord, format_selected, fuzzy_candidates,
+        fuzzy_score, grid_columns_for_width, help_overrides_line, icon_button_text_color,
+        install_op_token, internal_drop_paths, join_status_notices, keymap_action_name,
+        keymap_chord_reserved, kind_color, labeled_display_name, middle_click_tab_dir,
+        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
+        pending_rename_index, rank_fuzzy, read_properties_snapshot, remove_keymap_override,
+        saved_search_caption, saved_search_save_status, search_filter_status, settings_save_status,
+        startup_dir_from, status_color, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, transfer_log_level, transfer_skip_notice,
+        trash_batch, trash_delete_status, trash_key_action, trash_redo_cancelled_status,
+        trash_undo_status, upsert_keymap_override, validate_cli_dir, version_label,
+        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
+        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
+        PropertiesErrorReaction, SecondarySlot, SortKey, TrashKeyAction, C_BLUE, C_DIM, C_GREEN,
+        C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX,
+        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CHANGED,
-        STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_PREFIX, STATUS_PARTIAL_FAILURE_SUFFIX,
-        STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
-        STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE, STATUS_SETTINGS_SAVE_FAILED,
-        STATUS_TRASH_NO_COPY,
+        STATUS_CHAR_BUDGET_PER_TIER, STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX,
+        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PRIORITY, STATUS_REDO_FAILED,
+        STATUS_REDO_NO_TARGET, STATUS_RESTORE_FAILED, STATUS_SEARCH_STALE,
+        STATUS_SETTINGS_SAVE_FAILED, STATUS_TRASH_NO_COPY, STATUS_WARNING_MARKERS,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -10621,6 +10683,86 @@ mod tests {
             )),
             C_RED
         );
+    }
+
+    #[test]
+    fn palette_status_color_uses_active_theme_colors() {
+        let dark = AppPalette::dark();
+        let light = AppPalette::light();
+        // (status, Mocha expectation, Latte expectation). The pure classifier
+        // returns Mocha constants, so the palette must remap them per theme.
+        let cases = [
+            (STATUS_SEARCH_STALE, dark.yellow, light.yellow),
+            (STATUS_CANCELLED, dark.yellow, light.yellow),
+            (STATUS_TRASH_NO_COPY, dark.yellow, light.yellow),
+            (STATUS_ERROR_PREFIX, dark.red, light.red),
+            (STATUS_SETTINGS_SAVE_FAILED, dark.red, light.red),
+            ("3 件をコピーしました", dark.green, light.green),
+            ("", dark.green, light.green),
+        ];
+        for (status, expected_dark, expected_light) in cases {
+            assert_eq!(dark.status_color(status), expected_dark, "dark: {status:?}");
+            assert_eq!(
+                light.status_color(status),
+                expected_light,
+                "light: {status:?}"
+            );
+        }
+        // Light results must not be the Mocha constants the classifier emits.
+        assert_ne!(light.yellow, C_YELLOW);
+        assert_ne!(light.red, C_RED);
+        assert_ne!(light.status_color(STATUS_SEARCH_STALE), C_YELLOW);
+        assert_ne!(light.status_color(STATUS_ERROR_PREFIX), C_RED);
+    }
+
+    #[test]
+    fn palette_kind_color_uses_active_theme_colors() {
+        let dark = AppPalette::dark();
+        let light = AppPalette::light();
+        let cases = [
+            (FileKind::Folder, dark.blue, light.blue),
+            (FileKind::Symlink, dark.muted, light.muted),
+            (FileKind::Image, dark.green, light.green),
+            (FileKind::Code, dark.lavender, light.lavender),
+            (FileKind::Archive, dark.yellow, light.yellow),
+            (FileKind::Pdf, dark.red, light.red),
+            (FileKind::Text, dark.subtext, light.subtext),
+            (FileKind::Audio, dark.mauve, light.mauve),
+            (FileKind::Video, dark.teal, light.teal),
+            (FileKind::Unknown, dark.muted, light.muted),
+        ];
+        for (kind, expected_dark, expected_light) in cases {
+            assert_eq!(dark.kind_color(kind), expected_dark, "dark: {kind:?}");
+            assert_eq!(light.kind_color(kind), expected_light, "light: {kind:?}");
+            assert_ne!(
+                expected_light, expected_dark,
+                "light kind {kind:?} must not reuse the Mocha tint"
+            );
+        }
+        // Explicit Mocha-constant checks: the light palette must not fall back.
+        assert_ne!(light.kind_color(FileKind::Folder), C_BLUE);
+        assert_ne!(light.kind_color(FileKind::Pdf), C_RED);
+        assert_ne!(light.kind_color(FileKind::Archive), C_YELLOW);
+    }
+
+    #[test]
+    fn palette_status_color_covers_all_warning_and_error_markers() {
+        for palette in [AppPalette::dark(), AppPalette::light()] {
+            for marker in STATUS_WARNING_MARKERS {
+                assert_eq!(
+                    palette.status_color(marker),
+                    palette.yellow,
+                    "warning marker {marker:?} must be amber"
+                );
+            }
+            for marker in STATUS_ERROR_MARKERS {
+                assert_eq!(
+                    palette.status_color(marker),
+                    palette.red,
+                    "error marker {marker:?} must be red"
+                );
+            }
+        }
     }
 
     #[test]
@@ -12190,6 +12332,42 @@ mod tests {
     }
 
     #[test]
+    fn bookmark_label_is_settable_matches_setter_contract() {
+        use crate::model::{BookmarkLabel, MAX_BOOKMARK_LABELS, MAX_BOOKMARK_LABEL_BYTES};
+        use std::path::Path;
+
+        let mut settings = Settings::default();
+        let path = Path::new("/work/project");
+        assert!(bookmark_label_is_settable(&settings, path, " work "));
+        assert!(!bookmark_label_is_settable(&settings, path, ""));
+        assert!(!bookmark_label_is_settable(&settings, path, "   "));
+        let too_long = "x".repeat(MAX_BOOKMARK_LABEL_BYTES + 1);
+        assert!(!bookmark_label_is_settable(&settings, path, &too_long));
+        assert!(!bookmark_label_is_settable(&settings, path, "a\0b"));
+        assert!(!bookmark_label_is_settable(
+            &settings,
+            Path::new(""),
+            "work"
+        ));
+
+        // Fill to the cap: a brand-new entry is refused, while the existing
+        // entry for `path` is still replaced in place by the real setter.
+        assert!(settings.set_bookmark_label(path, "seed"));
+        for index in 0..MAX_BOOKMARK_LABELS - 1 {
+            settings.bookmark_labels.push(BookmarkLabel {
+                path: PathBuf::from(format!("/other/{index}")),
+                label: format!("label {index}"),
+            });
+        }
+        assert_eq!(settings.bookmark_labels.len(), MAX_BOOKMARK_LABELS);
+        assert!(bookmark_label_is_settable(&settings, path, "new"));
+        assert!(settings.set_bookmark_label(path, "new"));
+        let fresh = Path::new("/fresh");
+        assert!(!bookmark_label_is_settable(&settings, fresh, "work"));
+        assert!(!settings.set_bookmark_label(fresh, "work"));
+    }
+
+    #[test]
     fn bookmark_label_helper_ignores_blank_values() {
         assert_eq!(labeled_display_name("item", None), "item");
         assert_eq!(labeled_display_name("item", Some("  ")), "item");
@@ -12568,6 +12746,30 @@ mod tests {
         for bad in ["", "ctrl+", "+ctrl+p", "ctrl++p", "p+ctrl", "ctrl+shift+"] {
             assert_eq!(parse_chord(bad), None, "accepted {bad:?}");
         }
+    }
+
+    #[test]
+    fn semicolon_is_rejected_so_keymap_entries_round_trip() {
+        // Overrides are persisted as `action=chord;` and split on ';' when
+        // loaded. A chord containing ';' would be written as `action=ctrl+;;`
+        // and could never be parsed back, so both layers must reject it.
+        for chord in [";", "ctrl+;", ";+p", "ctrl+;+p"] {
+            assert_eq!(parse_chord(chord), None, "accepted chord {chord:?}");
+            let input = format!("open_preview {chord}");
+            assert_eq!(
+                parse_keymap_input(&input),
+                None,
+                "accepted keymap input {input:?}"
+            );
+        }
+        // A stray separator anywhere else in the command is invalid too.
+        assert_eq!(parse_keymap_input("unbind open_preview;"), None);
+        // Normal chords remain accepted.
+        assert_eq!(
+            parse_chord("ctrl+p"),
+            Some(("p".to_string(), true, None, false))
+        );
+        assert!(parse_keymap_input("open_preview ctrl+p").is_some());
     }
 
     #[test]

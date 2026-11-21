@@ -24,7 +24,7 @@ cd gpui-file-explorer   # リポジトリ直下
 bash scripts/dev-setup.sh   # 初回のみ（下記「前提」を参照）
 cd app
 cargo build                 # 初回（依存込み）約 1m30s / 2回目以降 約2s / debug バイナリ 約 165MiB
-cargo test                  # 426 tests（データ層 + 監視）
+cargo test                  # 432 tests（データ層 + 監視）
 ```
 
 リポジトリ直下から全体をビルドする場合:
@@ -355,7 +355,8 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 
 - 検索結果のソース表示（複数ルート検索時の由来ラベル強化）
 - OS のファイルクリップボード連携（GPUI 側未実装）
-- OS ネイティブのサムネイル / アイコン抽出（現在は Lucide の拡張子対応）
+- 画像サムネイルの抽出（ファイル種別アイコンは Breeze のシステムアイコンを使用し、
+  見つからない場合は Lucide へフォールバック済み）
 - 右クリックメニューの「空き領域」版（現状は行の右クリックと
   ツールバーの「新規フォルダ」ボタン。理由は既知の制限を参照）
 
@@ -365,9 +366,13 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 |---|---|
 | `src/main.rs` | ウィンドウ / UI レイアウト（ツールバー・サイドバー・リスト・ステータスバー）/ キー・マウス操作 / コンテキストメニュー / 非同期ロード / 設定・履歴の結線 |
 | `src/model.rs` | `Entry` と `read_dir`、フィルタ、自然順ソート、人間向けサイズ/日時、選択計算、パンくず、fingerprint（GPUI 非依存 = テスト容易） |
+| `src/error.rs` | `AppError`（`FsError` / `OpError` の共通実装）。`model.rs` のサブモジュール |
 | `src/history.rs` | 戻る/進む履歴スタック |
+| `src/tabs.rs` | タブごとのカレントディレクトリと戻る/進む履歴（GPUI 非依存） |
 | `src/settings.rs` | serde_json 永続化（アトミック書き込み） |
-| `src/icons.rs` | 拡張子 → Lucide アイコン分類（GPUI 非依存の分類 + アイコン写像） |
+| `src/settings_ui.rs` | 設定オーバーレイの描画と操作意図の通知。配色は `SettingsUiPalette` 経由 |
+| `src/icons.rs` | 拡張子 → Lucide アイコン分類（GPUI 非依存）・システムアイコン欠落時のフォールバック |
+| `src/system_icons.rs` | freedesktop アイコン（Breeze 等）のパス解決とサイズ別キャッシュ |
 | `src/watcher.rs` | debounce 付き OS ファイル監視（カレント + 親、非再帰） |
 | `src/ops.rs` | 安全なコピー/移動/リネーム/ゴミ箱の操作エンジン |
 | `src/search.rs` | 名前・内容検索、複数ルート統合、後段フィルタ |
@@ -390,7 +395,7 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 
 ```bash
 cargo test
-# running 426 tests ... test result: ok. 426 passed; 0 failed
+# running 432 tests ... test result: ok. 432 passed; 0 failed
 ```
 
 カバレッジ: ディレクトリ読み込み（ディレクトリ先頭・メタデータ・エラー）、
@@ -403,7 +408,7 @@ fingerprint の変化検出、パンくず生成、一意な新規フォルダ�
 
 ## 実行検証記録（2026-11-11, このマシン。テスト数は 2026-11-18 更新）
 
-- `cargo build`: 警告 0 / `cargo test`: 426 passed（初回実機検証時は 36 件）
+- `cargo build`: 警告 0 / `cargo test`: 432 passed（初回実機検証時は 36 件）
 - 起動: stderr 0 行（EGL/Vulkan/Wayland エラーなし）
 - KWin D-Bus（Wayland ネイティブであることの確認）:
 
@@ -548,7 +553,9 @@ bash packaging/linux/build-deb.sh
 - 自己操作の抑制は時間ベース（1.5 秒）。まれに外部の同期的変更を
   1 回見逃す可能性があるため、10 秒 reconcile で回復します。
 - 起動時の設定読み込みで最終ディレクトリが消えていれば `$HOME` にフォールバック。
-- サムネイル・プレビュー・アイコン抽出なし（Lucide アイコンのみ）。
+- 画像サムネイルの抽出は未実装。ファイル種別アイコンは Breeze のシステムアイコンを
+  使用し、見つからない場合は Lucide アイコンへフォールバックします
+  （テキスト/画像プレビューは実装済み）。
 - ゴミ箱ビューは**システムのゴミ箱全体**を表示します（他アプリが捨てた項目も含む）。
   行はファイルとして表示され、サイズは「-」固定です（trash crate のメタデータ拡張は未対応）。
   復元は元の場所へ戻すのみで、衝突時は失敗し項目はゴミ箱に残ります。完全削除はありません。

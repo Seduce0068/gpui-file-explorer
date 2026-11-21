@@ -95,7 +95,7 @@
 | コピー/移動/貼り付け | × | ◎ | | | 進捗・キャンセル・衝突解決を最初から（fs-notes §5.1） |
 | 複数選択（Ctrl/Shift） | × | ◎ | | | 型は P0 から複数対応（§5.3） |
 | ゴミ箱ビュー（復元/完全削除） | × | × | ◎ | | `trash::list/restore_all/purge_all`（fs-notes §5.2） |
-| OS ネイティブアイコン | × | × | ◎ | | Linux: freedesktop-icons（fs-notes §3） |
+| OS ネイティブアイコン | × | × | ◎ | | **as-built**: Breeze 実装済み（§8.3、fs-notes §3） |
 | 画像サムネイル | × | × | ◎ | | `img(PathBuf)` で可能（api-notes §7.2）。非同期+LRU |
 | 再帰検索（名前/複数ルート） | ○ | ◎ | ◎ | 単一実装 | `std::fs` walker（symlink 非追跡・上限付き）、範囲: 現在/タブ/ブックマーク |
 | ボリューム/空き容量 | × | × | ◎ | | `sysinfo` Disks（fs-notes §4） |
@@ -812,7 +812,7 @@ pub fn confirm_and_trash(
 | 開く | `cx.open_with_system`（xdg-open 系）✅ API / ⚠ 実行時 | ShellExecute | `open` | ✅ | | | api-notes §4.5 |
 | リビール | `cx.reveal_path` → `org.freedesktop.FileManager1.ShowItems`（Dolphin 対応）⚠ KDE 実機 | `explorer /select,` | `open -R` | ✅ | | | api-notes §8.1 / fs-notes §6.2 |
 | ファイルマネージャ起動 | 上記のフォールバックとして `OpenURI` | — | — |  | | | opener 0.9（reveal feature）。P2 で導入検討 |
-| ファイル種別アイコン | Lucide + 拡張子マップ（P0）/ freedesktop-icons（P2） | SHGetFileInfoW（P2） | NSWorkspace（P2） | ✅ | | | fs-notes §3 |
+| ファイル種別アイコン | Breeze + Lucide ✅ | SHGetFileInfoW | NSWorkspace | ✅ | | | §8.3 |
 | 画像サムネイル | `image` + `img(PathBuf)`（P2） | IShellItemImageFactory（P2） | QuickLook（P3） |  | | ✅ | api-notes §7.2 |
 | パス文字列コピー | `ClipboardItem::new_string` ✅ | 同左 | 同左 | ✅ | | | api-notes §4.4 |
 | ファイルリスト clipboard | GPUI `ClipboardEntry::ExternalPaths`（Wayland ✅ / X11 ⚠） / arboard 3.7（P2） | CF_HDROP | .fileURL |  |  | ✅ | api-notes §4.4 / fs-notes §7 |
@@ -825,6 +825,9 @@ pub fn confirm_and_trash(
 | D&D IN | `on_drop::<ExternalPaths>`（Wayland ✅/他 ⚠） | 同左 | 同左 |  |  | △ | api-notes §4.2 |
 | D&D OUT | `external_drag_payload`（Wayland ✅） | ⚠ | ⚠ |  |  |  | api-notes §4.3 |
 
+- ファイル種別アイコンの Windows（`SHGetFileInfoW`） / macOS（`NSWorkspace`）列の
+  P2 は設計時の予定。**as-built**: Linux は Breeze の freedesktop アイコンを解決し、
+  欠落時は Lucide へフォールバック（§8.3、`system_icons.rs`）。
 - **P0 の OS 統合は「GPUI core の API のみ」**で構成する（`open_with_system` / `reveal_path` / クリップボード text）。`opener` / `arboard` / `freedesktop-icons` の追加依存は P2 まで入れない（依存と検証面積を最小化、ADR-007）。
 - KDE 固有: `WindowOptions::app_id = "gpui-file-explorer"` を必ず設定（Wayland の app_id → KWin の resourceClass/desktopFile に反映されることを POC で確認、[`notes/poc-report.md`](notes/poc-report.md) §3-3）。タイトルバーはネイティブ（CSD を自前実装しない）。
 
@@ -872,10 +875,15 @@ pub fn confirm_and_trash(
 
 ### 8.3 アイコン方針
 
-- P0: **gpui-kit 同梱アイコン（Lucide 1,818 種 + 独自、ISC）** のみ。`icons.rs` に拡張子 → `IconName` の静的表:
+- **as-built（2026-11-21 現在）**: ファイル種別アイコンは **Breeze の freedesktop アイコンテーマ**を優先し、
+  `system_icons.rs` が `(icon name, size)` 単位でパスをキャッシュして `img(&Path)` で描画する。
+  テーマに無い項目や Windows/macOS では **gpui-kit 同梱アイコン（Lucide 1,818 種 + 独自、ISC）**へ
+  フォールバックする。`icons.rs` に拡張子 → `IconName` の静的表:
   - ディレクトリ、画像（png/jpg/webp/svg…）、動画、音声、書庫（zip/tar/gz/7z…）、コード（rs/ts/js/py…）、PDF、テキスト（txt/md）、不明。
-- 取得は同期（埋め込みアセットなので I/O なし）。OS ネイティブアイコンは P2（非同期 + `(icon_key, size, scale)` キャッシュ、RESEARCH §4.6）。
-- アイコンの欠落時は `IconName::File` 相当の汎用にフォールバック（⚠ 正確な variant 名は実装時に component の `IconName` を確認）。
+- 設計時は「OS ネイティブアイコンは P2（非同期 + `(icon_key, size, scale)` キャッシュ、RESEARCH §4.6）」だったが、
+  実装では同期解決 + パスキャッシュで前倒しした。画像サムネイル抽出は未実装のまま。
+- システムアイコンの欠落時は `icons.rs` の Lucide 分類へ、さらに `IconName::File` 相当の汎用へ
+  フォールバック（⚠ 正確な variant 名は実装時に component の `IconName` を確認）。
 
 ### 8.4 i18n 方針
 
@@ -1083,10 +1091,14 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | ADR-006 | 監視イベントは **チャネル + 前景 pump ループ**（120 ms tick で drain、10 s リコンサイル）。チャネルは `std::sync::mpsc` か `async-channel` のどちらでも可 | ブロッキング recv / notify コールバックから直接 UI 更新 / イベントごとの `notify()` | UI をブロックせずバッチ化できる。`Debouncer` は `std::sync::mpsc::Sender` 実装を提供 ✅。現行試作は `async-channel`（§4.1 as-built） |
 | ADR-007 | P0 の OS 統合は **GPUI core API のみ**（open_with_system/reveal_path/クリップボード text） | opener/arboard を最初から導入 | 依存と検証面積を最小化。失敗時は通知で明示。P2 で opener/arboard を追加 |
 | ADR-008 | 削除確認は **`Window::prompt`** を第一候補 | gpui-component `open_alert_dialog` / 独自モーダル | GPUI 標準 API で Windows/macOS ではネイティブになる。Linux は GPUI fallback（✅ ソース確認）。UI が見劣りする場合のみ AlertDialog へ |
-| ADR-009 | アイコンは **Lucide + 拡張子マップ**、OS ネイティブは P2 | OS ネイティブのみ / アイコンなし | P0 で見た目を成立させ、OS API の非同期/キャッシュ設計を後回しにできる |
+| ADR-009 | Breeze システムアイコン優先、Lucide フォールバック | ネイティブのみ/なし | §8.3 |
 | ADR-010 | 設定は **JSON + `dirs` + 原子的書込**、UI スレッドで同期保存（≤1KB） | TOML / 非同期保存 / DB | 可読性・依存最小・実装容易。書込は 1KB 未満で例外扱い（§4.4） |
 | ADR-011 | **モジュール分割を最初から行う**（main/app/model/fs/ui） | POC の単一 main.rs を拡張 | テスト容易性・並行安全レビュー・将来のタブ/複数ウィンドウ対応 |
 | ADR-012 | ライセンスは **AGPL-3.0-or-later**、Zed GPL は不取込 | MIT/Apache で配布 | 依頼者決定。Argus 流用可能・コピーレフト。配布時ソース提供の運用を §9 に固定 |
+
+- ADR-009 の初期決定は「Lucide + 拡張子マップ、OS ネイティブは P2」だった。
+  as-built では Breeze の freedesktop アイコンを優先し、欠落時は Lucide へ
+  フォールバック（§8.3）。
 
 ### 10.8 ロードマップ
 
@@ -1153,5 +1165,6 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 |---|---|---|
 | 0.1 | 2026-11-11 | 初版（P0 契約、§4/§5/§10.4 が実装対象） |
 | 0.1-as-built | 2026-11-17 | 実装完了に伴う差分を記録。P1 機能（安全な操作エンジン / 検索 / タブ / ゴミ箱 / プレビュー / undo 他）を実装。`strings.rs` 追加、`tracing` 構造化ログ導入、設定の読み取り専用モード（退避失敗・未知スキーマ）追加。設計との逸脱と保留項目の詳細は `app/README.md` の「設計（DESIGN.md）からの差分」と `review-report.md` を参照。 |
+| 0.1-as-built | 2026-11-21 | OS アイコン（Breeze）実装済みを反映（§2/§7/§8.3/ADR-009） |
 
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
