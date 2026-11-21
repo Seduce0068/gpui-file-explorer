@@ -557,12 +557,23 @@ fn labeled_display_name(base: &str, label: Option<&str>) -> String {
 }
 
 /// Pure pre-flight check for `commit_label_editor`: would `set_bookmark_label`
-/// accept this label? It mirrors `BookmarkLabel::new` (trim/length/NUL rules)
-/// and the `MAX_BOOKMARK_LABELS` cap, which does not apply when the path already
-/// owns an entry (that entry is replaced in place). Validating before
-/// `ensure_bookmark_for_label` keeps a rejected label from leaving behind a
-/// bookmark with no label attached.
+/// accept this label? It mirrors `BookmarkLabel::new` (trim/length/NUL rules),
+/// the path rules of `Settings::sane_path` (non-empty, bounded, NUL-free,
+/// valid UTF-8) and the `MAX_BOOKMARK_LABELS` cap, which does not apply when
+/// the path already owns an entry (that entry is replaced in place). Validating
+/// before `ensure_bookmark_for_label` keeps a rejected label from leaving
+/// behind a bookmark with no label attached.
 fn bookmark_label_is_settable(settings: &Settings, path: &std::path::Path, label: &str) -> bool {
+    // `sane_path` is private to `settings.rs`; replicate its contract here so
+    // this pre-flight agrees with the real setter on unsanitary paths (E09).
+    let bytes = path.as_os_str().as_encoded_bytes();
+    if bytes.is_empty()
+        || bytes.len() > crate::settings::MAX_PATH_BYTES
+        || bytes.contains(&0)
+        || path.to_str().is_none()
+    {
+        return false;
+    }
     if crate::model::BookmarkLabel::new(path, label).is_none() {
         return false;
     }
@@ -2837,6 +2848,13 @@ impl Explorer {
         if path.as_os_str().is_empty() {
             return;
         }
+        // Mirror `toggle_current_bookmark`: a non-UTF-8 path would be rejected
+        // by `toggle_bookmark` and produce a false "removed" status below.
+        if let Some(status) = bookmark_toggle_rejection(path) {
+            self.status = status;
+            cx.notify();
+            return;
+        }
         let added = self.settings.toggle_bookmark(path);
         let saved = self.save_settings();
         self.refresh_bookmarks();
@@ -3871,11 +3889,17 @@ impl Explorer {
             editor.input.read(cx).value().to_string()
         };
         let command = normalize_terminal_command(&raw).unwrap_or_default();
+        // Snapshot before previewing the command: a failed write leaves disk at
+        // the old value, so rollback restores the persisted command (D13).
+        let snapshot = self.settings.clone();
         if !self.settings.set_terminal_command(&command) {
             self.set_terminal_command_error("コマンドが長すぎるか、制御文字を含んでいます", cx);
             return;
         }
         let saved = self.save_settings();
+        if settings_write_needs_rollback(saved) {
+            self.rollback_settings(snapshot, cx);
+        }
         self.terminal_command_editor = None;
         self.focus_list_on_next_render = true;
         self.status = if !saved {
@@ -4041,6 +4065,10 @@ impl Explorer {
             );
             return;
         };
+        // Snapshot before previewing the keymap change: a failed write leaves
+        // disk at the old value, so rollback must restore both settings.keymap
+        // and the derived live table (D13).
+        let snapshot = self.settings.clone();
         let status = match command {
             KeymapInput::Bind { action, chord } => {
                 if !upsert_keymap_override(&mut self.settings.keymap, &action, &chord) {
@@ -4065,6 +4093,9 @@ impl Explorer {
         // persisted override restores that action's default binding.
         self.keymap = KeyMap::from_settings(&self.settings);
         let saved = self.save_settings();
+        if settings_write_needs_rollback(saved) {
+            self.rollback_settings(snapshot, cx);
+        }
         self.keymap_editor = None;
         self.focus_list_on_next_render = true;
         self.status = if !saved {
@@ -10291,10 +10322,14 @@ impl SettingsUiHost for Explorer {
                 }
                 self.settings_ui = None;
                 self.focus_list_on_next_render = true;
-                self.status = if saved {
-                    "設定を保存しました".to_string()
-                } else {
+                self.status = if !saved {
                     STATUS_SETTINGS_SAVE_FAILED.to_string()
+                } else if self.settings.read_only || self.settings.ephemeral {
+                    // `save()` reports success without writing in a read-only /
+                    // ephemeral session, so don't claim the settings were saved.
+                    STATUS_SETTINGS_READ_ONLY.to_string()
+                } else {
+                    "設定を保存しました".to_string()
                 };
                 cx.notify();
             }
@@ -10640,7 +10675,11 @@ fn main() {
                 }
                 let _ = explorer.update(cx, |this, _cx| {
                     this.persist_tabs();
-                    this.save_settings();
+                    if !this.save_settings() {
+                        // No status bar survives the close; mirror the Ctrl+Q
+                        // path and surface the failure in the log (Bug L01).
+                        tracing::error!("failed to save settings before closing window");
+                    }
                 });
                 true
             });
@@ -12401,6 +12440,31 @@ mod tests {
             Path::new(""),
             "work"
         ));
+
+        // `sane_path` rejects these paths even though `BookmarkLabel::new`
+        // accepts them. Pair every pre-flight assertion with the real setter
+        // so the two contracts cannot drift apart again (E09).
+        let mut setter = Settings::default();
+        let nul_path = PathBuf::from("/work/pro\0ject");
+        assert!(!bookmark_label_is_settable(&settings, &nul_path, "work"));
+        assert!(!setter.set_bookmark_label(&nul_path, "work"));
+        let too_long_path = PathBuf::from(format!(
+            "/{}",
+            "x".repeat(crate::settings::MAX_PATH_BYTES + 1)
+        ));
+        assert!(!bookmark_label_is_settable(
+            &settings,
+            &too_long_path,
+            "work"
+        ));
+        assert!(!setter.set_bookmark_label(&too_long_path, "work"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let non_utf8 = PathBuf::from(OsString::from_vec(vec![b'/', 0xff]));
+            assert!(!bookmark_label_is_settable(&settings, &non_utf8, "work"));
+            assert!(!setter.set_bookmark_label(&non_utf8, "work"));
+        }
 
         // Fill to the cap: a brand-new entry is refused, while the existing
         // entry for `path` is still replaced in place by the real setter.
