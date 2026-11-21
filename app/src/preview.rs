@@ -105,6 +105,13 @@ pub fn sniff_image_format(bytes: &[u8]) -> Option<ImageFormat> {
     None
 }
 
+/// Pure predicate for the byte-limit guard shared by the pre-read and
+/// post-read checks in [`read_image_preview`]. Kept standalone so the
+/// post-read branch can be tested directly without a pseudo-filesystem fixture.
+fn bytes_exceed_limit(len: u64, max_bytes: u64) -> bool {
+    len > max_bytes
+}
+
 /// Read an image file for preview, at most `max_bytes`.
 ///
 /// Safety: symlinks and non-files are refused, and the file size is checked
@@ -122,7 +129,7 @@ pub fn read_image_preview(
     if !link_metadata.is_file() {
         return Err("ファイルではありません".to_string());
     }
-    if link_metadata.len() > max_bytes {
+    if bytes_exceed_limit(link_metadata.len(), max_bytes) {
         return Err(format!(
             "画像が大きすぎます（上限 {}）",
             crate::model::human_size(max_bytes)
@@ -134,7 +141,7 @@ pub fn read_image_preview(
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| format!("読み取りに失敗しました: {error}"))?;
-    if bytes.len() as u64 > max_bytes {
+    if bytes_exceed_limit(bytes.len() as u64, max_bytes) {
         return Err(format!(
             "画像が大きすぎます（上限 {}）",
             crate::model::human_size(max_bytes)
@@ -287,8 +294,8 @@ pub fn preview_key_action(key: &str, control: bool) -> PreviewKeyAction {
 #[cfg(test)]
 mod image_tests {
     use super::{
-        image_format_for_name, png_dimensions, read_image_preview, sniff_image_format,
-        MAX_IMAGE_BYTES,
+        bytes_exceed_limit, image_format_for_name, png_dimensions, read_image_preview,
+        sniff_image_format, MAX_IMAGE_BYTES,
     };
     use gpui_kit::ImageFormat;
     use std::fs;
@@ -469,11 +476,24 @@ mod image_tests {
         fs::write(&path, PNG_HEADER).unwrap(); // exactly 8 bytes
         let read = read_image_preview(&path, ImageFormat::Png, 8).unwrap();
         assert_eq!(read.bytes.len(), 8);
-        // One byte below the real size trips the post-read guard even though
-        // `metadata.len()` reported 8 (which passed the pre-read check).
+        // One byte below the real size trips the *pre-read* guard here:
+        // `metadata.len()` (8) is already greater than `max_bytes` (7), so the
+        // file is rejected before any bytes are read. The post-read guard uses
+        // the same predicate and is covered directly by `bytes_exceed_limit`.
         let error = read_image_preview(&path, ImageFormat::Png, 7).unwrap_err();
         assert!(error.contains("画像が大きすぎます"), "{error}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bytes_exceed_limit_covers_post_read_boundary() {
+        // Directly tests the predicate used by the post-read guard, including
+        // the exact-limit case that `reads_image_at_exact_limit` cannot reach.
+        assert!(!bytes_exceed_limit(0, 0));
+        assert!(bytes_exceed_limit(1, 0));
+        assert!(!bytes_exceed_limit(7, 8));
+        assert!(!bytes_exceed_limit(8, 8));
+        assert!(bytes_exceed_limit(9, 8));
     }
 
     #[test]

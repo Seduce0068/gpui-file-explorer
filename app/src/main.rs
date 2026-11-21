@@ -877,8 +877,10 @@ fn normalize_terminal_command(raw: &str) -> Option<String> {
 }
 
 /// Status shown when the configured terminal command is missing or unusable.
+/// The reason / recovery hint lives in `strings.rs` so its wording is shared
+/// with the colour-classification and wording tests (S07).
 fn terminal_disabled_status() -> String {
-    format!("ターミナルを{STATUS_CANNOT_OPEN_SUFFIX}: 起動コマンドが未設定です（設定の terminal_command を確認）")
+    format!("ターミナルを{STATUS_CANNOT_OPEN_SUFFIX}{STATUS_TERMINAL_DISABLED_HINT}")
 }
 
 /// Status shown after a successful launch (command plus target directory).
@@ -1125,6 +1127,39 @@ fn canonical_chord(chord: &str) -> String {
     })
 }
 
+/// Whether two chord spellings claim the same keystroke under `KeyMap`
+/// dispatch. `binding_matches` deliberately ignores `alt` for Ctrl bindings,
+/// so `ctrl+p` and `ctrl+alt+p` must be treated as one chord when a persisted
+/// override is inserted (S06). Otherwise both survive in settings while only
+/// the later one survives in the live keymap after `from_settings` reloads
+/// them — the file and the dispatcher then disagree about the owner.
+///
+/// An omitted shift resolves to `false`, matching `KeyMap::from_settings`, so
+/// `ctrl+p` and `ctrl+shift+p` stay distinct just as they are at runtime.
+fn chords_collide(a: &str, b: &str) -> bool {
+    let (Some((key_a, ctrl_a, shift_a, alt_a)), Some((key_b, ctrl_b, shift_b, alt_b))) =
+        (parse_chord(a), parse_chord(b))
+    else {
+        // An unparseable spelling has no modifier semantics; fall back to the
+        // canonical form so deduplication stays deterministic.
+        return canonical_chord(a) == canonical_chord(b);
+    };
+    let binding = KeyBinding {
+        key: key_a,
+        ctrl: ctrl_a,
+        alt: alt_a,
+        shift: Some(shift_a.unwrap_or(false)),
+        action: KeyAction::None,
+    };
+    KeyMap::binding_matches(
+        &binding,
+        &key_b,
+        ctrl_b,
+        alt_b,
+        Some(shift_b.unwrap_or(false)),
+    )
+}
+
 /// Insert or replace one persisted override, deduplicated by action name.
 /// Returns `false` only when the list is full for a new action; the parser has
 /// already rejected invalid and reserved pairs before this is called. The
@@ -1136,9 +1171,12 @@ fn upsert_keymap_override(
 ) -> bool {
     let chord = canonical_chord(chord);
     // A chord can only belong to one action. Mirror `KeyMap::rebind`'s eviction
-    // in the persisted list so the binding survives a restart unchanged. Both
-    // sides are canonicalized because older files may hold a different order.
-    overrides.retain(|(name, bound)| name == action || canonical_chord(bound) != chord);
+    // in the persisted list so the binding survives a restart unchanged. The
+    // comparison is semantic, not textual: `binding_matches` ignores `alt` for
+    // Ctrl chords, so `ctrl+p` and `ctrl+alt+p` are the same keystroke and must
+    // not both be stored (S06). `canonical_chord` still normalizes modifier
+    // order for the value we actually persist.
+    overrides.retain(|(name, bound)| name == action || !chords_collide(bound, &chord));
     if let Some(entry) = overrides.iter_mut().find(|(name, _)| name == action) {
         entry.1 = chord;
         return true;
@@ -1757,13 +1795,14 @@ use crate::strings::{
     STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
     STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_FAILED,
     STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
-    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT,
-    STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
-    STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
-    STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY,
-    STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
-    STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
-    STATUS_TARGET_MISSING, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
+    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
+    STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
+    STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
+    STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
+    STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW,
+    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED,
+    STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
+    STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
     STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
     STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
     STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
@@ -8371,9 +8410,9 @@ impl Explorer {
         };
         let saved = if stored { self.save_settings() } else { true };
         self.status = if name.is_empty() {
-            format!("{STATUS_ERROR_PREFIX}保存する検索名を入力してください")
+            format!("{STATUS_ERROR_PREFIX}{STATUS_SAVED_SEARCH_NAME_REQUIRED}")
         } else if query.is_empty() {
-            format!("{STATUS_ERROR_PREFIX}検索語を入力してから保存してください")
+            format!("{STATUS_ERROR_PREFIX}{STATUS_SAVED_SEARCH_QUERY_REQUIRED}")
         } else {
             settings_write_status(
                 &self.settings,
@@ -11203,8 +11242,8 @@ mod tests {
     use super::{
         active_keymap_overrides, apply_debug_settings_overrides, bookmark_label_is_settable,
         bookmark_label_set_rejection, bookmark_toggle_rejection, build_places, canonical_chord,
-        chord_for_action, classify_cli, clear_dialog_error, clear_op_token, format_chord,
-        format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
+        chord_for_action, chords_collide, classify_cli, clear_dialog_error, clear_op_token,
+        format_chord, format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
         help_overrides_line, icon_button_text_color, install_op_token, internal_drop_paths,
         join_status_notices, keymap_action_name, keymap_bind_caption, keymap_chord_reserved,
         keymap_unbind_caption, kind_color, labeled_display_name, middle_click_tab_dir,
@@ -11239,9 +11278,10 @@ mod tests {
         STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
         STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_SAVE_FAILED, STATUS_SPECIAL_FILE_NO_COPY,
         STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
-        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_START_PREFIX,
-        STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY, STATUS_UNDO_EMPTY,
-        STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_DISABLED_HINT,
+        STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_NO_COPY,
+        STATUS_UNDO_EMPTY, STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT,
+        THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -11352,6 +11392,12 @@ mod tests {
         // N02: 実際の 3 箇所の呼び出し文も warning になることを確認する。
         let disabled = terminal_disabled_status();
         assert!(disabled.contains(STATUS_CANNOT_OPEN_SUFFIX), "{disabled}");
+        // S07: 文言は strings.rs の接尾 + 理由/復帰導線から組み立てる
+        // （完全一致の文言テストは strings.rs 側に置く）。
+        assert_eq!(
+            disabled,
+            format!("ターミナルを{STATUS_CANNOT_OPEN_SUFFIX}{STATUS_TERMINAL_DISABLED_HINT}")
+        );
         assert_eq!(status_color(&disabled), C_YELLOW, "{disabled}");
         for status in [
             format!("ゴミ箱ではターミナルを{STATUS_CANNOT_OPEN_SUFFIX}"),
@@ -14434,6 +14480,57 @@ mod tests {
             "the previous owner of the chord must be evicted"
         );
         assert_eq!(overrides.len(), 2, "unrelated bindings are preserved");
+    }
+
+    #[test]
+    fn upsert_keymap_override_dedupes_ctrl_chord_alt_variant() {
+        // S06: 文字列の正規化だけでは `ctrl+p` と `ctrl+alt+p` は別扱いになるが、
+        // `binding_matches` は Ctrl バインドの `alt` を無視するのでdispatch 上は
+        // 同じキー。保存済みオーバーライドも同じ規則で排除しなければ、ファイルに
+        // 2 件残るのに再読み込み後は後勝ちの 1 件しか効かない。
+        assert!(chords_collide("ctrl+p", "ctrl+alt+p"));
+        assert!(chords_collide("ctrl+alt+p", "ctrl+p"));
+        // shift は runtime と同じく区別する（from_settings は省略時 false）。
+        assert!(!chords_collide("ctrl+p", "ctrl+shift+p"));
+        assert!(chords_collide("shift+ctrl+p", "ctrl+shift+p"));
+
+        let mut overrides = vec![("fuzzy_jump".to_string(), "ctrl+p".to_string())];
+        assert!(upsert_keymap_override(
+            &mut overrides,
+            "open_preview",
+            "ctrl+alt+p"
+        ));
+        assert_eq!(
+            overrides,
+            vec![("open_preview".to_string(), "ctrl+alt+p".to_string())],
+            "the alt variant must evict the plain Ctrl binding"
+        );
+
+        // 残った 1 件から組み立てた live keymap も同じ解決結果になる。
+        let settings = Settings {
+            keymap: overrides.clone(),
+            ..Settings::default()
+        };
+        let keymap = KeyMap::from_settings(&settings);
+        for alt in [false, true] {
+            assert_eq!(
+                keymap.resolve("p", true, false, alt),
+                KeyAction::OpenPreview,
+                "alt={alt} must resolve to the sole persisted owner"
+            );
+        }
+
+        // 逆の挿入順でも 1 件だけ生存し、保存される綴りは後勝ちのものになる。
+        let mut reversed = vec![("fuzzy_jump".to_string(), "ctrl+alt+p".to_string())];
+        assert!(upsert_keymap_override(
+            &mut reversed,
+            "open_preview",
+            "ctrl+p"
+        ));
+        assert_eq!(
+            reversed,
+            vec![("open_preview".to_string(), "ctrl+p".to_string())]
+        );
     }
 
     #[test]

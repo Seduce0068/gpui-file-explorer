@@ -885,27 +885,27 @@ status: current
 
 ### 優先度: 中（ループ R14・confirmed）
 
-- [ ] **S01** 保存検索の入力必須エラーがインライン拒否リテラル
+- [x] **S01** 保存検索の入力必須エラーがインライン拒否リテラル — 対応: loop16-core
   — main.rs:8374
-- [ ] **S02** review-report 総評の「132 件のヘッドレス テスト」が現在形・誤分類
+- [x] **S02** review-report 総評の「132 件のヘッドレス テスト」が現在形・誤分類 — 対応: loop16-tests
   — review-report.md:21
-- [ ] **S03** read_image_preview の後段サイズガード未到達＋誤コメント
+- [x] **S03** read_image_preview の後段サイズガード未到達＋誤コメント — 対応: loop16-tests
   — preview.rs:134,472
-- [ ] **S04** acquire_save_lock の古いロック回収/タイムアウト分岐が無テスト
+- [x] **S04** acquire_save_lock の古いロック回収/タイムアウト分岐が無テスト — 対応: loop16-core
   — settings.rs:1464
-- [ ] **S05** 既定ショートカット一覧に Ctrl+Shift+F 欠落
+- [x] **S05** 既定ショートカット一覧に Ctrl+Shift+F 欠落 — 対応: loop16-ux
   — settings_ui.rs:554
 
 ### 優先度: 低（ループ R14）
 
-- [ ] **S06** 永続 keymap eviction が Ctrl の alt don't-care と不一致
+- [x] **S06** 永続 keymap eviction が Ctrl の alt don't-care と不一致 — 対応: loop16-core（実バグ修正）
   — main.rs:1141
-- [ ] **S07** ターミナル無効化の理由・復帰導線がインライン
+- [x] **S07** ターミナル無効化の理由・復帰導線がインライン — 対応: loop16-core
   — main.rs:880
-- [ ] **S08** ops.rs 固定テスト数「50 件」が動的方針と不統一
+- [x] **S08** ops.rs 固定テスト数「50 件」が動的方針と不統一 — 対応: loop16-tests
   — app/README.md:293 / DESIGN.md:366
-- [ ] **S09** README キーバインド表に F4 行なし — app/README.md:92
-- [ ] **S10** 設定 About にライセンス/ソース導線なし — settings_ui.rs:1161
+- [x] **S09** README キーバインド表に F4 行なし — app/README.md:92 — 対応: loop16-ux
+- [x] **S10** 設定 About にライセンス/ソース導線なし — settings_ui.rs:1161 — 対応: loop16-ux
 
 ### 優先度: 低（調査タスク）
 

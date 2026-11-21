@@ -1965,6 +1965,84 @@ mod tests {
     }
 
     #[test]
+    fn save_reclaims_lock_older_than_stale_threshold() {
+        // S04(a): 60 秒より古いロックはクラッシュしたプロセスの残骸として
+        // 回収され、その後の保存が成功する。
+        let dir = scratch("stale-lock");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let lock = path.with_extension("json.lock");
+        fs::write(&lock, b"stale").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        let settings = Settings::default();
+        settings
+            .save_to(&path)
+            .expect("a lock older than 60 s must be reclaimed");
+        assert!(path.exists(), "the settings file must be written");
+        assert!(!lock.exists(), "the reclaimed lock must be released");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_times_out_on_a_fresh_lock_without_removing_it() {
+        // S04(b): 生きているプロセスのロック（mtime が新しい）は決して回収せず、
+        // 再試行を使い切ったら失敗する。50 回 × 10ms なのでテストは約 0.5 秒。
+        let dir = scratch("fresh-lock");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let lock = path.with_extension("json.lock");
+        fs::write(&lock, b"in-use").unwrap();
+
+        let error = Settings::default()
+            .save_to(&path)
+            .expect_err("a fresh lock must block the save");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(lock.exists(), "a live lock must never be removed");
+        assert!(!path.exists(), "no settings file may be written");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_does_not_remove_lock_when_metadata_cannot_be_read() {
+        // S04(c): `create_new` はシンボリックリンクにも AlreadyExists を返すが、
+        // `metadata` はリンク先を辿るため壊れたリンクでは失敗する。その場合
+        // stale と判定せず、ロックを消してはならない。
+        use std::os::unix::fs::symlink;
+
+        let dir = scratch("lock-metadata-failure");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let lock = path.with_extension("json.lock");
+        symlink(dir.join("missing-target"), &lock).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&lock).is_ok(),
+            "link itself exists"
+        );
+        assert!(std::fs::metadata(&lock).is_err(), "target must be missing");
+
+        let error = Settings::default()
+            .save_to(&path)
+            .expect_err("an unreadable lock must block the save");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(
+            std::fs::symlink_metadata(&lock).is_ok(),
+            "a lock whose staleness is unknown must be preserved"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn save_and_load_roundtrip() {
         let dir = scratch("roundtrip");
         let _ = fs::remove_dir_all(&dir);

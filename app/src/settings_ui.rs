@@ -503,6 +503,9 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "Alt+数字",
     "Ctrl+,",
     "Ctrl+F",
+    // S05: Ctrl+Shift+F narrows already-fetched results by name. F1 help and
+    // README list it, so the Shortcuts tab must surface for that chord too.
+    "Ctrl+Shift+F",
     "Ctrl+L",
     "F1",
     "F4",
@@ -559,6 +562,7 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "F1 … ヘルプ / キー一覧",
     "Ctrl+L … 場所を入力",
     "Ctrl+F … ファイルを検索",
+    "Ctrl+Shift+F … 検索結果を名前で絞り込み",
     "F4 … ターミナルを開く",
     "Alt+T … ターミナル起動コマンドの設定",
     "Ctrl+, … 設定を開く",
@@ -601,6 +605,10 @@ const PERSONALIZE_INFO_KEYWORDS: &[&str] = &[
     "アプリ",
     "GPUI",
     "ファイルマネージャー",
+    // S10: license/source rows rendered below (F1 is blocked in the dialog).
+    "ライセンス",
+    "AGPL",
+    "ソース",
     "settings.json",
     "保存",
     "配色",
@@ -922,6 +930,24 @@ fn personalize_version_info_line() -> String {
     )
 }
 
+/// Read-only license line shown on the Personalize info page (S10).
+///
+/// F1 help is swallowed while the settings dialog owns the keyboard, so the
+/// license row that otherwise exists only in `strings::HELP_SECTIONS` is
+/// repeated here. Pure like [`personalize_version_info_line`] so a sync test
+/// can prove the two copies cannot drift.
+fn personalize_license_info_line() -> String {
+    "ライセンス: AGPL-3.0-or-later".to_string()
+}
+
+/// Read-only source line shown on the Personalize info page (S10).
+///
+/// Uses the same URL as the F1 help entry in `strings::HELP_SECTIONS`; the sync
+/// test compares them verbatim (like Q08 for the version row).
+fn personalize_source_info_line() -> String {
+    "ソース: https://github.com/Seduce0068/gpui-file-explorer".to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -1167,6 +1193,8 @@ pub fn render_settings_content<V: SettingsUiHost>(
                         "gpui-file-explorer — GPUI 製のファイルマネージャー",
                     ))
                     .child(info_line(palette, &personalize_version_info_line()))
+                    .child(info_line(palette, &personalize_license_info_line()))
+                    .child(info_line(palette, &personalize_source_info_line()))
                     .child(info_line(
                         palette,
                         "設定は ~/.config/gpui-file-explorer/settings.json に保存されます。",
@@ -1321,13 +1349,14 @@ mod tests {
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
         cancel_label, footer_status_text, matches_query, next_settings_focus, no_match_hint,
-        personalize_version_info_line, selected_index, settings_focus_order,
-        settings_footer_legend, settings_hidden_next, settings_row_is_visible,
-        settings_row_shortcut, settings_theme_next, settings_view_next, tabs_matching_query,
-        SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
-        APPEARANCE_THEME_DESCRIPTION, APPEARANCE_VIEW_DESCRIPTION, FILES_HIDDEN_DESCRIPTION,
-        FILES_SORT_DESCRIPTION, PERSONALIZE_INFO_KEYWORDS, SETTINGS_KEYMAP_INPUT_HINT,
-        SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
+        personalize_license_info_line, personalize_source_info_line, personalize_version_info_line,
+        selected_index, settings_focus_order, settings_footer_legend, settings_hidden_next,
+        settings_row_is_visible, settings_row_shortcut, settings_theme_next, settings_view_next,
+        tabs_matching_query, SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction,
+        SettingsUiPalette, APPEARANCE_THEME_DESCRIPTION, APPEARANCE_VIEW_DESCRIPTION,
+        FILES_HIDDEN_DESCRIPTION, FILES_SORT_DESCRIPTION, PERSONALIZE_INFO_KEYWORDS,
+        SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
+        SHORTCUTS_DEFAULT_LINES,
     };
 
     #[test]
@@ -1557,6 +1586,7 @@ mod tests {
             "Alt+数字",
             "Ctrl+,",
             "Ctrl+F",
+            "Ctrl+Shift+F",
             "Ctrl+L",
             "F1",
             "F4",
@@ -1640,6 +1670,43 @@ mod tests {
             "version line must embed CARGO_PKG_VERSION: {line}"
         );
         assert!(matches_query("バージョン", PERSONALIZE_INFO_KEYWORDS));
+    }
+
+    #[test]
+    fn personalize_license_and_source_lines_match_f1_help() {
+        // S10: F1 is swallowed while the dialog owns the keyboard, so the
+        // license/source rows that otherwise live only in F1 help must be
+        // repeated on the Personalize info page. Compare with HELP_SECTIONS
+        // so the two copies cannot drift (same guard as Q08 for the version).
+        let license = personalize_license_info_line();
+        let source = personalize_source_info_line();
+        let help_rows: Vec<(&str, &str)> = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .collect();
+        // The F1 help stores the license as the row key and the source line as
+        // its value ("ライセンス / ソース" section).
+        let (help_license_key, help_source_line) = help_rows
+            .iter()
+            .find(|(key, value)| key.starts_with("AGPL") && value.starts_with("ソース: https://"))
+            .expect("F1 help must include the license/source row");
+        assert_eq!(
+            license,
+            format!("ライセンス: {help_license_key}"),
+            "Personalize license must match F1 help: {help_license_key}"
+        );
+        assert_eq!(
+            source, *help_source_line,
+            "Personalize source must match F1 help: {help_source_line}"
+        );
+        // The visible words are advertised by the Personalize keywords so a
+        // search lands on the page that actually renders them (M09/Q08).
+        for word in ["ライセンス", "AGPL", "ソース"] {
+            assert!(PERSONALIZE_INFO_KEYWORDS.contains(&word));
+            assert!(matches_query(word, PERSONALIZE_INFO_KEYWORDS));
+        }
+        assert!(license.contains("ライセンス") && license.contains("AGPL"));
+        assert!(source.contains("ソース") && source.contains("https://"));
     }
 
     #[test]
@@ -1798,6 +1865,7 @@ mod tests {
             "F1",
             "Ctrl+L",
             "Ctrl+F",
+            "Ctrl+Shift+F",
             "F4",
             "Alt+T",
             "Alt+Shift+T",
