@@ -1083,8 +1083,7 @@ status: current
 
 ### 優先度: 中（ループ R21 フォローアップ・confirmed）
 
-- [ ] **Z14** 再スキャン成功時に STATUS_RESCAN_FAILED がクリアされない（「次回成功まで」規約）
-  — main.rs:3544-3575（Z02 の成功側、次ラウンド）
+- [x] **Z14** 再スキャン成功時に STATUS_RESCAN_FAILED がクリアされない — 対応: 親（clear_rescan_failure_status）
 
 ### 優先度: 低（調査タスク）
 

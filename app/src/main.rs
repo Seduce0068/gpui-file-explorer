@@ -261,6 +261,14 @@ fn reconcile_aware_status(current: &str, next: &str) -> String {
     }
 }
 
+/// The successful half of the F6-36 "keep RESCAN_FAILED until the next
+/// successful read" contract: once a fresh read lands, clear the stale failure
+/// notice so the bar is not stuck red forever (Z14). Other statuses are left
+/// untouched.
+fn clear_rescan_failure_status(current: &str) -> Option<String> {
+    current.starts_with(STATUS_RESCAN_FAILED).then(String::new)
+}
+
 /// Keys forwarded to the normal keymap while the search view is open and no
 /// search text input owns focus. Text editing keys stay with the query field;
 /// once focus moves to the result list, navigation, copy, F4 (terminal) and
@@ -3572,6 +3580,10 @@ impl Explorer {
                     }
                     if needs_reload {
                         this.reload(cx);
+                    }
+                    // Z14: a successful read ends the F6-36 RESCAN_FAILED hold.
+                    if let Some(cleared) = clear_rescan_failure_status(&this.status) {
+                        this.status = cleared;
                     }
                     cx.notify();
                 }
@@ -11436,20 +11448,20 @@ mod tests {
         bookmark_label_not_set_status, bookmark_label_rejection_reason,
         bookmark_label_set_rejection, bookmark_toggle_rejection, build_places, canonical_chord,
         chord_for_action, chords_collide, classify_cli, clear_dialog_error, clear_op_token,
-        format_chord, format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
-        help_overrides_line, icon_button_text_color, install_op_token, internal_drop_paths,
-        join_status_notices, keymap_action_name, keymap_bind_caption, keymap_chord_reserved,
-        keymap_limit_status, keymap_unbind_caption, kind_color, labeled_display_name,
-        load_error_display_text, middle_click_tab_dir, normalize_terminal_command, op_is_active,
-        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
-        read_properties_snapshot, reconcile_aware_status, remove_keymap_override,
-        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
-        settings_discard_status, settings_read_only_status, settings_row_key_is_bare,
-        settings_save_error_status, settings_save_status, settings_sort_next,
-        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
-        settings_write_needs_rollback, settings_write_status, startup_dir_from,
-        startup_save_failure_status, status_color, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
+        clear_rescan_failure_status, format_chord, format_selected, fuzzy_candidates, fuzzy_score,
+        grid_columns_for_width, help_overrides_line, icon_button_text_color, install_op_token,
+        internal_drop_paths, join_status_notices, keymap_action_name, keymap_bind_caption,
+        keymap_chord_reserved, keymap_limit_status, keymap_unbind_caption, kind_color,
+        labeled_display_name, load_error_display_text, middle_click_tab_dir,
+        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
+        pending_rename_index, rank_fuzzy, read_properties_snapshot, reconcile_aware_status,
+        remove_keymap_override, saved_search_caption, saved_search_save_status,
+        search_filter_status, set_view_status, settings_discard_status, settings_read_only_status,
+        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
+        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        settings_validation_status, settings_write_needs_rollback, settings_write_status,
+        startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
+        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
         transfer_progress_status, transfer_skip_notice, trash_batch, trash_delete_status,
         trash_key_action, trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
@@ -11688,6 +11700,25 @@ mod tests {
         let ordinary = reconcile_aware_status("3 件をコピーしました", STATUS_CHANGED);
         assert_eq!(ordinary, STATUS_CHANGED);
         assert_eq!(status_color(&ordinary), C_GREEN);
+    }
+
+    // Z14: the successful read must actually clear the held RESCAN_FAILED
+    // notice (F6-36 "until the next successful read"), not merely let a later
+    // status overwrite it by accident.
+    #[test]
+    fn successful_reconcile_clears_the_held_rescan_failure() {
+        let failed = format!("{STATUS_RESCAN_FAILED}: permission denied");
+        assert_eq!(
+            clear_rescan_failure_status(&failed),
+            Some(String::new()),
+            "a fresh successful read clears the stale failure"
+        );
+        assert_eq!(
+            clear_rescan_failure_status(STATUS_CHANGED),
+            None,
+            "unrelated statuses must be left untouched"
+        );
+        assert_eq!(clear_rescan_failure_status(""), None);
     }
 
     #[test]
