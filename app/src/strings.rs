@@ -315,7 +315,9 @@ pub const STATUS_SETTINGS_SAVE_FAILED: &str =
 pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
 /// Esc / 背景クリックで未保存の設定変更を破棄したときの通知（H03）。
 /// フッターの「保存せず閉じる」ボタンと違い、これらの操作は事前の警告がない。
-pub const STATUS_SETTINGS_DISCARDED: &str = "未保存の変更を破棄しました";
+/// 情報量ルール (F6-36) の「復帰導線」に従い、設定を開き直す操作を併記する（I06）。
+pub const STATUS_SETTINGS_DISCARDED: &str =
+    "未保存の変更を破棄しました（Ctrl+, で設定を開き直せます）";
 /// タブ復元の成否。
 pub const STATUS_TAB_RESTORED: &str = "タブを復元しました";
 pub const STATUS_TAB_RESTORE_EMPTY: &str = "復元できるタブがありません";
@@ -654,6 +656,19 @@ mod tests {
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
         }
+    }
+
+    #[test]
+    fn discarded_settings_notice_carries_a_recovery_hint() {
+        // F6-36 の 4 段構成のうち「復帰導線」が欠けていた (I06)。破棄した事実
+        // だけで終わらせず、設定を開き直す操作を括弧内に案内する。
+        assert!(STATUS_SETTINGS_DISCARDED.starts_with("未保存の変更を破棄しました"));
+        assert!(STATUS_SETTINGS_DISCARDED.contains("Ctrl+,"));
+        assert!(STATUS_SETTINGS_DISCARDED.contains("設定を開き直せます"));
+        assert!(
+            STATUS_SETTINGS_DISCARDED.ends_with('）') && STATUS_SETTINGS_DISCARDED.contains('（'),
+            "recovery hint must be a parenthesized suffix: {STATUS_SETTINGS_DISCARDED}"
+        );
     }
 
     #[test]

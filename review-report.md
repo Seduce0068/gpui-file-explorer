@@ -297,10 +297,13 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
   名前の衝突を解消。`#[serde(rename_all = "snake_case")]` は
   不変で `settings.json` の `"details"` / `"icons"` 互換性を
   維持（settings 系 24 テスト通過）。
-- `main.rs` の debug hooks（判断: 現状維持）: リリースビルドにも
-  残存するが、本機に合成入力ツールが無く release のスクリーンショット
-  検証でも必要なため `#[cfg(debug_assertions)]` では無効化しない。
-  環境変数未設定時は発火しない旨を `app/README.md` に明記。
+- `main.rs` の debug hooks（判断: 現状維持）: `GPUI_FE_DEBUG_*` の読み込みは
+  `#[cfg(debug_assertions)]` でガードされ、**debug ビルドのみ有効・release では
+  コンパイルアウト**されます（`main.rs` の `Explorer::debug_hooks_from_env` と
+  起動時の設定上書きブロック）。したがって release バイナリでは
+  環境変数を設定しても発火せず、実 settings.json は汚染されません。
+  スクリーンショット検証は debug ビルドで実施しており、
+  `app/README.md` の「既知の制限」にもその旨を明記しています。
 - `main.rs:1318`: ショートカットが raw 文字列比較。
   `actions!` + `KeyBinding` への移行を検討。
 - `main.rs:5563`（解消済み）: 起動時 window 作成失敗の
@@ -626,8 +629,8 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 - `scripts/check.sh` が `--app --poc` 同時指定で誤成功
   （`run_app` / `run_poc` が両方 false になる）。
 - `build-deb.sh:149` の Maintainer が個人アドレス固定。
-- `GPUI_FE_DEBUG_*` フックが release にも残存（前回判断通り
-  現状維持だが、ランブックへの明記が必要）。
+- `GPUI_FE_DEBUG_*` フックは debug ビルドのみ有効・release では
+  コンパイルアウト（前回判断を as-built 反映し、README に明記済み）。
 - `ConflictPolicy::Fail` / `Skip` が本番未使用。
 - UI 文言リテラルが `strings.rs` に集約しきれていない。
 - DESIGN.md の変更履歴が v0.1 のまま（as-built 差分未反映）。
