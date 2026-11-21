@@ -164,7 +164,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+,", "設定を開く"),
             (
                 "設定ダイアログ",
-                "Enter で保存 / Esc でキャンセル / 上部の検索欄で設定項目を絞り込み。F1 はダイアログ内で無効なので、下部のキー凡例に必要なキーを表示",
+                "Enter で保存 / Esc でキャンセル（未保存変更時は破棄され通知されます）/ 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。F1 はダイアログ内で無効なので、下部のキー凡例に必要なキーを表示",
             ),
             (
                 "設定ダイアログのタブ",
@@ -211,7 +211,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
 /// `open_settings` notice explains why the shipped Ctrl+, cannot be moved: the
 /// F1 help and the discard-recovery hint promise that chord (L01).
 pub const KEYMAP_INPUT_HINT: &str =
-    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。escape / f1 は予約キーです。open_settings は Ctrl+, 固定で変更できません";
+    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。escape / f1 は予約キーです。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。";
 
 // ---------------------------------------------------------------------------
 // 空状態・読み込み
@@ -420,6 +420,22 @@ pub const STATUS_SEARCH_EMPTY_QUERY: &str = "検索語が空です";
 /// 「先に … してください」は拒否なので warning として色分けする。
 pub const STATUS_SEARCH_NOT_OPEN: &str = "先に Ctrl+F で検索を開いてください";
 
+/// OS がプロパティのメタデータ読み取りを拒否したときの通知（R02）。
+/// 以前は main.rs ローカルだったが、色分類表と一元化するためここへ移動した。
+pub const STATUS_ACCESS_DENIED: &str = "アクセスが拒否されました";
+/// ターミナル起動失敗の接頭辞（R03）。`STATUS_OP_FAILED_SUFFIX` と連結して
+/// 「ターミナルを起動できません」を組み立てる。
+pub const STATUS_TERMINAL_START_PREFIX: &str = "ターミナルを起動";
+/// 保存検索の保存失敗（上限超過）の接頭辞（R04）。動的な `{name}` が後続するため、
+/// 接頭辞自体を error マーカーとして登録する。
+pub const STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX: &str = "検索を保存できませんでした: ";
+/// 保存検索の上限拒否に添える理由と復帰導線（R04）。
+pub const STATUS_SAVED_SEARCH_CAP_HINT: &str =
+    "（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）";
+/// ブックマークラベルの設定失敗の接頭辞（R05）。動的なパスが後続するため、
+/// 接頭辞自体を error マーカーとして登録する。
+pub const STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX: &str = "ラベルを設定できませんでした: ";
+
 /// 表示層の優先順位（高い順）。狭いステータスバーでは後ろから省略する。
 /// 実行時のスロットではなく、競合時に参照する規約データ（r5-render-09）。
 /// `main.rs` の二次スロット省略ヘルパーがこの長さと末尾（"監視状態"）を
@@ -501,7 +517,8 @@ mod tests {
         assert!(KEYMAP_INPUT_HINT.contains("open_preview ctrl+shift+p"));
         assert!(KEYMAP_INPUT_HINT.contains("unbind アクション名"));
         assert!(KEYMAP_INPUT_HINT.contains("escape / f1"));
-        assert!(KEYMAP_INPUT_HINT.contains("open_settings は Ctrl+, 固定で変更できません"));
+        assert!(KEYMAP_INPUT_HINT
+            .contains("open_settings は Ctrl+, 固定で変更できません（unbind も不可）"));
     }
 
     #[test]
@@ -584,6 +601,13 @@ mod tests {
             "{dialog}"
         );
         assert!(dialog.contains("検索"), "{dialog}");
+        // R07: the dialog search covers key names too, not just setting labels.
+        assert!(dialog.contains("キー名でも検索可"), "{dialog}");
+        // R11: Esc cancellation warns when unsaved changes would be discarded.
+        assert!(
+            dialog.contains("未保存変更時は破棄され通知されます"),
+            "{dialog}"
+        );
         let tabs = find("設定ダイアログのタブ").expect("settings tab keys must be in F1 help");
         assert!(tabs.contains("Ctrl+Tab"), "{tabs}");
         assert!(tabs.contains("Ctrl+Shift+Tab"), "{tabs}");
@@ -855,6 +879,12 @@ mod tests {
             STATUS_SEARCH_EMPTY_QUERY,
             STATUS_SEARCH_NOT_OPEN,
             STATUS_THEME_CHANGED_PREFIX,
+            // R02〜R05: strings.rs へ集約した拒否・失敗文言。
+            STATUS_ACCESS_DENIED,
+            STATUS_TERMINAL_START_PREFIX,
+            STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
+            STATUS_SAVED_SEARCH_CAP_HINT,
+            STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
         }
@@ -905,6 +935,19 @@ mod tests {
             ),
             ("STATUS_TRASH_ALL_FAILED", STATUS_TRASH_ALL_FAILED, "error"),
             ("STATUS_RESTORE_FAILED", STATUS_RESTORE_FAILED, "error"),
+            // R02: OS によるアクセス拒否は concrete failure なので error(red)。
+            ("STATUS_ACCESS_DENIED", STATUS_ACCESS_DENIED, "error"),
+            // R04 / R05: 動的な値を連結する失敗接頭辞も error(red)。
+            (
+                "STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX",
+                STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
+                "error",
+            ),
+            (
+                "STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX",
+                STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+                "error",
+            ),
             // Q02: P08 の「できません」拒否は STATUS_OP_FAILED_SUFFIX と同じ
             // 文言を含むため error(red)。main.rs の error マーカーにも明示登録済み。
             (
@@ -1052,7 +1095,9 @@ mod tests {
                     // N08: 上限拒否の接頭辞（「タブは最大 {n} 個までです」）。
                     || message.contains("最大")
                     // P03: 事前操作を求める案内（「先に Ctrl+F で … してください」）。
-                    || message.contains("ください"),
+                    || message.contains("ください")
+                    // R02: OS による拒否（「アクセスが拒否されました」）。
+                    || message.contains("拒否されました"),
                 "{name} is not refusal-worded: {message}"
             );
             assert!(
@@ -1178,6 +1223,24 @@ mod tests {
             .contains(STATUS_KEYMAP_NO_UNBIND_PREFIX));
         assert!(format!("保存検索{STATUS_NOT_FOUND_SUFFIX}: foo").contains(STATUS_NOT_FOUND_SUFFIX));
         assert!(format!("3{STATUS_MISSING_COUNT_SUFFIX}").contains(STATUS_MISSING_COUNT_SUFFIX));
+    }
+
+    #[test]
+    fn newly_centralized_failure_words_keep_their_wording() {
+        // R02〜R05: strings.rs へ集約した文言が従来の表示と一致することを固定する。
+        assert_eq!(STATUS_ACCESS_DENIED, "アクセスが拒否されました");
+        assert_eq!(
+            format!("{STATUS_TERMINAL_START_PREFIX}{STATUS_OP_FAILED_SUFFIX}"),
+            "ターミナルを起動できません"
+        );
+        assert_eq!(
+            format!("{STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX}仕事{STATUS_SAVED_SEARCH_CAP_HINT}"),
+            "検索を保存できませんでした: 仕事（保存できる検索の上限に達しました。既存の保存検索を削除してから再試行してください）"
+        );
+        assert_eq!(
+            format!("{STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX}/tmp/target"),
+            "ラベルを設定できませんでした: /tmp/target"
+        );
     }
 
     #[test]
