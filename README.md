@@ -23,7 +23,7 @@ bash scripts/dev-setup.sh
 
 cd app
 cargo build          # 初回は依存込みで約 1m30s
-cargo test           # 494 tests
+cargo test           # 507 tests
 ./target/debug/gpui-file-explorer [ディレクトリ]
 ```
 
@@ -52,6 +52,9 @@ cargo test           # 494 tests
 
 設定画面は「外観 / ファイル / ショートカット / ターミナル / 個人化」の
 5 タブ構成で、「保存」で反映、「キャンセル」で破棄します。
+ラジオボタン・スイッチは Tab 巡回に含まれないため、外観タブは `t`（テーマ）/
+`v`（ビュー）、ファイルタブは `h`（隠しファイル）で直接切替できます
+（入力欄にフォーカスがあるときは無効）。各設定行の説明にも同じキーを記載しています。
 
 ```json
 { "version": 1, "keymap": [["open_preview", "ctrl+shift+p"]] }
@@ -59,16 +62,17 @@ cargo test           # 494 tests
 
 設定画面（「ショートカット」タブ）の入力欄は **`action=chord;`** 形式です。
 `;` 区切りで複数指定し（例: `open_preview=ctrl+shift+p;quit=ctrl+q;`）、
-保存時に入力欄の内容が上書き一覧を**すべて置き換え**ます。`unbind` 構文は
-なく、削除する場合は該当項目を入力欄から消して保存します。`Alt+K` の
-ダイアログは `action chord` / `unbind action` で 1 件ずつ操作します。
+保存時に入力欄の内容が上書き一覧を**すべて置き換え**ます。削除する場合は
+該当項目を入力欄から消すか、この欄でも **`unbind アクション名`** を入力して
+保存します（`Alt+K` ダイアログと同じ構文で 1 件ずつ解除できます）。
 
 - アクション名は `KeyAction` の snake_case 名（例: `open_preview` /
   `fuzzy_jump`）、コードは `ctrl` / `shift` / `alt` を `+` で連結した修飾キーと
   最後のキー名（例: `ctrl+shift+p`、`alt+left`、`f4`）。修飾キーの順番は任意です。
 - 同じアクション名は UI での登録時に置き換えられ最後の入力が優先されます
   （手編集で重複させた場合は最初の 1 件が有効。最大 64 件）。
-  `escape` / `f1` は予約キーで上書き不可。不正なコードや未知のアクション名は
+  `escape` / `f1` / `open_settings`（`Ctrl+,`）は予約キーで上書き不可
+  （`unbind` も不可）。不正なコードや未知のアクション名は
   無視されます。詳細は [app/README.md](app/README.md) の
   「キーマップの上書き」を参照してください。
 - 全キーバインドの一覧は [app/README.md](app/README.md) の「キーバインド」、
@@ -94,7 +98,7 @@ cargo test           # 494 tests
 
 ## 試作の検証結果（2026-11-11 実機 / テスト数は 2026-11-21 更新）
 
-- `cargo build` 警告 0 / `cargo test` **494 passed / 0 failed**
+- `cargo build` 警告 0 / `cargo test` **507 passed / 0 failed**
   （2026-11-21 時点。初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認

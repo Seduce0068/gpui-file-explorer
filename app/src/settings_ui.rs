@@ -401,9 +401,11 @@ const APPEARANCE_THEME_KEYWORDS: &[&str] = &[
     "システム",
     "配色",
     "外観",
-    // "アプリ全体の明るさを切り替えます"
+    // "アプリ全体の明るさを切り替えます（t でキーボードから切替）"
     "明るさ",
     "切り替え",
+    "キーボード",
+    "切替",
 ];
 const APPEARANCE_VIEW_KEYWORDS: &[&str] = &[
     "レイアウト",
@@ -412,21 +414,27 @@ const APPEARANCE_VIEW_KEYWORDS: &[&str] = &[
     "アイコン",
     "表示",
     "外観",
-    // "既定のビュー" / "詳細一覧またはアイコン一覧を選択します"
+    // "既定のビュー" / "詳細一覧またはアイコン一覧を選択します（v でキーボードから切替）"
     "ビュー",
     "既定のビュー",
     "詳細一覧",
     "選択",
+    "キーボード",
+    "切替",
 ];
 const FILES_HIDDEN_KEYWORDS: &[&str] = &[
     "隠しファイル",
     "hidden",
     "ファイル",
     "ドットファイル",
-    // "名前が . で始まるファイルとフォルダーを一覧に含めます"
+    // Visible on this row: "ファイルの表示" (section) / "隠しファイルを表示" (label).
+    "表示",
+    // "名前が . で始まるファイルとフォルダーを一覧に含めます（h でキーボードから切替）"
     "ドット",
     "フォルダー",
     "一覧",
+    "キーボード",
+    "切替",
 ];
 const FILES_SORT_KEYWORDS: &[&str] = &[
     "並び",
@@ -511,6 +519,20 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
 /// reserved action — `Ctrl+,` is fixed and cannot be rebound (or unbound)
 /// from either editor, so promising otherwise here would mislead the user.
 const SETTINGS_KEYMAP_INPUT_HINT: &str = "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。";
+
+/// Descriptions of the three rows with a bare-letter shortcut, plus the
+/// existing Alt+S row. Kept as constants so the visible hint can be regression
+/// tested without a GPUI window: F1 help lives in `strings.rs` (separate
+/// follow-up), so the row itself must tell the user the key that changes it.
+const APPEARANCE_THEME_DESCRIPTION: &str =
+    "アプリ全体の明るさを切り替えます（t でキーボードから切替）";
+const APPEARANCE_VIEW_DESCRIPTION: &str =
+    "詳細一覧またはアイコン一覧を選択します（v でキーボードから切替）";
+const FILES_HIDDEN_DESCRIPTION: &str =
+    "名前が . で始まるファイルとフォルダーを一覧に含めます（h でキーボードから切替）";
+const FILES_SORT_DESCRIPTION: &str =
+    "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）";
+
 /// Rows of the "主な既定のショートカット" list, kept as one constant so the
 /// Shortcuts tab, F1 help (`strings::HELP_SECTIONS`) and README cannot drift
 /// apart. The chord names are also searchable via `SHORTCUTS_DEFAULTS_KEYWORDS`
@@ -978,7 +1000,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                     .child(setting_row(
                         palette,
                         "配色",
-                        "アプリ全体の明るさを切り替えます",
+                        APPEARANCE_THEME_DESCRIPTION,
                         theme_radios,
                     ));
             }
@@ -989,7 +1011,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                     .child(setting_row(
                         palette,
                         "既定のビュー",
-                        "詳細一覧またはアイコン一覧を選択します",
+                        APPEARANCE_VIEW_DESCRIPTION,
                         view_radios,
                     ));
             }
@@ -1003,7 +1025,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                     .child(setting_row(
                         palette,
                         "隠しファイルを表示",
-                        "名前が . で始まるファイルとフォルダーを一覧に含めます",
+                        FILES_HIDDEN_DESCRIPTION,
                         hidden_switch,
                     ));
             }
@@ -1014,7 +1036,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                     .child(setting_row(
                         palette,
                         "既定の並び順",
-                        "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）",
+                        FILES_SORT_DESCRIPTION,
                         sort_radios,
                     ));
             }
@@ -1258,7 +1280,9 @@ mod tests {
         selected_index, settings_focus_order, settings_hidden_next, settings_row_is_visible,
         settings_row_shortcut, settings_theme_next, settings_view_next, tabs_matching_query,
         SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
-        SETTINGS_KEYMAP_INPUT_HINT, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
+        APPEARANCE_THEME_DESCRIPTION, APPEARANCE_VIEW_DESCRIPTION, FILES_HIDDEN_DESCRIPTION,
+        FILES_SORT_DESCRIPTION, SETTINGS_KEYMAP_INPUT_HINT, SHORTCUTS_DEFAULTS_KEYWORDS,
+        SHORTCUTS_DEFAULT_LINES,
     };
 
     #[test]
@@ -1519,6 +1543,36 @@ mod tests {
             tabs_matching_query("Alt+1〜5"),
             vec![SettingsTab::Shortcuts]
         );
+    }
+
+    #[test]
+    fn tabs_matching_query_finds_visible_表示_on_the_files_tab() {
+        // N07: "ファイルの表示" (section) and "隠しファイルを表示" (label) are
+        // rendered on the Files page, so searching that word must surface it.
+        // Appearance also matches through its own "表示レイアウト" section title.
+        let matched = tabs_matching_query("表示");
+        assert!(
+            matched.contains(&SettingsTab::Files),
+            "Files must surface for its visible 表示 wording: {matched:?}"
+        );
+        assert_eq!(matched, vec![SettingsTab::Appearance, SettingsTab::Files]);
+    }
+
+    #[test]
+    fn row_descriptions_advertise_their_bare_letter_shortcuts() {
+        // N04: F1 help lives in strings.rs (separate follow-up), so until then
+        // each row must name the key that changes it, just like the Alt+S row.
+        for (description, key) in [
+            (APPEARANCE_THEME_DESCRIPTION, "t"),
+            (APPEARANCE_VIEW_DESCRIPTION, "v"),
+            (FILES_HIDDEN_DESCRIPTION, "h"),
+        ] {
+            assert!(
+                description.contains(&format!("（{key} でキーボードから切替）")),
+                "row description must advertise {key}: {description}"
+            );
+        }
+        assert!(FILES_SORT_DESCRIPTION.contains("Alt+S でキーボードから切替"));
     }
 
     #[test]

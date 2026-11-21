@@ -376,6 +376,16 @@ mod image_tests {
     }
 
     #[test]
+    fn sniff_image_format_rejects_svg_with_an_invalid_utf8_header() {
+        // The SVG branch decodes only the leading KiB as UTF-8. Invalid bytes
+        // there must make the sniffer fall through to None, not guess a format
+        // from the remaining ASCII "<svg" text.
+        let mut bytes = vec![0xff, 0xfe, 0x80];
+        bytes.extend_from_slice(br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#);
+        assert_eq!(sniff_image_format(&bytes), None);
+    }
+
+    #[test]
     fn content_wins_over_a_wrong_extension() {
         let dir = scratch("mismatch");
         // A PNG that claims to be a .jpg.

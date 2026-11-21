@@ -3935,8 +3935,8 @@ mod terminal_command_tests {
 #[cfg(test)]
 mod keymap_settings_tests {
     use super::{
-        is_reserved_action, is_reserved_chord, sane_keymap_entry, Settings, MAX_CHORD_BYTES,
-        MAX_KEYMAP_OVERRIDES,
+        canonical_chord_key, is_reserved_action, is_reserved_chord, sane_keymap_entry, Settings,
+        MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -4087,6 +4087,48 @@ mod keymap_settings_tests {
             ],
             "equivalent chord spellings must collapse to the first entry"
         );
+    }
+
+    #[test]
+    fn keymap_validation_keeps_canonical_chord_key_fallbacks() {
+        // N16: chords with a modifier after the key or with no key at all pass
+        // the token sanity gate (no empty or repeated token) but fall back to
+        // the trimmed lowercase string as their dedupe key. They must be kept
+        // verbatim, and must not collapse into a normal chord such as ctrl+p.
+        let mut settings = Settings {
+            keymap: vec![
+                ("normal".to_string(), "ctrl+p".to_string()),
+                ("after_key".to_string(), "p+ctrl".to_string()),
+                ("no_key".to_string(), "ctrl+alt".to_string()),
+                ("upper".to_string(), " SHIFT+CTRL+Z ".to_string()),
+                ("fallback_twice".to_string(), "p+ctrl".to_string()),
+            ],
+            ..Settings::default()
+        };
+        settings.validate();
+        assert_eq!(
+            settings.keymap,
+            vec![
+                ("normal".to_string(), "ctrl+p".to_string()),
+                ("after_key".to_string(), "p+ctrl".to_string()),
+                ("no_key".to_string(), "ctrl+alt".to_string()),
+                ("upper".to_string(), "SHIFT+CTRL+Z".to_string()),
+            ],
+            "fallback keys stay verbatim; only an identical fallback dedupes"
+        );
+    }
+
+    #[test]
+    fn canonical_chord_key_falls_back_for_empty_tokens() {
+        // N16: the empty-token fallback is unreachable through validate() —
+        // sane_keymap_entry rejects such chords first — so cover it directly.
+        for chord in ["", "ctrl+", "+p", "ctrl++p"] {
+            assert_eq!(
+                canonical_chord_key(chord),
+                chord.trim().to_ascii_lowercase(),
+                "fallback key must be retained: {chord:?}"
+            );
+        }
     }
 
     #[test]

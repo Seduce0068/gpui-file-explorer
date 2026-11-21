@@ -2051,6 +2051,80 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn verify_transfer_detects_symlink_target_mismatch() {
+        // Both sides are symlinks, so verification must compare read_link()
+        // targets instead of following either link.
+        let dir = scratch("verify-link-target");
+        let src = dir.join("src");
+        let dest = dir.join("dest");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dest).unwrap();
+        std::os::unix::fs::symlink("target-a", src.join("link")).unwrap();
+        std::os::unix::fs::symlink("target-b", dest.join("link")).unwrap();
+
+        let err = verify_transfer(&src, &dest, &CancelFlag::new()).unwrap_err();
+        assert!(
+            matches!(err, OpError::InvalidTarget(ref message) if message.contains("リンク先")),
+            "unexpected error: {err:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_transfer_detects_kind_mismatch() {
+        let dir = scratch("verify-kind");
+        let src_dir = dir.join("src-dir");
+        let dest_file = dir.join("dest-file");
+        fs::create_dir(&src_dir).unwrap();
+        write(&dest_file, b"x");
+        let err = verify_transfer(&src_dir, &dest_file, &CancelFlag::new()).unwrap_err();
+        assert!(
+            matches!(err, OpError::InvalidTarget(ref message) if message.contains("種類")),
+            "unexpected error: {err:?}"
+        );
+
+        #[cfg(unix)]
+        {
+            // A symlink on one side and a regular file on the other is also a
+            // type mismatch; symlink_metadata must not follow the link.
+            let src_link = dir.join("src-link");
+            let dest_plain = dir.join("dest-plain");
+            std::os::unix::fs::symlink("nowhere", &src_link).unwrap();
+            write(&dest_plain, b"x");
+            let err = verify_transfer(&src_link, &dest_plain, &CancelFlag::new()).unwrap_err();
+            assert!(
+                matches!(err, OpError::InvalidTarget(ref message) if message.contains("種類")),
+                "unexpected error: {err:?}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_transfer_honours_a_cancelled_flag_before_touching_paths() {
+        // Cancellation is checked before symlink_metadata, so even paths that
+        // do not exist must report Cancelled rather than an I/O error.
+        let dir = scratch("verify-cancel");
+        let cancel = CancelFlag::new();
+        cancel.cancel();
+        for pair in [
+            (dir.join("a.txt"), dir.join("b.txt")),
+            (dir.join("missing-src"), dir.join("missing-dest")),
+        ] {
+            let err = verify_transfer(&pair.0, &pair.1, &cancel).unwrap_err();
+            assert!(
+                matches!(err, OpError::Cancelled),
+                "unexpected error: {err:?}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn batch_rename_renames_all_entries() {
         let dir = scratch("batch-rename");

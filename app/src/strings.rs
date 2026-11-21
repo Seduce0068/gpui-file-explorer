@@ -179,6 +179,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "ファイルタブで Alt+S により「既定の並び順」を切替",
             ),
             (
+                "設定ダイアログの行ショートカット",
+                "外観タブで t=配色 / v=既定のビュー、ファイルタブで h=隠しファイルを切替（修飾キーなし・入力欄フォーカス中は無効）",
+            ),
+            (
                 "設定ダイアログの操作",
                 "Tab / Shift+Tab で検索欄 → 入力欄 → キャンセル / 保存へフォーカス移動（循環）",
             ),
@@ -245,6 +249,14 @@ pub const STATUS_SEARCH_STALE: &str = "変更を検出しました（再検索�
 pub const STATUS_TABS_ONLY_DIRECTORY: &str = "タブはディレクトリ表示でのみ操作できます";
 pub const STATUS_BOOKMARKS_ONLY_DIRECTORY: &str =
     "ブックマークはディレクトリ表示でのみ操作できます";
+/// ディレクトリ表示以外のビューで機能を拒否するときの共通通知（N03）。
+/// 「〜できます / 〜使えます」は肯定形に見えるが、文脈上は拒否なので warning に分類する。
+pub const STATUS_PREVIEW_ONLY_DIRECTORY: &str = "プレビューはディレクトリ表示でのみ使えます";
+pub const STATUS_LOCATION_ONLY_DIRECTORY: &str = "パス入力はディレクトリ表示でのみ使えます";
+pub const STATUS_FUZZY_JUMP_ONLY_DIRECTORY: &str =
+    "クイックジャンプはディレクトリ表示でのみ使えます";
+pub const STATUS_PROPERTIES_ONLY_DIRECTORY: &str = "プロパティはディレクトリ表示でのみ表示できます";
+pub const STATUS_SEARCH_ONLY_DIRECTORY: &str = "検索はディレクトリ表示でのみ使えます";
 pub const STATUS_LAST_TAB: &str = "最後のタブは閉じられません";
 pub const STATUS_TAB_MOVED_LEFT: &str = "タブを左へ移動しました";
 pub const STATUS_TAB_MOVED_RIGHT: &str = "タブを右へ移動しました";
@@ -300,6 +312,10 @@ pub const STATUS_ERROR_PREFIX: &str = "エラー: ";
 pub const STATUS_PARTIAL_FAILURE_SUFFIX: &str = "しました（一部失敗: ";
 /// 成功項目が皆無のときの失敗接尾（`{verb}` に続く）。
 pub const STATUS_OP_FAILED_SUFFIX: &str = "できません";
+/// 「開けません」系の拒否接尾（N02）。`STATUS_OP_FAILED_SUFFIX` と違い、
+/// 「できません」を含まないため単独では成功 green に落ちていた。
+/// main.rs の warning マーカーとして登録し、全ての呼び出し側がこれを連結する。
+pub const STATUS_CANNOT_OPEN_SUFFIX: &str = "開けません";
 /// スキップ件数の括弧（`{status}` に続く）。
 #[allow(dead_code)]
 pub const STATUS_SKIPPED_PREFIX: &str = "（存在しない項目 ";
@@ -330,6 +346,9 @@ pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: 
 /// キーマップの `unbind` で解除するオーバーライドがなかったときの通知接頭辞。
 /// 動的な `{action}` を連結するため、接頭辞自体を色判定のマーカーとして登録する。
 pub const STATUS_KEYMAP_NO_UNBIND_PREFIX: &str = "解除する設定はありません: ";
+/// タブ数が上限に達したときの拒否通知の接頭辞（N08）。
+/// 動的な `{n}` を連結するため、M05 と同じく接頭辞自体を warning マーカーに登録する。
+pub const STATUS_MAX_TABS_PREFIX: &str = "タブは最大 ";
 /// 設定の失敗／退避（読み込み失敗と情報量を揃える）。
 pub const STATUS_SETTINGS_SAVE_FAILED: &str =
     "設定を保存できませんでした（権限や空き容量を確認して再試行してください）";
@@ -371,6 +390,11 @@ pub const THEME_LABEL_SYSTEM: &str = "システム";
 pub const STATUS_TRASH_ALL_FAILED: &str = "ゴミ箱へ移動できません";
 pub const STATUS_TRASH_PARTIAL_FAILED: &str = " 件失敗: ";
 pub const STATUS_RESTORE_FAILED: &str = "復元できません";
+/// 復元対象が空のときの拒否通知（N08）。`STATUS_TAB_RESTORE_EMPTY` と異なり
+/// 「できません / ありません」のどちらもマーカーに登録されていなかった。
+pub const STATUS_RESTORE_EMPTY: &str = "復元対象がありません";
+/// 空の検索語を実行したときの拒否通知（N09）。
+pub const STATUS_SEARCH_EMPTY_QUERY: &str = "検索語が空です";
 
 /// 表示層の優先順位（高い順）。狭いステータスバーでは後ろから省略する。
 /// 実行時のスロットではなく、競合時に参照する規約データ（r5-render-09）。
@@ -491,11 +515,25 @@ mod tests {
             .flat_map(|(_, entries)| *entries)
             .map(|(key, _)| *key)
             .collect();
-        for expected in ["Ctrl+Shift+L", "Ctrl+Space", "Ctrl+Shift+C"] {
+        for expected in [
+            "Ctrl+Shift+L",
+            "Ctrl+Space",
+            "Ctrl+Shift+C",
+            "設定ダイアログの行ショートカット",
+        ] {
             assert!(
                 keys.contains(&expected),
                 "{expected} must be listed in F1 help"
             );
+        }
+        let row_hint = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, entries)| *entries)
+            .find(|(key, _)| *key == "設定ダイアログの行ショートカット")
+            .map(|(_, text)| *text)
+            .expect("row shortcut help entry exists");
+        for token in ["t=配色", "v=既定のビュー", "h=隠しファイル"] {
+            assert!(row_hint.contains(token), "row hint must mention {token}");
         }
     }
 
@@ -665,6 +703,11 @@ mod tests {
             STATUS_SEARCH_STALE,
             STATUS_TABS_ONLY_DIRECTORY,
             STATUS_BOOKMARKS_ONLY_DIRECTORY,
+            STATUS_PREVIEW_ONLY_DIRECTORY,
+            STATUS_LOCATION_ONLY_DIRECTORY,
+            STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
+            STATUS_PROPERTIES_ONLY_DIRECTORY,
+            STATUS_SEARCH_ONLY_DIRECTORY,
             STATUS_LAST_TAB,
             STATUS_TAB_MOVED_LEFT,
             STATUS_TAB_MOVED_RIGHT,
@@ -691,6 +734,7 @@ mod tests {
             STATUS_ERROR_PREFIX,
             STATUS_PARTIAL_FAILURE_SUFFIX,
             STATUS_OP_FAILED_SUFFIX,
+            STATUS_CANNOT_OPEN_SUFFIX,
             STATUS_SKIPPED_PREFIX,
             STATUS_SKIPPED_SUFFIX,
             STATUS_CANCELLED,
@@ -706,6 +750,7 @@ mod tests {
             STATUS_OPENED_DEFAULT_SUFFIX,
             STATUS_REVEALED_PREFIX,
             STATUS_KEYMAP_NO_UNBIND_PREFIX,
+            STATUS_MAX_TABS_PREFIX,
             STATUS_SETTINGS_SAVE_FAILED,
             STATUS_SETTINGS_READ_ONLY,
             STATUS_SETTINGS_DISCARDED,
@@ -728,6 +773,8 @@ mod tests {
             STATUS_TRASH_NO_SORT,
             STATUS_TRASH_PARTIAL_FAILED,
             STATUS_RESTORE_FAILED,
+            STATUS_RESTORE_EMPTY,
+            STATUS_SEARCH_EMPTY_QUERY,
             STATUS_THEME_CHANGED_PREFIX,
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
@@ -812,8 +859,51 @@ mod tests {
             ),
             ("STATUS_UNDO_EMPTY", STATUS_UNDO_EMPTY, "warning"),
             ("STATUS_REDO_EMPTY", STATUS_REDO_EMPTY, "warning"),
+            // N02: 「開けません」は「できません」を含まない拒否接尾なので、
+            // 単独では成功 green に落ちていた。warning として登録する。
+            (
+                "STATUS_CANNOT_OPEN_SUFFIX",
+                STATUS_CANNOT_OPEN_SUFFIX,
+                "warning",
+            ),
+            // N03: ディレクトリ表示でしか使えない機能の拒否通知。
+            (
+                "STATUS_PREVIEW_ONLY_DIRECTORY",
+                STATUS_PREVIEW_ONLY_DIRECTORY,
+                "warning",
+            ),
+            (
+                "STATUS_LOCATION_ONLY_DIRECTORY",
+                STATUS_LOCATION_ONLY_DIRECTORY,
+                "warning",
+            ),
+            (
+                "STATUS_FUZZY_JUMP_ONLY_DIRECTORY",
+                STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
+                "warning",
+            ),
+            (
+                "STATUS_PROPERTIES_ONLY_DIRECTORY",
+                STATUS_PROPERTIES_ONLY_DIRECTORY,
+                "warning",
+            ),
+            (
+                "STATUS_SEARCH_ONLY_DIRECTORY",
+                STATUS_SEARCH_ONLY_DIRECTORY,
+                "warning",
+            ),
+            // N08: 動的な件数を含む上限拒否と、空の復元対象。
+            ("STATUS_MAX_TABS_PREFIX", STATUS_MAX_TABS_PREFIX, "warning"),
+            ("STATUS_RESTORE_EMPTY", STATUS_RESTORE_EMPTY, "warning"),
+            // N09: 空の検索語は検索を実行しない拒否なので warning。
+            (
+                "STATUS_SEARCH_EMPTY_QUERY",
+                STATUS_SEARCH_EMPTY_QUERY,
+                "warning",
+            ),
         ];
-        // L06 の指摘で main.rs 側への登録が必要な定数名（重複・脱落を防止）。
+        // L06 / N02 / N03 / N08 / N09 の指摘で main.rs 側への登録が必要な定数名
+        // （重複・脱落を防止）。全て warning として分類されなければならない。
         const PENDING_WARNING_MARKERS: &[&str] = &[
             "STATUS_TABS_ONLY_DIRECTORY",
             "STATUS_BOOKMARKS_ONLY_DIRECTORY",
@@ -823,6 +913,15 @@ mod tests {
             "STATUS_TAB_RESTORE_EMPTY",
             "STATUS_UNDO_EMPTY",
             "STATUS_REDO_EMPTY",
+            "STATUS_CANNOT_OPEN_SUFFIX",
+            "STATUS_PREVIEW_ONLY_DIRECTORY",
+            "STATUS_LOCATION_ONLY_DIRECTORY",
+            "STATUS_FUZZY_JUMP_ONLY_DIRECTORY",
+            "STATUS_PROPERTIES_ONLY_DIRECTORY",
+            "STATUS_SEARCH_ONLY_DIRECTORY",
+            "STATUS_MAX_TABS_PREFIX",
+            "STATUS_RESTORE_EMPTY",
+            "STATUS_SEARCH_EMPTY_QUERY",
         ];
         // STATUS_DROP_SAME_DIRECTORY（「同じフォルダのためコピーしません」）は
         // 操作の拒否ではなくコピー不要の情報通知として green のまま（L06 対象外）。
@@ -838,7 +937,11 @@ mod tests {
             assert!(
                 message.contains("ません")
                     || message.contains("のみ")
-                    || message.contains("未対応"),
+                    || message.contains("未対応")
+                    // N09: 空入力の拒否（「検索語が空です」）。
+                    || message.contains("空です")
+                    // N08: 上限拒否の接頭辞（「タブは最大 {n} 個までです」）。
+                    || message.contains("最大"),
                 "{name} is not refusal-worded: {message}"
             );
             assert!(
@@ -957,9 +1060,58 @@ mod tests {
         assert_eq!(STATUS_KEYMAP_NO_UNBIND_PREFIX, "解除する設定はありません: ");
         assert_eq!(STATUS_NOT_FOUND_SUFFIX, "が見つかりません");
         assert_eq!(STATUS_MISSING_COUNT_SUFFIX, " 件は既に存在しません");
+        // N08: 件数を連結する上限拒否も、接頭辞自体を warning マーカーにする。
+        assert_eq!(STATUS_MAX_TABS_PREFIX, "タブは最大 ");
+        assert!(format!("{STATUS_MAX_TABS_PREFIX}8 個までです").contains(STATUS_MAX_TABS_PREFIX));
         assert!(format!("{STATUS_KEYMAP_NO_UNBIND_PREFIX}open_preview")
             .contains(STATUS_KEYMAP_NO_UNBIND_PREFIX));
         assert!(format!("保存検索{STATUS_NOT_FOUND_SUFFIX}: foo").contains(STATUS_NOT_FOUND_SUFFIX));
         assert!(format!("3{STATUS_MISSING_COUNT_SUFFIX}").contains(STATUS_MISSING_COUNT_SUFFIX));
+    }
+
+    #[test]
+    fn refusal_suffixes_and_empty_notices_have_canonical_wording() {
+        // N02 / N08 / N09: マーカーとして登録する文言をここで固定する。
+        assert_eq!(STATUS_CANNOT_OPEN_SUFFIX, "開けません");
+        assert!(!STATUS_CANNOT_OPEN_SUFFIX.contains(STATUS_OP_FAILED_SUFFIX));
+        assert_eq!(STATUS_RESTORE_EMPTY, "復元対象がありません");
+        assert_eq!(STATUS_SEARCH_EMPTY_QUERY, "検索語が空です");
+    }
+
+    #[test]
+    fn only_directory_refusals_share_canonical_wording() {
+        // N03: 5 つのインライン拒否を定数化し、表現の揺れを防ぐ。
+        assert_eq!(
+            STATUS_PREVIEW_ONLY_DIRECTORY,
+            "プレビューはディレクトリ表示でのみ使えます"
+        );
+        assert_eq!(
+            STATUS_LOCATION_ONLY_DIRECTORY,
+            "パス入力はディレクトリ表示でのみ使えます"
+        );
+        assert_eq!(
+            STATUS_PROPERTIES_ONLY_DIRECTORY,
+            "プロパティはディレクトリ表示でのみ表示できます"
+        );
+        assert_eq!(
+            STATUS_SEARCH_ONLY_DIRECTORY,
+            "検索はディレクトリ表示でのみ使えます"
+        );
+        // クイックジャンプの表示名は `FUZZY_JUMP_LABEL` と常に一致させる。
+        assert_eq!(
+            STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
+            format!("{FUZZY_JUMP_LABEL}はディレクトリ表示でのみ使えます")
+        );
+        // いずれも「できません」を含まないため、マーカー登録が必須である。
+        for message in [
+            STATUS_PREVIEW_ONLY_DIRECTORY,
+            STATUS_LOCATION_ONLY_DIRECTORY,
+            STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
+            STATUS_PROPERTIES_ONLY_DIRECTORY,
+            STATUS_SEARCH_ONLY_DIRECTORY,
+        ] {
+            assert!(message.contains("ディレクトリ表示でのみ"), "{message}");
+            assert!(!message.contains(STATUS_OP_FAILED_SUFFIX), "{message}");
+        }
     }
 }

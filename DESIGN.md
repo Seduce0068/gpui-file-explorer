@@ -120,7 +120,10 @@
 `Alt+Shift+T` で Dark → Light → System を循環、選択が `system` のときは
 OS の外観を監視して実効テーマを追従する。設定オーバーレイの「外観」タブ
 からも 3 値を選択できる（§8.2）。
-未実装はサムネイルと完全削除（後者は安全則で意図的に禁止）のみ。
+未実装はサムネイルと完全削除（後者は安全則で意図的に禁止）だけではありません。
+検索結果のソース表示、OS のファイルクリップボード連携、空き領域の右クリック
+メニューなども残っており、一覧は [app/README.md](app/README.md) の
+「今後の候補」を参照してください。
 
 ---
 
@@ -1002,7 +1005,7 @@ app/
 | 性能 | 1k/10k 件の初回表示・スクロール・監視反映 | 手動 + `date`/スクショ + `/proc/<pid>/status` | △（1k のみ） |
 
 **as-built スナップショット（2026-11-21 実行、現在値は README / 実行結果を参照）**:
-単体テストは `cargo test --all-targets --locked` が 494 passed / 0 failed（app）。
+単体テストは `cargo test --all-targets --locked` が 507 passed / 0 failed（app）。
 数値は 2026-11-21 実行の as-built スナップショット（README.md / app/README.md の cargo test 欄と一致）。
 実機 GUI は KWin D-Bus + XDG Portal で起動・描画・監視・ゴミ箱を確認済み。
 `DISPLAY=:1 WAYLAND_DISPLAY=wayland-0` + spectacle + kdotool でスクショ取得可だが、
@@ -1173,7 +1176,9 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 7. **trash 5.3 の KDE/Wayland 実挙動とネットワーク FS での失敗型**（エラー型・パス）。⚠ 実機で一時ファイル削除を確認。
 8. **IME（fcitx5/mozc）でのリネーム/パス入力**（P1。Linux Wayland 実装は ✅ ソース確認だが実機未検証）。
 9. **Windows/macOS 全般**（ビルド・動作・長パス・大小文字・NFD・Recycle Bin・NSWorkspace）。⚠ CI ビルド以外未検証。
-10. **10 万件ディレクトリの実測性能**（未計測）。P2 の 2 パス方式・background ソートの要否をここで判断。
+10. **10 万件ディレクトリの実測性能**（主要項目は実測済み:
+    [`notes/perf-baseline.md`](notes/perf-baseline.md)）。P2 の 2 パス方式・
+    background ソートの要否をここで判断（200 MB 目標は未達）。
 11. **gpui-kit `open_window` が返す Root のプラグイン（ダイアログ/通知）が component 機能付きで有効か**（✅ ソース: `gpui_kit::open_window` は `base::Root::new` で包み、`gpui_kit::init` が `gpui_component::init` を呼ぶ。⚠ 実行時は未検証）。
 12. **`ClipboardItem::new_string` でコピーしたパスが KDE の他アプリ（Dolphin 等）に期待通り貼り付くか**（テキストとしては動く想定 ⚠）。
 13. **日本語ファイル名（CJK）の描画・フォント**（POC は ASCII のみ確認。Noto Sans CJK JP 等の明示指定要否 ⚠）。
