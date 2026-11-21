@@ -71,7 +71,8 @@ status: current
 - [x] **F6-16** 検索結果の右クリックが `self.cwd` に適用される — 対応: 7286eb6 (文書化、設計判断で現状維持)
 - [x] **F6-17** 監視の世代/cwd ガード欠如・抑制窓のイベント破棄 — 対応: 現行コードで確認済み (cwd ガードあり)
 - [x] **F6-18** UI スレッド上の同期ファイル I/O — 対応: 作業ツリー（background_spawn 化）
-- [x] **F6-19** エラー型の平坦化と分断（`FsError`/`OpError`/`String`） — 対応: 作業ツリー（共通 AppError）
+- [x] **F6-19** エラー型の平坦化と分断（`FsError`/`OpError`/`String`）
+  対応: 作業ツリー（共通 AppError）
 - [x] **F6-20** 設定スキーマ検証・上限・マイグレーションの不足 — 対応: 4268167
 - [x] **F6-21** 設定の並列更新と保存失敗の非通知 — 対応: 2bace24
 - [x] **F6-22** 検索／プレビューの鮮度・性能・形式判定 — 対応: 現行コードで確認済み (二重サイズガード)
@@ -90,7 +91,8 @@ status: current
 - [x] **F6-33** ドラッグ&ドロップとゴミ箱ビュー操作の不足 — 対応: 作業ツリー（内部 DnD / trash キー導線）
 - [x] **F6-34** ワークフロー改善（プレビュー連続移動、新タブで開く、即命名） — 対応: 作業ツリー
 - [x] **F6-35** キーボード／ダイアログの細部 — 対応: 既にトグル実装済みを確認
-- [x] **F6-36** エラー・ステータスメッセージの情報量と競合 — 対応: ad5949c（定数と共存ルール、呼び出し側は 44 箇所を定数へ移行済み（aeb687c））
+- [x] **F6-36** エラー・ステータスメッセージの情報量と競合
+  対応: ad5949c（定数と共存ルール、呼び出し側は 44 箇所を定数へ移行済み（aeb687c））
 - [x] **F6-37** 作業効率ロードマップ — 転送後検証と一括リネーム API を実装。ターミナル起動は F6-50 へ分離。
 - [x] **F6-38** 個人化ロードマップ — データモデル完了（保存検索 / ブックマークラベル、11テスト）。UI 配線は F6-49 へ分離。
 
@@ -581,22 +583,26 @@ status: current
 
 ### 優先度: 高（ループ R2・confirmed）
 
-- [ ] **F01** 設定検証エラーがステータスバーで緑（成功色）表示 — main.rs:10257
-- [ ] **F02** 設定ダイアログに Enter 保存のキーボード経路なし — settings_ui.rs:272
-- [ ] **F03** 設定再オープン時に保留フォーカス復元が検索欄から焦点を奪う — main.rs:9818
-- [ ] **F04** read_only が設定画面以外の書き込みパスで成功通知になる — main.rs:509
+- [x] **F01** 設定検証エラーがステータスバーで緑（成功色）表示 — main.rs:10257 — 対応: loop4-core
+- [x] **F02** 設定ダイアログに Enter 保存のキーボード経路なし — settings_ui.rs:272 — 対応: loop4-core
+- [x] **F03** 設定再オープン時に保留フォーカス復元が検索欄から焦点を奪う — main.rs:9818 — 対応: loop4-core
+- [x] **F04** read_only が設定画面以外の書き込みパスで成功通知になる — main.rs:509 — 対応: loop4-save
 
 ### 優先度: 中（ループ R2）
 
-- [ ] **F05** set_sort 保存失敗時に並び順がロールバックされない — main.rs:4628
-- [ ] **F06** サイドバー幅が DESIGN/review-report で 200/214px のまま — DESIGN.md:152, review-report.md:774
-- [ ] **F07** README CI run が古い（43734 vs 44063）— README.md:175
-- [ ] **F08** Windows cargo check 警告数が README 0 / review-report 2 で矛盾 — README.md:139
-- [ ] **F09** 初回実機検証 36 件は一次記録 35 件と矛盾 — README.md:97
-- [ ] **F10** DESIGN §8.2 配色契約が独自パレット実装と乖離 — DESIGN.md:869
-- [ ] **F11** 古いコメント群（共通フッタ/ロールバック2経路） — main.rs:517,10254
-- [ ] **F12** set_prefer_dark の早期リターン/非入れ替え分岐が無テスト — system_icons.rs:198,398
-- [ ] **F13** bookmark_label_is_settable の上限ちょうどが無テスト — main.rs:566
+- [x] **F05** set_sort 保存失敗時に並び順がロールバックされない — main.rs:4628 — 対応: loop4-save
+- [x] **F06** サイドバー幅が DESIGN/review-report で 200/214px のまま
+  DESIGN.md:152, review-report.md:774 — 対応: loop4-docs
+- [x] **F07** README CI run が古い（43734 vs 44063）— README.md:175 — 対応: loop4-docs
+- [x] **F08** Windows cargo check 警告数が README 0 / review-report 2 で矛盾
+  README.md:139 — 対応: loop4-docs
+- [x] **F09** 初回実機検証 36 件は一次記録 35 件と矛盾 — README.md:97 — 対応: loop4-docs
+- [x] **F10** DESIGN §8.2 配色契約が独自パレット実装と乖離 — DESIGN.md:869 — 対応: loop4-docs
+- [x] **F11** 古いコメント群（共通フッタ/ロールバック2経路） — main.rs:517,10254 — 対応: loop4-core
+- [x] **F12** set_prefer_dark の早期リターン/非入れ替え分岐が無テスト
+  system_icons.rs:198,398 — 対応: loop4-docs
+- [x] **F13** bookmark_label_is_settable の上限ちょうどが無テスト
+  main.rs:566 — 対応: loop4-docs
 
 ### 優先度: 低（調査タスク）
 

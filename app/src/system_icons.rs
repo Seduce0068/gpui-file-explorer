@@ -537,6 +537,73 @@ mod tests {
     }
 
     #[test]
+    fn set_prefer_dark_same_value_false_is_a_no_op() {
+        let mut resolver = SystemIconResolver::new();
+        resolver.themes = vec![
+            "breeze".to_string(),
+            "breeze-dark".to_string(),
+            "hicolor".to_string(),
+        ];
+        let original = resolver.themes.clone();
+        resolver.cache.insert(("icon".to_string(), 16), None);
+
+        // A fresh resolver starts at false. Repeating false must hit the
+        // early return: no reorder, no flag change, no cache invalidation.
+        assert!(!resolver.prefer_dark);
+        resolver.set_prefer_dark(false);
+        assert_eq!(resolver.themes, original, "theme order must not change");
+        assert!(!resolver.prefer_dark);
+        assert_eq!(resolver.cache.len(), 1, "cache must survive a no-op");
+    }
+
+    #[test]
+    fn set_prefer_dark_without_breeze_themes_is_safe() {
+        let mut resolver = SystemIconResolver::new();
+        resolver.themes = vec![
+            "Adwaita".to_string(),
+            "hicolor".to_string(),
+            "custom".to_string(),
+        ];
+        let original = resolver.themes.clone();
+        resolver.cache.insert(("icon".to_string(), 16), None);
+
+        // `reorder_breeze_themes` returns early when either sibling is absent.
+        // The flag and cache still update, but the ladder must not move or
+        // panic (the old code indexed into the vector unconditionally).
+        resolver.set_prefer_dark(true);
+        assert_eq!(resolver.themes, original, "theme order must be untouched");
+        assert!(resolver.prefer_dark);
+        assert!(
+            resolver.cache.is_empty(),
+            "a real preference change still clears the cache"
+        );
+    }
+
+    #[test]
+    fn set_prefer_dark_already_dark_order_is_not_swapped_twice() {
+        let mut resolver = SystemIconResolver::new();
+        resolver.themes = vec![
+            "breeze-dark".to_string(),
+            "breeze".to_string(),
+            "hicolor".to_string(),
+        ];
+        let dark_order = resolver.themes.clone();
+
+        // Dark already outranks light: the swap branch must be skipped, so a
+        // repeated "prefer dark" call cannot flip the ladder back to light.
+        resolver.set_prefer_dark(true);
+        assert_eq!(resolver.themes, dark_order, "no double swap");
+        assert!(resolver.prefer_dark);
+
+        // Flipping to light swaps exactly once; re-enabling dark restores the
+        // original order without an additional swap.
+        resolver.set_prefer_dark(false);
+        assert_eq!(resolver.themes, vec!["breeze", "breeze-dark", "hicolor"]);
+        resolver.set_prefer_dark(true);
+        assert_eq!(resolver.themes, dark_order, "order must be restored");
+    }
+
+    #[test]
     fn resolver_caches_misses_by_name_and_size() {
         let mut resolver = SystemIconResolver::new();
         let missing = "definitely-not-a-real-icon-name-gpui-test";
