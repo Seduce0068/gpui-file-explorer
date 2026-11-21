@@ -839,3 +839,9 @@ AGENTS.md §2 の事前調査（crates.io の live status、ローカルキャ�
   （`debug = "line-tables-only"` / `release.strip = true`、
   `19b5f1d`）。tracing 導入と競合なく統合済み。
 - 最新コミットに対する CI run 44063705679 が **success**（8m17s、2026-11-17T19:27+09:00 完了）。
+
+## as-built 補足（2026-11-22）
+
+- F6-38 / F6-49 の保存検索（最大 50 件、検索バーのチップから呼び出し・削除）と
+  ブックマークラベル（右クリックの「ラベルを設定…」/「ラベルを削除」）は実装済み。
+  詳細は [app/README.md](app/README.md) の「再帰検索」を参照。

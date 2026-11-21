@@ -1087,22 +1087,22 @@ status: current
 
 ### 優先度: 中（ループ R22・confirmed）
 
-- [ ] **AA01** F5/変更なし reconcile 成功で再スキャン失敗がクリアされない
+- [x] **AA01** F5/変更なし reconcile 成功で再スキャン失敗がクリアされない — 対応: loop24-core（実バグ修正）
   — main.rs:3044,3585
-- [ ] **AA02** app/README ホットプラグ「未対応」が実装と矛盾
+- [x] **AA02** app/README ホットプラグ「未対応」が実装と矛盾 — 対応: loop24-ux
   — app/README.md:630
-- [ ] **AA03** 保存検索・ブックマークラベルが4文書に未反映
+- [x] **AA03** 保存検索・ブックマークラベルが4文書に未反映 — 対応: loop24-ux
   — app/README.md:143
-- [ ] **AA04** search_view_action_allowed の9分岐が未テスト
+- [x] **AA04** search_view_action_allowed の9分岐が未テスト — 対応: loop24-core
   — main.rs:293
-- [ ] **AA05** 設定検索キーマップ例（open_preview 等）が検索不能
+- [x] **AA05** 設定検索キーマップ例（open_preview 等）が検索不能 — 対応: loop24-ux
   — settings_ui.rs:616
 
 ### 優先度: 低（ループ R22）
 
-- [ ] **AA06** 監視更新件数 14→15 vs 12→13 が別 runs と未明示
+- [x] **AA06** 監視更新件数 14→15 vs 12→13 が別 runs と未明示 — 対応: loop24-ux
   — README.md:108 / app/README.md:473
-- [ ] **AA07** record_trashed_paths の非UTF-8分岐が未テスト — main.rs:2548
+- [x] **AA07** record_trashed_paths の非UTF-8分岐が未テスト — main.rs:2548 — 対応: loop24-core
 
 ### 優先度: 低（調査タスク）
 

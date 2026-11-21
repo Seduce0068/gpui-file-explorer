@@ -504,6 +504,14 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "入力",
     "unbind",
     "置き換え",
+    // AA05/M09: SETTINGS_KEYMAP_INPUT_HINT prints the example
+    // "open_preview=ctrl+shift+p; quit=ctrl+q". Users copy that wording into
+    // this search box, so every token must resolve to the Shortcuts tab
+    // instead of dead-ending. Lowercase chords match case-insensitively.
+    "open_preview",
+    "ctrl+shift+p",
+    "quit",
+    "ctrl+q",
 ];
 /// Searchable keywords of the "既定のショートカット" row group.
 ///
@@ -1911,6 +1919,25 @@ mod tests {
         assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("unbind も不可"));
         assert!(SETTINGS_KEYMAP_INPUT_HINT
             .contains("open_settings は Ctrl+, 固定で変更できません（unbind も不可）"));
+    }
+
+    #[test]
+    fn keymap_hint_examples_are_searchable() {
+        // AA05/M09: the example printed in SETTINGS_KEYMAP_INPUT_HINT must not
+        // dead-end in the settings search. Every token has to surface the
+        // Shortcuts tab so the wording users copy from the hint finds a row.
+        const EXAMPLES: &[&str] = &["open_preview", "ctrl+shift+p", "quit", "ctrl+q"];
+        let hint_lower = SETTINGS_KEYMAP_INPUT_HINT.to_lowercase();
+        for example in EXAMPLES {
+            assert!(
+                hint_lower.contains(example),
+                "hint must still show the example {example}"
+            );
+            assert!(
+                tabs_matching_query(example).contains(&SettingsTab::Shortcuts),
+                "keymap hint example {example} must surface the Shortcuts tab"
+            );
+        }
     }
 
     #[test]

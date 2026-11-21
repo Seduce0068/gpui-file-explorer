@@ -105,7 +105,7 @@ cargo test           # 全テスト（データ層・監視・P1 機能を含む
   （2026-11-21 時点。初回実機検証時は 35 件（M-1/2/3 修正後 36 件））
 - Wayland ネイティブ起動（stderr 0 行）。KWin D-Bus で
   `caption="GPUI File Explorer"`, `resourceClass="gpui-file-explorer"`, 1100x728 を確認
-- 起動中に外部からファイル作成 → 一覧が自動更新（14→15 件）
+- 起動中に外部からファイル作成 → 一覧が自動更新（14→15 件、出典: Lead 再検証）
 - 独立検証レポート: [notes/verify-report.md](notes/verify-report.md)（blocker なし。major 3 は修正済み）
 - Lead 再検証: [notes/lead-verify/SUMMARY.md](notes/lead-verify/SUMMARY.md)
 - 証拠画像: [postfix-after.png](notes/lead-verify/postfix-after.png)
@@ -143,6 +143,7 @@ bash packaging/linux/build-deb.sh --skip-build
   XDG Desktop Portal のスクリーンショットを組み合わせれば UI 状態のローカル検証は可能
   （詳細は [app/README.md](app/README.md) の「既知の制限」）。
 - P1 実装済み: 安全なファイル操作（`app/src/ops.rs`: 上書き禁止・symlink非追跡・キャンセル対応）、コピー/切り取り/貼り付け（`Ctrl+C`/`Ctrl+X`/`Ctrl+V`）、リネームダイアログ（F2、上書き拒否・失敗時は原名維持）、コピー/移動のバイト進捗表示（ステータスバー、80msスロットル）、複数選択（Ctrl/Shift/Ctrl+A）とバッチ操作（コピー/切り取り/ゴミ箱、件数付き確認）、ゴミ箱ビュー（一覧・復元）、視覚的な進捗バー（総バイト事前計算 + パーセント表示）、アイコングリッド表示（列数自動・設定永続化）、再帰検索（Ctrl+F、symlink非追跡・上限付き・キャンセル対応）、ボリューム（ドライブ）一覧（Linux /proc/mounts）、タブ（Ctrl+T/W/Tab、履歴保持）、最近使った場所（サイドバー、最大10件）、ドラッグ&ドロップ（OSからのコピー受信・フォルダ単位のドロップ先・OSへのドラッグアウト）、検索結果の絞り込み（種別・拡張子）、内容検索（行番号表示・バイナリ除外・上限付き）、ブックマーク（Ctrl+D、最大50件）、プロパティ表示（Ctrl+I、読み取り専用）、空状態・ローディング表示、キーボードヘルプ（F1）、タブ構成の永続化、プロパティのディレクトリサイズ計算（バックグラウンド・キャンセル可能）、種類（拡張子）でのソートと「種類」列、タブの並べ替え、検索履歴（チップから再利用）、パス直接入力（Ctrl+L）、テキスト/画像プレビュー（Space/F3、読み取り専用・上限付き・magic number 判定）、元に戻す/やり直す（Ctrl+Z、名前変更・ゴミ箱のみ）、検索結果の名前部分一致絞り込み（Ctrl+Shift+F）、閉じたタブの復元（Ctrl+Shift+T）を実装・テスト済み。`#![forbid(unsafe_code)]` を app 本体に適用。未実装: 検索結果のソース表示強化、OSファイルクリップボード連携（GPUI側未実装）
+  - as-built（F6-38/F6-49）: 保存検索（最大50件・チップから呼び出し/削除）とブックマークラベル（右クリックで設定/削除）も実装済み。
 - Windows / macOS の実機ビルド・実行は未検証（設計は `std::fs` / `dirs` / `trash` でポータブル）。
   Windows は `cargo check` レベルでは成功（警告は cfg 分岐由来の 2 件のみ。
   [review-report.md](review-report.md) の検証記録に記載）。macOS は

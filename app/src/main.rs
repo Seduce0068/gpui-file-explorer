@@ -269,6 +269,22 @@ fn clear_rescan_failure_status(current: &str) -> Option<String> {
     current.starts_with(STATUS_RESCAN_FAILED).then(String::new)
 }
 
+/// End the F6-36 RESCAN_FAILED hold after a successful directory read.
+///
+/// Both fresh-read paths go through here — the F5 `reload` success branch and
+/// the 10s `reconcile` success branch (including the no-fingerprint-change
+/// case) — so the two cannot drift apart. Only a held failure notice is
+/// replaced; every other status passes through untouched. Returns whether a
+/// notice was actually cleared, which lets callers/tests observe the change.
+fn clear_rescan_failure_after_successful_read(status: &mut String) -> bool {
+    if let Some(cleared) = clear_rescan_failure_status(status) {
+        *status = cleared;
+        true
+    } else {
+        false
+    }
+}
+
 /// Keys forwarded to the normal keymap while the search view is open and no
 /// search text input owns focus. Text editing keys stay with the query field;
 /// once focus moves to the result list, navigation, copy, F4 (terminal) and
@@ -2542,12 +2558,24 @@ impl PropertiesErrorReaction {
     }
 }
 
+/// Pure snapshot-mapping half of [`record_trashed_paths`].
+///
+/// Kept separate from the blocking trash listing so the byte-exact id mapping
+/// used by undo bookkeeping can be tested with synthetic non-UTF-8 paths: the
+/// real trash directory cannot be seeded deterministically in a unit test.
+fn trashed_ids_from_snapshot(
+    items: &[trash_view::TrashItem],
+    trashed: &[PathBuf],
+) -> Vec<(PathBuf, OsString)> {
+    trash_view::record_ids(items, trashed)
+}
+
 /// Resolve the trash ids of freshly trashed paths from a previously read
 /// listing. Blocking: call from the background executor only. An empty result
 /// (including a failed listing) leaves the undo entry empty, as before (F6-15).
 fn record_trashed_paths(trashed: &[PathBuf]) -> Vec<(PathBuf, OsString)> {
     trash_view::list()
-        .map(|items| trash_view::record_ids(&items, trashed))
+        .map(|items| trashed_ids_from_snapshot(&items, trashed))
         .unwrap_or_default()
 }
 
@@ -3043,6 +3071,10 @@ impl Explorer {
                 match result {
                     Ok(entries) => {
                         let needs_reload = this.apply_loaded(entries);
+                        // AA01(a): F5 is a fresh read as well. End the F6-36
+                        // RESCAN_FAILED hold here too, not only on reconcile;
+                        // the helper leaves other success notices untouched.
+                        clear_rescan_failure_after_successful_read(&mut this.status);
                         if needs_reload {
                             // Re-read after events that landed past this
                             // snapshot (finding 2). Bumps generation so this
@@ -3560,15 +3592,17 @@ impl Explorer {
                 ) {
                     return;
                 }
-                // A successful read clears a stale error overlay on both the
-                // changed and unchanged-fingerprint paths, and re-applies the
-                // freshly read listing so the cleared error list is refilled.
+                // A changed fingerprint, or a stale error overlay that must
+                // be dropped, re-applies the freshly read listing. When both
+                // flags are false there is nothing to rebuild, but the read
+                // itself still ended the RESCAN_FAILED hold (below).
                 // `Loading` is never touched here (guarded above), so an
                 // explicit reload that started after this read was dispatched
                 // still wins.
                 let clear_error = should_clear_error_on_reconcile(&this.load);
                 let changed = fingerprint(&entries) != this.fingerprint;
-                if should_apply_loaded_on_reconcile(changed, clear_error) {
+                let applied = should_apply_loaded_on_reconcile(changed, clear_error);
+                if applied {
                     // `apply_loaded` rebuilds the view and recomputes the
                     // fingerprint itself, but does not touch `load`; the
                     // explicit transition below is still needed to drop the
@@ -3581,10 +3615,16 @@ impl Explorer {
                     if needs_reload {
                         this.reload(cx);
                     }
-                    // Z14: a successful read ends the F6-36 RESCAN_FAILED hold.
-                    if let Some(cleared) = clear_rescan_failure_status(&this.status) {
-                        this.status = cleared;
-                    }
+                }
+                // AA01(b): this is a successful read even when the fingerprint
+                // did not change (changed=false, clear_error=false), so the
+                // clear must sit outside the apply guard above. Keeping it here
+                // ends the F6-36 hold on every successful reconcile read while
+                // leaving `load`/`entries` handling to the guarded branch.
+                let status_cleared = clear_rescan_failure_after_successful_read(&mut this.status);
+                // A no-change/no-clear tick still has nothing to render; avoid
+                // adding a 10s repaint just to run the status check.
+                if applied || status_cleared {
                     cx.notify();
                 }
             });
@@ -11448,30 +11488,31 @@ mod tests {
         bookmark_label_not_set_status, bookmark_label_rejection_reason,
         bookmark_label_set_rejection, bookmark_toggle_rejection, build_places, canonical_chord,
         chord_for_action, chords_collide, classify_cli, clear_dialog_error, clear_op_token,
-        clear_rescan_failure_status, format_chord, format_selected, fuzzy_candidates, fuzzy_score,
-        grid_columns_for_width, help_overrides_line, icon_button_text_color, install_op_token,
-        internal_drop_paths, join_status_notices, keymap_action_name, keymap_bind_caption,
-        keymap_chord_reserved, keymap_limit_status, keymap_unbind_caption, kind_color,
-        labeled_display_name, load_error_display_text, middle_click_tab_dir,
-        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
-        pending_rename_index, rank_fuzzy, read_properties_snapshot, reconcile_aware_status,
-        remove_keymap_override, saved_search_caption, saved_search_save_status,
-        search_filter_status, set_view_status, settings_discard_status, settings_read_only_status,
-        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
-        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
-        settings_validation_status, settings_write_needs_rollback, settings_write_status,
-        startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
-        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
+        clear_rescan_failure_after_successful_read, clear_rescan_failure_status, format_chord,
+        format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
+        help_overrides_line, icon_button_text_color, install_op_token, internal_drop_paths,
+        join_status_notices, keymap_action_name, keymap_bind_caption, keymap_chord_reserved,
+        keymap_limit_status, keymap_unbind_caption, kind_color, labeled_display_name,
+        load_error_display_text, middle_click_tab_dir, normalize_terminal_command, op_is_active,
+        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
+        read_properties_snapshot, reconcile_aware_status, remove_keymap_override,
+        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
+        settings_discard_status, settings_read_only_status, settings_row_key_is_bare,
+        settings_save_error_status, settings_save_status, settings_sort_next,
+        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
+        settings_write_needs_rollback, settings_write_status, startup_dir_from,
+        startup_save_failure_status, status_color, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
         transfer_progress_status, transfer_skip_notice, trash_batch, trash_delete_status,
         trash_key_action, trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
-        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
-        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
-        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers,
-        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, UndoAction,
-        ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX,
-        GRID_GAP_PX, GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX,
-        STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+        trashed_ids_from_snapshot, undo_missing_status, upsert_keymap_override, validate_cli_dir,
+        version_label, visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides,
+        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
+        Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction,
+        UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW,
+        GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY,
+        SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
         STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
         STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
         STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
@@ -11510,6 +11551,7 @@ mod tests {
         STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
         STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_INIT_FAILED,
     };
+    use crate::trash_view;
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -11719,6 +11761,119 @@ mod tests {
             "unrelated statuses must be left untouched"
         );
         assert_eq!(clear_rescan_failure_status(""), None);
+    }
+
+    /// Slice of `include_str!("main.rs")` spanning a unique item marker up to
+    /// the next item marker; keeps source assertions away from the test text.
+    fn source_region<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let from = source
+            .find(start)
+            .unwrap_or_else(|| panic!("missing source marker: {start}"));
+        let to = source[from..]
+            .find(end)
+            .map(|offset| from + offset)
+            .unwrap_or(source.len());
+        &source[from..to]
+    }
+
+    /// Byte index just past the brace closing the block opened at `open`.
+    fn braced_block_end(source: &str, open: usize) -> usize {
+        assert_eq!(source.as_bytes()[open], b'{');
+        let mut depth = 0usize;
+        for (offset, ch) in source[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.checked_sub(1).expect("unbalanced braces");
+                    if depth == 0 {
+                        return open + offset + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unterminated braced block");
+    }
+
+    // AA01: the shared helper mutates the real status string, not just returns
+    // a flag, and leaves every non-failure notice untouched.
+    #[test]
+    fn successful_read_helper_clears_only_held_rescan_failure() {
+        let mut failed = format!("{STATUS_RESCAN_FAILED}: permission denied");
+        assert!(clear_rescan_failure_after_successful_read(&mut failed));
+        assert_eq!(failed, "", "F6-36 hold ends at the next successful read");
+        assert!(!clear_rescan_failure_after_successful_read(&mut failed));
+
+        let mut ordinary = STATUS_CHANGED.to_string();
+        assert!(!clear_rescan_failure_after_successful_read(&mut ordinary));
+        assert_eq!(ordinary, STATUS_CHANGED);
+
+        let mut empty = String::new();
+        assert!(!clear_rescan_failure_after_successful_read(&mut empty));
+        assert_eq!(empty, "");
+    }
+
+    // AA01(a): F5 success is a fresh read too. `reload` cannot be driven
+    // headlessly (it needs a live GPUI Context), so pin the call site in source
+    // and exercise the exact status transition with the shared helper above.
+    #[test]
+    fn f5_reload_success_clears_the_held_rescan_failure() {
+        let source = include_str!("main.rs");
+        let reload = source_region(
+            source,
+            "    fn reload(&mut self, cx: &mut Context<Self>) {",
+            "    fn set_load_error(",
+        );
+        let ok = reload
+            .find("Ok(entries) => {")
+            .expect("reload success branch missing");
+        let err = reload[ok..]
+            .find("Err(error) => {")
+            .map(|offset| ok + offset)
+            .expect("reload error branch missing");
+        let ok_branch = &reload[ok..err];
+        assert!(
+            ok_branch.contains(concat!("clear_rescan_failure_", "after_successful_read")),
+            "F5 success must clear the held failure; Ok branch was:\n{ok_branch}"
+        );
+
+        let mut status = format!("{STATUS_RESCAN_FAILED}: permission denied");
+        assert!(clear_rescan_failure_after_successful_read(&mut status));
+        assert_eq!(status, "");
+    }
+
+    // AA01(b): a successful reconcile with an unchanged fingerprint has
+    // changed=false AND clear_error=false, so it never enters the
+    // `should_apply_loaded_on_reconcile` branch. The clear must therefore sit
+    // after that branch, not inside it.
+    #[test]
+    fn no_change_reconcile_success_clears_the_held_rescan_failure() {
+        use super::should_apply_loaded_on_reconcile;
+
+        let source = include_str!("main.rs");
+        let reconcile = source_region(
+            source,
+            "    fn reconcile(&mut self, cx: &mut Context<Self>) {",
+            "    fn spawn_watch_loop(",
+        );
+        let guard = reconcile
+            .find("if applied {")
+            .expect("reconcile apply guard missing");
+        let open = guard
+            + reconcile[guard..]
+                .find('{')
+                .expect("reconcile apply guard body missing");
+        let after_guard = &reconcile[braced_block_end(reconcile, open)..];
+        assert!(
+            after_guard.contains(concat!("clear_rescan_failure_", "after_successful_read")),
+            "a no-change successful reconcile must clear outside the apply guard; tail was:\n{after_guard}"
+        );
+
+        // The exact flag combination that used to skip the clear.
+        assert!(!should_apply_loaded_on_reconcile(false, false));
+        let mut status = format!("{STATUS_RESCAN_FAILED}: read failed");
+        assert!(clear_rescan_failure_after_successful_read(&mut status));
+        assert_eq!(status, "");
     }
 
     #[test]
@@ -12270,6 +12425,69 @@ mod tests {
             vec![PathBuf::from("/work/a.txt"), PathBuf::from("/work/b.txt")]
         );
         assert!(internal_drop_paths(&[], &destination).is_empty());
+    }
+
+    // AA07: `record_trashed_paths` wraps a blocking trash listing, so exercise
+    // its pure snapshot-mapping half with raw (invalid UTF-8) bytes and pin the
+    // wrapper's delegation in source. Losing bytes here would silently break
+    // undo: ids are compared as OsString, not lossy Strings.
+    #[cfg(unix)]
+    #[test]
+    fn record_trashed_paths_preserves_non_utf8_bytes_and_order() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let id_a = OsString::from_vec(b"/trash/info/a-\xff.trashinfo".to_vec());
+        let id_b = OsString::from_vec(b"/trash/info/b-\xfe.trashinfo".to_vec());
+        let path_a = PathBuf::from(OsString::from_vec(b"/tmp/\xff-a.txt".to_vec()));
+        let path_b = PathBuf::from(OsString::from_vec(b"/tmp/\xfe-b.txt".to_vec()));
+        let items = vec![
+            trash_view::TrashItem {
+                id: id_a.clone(),
+                name: OsString::from_vec(b"\xff-a.txt".to_vec()),
+                original_parent: PathBuf::from("/tmp"),
+                time_deleted: 100,
+            },
+            trash_view::TrashItem {
+                id: id_b.clone(),
+                name: OsString::from_vec(b"\xfe-b.txt".to_vec()),
+                original_parent: PathBuf::from("/tmp"),
+                time_deleted: 200,
+            },
+        ];
+
+        // Request b before a: caller order (not snapshot order) is preserved,
+        // and each returned id must be the exact original byte sequence.
+        let recorded = trashed_ids_from_snapshot(&items, &[path_b.clone(), path_a.clone()]);
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(
+            recorded[0].0.as_os_str().as_bytes(),
+            path_b.as_os_str().as_bytes()
+        );
+        assert_eq!(
+            recorded[0].1.as_os_str().as_bytes(),
+            id_b.as_os_str().as_bytes()
+        );
+        assert_eq!(
+            recorded[1].0.as_os_str().as_bytes(),
+            path_a.as_os_str().as_bytes()
+        );
+        assert_eq!(
+            recorded[1].1.as_os_str().as_bytes(),
+            id_a.as_os_str().as_bytes()
+        );
+        assert!(trashed_ids_from_snapshot(&items, &[PathBuf::from("/tmp/missing")]).is_empty());
+
+        // The blocking wrapper must use the exact mapper exercised above.
+        let source = include_str!("main.rs");
+        let wrapper = source_region(
+            source,
+            "fn record_trashed_paths(trashed: &[PathBuf])",
+            "fn internal_drop_paths(",
+        );
+        assert!(
+            wrapper.contains(concat!("trashed_ids_from_", "snapshot")),
+            "record_trashed_paths must route through the tested mapper: {wrapper}"
+        );
     }
 
     #[test]
@@ -13383,6 +13601,75 @@ mod tests {
         assert!(rebound.rebind(KeyAction::TrashSelected, "y", true, false, false));
         assert!(!search_view_key_reaches_keymap(
             &rebound, "y", true, false, false
+        ));
+    }
+
+    // AA04: every action in `search_view_action_allowed` must keep working
+    // while browsing results after a rebind to a key the hardcoded allowlist
+    // does not know. The earlier test only covered Copy (and OpenSettings via
+    // its default chord), leaving nine actions untested.
+    #[test]
+    fn search_view_every_allowed_action_reaches_keymap_when_rebound() {
+        use super::{
+            search_view_action_allowed, search_view_key_allowed, search_view_key_reaches_keymap,
+        };
+
+        // Unlisted single-letter chords. `rebind` refuses OpenSettings, so the
+        // eleventh allowed action is verified via its shipped Ctrl+, below.
+        let cases: &[(KeyAction, &str)] = &[
+            (KeyAction::MoveUp, "y"),
+            (KeyAction::MoveDown, "u"),
+            (KeyAction::PageUp, "i"),
+            (KeyAction::PageDown, "o"),
+            (KeyAction::SelectFirst, "p"),
+            (KeyAction::SelectLast, "n"),
+            (KeyAction::OpenSelected, "m"),
+            (KeyAction::OpenTerminal, "j"),
+            (KeyAction::Copy, "k"),
+            (KeyAction::Quit, "l"),
+        ];
+        assert_eq!(cases.len() + 1, 11, "all allowed actions must be covered");
+        for &(action, key) in cases {
+            assert!(
+                search_view_action_allowed(action),
+                "test table must only contain allowed actions: {action:?}"
+            );
+            let mut keymap = KeyMap::default_keymap();
+            assert!(
+                keymap.rebind(action, key, false, false, false),
+                "rebind {action:?} to {key} failed"
+            );
+            assert!(
+                !search_view_key_allowed(key, false, false),
+                "{key} must be unlisted so only the action path can forward it"
+            );
+            assert_eq!(keymap.resolve(key, false, false, false), action);
+            assert!(
+                search_view_key_reaches_keymap(&keymap, key, false, false, false),
+                "rebinding {action:?} to {key} must reach normal dispatch"
+            );
+        }
+
+        // The eleventh allowed action is deliberately not rebindable; its
+        // shipped chord must still reach normal dispatch (L04).
+        assert!(search_view_action_allowed(KeyAction::OpenSettings));
+        let mut settings_keymap = KeyMap::default_keymap();
+        assert!(!settings_keymap.rebind(KeyAction::OpenSettings, "y", false, false, false));
+        assert!(search_view_key_reaches_keymap(
+            &settings_keymap,
+            ",",
+            true,
+            false,
+            false
+        ));
+
+        // Contrast: a destructive action stays blocked even when rebound to
+        // the same unlisted key.
+        let mut rejected = KeyMap::default_keymap();
+        assert!(rejected.rebind(KeyAction::TrashSelected, "y", false, false, false));
+        assert!(!search_view_action_allowed(KeyAction::TrashSelected));
+        assert!(!search_view_key_reaches_keymap(
+            &rejected, "y", false, false, false
         ));
     }
 
