@@ -57,8 +57,9 @@ use crate::search::{
     ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
 };
 use crate::settings::{
-    next_theme_choice, resolve_theme, Settings, SettingsSaveError, TabSession, ThemeChoice,
-    ViewLayout, WindowBoundsState, MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES, MAX_TABS,
+    next_theme_choice, resolve_theme, ColumnPrefs, Settings, SettingsSaveError, TabSession,
+    ThemeChoice, ViewLayout, WindowBoundsState, COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH,
+    MAX_CHORD_BYTES, MAX_KEYMAP_OVERRIDES, MAX_TABS,
 };
 use crate::system_icons::SystemIconResolver;
 use crate::tabs::{Tab, Tabs};
@@ -2209,7 +2210,11 @@ fn build_places() -> Vec<Place> {
         ("ピクチャ", IconName::Image, dirs::picture_dir()),
         ("ミュージック", IconName::Music, dirs::audio_dir()),
         ("ビデオ", IconName::Video, dirs::video_dir()),
-        ("ルート", IconName::HardDrive, Some(PathBuf::from("/"))),
+        (
+            "ルート",
+            IconName::HardDrive,
+            Some(crate::model::root_path_for_platform()),
+        ),
     ];
     let mut places: Vec<Place> = entries
         .into_iter()
@@ -2978,6 +2983,170 @@ fn bookmark_toggle_rejection(path: &Path) -> Option<String> {
         None
     } else {
         Some(STATUS_BOOKMARK_NOT_PERSISTABLE.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NW07: list column preferences (pure helpers)
+// ---------------------------------------------------------------------------
+
+/// Persisted string key of a list column. Matches `SortKey`'s serde names and
+/// `settings::COLUMN_KEYS`.
+fn column_key(key: SortKey) -> &'static str {
+    match key {
+        SortKey::Name => "name",
+        SortKey::Kind => "kind",
+        SortKey::Size => "size",
+        SortKey::Modified => "modified",
+    }
+}
+
+fn column_from_key(key: &str) -> Option<SortKey> {
+    match key {
+        "name" => Some(SortKey::Name),
+        "kind" => Some(SortKey::Kind),
+        "size" => Some(SortKey::Size),
+        "modified" => Some(SortKey::Modified),
+        _ => None,
+    }
+}
+
+/// Visible columns in the stored display order. `Settings::validate` already
+/// removes unknown keys and duplicates; ignoring both here keeps the helper
+/// safe for callers that pass unvalidated in-memory prefs (duplicate header
+/// cells would reuse the same GPUI element id).
+fn visible_columns(prefs: &ColumnPrefs) -> Vec<SortKey> {
+    let mut columns: Vec<SortKey> = Vec::with_capacity(prefs.visible.len().min(4));
+    for key in &prefs.visible {
+        if let Some(column) = column_from_key(key) {
+            if !columns.contains(&column) {
+                columns.push(column);
+            }
+        }
+    }
+    columns
+}
+
+/// Effective width of one column, falling back to `default` when no valid
+/// override is stored. A `default` of `0.0` means "stretch" for the Name column
+/// (the header uses `flex_1` instead of a fixed width in that case).
+fn column_width(prefs: &ColumnPrefs, key: &str, default: f32) -> f32 {
+    prefs
+        .widths
+        .get(key)
+        .copied()
+        .filter(|width| width.is_finite() && (COLUMN_MIN_WIDTH..=COLUMN_MAX_WIDTH).contains(width))
+        .unwrap_or(default)
+}
+
+/// Header cell specification: `(column, width)` in render order. `None` width
+/// means `flex_1`. Testing this spec proves the default prefs still produce
+/// the exact historical cell sequence and widths.
+fn header_columns(prefs: &ColumnPrefs) -> Vec<(SortKey, Option<f32>)> {
+    visible_columns(prefs)
+        .into_iter()
+        .map(|key| {
+            let builtin = default_column_width(key).unwrap_or(0.0);
+            let width = column_width(prefs, column_key(key), builtin);
+            (key, (width > 0.0).then_some(width))
+        })
+        .collect()
+}
+
+/// Built-in widths, matching the historical header exactly. `None` keeps the
+/// Name column's `flex_1` behavior, so default prefs render byte-identically.
+fn default_column_width(key: SortKey) -> Option<f32> {
+    let width = crate::settings::default_column_width(column_key(key));
+    (width > 0.0).then_some(width)
+}
+
+#[cfg(test)]
+mod column_prefs_helpers_tests {
+    use super::{
+        column_from_key, column_key, column_width, default_column_width, header_columns,
+        visible_columns,
+    };
+    use crate::model::SortKey;
+    use crate::settings::ColumnPrefs;
+
+    #[test]
+    fn default_prefs_keep_the_historical_four_columns_and_widths() {
+        let prefs = ColumnPrefs::default();
+        assert_eq!(
+            visible_columns(&prefs),
+            vec![
+                SortKey::Name,
+                SortKey::Kind,
+                SortKey::Size,
+                SortKey::Modified
+            ]
+        );
+        for key in [
+            SortKey::Name,
+            SortKey::Kind,
+            SortKey::Size,
+            SortKey::Modified,
+        ] {
+            let builtin = default_column_width(key).unwrap_or(0.0);
+            assert_eq!(column_width(&prefs, column_key(key), builtin), builtin);
+        }
+        assert_eq!(default_column_width(SortKey::Name), None);
+        assert_eq!(default_column_width(SortKey::Kind), Some(90.0));
+        assert_eq!(default_column_width(SortKey::Size), Some(90.0));
+        assert_eq!(default_column_width(SortKey::Modified), Some(150.0));
+        // The exact cell sequence the old hard-coded header produced.
+        assert_eq!(
+            header_columns(&prefs),
+            vec![
+                (SortKey::Name, None),
+                (SortKey::Kind, Some(90.0)),
+                (SortKey::Size, Some(90.0)),
+                (SortKey::Modified, Some(150.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn visible_columns_follow_stored_order_and_skip_unknown_keys() {
+        let prefs = ColumnPrefs {
+            visible: vec![
+                "size".into(),
+                "future_key".into(),
+                "name".into(),
+                "modified".into(),
+            ],
+            widths: Default::default(),
+        };
+        assert_eq!(
+            visible_columns(&prefs),
+            vec![SortKey::Size, SortKey::Name, SortKey::Modified]
+        );
+        assert_eq!(column_from_key("kind"), Some(SortKey::Kind));
+        assert_eq!(column_from_key("future_key"), None);
+
+        // Duplicate ids would collide in GPUI's header cell element ids.
+        let duplicated = ColumnPrefs {
+            visible: vec!["size".into(), "size".into(), "name".into()],
+            widths: Default::default(),
+        };
+        assert_eq!(
+            visible_columns(&duplicated),
+            vec![SortKey::Size, SortKey::Name]
+        );
+    }
+
+    #[test]
+    fn column_width_uses_stored_override_and_rejects_bad_values() {
+        let mut prefs = ColumnPrefs::default();
+        prefs.widths.insert("name".into(), 240.0);
+        prefs.widths.insert("size".into(), 60.0);
+        prefs.widths.insert("kind".into(), f32::NAN);
+        prefs.widths.insert("modified".into(), 600.1);
+        assert_eq!(column_width(&prefs, "name", 0.0), 240.0);
+        assert_eq!(column_width(&prefs, "size", 90.0), 60.0);
+        assert_eq!(column_width(&prefs, "kind", 90.0), 90.0);
+        assert_eq!(column_width(&prefs, "modified", 150.0), 150.0);
+        assert_eq!(column_width(&prefs, "unrelated", 123.0), 123.0);
     }
 }
 
@@ -9392,7 +9561,8 @@ impl Explorer {
 
     fn sort_header(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
-        div()
+        let prefs = &self.settings.column_prefs;
+        let mut header = div()
             .flex()
             .items_center()
             .gap_2()
@@ -9403,11 +9573,14 @@ impl Explorer {
             .border_color(rgb(p.surface))
             .text_xs()
             .text_color(rgb(p.muted))
-            .child(div().w(px(18.0)))
-            .child(self.sort_header_cell(SortKey::Name, None, cx))
-            .child(self.sort_header_cell(SortKey::Kind, Some(90.0), cx))
-            .child(self.sort_header_cell(SortKey::Size, Some(90.0), cx))
-            .child(self.sort_header_cell(SortKey::Modified, Some(150.0), cx))
+            .child(div().w(px(18.0)));
+        // Default prefs yield exactly the historical four cells and widths;
+        // only customized prefs change the header. List rows are intentionally
+        // left untouched here (see the NW07 alignment follow-up note).
+        for (key, width) in header_columns(prefs) {
+            header = header.child(self.sort_header_cell(key, width, cx));
+        }
+        header
     }
 
     fn overlay(&self) -> Option<Div> {
@@ -9494,6 +9667,38 @@ impl Explorer {
         } else {
             this.system_icon_resolver.icon_path_for_entry(&entry, 16)
         };
+        // NW09: the previous icon element becomes the thumbnail's fallback,
+        // so a missing/corrupt image still renders exactly as before.
+        let icon_fallback = {
+            let system_icon_path = system_icon_path.clone();
+            move || -> AnyElement {
+                match system_icon_path.as_deref() {
+                    Some(path) => gpui_kit::img(path)
+                        .size(px(18.0))
+                        .with_fallback({
+                            let icon = icon;
+                            let icon_color = icon_color;
+                            move || {
+                                Icon::new(icon)
+                                    .text_color(rgb(icon_color))
+                                    .into_any_element()
+                            }
+                        })
+                        .into_any_element(),
+                    None => Icon::new(icon)
+                        .text_color(rgb(icon_color))
+                        .into_any_element(),
+                }
+            }
+        };
+        // The size guard matters: `gpui_kit::img` loads path resources with an
+        // unbounded `fs::read`, so apply preview.rs's 8 MiB cap here. Trash ids
+        // are not real image paths and are excluded explicitly.
+        let show_thumbnail = this.settings.show_thumbnails
+            && this.view != ViewSource::Trash
+            && !entry.is_dir
+            && entry.size <= preview::MAX_IMAGE_BYTES
+            && preview::is_thumbnailable(&entry.name_text, entry.is_symlink);
 
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_handle.focus(window, cx);
@@ -9631,21 +9836,18 @@ impl Explorer {
                 })
                 .context_menu(context_menu)
                 .child(
-                    div().w(px(18.0)).flex().justify_center().child(
-                        match system_icon_path.as_deref() {
-                            Some(path) => gpui_kit::img(path)
+                    div()
+                        .w(px(18.0))
+                        .flex()
+                        .justify_center()
+                        .child(if show_thumbnail {
+                            gpui_kit::img(entry.path.as_path())
                                 .size(px(18.0))
-                                .with_fallback(move || {
-                                    Icon::new(icon)
-                                        .text_color(rgb(icon_color))
-                                        .into_any_element()
-                                })
-                                .into_any_element(),
-                            None => Icon::new(icon)
-                                .text_color(rgb(icon_color))
-                                .into_any_element(),
-                        },
-                    ),
+                                .with_fallback(icon_fallback)
+                                .into_any_element()
+                        } else {
+                            icon_fallback()
+                        }),
                 )
                 .child(
                     // `tooltip` needs an interactive (Stateful) element, hence
@@ -9767,6 +9969,38 @@ impl Explorer {
         } else {
             this.system_icon_resolver.icon_path_for_entry(&entry, 48)
         };
+        // NW09: same decision as the list row, with the old icon element kept
+        // as the thumbnail fallback (and as the element for non-image files).
+        let icon_fallback = {
+            let system_icon_path = system_icon_path.clone();
+            move || -> AnyElement {
+                match system_icon_path.as_deref() {
+                    Some(path) => gpui_kit::img(path)
+                        .size(px(48.0))
+                        .with_fallback({
+                            let icon = icon;
+                            let icon_color = icon_color;
+                            move || {
+                                div()
+                                    .text_2xl()
+                                    .child(Icon::new(icon).text_color(rgb(icon_color)))
+                                    .into_any_element()
+                            }
+                        })
+                        .into_any_element(),
+                    None => div()
+                        .text_2xl()
+                        .child(Icon::new(icon).text_color(rgb(icon_color)))
+                        .into_any_element(),
+                }
+            }
+        };
+        let show_thumbnail = this.settings.show_thumbnails
+            && this.view != ViewSource::Trash
+            && !entry.is_dir
+            && entry.size <= preview::MAX_IMAGE_BYTES
+            && preview::is_thumbnailable(&entry.name_text, entry.is_symlink);
+
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_handle.focus(window, cx);
             let modifiers = event.modifiers();
@@ -9880,20 +10114,13 @@ impl Explorer {
                     .drag_over::<Vec<PathBuf>>(move |style, _, _, _| style.bg(rgb(drag_blue)))
                 })
                 .context_menu(context_menu)
-                .child(match system_icon_path.as_deref() {
-                    Some(path) => gpui_kit::img(path)
+                .child(if show_thumbnail {
+                    gpui_kit::img(entry.path.as_path())
                         .size(px(48.0))
-                        .with_fallback(move || {
-                            div()
-                                .text_2xl()
-                                .child(Icon::new(icon).text_color(rgb(icon_color)))
-                                .into_any_element()
-                        })
-                        .into_any_element(),
-                    None => div()
-                        .text_2xl()
-                        .child(Icon::new(icon).text_color(rgb(icon_color)))
-                        .into_any_element(),
+                        .with_fallback(icon_fallback)
+                        .into_any_element()
+                } else {
+                    icon_fallback()
                 })
                 .child(
                     div()
@@ -10083,8 +10310,11 @@ impl Explorer {
             );
             for (index, mount) in self.mounts.iter().enumerate() {
                 let active = self.view == ViewSource::Directory && mount.path == self.cwd;
-                let label = if mount.path == std::path::Path::new("/") {
-                    "ルート (/)".to_string()
+                // Root mounts use the OS-specific label (`/` on POSIX, the
+                // drive letter such as `C:` on Windows) instead of a
+                // hardcoded POSIX string.
+                let label = if crate::model::is_root_path(&mount.path) {
+                    crate::model::root_display_for_platform(&mount.path)
                 } else {
                     mount.path.display().to_string()
                 };
@@ -11118,6 +11348,7 @@ impl Explorer {
             SortKey::Modified => "modified",
         };
         state.set_sort_choice(sort_choice);
+        state.set_column_prefs(self.settings.column_prefs.clone());
         state.set_show_hidden(self.settings.show_hidden);
         state.observe_inputs(cx);
         // `observe_inputs` only watches the search box. The text editors never
@@ -11251,6 +11482,34 @@ impl SettingsUiHost for Explorer {
                     cx.notify();
                 }
             }
+            SettingsUiAction::SetColumnVisible { key, visible } => {
+                if let Some(state) = self.settings_ui.as_mut() {
+                    let next = crate::settings_ui::column_visibility(
+                        &state.column_prefs.visible,
+                        &key,
+                        visible,
+                    );
+                    if let Some(visible) = next {
+                        state.column_prefs.visible = visible;
+                        state.dirty = true;
+                        cx.notify();
+                    }
+                }
+            }
+            SettingsUiAction::MoveColumn { key, delta } => {
+                if let Some(state) = self.settings_ui.as_mut() {
+                    let next = crate::settings_ui::column_reordered(
+                        &state.column_prefs.visible,
+                        &key,
+                        delta,
+                    );
+                    if let Some(visible) = next {
+                        state.column_prefs.visible = visible;
+                        state.dirty = true;
+                        cx.notify();
+                    }
+                }
+            }
             // The GPUI text inputs own their value; only the dirty flag is ours.
             SettingsUiAction::SetTerminal(_) | SettingsUiAction::SetKeymap(_) => {
                 if let Some(state) = self.settings_ui.as_mut() {
@@ -11269,7 +11528,15 @@ impl SettingsUiHost for Explorer {
                 // what the next launch will load (D13).
                 let snapshot = self.settings.clone();
                 // Copy the form values out of the card before mutating settings.
-                let (terminal_raw, keymap_raw, theme_choice, view_choice, sort_choice, show_hidden) = {
+                let (
+                    terminal_raw,
+                    keymap_raw,
+                    theme_choice,
+                    view_choice,
+                    sort_choice,
+                    column_prefs,
+                    show_hidden,
+                ) = {
                     let Some(state) = self.settings_ui.as_ref() else {
                         return;
                     };
@@ -11279,6 +11546,7 @@ impl SettingsUiHost for Explorer {
                         state.theme_choice.clone(),
                         state.view_choice.clone(),
                         state.sort_choice.clone(),
+                        state.column_prefs.clone(),
                         state.show_hidden,
                     )
                 };
@@ -11379,6 +11647,12 @@ impl SettingsUiHost for Explorer {
                 // (and `dirs_first`) untouched instead of deriving a default
                 // from the chosen key.
                 self.settings.sort.key = sort_key;
+                // Re-run the persisted-value validation before writing: the UI
+                // only emits known keys and valid widths, but a defensive pass
+                // keeps the on-disk file canonical even for future callers.
+                let mut column_prefs = column_prefs;
+                column_prefs.validate();
+                self.settings.column_prefs = column_prefs;
                 self.settings.keymap = overrides;
                 self.keymap = KeyMap::from_settings(&self.settings);
 
@@ -12627,6 +12901,20 @@ mod tests {
         assert!(places
             .iter()
             .any(|place| place.label == "ルート" && place.exists));
+    }
+
+    #[test]
+    fn build_places_root_uses_the_platform_root() {
+        let places = build_places();
+        let root = places
+            .iter()
+            .find(|place| place.label == "ルート")
+            .expect("the ルート place is always present");
+        let expected = crate::model::root_path_for_platform();
+        assert_eq!(root.path.as_deref(), Some(expected.as_path()));
+        assert!(crate::model::is_root_path(
+            root.path.as_deref().expect("root path")
+        ));
     }
 
     #[test]

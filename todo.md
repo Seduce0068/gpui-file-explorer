@@ -1322,15 +1322,18 @@ status: current
 
 ### 優先度: 中（新要件・実装）
 
-- [ ] **NW05** Windows ドライブ列挙（GetLogicalDrives）とルート表現の OS 別化
+- [x] **NW05** Windows ドライブ列挙とルート表現 OS 別化 — 対応: impl-windrives
+  — 実 FFI は unsafe 禁止のため documented stub（要承認）
   — mounts.rs:155 / main.rs:2122 / R1-ARCH01
 - [ ] **NW06** OS ファイルアイコン抽象化（Windows: SHGetFileInfo / モバイル: バンドル asset）
   — system_icons.rs:160 / R1-ARCH01
-- [ ] **NW07** 列のカスタマイズ（表示/非表示・幅・並び）を Settings に永続化
+- [x] **NW07** 列のカスタマイズ — 対応: impl-columns
+  — ヘッダーは対応、行との整列はフォローアップ
   — main.rs:9246 / R1-UX01
 - [x] **NW08** コンテキストメニューをキーボードから開く — 対応: impl-ctxkey
   — Shift+F10 / Menu をバインド（E2E 実機確認は未実施）
-- [ ] **NW09** 一覧の画像サムネイル（preview.rs の安全則を流用、非同期 + LRU）
+- [x] **NW09** 一覧の画像サムネイル — 対応: impl-thumbs
+  — gpui-kit の async 読込＋キャッシュを再利用（独自 LRU はフォローアップ）
   — preview.rs:1 / R1-PRD01
 - [ ] **NW10** OS ファイルクリップボード相互運用（CF_HDROP / text-uri-list / 共有 Intent）
   — main.rs:2300 / R1-PRD01
@@ -1338,6 +1341,17 @@ status: current
   — main.rs:1246 / R1-ARCH01
 - [ ] **NW12** 日本語ファイル名の五十音順（ICU4X、オプトイン）
   — strings.rs:25 / R1-PRD01
+
+### 優先度: 中（新要件フォローアップ）
+
+- [ ] **NF01** 列カスタマイズ時にヘッダと行の列を整列させる（行描画を列ベースへ）
+  — NW07 の残作業 / impl-columns 報告
+- [ ] **NF02** Windows 実ドライブ列挙の FFI 実装（windows-sys 直接依存＋unsafe  Narrow scope のレビュー合意が必要）
+  — NW05 の documented stub を実装へ / AGENTS.md §15
+- [ ] **NF03** サムネイル設定の Switch を設定UIへ配線 + docs 更新
+  — NW09 のフォローアップ / README.md:148 / DESIGN.md:101
+- [ ] **NF04** icons.rs::kind_for_name に PNM 拡張子（pbm/ppm/pgm/pnm）を追加
+  — NW09 で発見したギャップ
 
 ### 優先度: 低（調査タスク）
 

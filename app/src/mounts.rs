@@ -6,6 +6,13 @@
 //! are collapsed. Other platforms return an empty list for now (documented in
 //! the README); they can be added later without changing the UI.
 //!
+//! Windows drive discovery is split in two: the projection from the Win32
+//! `GetLogicalDrives` mask / `GetVolumeInformationW` data into `MountPoint`s is
+//! a pure, headlessly testable function, while the actual FFI call is kept in a
+//! documented stub. The stub is intentionally empty because `windows-sys` is
+//! only a *transitive* dependency (it cannot be `use`d directly) and this crate
+//! sets `#![forbid(unsafe_code)]`; see the note on [`list_mounts`] below.
+//!
 //! This module is GPUI-free so the parser can be unit tested headlessly.
 
 use std::path::PathBuf;
@@ -14,11 +21,54 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MountPoint {
     /// Device/source as reported by the kernel (e.g. `/dev/nvme0n1p7`).
+    /// On Windows this holds `C:` plus the volume label, e.g. `C: (System)`.
     pub source: String,
     /// Directory where the filesystem is mounted.
     pub path: PathBuf,
     /// Filesystem type (e.g. `ext4`, `vfat`).
     pub fs_type: String,
+}
+
+/// Pure: expand a Win32 `GetLogicalDrives` bitmask into drive letters `A`..`Z`.
+///
+/// Bit *i* (0-based) corresponds to `b'A' + i`; the remaining bits of the
+/// `u32` are ignored. Keeping this conversion pure makes the Windows drive
+/// layout regression-testable on Linux as well.
+#[cfg(any(target_os = "windows", test))]
+pub fn drive_letters_from_mask(mask: u32) -> Vec<char> {
+    (0..26u32)
+        .filter_map(|index| (mask & (1u32 << index) != 0).then_some(char::from(b'A' + index as u8)))
+        .collect()
+}
+
+/// Pure: convert a drive mask and a per-letter volume-info lookup into sidebar
+/// entries. `volume_for` receives the drive letter and returns
+/// `(volume label, filesystem name)` as produced by `GetVolumeInformationW`.
+///
+/// The volume label is folded into `source` because the sidebar tooltip already
+/// renders `path · fs_type · source`; this keeps the platform-neutral
+/// `MountPoint` shape unchanged for the Linux parser.
+#[cfg(any(target_os = "windows", test))]
+pub fn mount_points_from_drive_mask(
+    mask: u32,
+    mut volume_for: impl FnMut(char) -> (String, String),
+) -> Vec<MountPoint> {
+    drive_letters_from_mask(mask)
+        .into_iter()
+        .map(|letter| {
+            let (label, fs_type) = volume_for(letter);
+            let source = if label.is_empty() {
+                format!("{}:", letter)
+            } else {
+                format!("{}: ({label})", letter)
+            };
+            MountPoint {
+                source,
+                path: PathBuf::from(format!("{}:\\", letter)),
+                fs_type,
+            }
+        })
+        .collect()
 }
 
 /// Filesystem types that are useful in a file-manager sidebar. Pseudo
@@ -157,9 +207,38 @@ pub fn list_mounts() -> Vec<MountPoint> {
     parse_mounts(&read_mounts_file("/proc/mounts"))
 }
 
-/// Non-Linux platforms: no volume discovery yet (the sidebar simply omits the
-/// "ドライブ" section).
-#[cfg(not(target_os = "linux"))]
+/// Windows: drive-letter discovery through the Win32 volume APIs.
+///
+/// STATUS — documented stub. `windows-sys` exists in `Cargo.lock` only as a
+/// *transitive* dependency (0.48.0 / 0.52.0 / 0.60.2 / 0.61.2), so this crate
+/// cannot `use` it without a direct dependency declaration in `Cargo.toml`.
+/// `main.rs` also sets `#![forbid(unsafe_code)]`, whereas the Win32 entry points
+/// are `unsafe extern "system"` functions. Once a direct dependency plus a
+/// narrowly scoped, reviewed FFI module exist, replace the zero mask and empty
+/// lookup below with the real calls:
+///
+/// ```text
+/// let mask = unsafe { GetLogicalDrives() };
+/// let volume_for = |letter: char| {
+///     let root: Vec<u16> = format!("{}:\\\0", letter).encode_utf16().collect();
+///     // unsafe GetVolumeInformationW(root.as_ptr(), ...) -> (label, fs_type)
+/// };
+/// mount_points_from_drive_mask(mask, volume_for)
+/// ```
+///
+/// Signatures were verified from the locally cached `windows-sys 0.61.2`
+/// source (feature `Win32_Storage_FileSystem`): `GetLogicalDrives() -> u32` and
+/// `GetVolumeInformationW(PCWSTR, PWSTR, u32, *mut u32, *mut u32, *mut u32,
+/// PWSTR, u32) -> BOOL`. `GetDiskFreeSpaceExW` would additionally provide the
+/// total/free byte counts.
+#[cfg(target_os = "windows")]
+pub fn list_mounts() -> Vec<MountPoint> {
+    mount_points_from_drive_mask(0, |_| (String::new(), String::new()))
+}
+
+/// Other non-Linux/non-Windows platforms: no volume discovery yet (the sidebar
+/// simply omits the "ドライブ" section).
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn list_mounts() -> Vec<MountPoint> {
     Vec::new()
 }
@@ -273,6 +352,43 @@ overlay /var/lib/docker/overlay2/abc overlay rw 0 0
         if cfg!(not(target_os = "linux")) {
             assert!(list_mounts().is_empty());
         }
+    }
+
+    #[test]
+    fn drive_letters_from_mask_maps_bits_to_letters() {
+        // Bit i maps to 'A' + i; bit 26 is outside the A:..Z: range.
+        assert_eq!(drive_letters_from_mask(0b0000_0101), vec!['A', 'C']);
+        assert_eq!(drive_letters_from_mask(1 << 25), vec!['Z']);
+        assert!(drive_letters_from_mask(1 << 26).is_empty());
+        assert_eq!(drive_letters_from_mask((1 << 2) | 1), vec!['A', 'C']);
+        assert!(drive_letters_from_mask(0).is_empty());
+    }
+
+    #[test]
+    fn mount_points_from_drive_mask_builds_windows_roots_and_labels() {
+        let mask = (1 << 0) | (1 << 2) | (1 << 25);
+        let mounts = mount_points_from_drive_mask(mask, |letter| match letter {
+            'C' => ("System".to_string(), "NTFS".to_string()),
+            'Z' => (String::new(), "exFAT".to_string()),
+            _ => (String::new(), String::new()),
+        });
+        assert_eq!(
+            mounts
+                .iter()
+                .map(|mount| mount.path.display().to_string())
+                .collect::<Vec<_>>(),
+            vec![r"A:\", r"C:\", r"Z:\"]
+        );
+        assert_eq!(mounts[0].source, "A:");
+        assert_eq!(mounts[1].source, "C: (System)");
+        assert_eq!(mounts[1].fs_type, "NTFS");
+        assert_eq!(mounts[2].source, "Z:");
+        assert_eq!(mounts[2].fs_type, "exFAT");
+    }
+
+    #[test]
+    fn empty_drive_mask_yields_no_mounts() {
+        assert!(mount_points_from_drive_mask(0, |_| (String::new(), String::new())).is_empty());
     }
 
     #[test]

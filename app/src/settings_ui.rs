@@ -26,6 +26,8 @@ use gpui_kit::component::Disableable;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use crate::settings::{is_known_column_key, ColumnPrefs, COLUMN_KEYS};
+
 // ---------------------------------------------------------------------------
 // Tabs
 // ---------------------------------------------------------------------------
@@ -160,6 +162,10 @@ pub enum SettingsUiAction {
     ToggleHidden(bool),
     /// Change the sort key.
     SetSort(String),
+    /// Show or hide one details-view column.
+    SetColumnVisible { key: String, visible: bool },
+    /// Move a details-view column one step left (`-1`) or right (`+1`).
+    MoveColumn { key: String, delta: isize },
     /// Replace the terminal startup command.
     SetTerminal(String),
     /// Replace the keymap overrides.
@@ -185,6 +191,8 @@ pub struct SettingsUiState {
     pub view_choice: String,
     /// Selected sort option value, filled by the host when opening.
     pub sort_choice: String,
+    /// NW07: edited column visibility/order/widths, read back on Save.
+    pub column_prefs: ColumnPrefs,
     /// Current "show hidden files" flag.
     pub show_hidden: bool,
     /// Terminal startup command editor.
@@ -231,6 +239,7 @@ impl SettingsUiState {
             theme_choice: String::new(),
             view_choice: String::new(),
             sort_choice: String::new(),
+            column_prefs: ColumnPrefs::default(),
             show_hidden: false,
             terminal_input,
             keymap_input,
@@ -262,6 +271,11 @@ impl SettingsUiState {
     /// Set the selected sort-key value.
     pub fn set_sort_choice(&mut self, value: impl Into<String>) {
         self.sort_choice = value.into();
+    }
+
+    /// Seed the column editor from persisted settings (does not mark dirty).
+    pub fn set_column_prefs(&mut self, prefs: ColumnPrefs) {
+        self.column_prefs = prefs;
     }
 
     /// Set the "show hidden files" flag.
@@ -556,6 +570,23 @@ const FILES_SORT_KEYWORDS: &[&str] = &[
     // ディレクトリ; searching that visible word must surface this row.
     "ディレクトリ",
 ];
+/// NW07: keywords of the column editor row on the Files page.
+const FILES_COLUMN_KEYWORDS: &[&str] = &[
+    "列",
+    "一覧の列",
+    "column",
+    "columns",
+    "column_prefs",
+    "幅",
+    "width",
+    "順番",
+    "並べ替え",
+    "非表示",
+    "名前",
+    "種類",
+    "サイズ",
+    "更新日時",
+];
 const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "ショートカット",
     "キー",
@@ -752,6 +783,7 @@ const FILES_SORT_DESCRIPTION: &str = concat!(
     "。",
     crate::strings::directory_view_only_note!()
 );
+const FILES_COLUMN_DESCRIPTION: &str = "一覧ヘッダに出す列と順番を選びます（チェックボックスで表示/非表示、↑↓で並べ替え。幅は保存済みの値を表示）";
 
 /// 表示専用のカラーパレット行に添える、編集可能なテーマ行への案内（AB13）。
 ///
@@ -893,7 +925,11 @@ const PERSONALIZE_INFO_KEYWORDS: &[&str] = &[
 fn tab_keyword_groups(tab: SettingsTab) -> &'static [&'static [&'static str]] {
     match tab {
         SettingsTab::Appearance => &[APPEARANCE_THEME_KEYWORDS, APPEARANCE_VIEW_KEYWORDS],
-        SettingsTab::Files => &[FILES_HIDDEN_KEYWORDS, FILES_SORT_KEYWORDS],
+        SettingsTab::Files => &[
+            FILES_HIDDEN_KEYWORDS,
+            FILES_SORT_KEYWORDS,
+            FILES_COLUMN_KEYWORDS,
+        ],
         SettingsTab::Shortcuts => &[SHORTCUTS_KEYMAP_KEYWORDS, SHORTCUTS_DEFAULTS_KEYWORDS],
         SettingsTab::Terminal => &[TERMINAL_COMMAND_KEYWORDS],
         SettingsTab::Personalize => &[PERSONALIZE_PALETTE_KEYWORDS, PERSONALIZE_INFO_KEYWORDS],
@@ -1061,6 +1097,110 @@ pub fn settings_view_next(choice: &str) -> &'static str {
 /// Next switch value for the ファイル `h` shortcut.
 pub fn settings_hidden_next(current: bool) -> bool {
     !current
+}
+
+// ---------------------------------------------------------------------------
+// NW07: column preference editing (pure helpers)
+// ---------------------------------------------------------------------------
+
+/// Display label of a persisted column key, matching the list header.
+pub fn column_label(key: &str) -> &'static str {
+    match key {
+        "name" => "名前",
+        "kind" => "種類",
+        "size" => "サイズ",
+        "modified" => "更新日時",
+        _ => "不明",
+    }
+}
+
+/// Stable element ids for one column row: `(switch, move-up, move-down)`.
+/// Returning `'static` strings keeps the GPUI widget ids unique without
+/// relying on dynamic `String` ids.
+fn column_ids(key: &str) -> (&'static str, &'static str, &'static str) {
+    match key {
+        "name" => (
+            "settings-column-name",
+            "settings-column-name-up",
+            "settings-column-name-down",
+        ),
+        "kind" => (
+            "settings-column-kind",
+            "settings-column-kind-up",
+            "settings-column-kind-down",
+        ),
+        "size" => (
+            "settings-column-size",
+            "settings-column-size-up",
+            "settings-column-size-down",
+        ),
+        "modified" => (
+            "settings-column-modified",
+            "settings-column-modified-up",
+            "settings-column-modified-down",
+        ),
+        _ => (
+            "settings-column-unknown",
+            "settings-column-unknown-up",
+            "settings-column-unknown-down",
+        ),
+    }
+}
+
+/// Return the visibility list after showing/hiding `key`, or `None` when the
+/// request is a no-op (unknown key, already in the requested state, or hiding
+/// the last remaining column). Keeping at least one column avoids an empty
+/// header with no sort affordance.
+pub fn column_visibility(visible: &[String], key: &str, show: bool) -> Option<Vec<String>> {
+    if !is_known_column_key(key) {
+        return None;
+    }
+    let mut next = visible.to_vec();
+    let position = next.iter().position(|entry| entry == key);
+    match (show, position) {
+        (true, None) => {
+            next.push(key.to_string());
+            Some(next)
+        }
+        (false, Some(index)) if next.len() > 1 => {
+            next.remove(index);
+            Some(next)
+        }
+        _ => None,
+    }
+}
+
+/// Return the visibility list after moving `key` by `delta` positions
+/// (`-1` = left/up, `+1` = right/down), or `None` when the move is impossible.
+pub fn column_reordered(visible: &[String], key: &str, delta: isize) -> Option<Vec<String>> {
+    let from = visible.iter().position(|entry| entry == key)?;
+    let to = if delta < 0 {
+        from.checked_sub(delta.unsigned_abs())?
+    } else {
+        from.checked_add(delta as usize)?
+    };
+    if to == from || to >= visible.len() {
+        return None;
+    }
+    let mut next = visible.to_vec();
+    next.remove(from);
+    next.insert(to, key.to_string());
+    Some(next)
+}
+
+/// Compact width caption shown next to a column row: the effective px width,
+/// or 自動 for the Name column's stretch cell when no override is stored.
+pub fn column_width_label(prefs: &ColumnPrefs, key: &str) -> String {
+    let width = prefs
+        .widths
+        .get(key)
+        .copied()
+        .unwrap_or_else(|| crate::settings::default_column_width(key));
+    if width <= 0.0 {
+        "自動".to_string()
+    } else {
+        format!("{width:.0}px")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,6 +1500,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
     let show_appearance_view = matches_query(query, APPEARANCE_VIEW_KEYWORDS);
     let show_files_hidden = matches_query(query, FILES_HIDDEN_KEYWORDS);
     let show_files_sort = matches_query(query, FILES_SORT_KEYWORDS);
+    let show_files_columns = matches_query(query, FILES_COLUMN_KEYWORDS);
     let show_shortcuts_keymap = matches_query(query, SHORTCUTS_KEYMAP_KEYWORDS);
     let show_shortcuts_defaults = matches_query(query, SHORTCUTS_DEFAULTS_KEYWORDS);
     let show_terminal_command = matches_query(query, TERMINAL_COMMAND_KEYWORDS);
@@ -1420,6 +1561,99 @@ pub fn render_settings_content<V: SettingsUiHost>(
                         FILES_SORT_DESCRIPTION,
                         sort_radios,
                     ));
+            }
+            if show_files_columns {
+                column = column
+                    .child(divider(palette))
+                    .child(section_title(palette, "一覧の列"))
+                    .child(
+                        div()
+                            .w_full()
+                            .text_xs()
+                            .text_color(rgb(palette.subtext))
+                            .child(FILES_COLUMN_DESCRIPTION),
+                    );
+                // Visible columns first in the stored order, then hidden ones in
+                // canonical order so every column can be re-enabled.
+                let mut ordered = state.column_prefs.visible.clone();
+                for key in COLUMN_KEYS {
+                    let key = key.to_string();
+                    if !ordered.contains(&key) {
+                        ordered.push(key);
+                    }
+                }
+                let visible_len = state.column_prefs.visible.len();
+                for key in ordered {
+                    let position = state.column_prefs.visible.iter().position(|k| *k == key);
+                    let ids = column_ids(&key);
+                    let switch_key = key.clone();
+                    let switch =
+                        Switch::new(ids.0)
+                            .checked(position.is_some())
+                            .on_click(cx.listener(
+                                move |this: &mut V, checked: &bool, _window, cx| {
+                                    this.on_settings_action(
+                                        SettingsUiAction::SetColumnVisible {
+                                            key: switch_key.clone(),
+                                            visible: *checked,
+                                        },
+                                        cx,
+                                    );
+                                },
+                            ));
+                    let up_key = key.clone();
+                    let up = Button::new(ids.1)
+                        .label("↑")
+                        .disabled(position.is_none_or(|index| index == 0))
+                        .on_click(
+                            cx.listener(move |this: &mut V, _: &ClickEvent, _window, cx| {
+                                this.on_settings_action(
+                                    SettingsUiAction::MoveColumn {
+                                        key: up_key.clone(),
+                                        delta: -1,
+                                    },
+                                    cx,
+                                );
+                            }),
+                        );
+                    let down_key = key.clone();
+                    let down = Button::new(ids.2)
+                        .label("↓")
+                        .disabled(position.is_none_or(|index| index + 1 == visible_len))
+                        .on_click(
+                            cx.listener(move |this: &mut V, _: &ClickEvent, _window, cx| {
+                                this.on_settings_action(
+                                    SettingsUiAction::MoveColumn {
+                                        key: down_key.clone(),
+                                        delta: 1,
+                                    },
+                                    cx,
+                                );
+                            }),
+                        );
+                    let label = column_label(&key);
+                    let width = column_width_label(&state.column_prefs, &key);
+                    column = column.child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .py_1()
+                            .child(switch)
+                            .child(
+                                div()
+                                    .w(px(72.0))
+                                    .text_xs()
+                                    .text_color(rgb(palette.text))
+                                    .child(label),
+                            )
+                            .child(up)
+                            .child(down)
+                            .child(div().flex_1())
+                            .child(div().text_xs().text_color(rgb(palette.muted)).child(width)),
+                    );
+                }
             }
             column
         }
@@ -3497,5 +3731,75 @@ mod tests {
         );
         assert_eq!(next_settings_focus(&[], Some(Search), false), None);
         assert_eq!(next_settings_focus(&[], Some(Search), true), None);
+    }
+}
+
+#[cfg(test)]
+mod column_prefs_ui_tests {
+    // Explicit imports: the module-level `use gpui_kit::*` would shadow the
+    // built-in `#[test]` attribute if pulled in through `use super::*`.
+    use super::{
+        column_label, column_reordered, column_visibility, column_width_label, matches_query,
+        tabs_matching_query, FILES_COLUMN_DESCRIPTION, FILES_COLUMN_KEYWORDS,
+    };
+    use crate::settings::ColumnPrefs;
+    use crate::settings_ui::SettingsTab;
+
+    #[test]
+    fn column_editor_keywords_are_searchable_on_the_files_tab() {
+        for keyword in ["列", "column", "column_prefs", "幅", "width"] {
+            assert!(
+                matches_query(keyword, FILES_COLUMN_KEYWORDS),
+                "{keyword} must match the column editor row"
+            );
+            assert_eq!(tabs_matching_query(keyword), vec![SettingsTab::Files]);
+        }
+        assert!(FILES_COLUMN_DESCRIPTION.contains("列"));
+        assert_eq!(column_label("name"), "名前");
+        assert_eq!(column_label("modified"), "更新日時");
+    }
+
+    #[test]
+    fn column_visibility_helper_keeps_at_least_one_column() {
+        let visible = vec!["name".to_string(), "kind".to_string()];
+        assert_eq!(
+            column_visibility(&visible, "size", true),
+            Some(vec!["name".into(), "kind".into(), "size".into()])
+        );
+        assert_eq!(
+            column_visibility(&visible, "kind", false),
+            Some(vec!["name".into()])
+        );
+        // Hiding the last column, re-hiding a hidden one, and unknown keys are
+        // all no-ops so the header never disappears.
+        assert_eq!(column_visibility(&["name".into()], "name", false), None);
+        assert_eq!(column_visibility(&visible, "size", false), None);
+        assert_eq!(column_visibility(&visible, "future", true), None);
+    }
+
+    #[test]
+    fn column_reorder_helper_only_moves_visible_columns() {
+        let visible = vec!["name".to_string(), "kind".to_string(), "size".to_string()];
+        assert_eq!(
+            column_reordered(&visible, "kind", -1),
+            Some(vec!["kind".into(), "name".into(), "size".into()])
+        );
+        assert_eq!(
+            column_reordered(&visible, "kind", 1),
+            Some(vec!["name".into(), "size".into(), "kind".into()])
+        );
+        assert_eq!(column_reordered(&visible, "name", -1), None);
+        assert_eq!(column_reordered(&visible, "size", 1), None);
+        assert_eq!(column_reordered(&visible, "modified", 1), None);
+    }
+
+    #[test]
+    fn column_width_label_shows_effective_width() {
+        let mut prefs = ColumnPrefs::default();
+        assert_eq!(column_width_label(&prefs, "name"), "自動");
+        assert_eq!(column_width_label(&prefs, "kind"), "90px");
+        assert_eq!(column_width_label(&prefs, "modified"), "150px");
+        prefs.widths.insert("name".into(), 240.0);
+        assert_eq!(column_width_label(&prefs, "name"), "240px");
     }
 }

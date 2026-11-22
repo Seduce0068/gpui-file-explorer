@@ -54,6 +54,25 @@ pub fn image_format_for_name(name: &str) -> Option<ImageFormat> {
     }
 }
 
+/// Pure, I/O-free decision for NW09 list/grid thumbnails: may this entry be
+/// rendered with `gpui_kit::img(path)` instead of a generic file icon?
+///
+/// The allowlist is [`image_format_for_name`], i.e. the same extensions the
+/// existing decoder handles; `.heic` / `.psd` are image *kinds* according to
+/// `icons::kind_for_name` but are not decodable here. The reverse gap is real
+/// too: `kind_for_name` classifies `.pbm` / `.ppm` / `.pgm` / `.pnm` as
+/// `Unknown` even though this module and `gpui_kit::img` support them, so it is
+/// deliberately not used as a gate here (follow-up: align the icon mapping).
+/// Symlinks are refused just like in [`read_image_preview`], so a thumbnail
+/// never reads through a link. Content is not sniffed: that needs bytes and
+/// hence fs I/O. `gpui_kit::img` detects the format asynchronously and calls
+/// `.with_fallback(...)` if the contents do not match the extension, leaving
+/// the ordinary icon visible. The caller also checks the entry size against
+/// [`MAX_IMAGE_BYTES`] before using this helper's result.
+pub fn is_thumbnailable(name: &str, entry_is_symlink: bool) -> bool {
+    !entry_is_symlink && image_format_for_name(name).is_some()
+}
+
 /// An image ready to render: the format that matches the **content**, plus the
 /// bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,8 +319,8 @@ pub fn preview_key_action(key: &str, control: bool) -> PreviewKeyAction {
 #[cfg(test)]
 mod image_tests {
     use super::{
-        bytes_exceed_limit, image_format_for_name, image_too_large_error, png_dimensions,
-        read_image_preview, sniff_image_format, MAX_IMAGE_BYTES,
+        bytes_exceed_limit, image_format_for_name, image_too_large_error, is_thumbnailable,
+        png_dimensions, read_image_preview, sniff_image_format, MAX_IMAGE_BYTES,
     };
     use gpui_kit::ImageFormat;
     use std::fs;
@@ -345,6 +364,62 @@ mod image_tests {
     }
 
     const PNG_HEADER: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+    #[test]
+    fn thumbnail_decision_accepts_decodable_image_names_only() {
+        // Every format listed by `image_format_for_name` is thumbnailable,
+        // including hidden files and compound names (the last dot wins).
+        for name in [
+            "photo.png",
+            "PHOTO.JPG",
+            "photo.jpeg",
+            "picture.webp",
+            "anim.GIF",
+            "vector.svg",
+            "scan.tiff",
+            "icon.ico",
+            "img.pbm",
+            ".hidden.png",
+            "holiday.photo.PNG",
+        ] {
+            assert!(is_thumbnailable(name, false), "{name}");
+        }
+        // Non-images and image *kinds* the decoder cannot handle stay on the
+        // ordinary icon path.
+        for name in [
+            "archive.zip",
+            "notes.md",
+            "noextension",
+            "Makefile",
+            "photo.heic",
+            "photo.avif",
+            "photo.psd",
+            "photo.raw",
+        ] {
+            assert!(!is_thumbnailable(name, false), "{name}");
+        }
+    }
+
+    #[test]
+    fn thumbnail_decision_covers_pnm_despite_the_icon_kind_gap() {
+        // `icons::kind_for_name` still classifies these as `Unknown`, but both
+        // this module's format allowlist and `gpui_kit::img` support them.
+        // Pin the expectation here so aligning the icon mapping later cannot
+        // silently take their thumbnails away.
+        for name in ["img.pbm", "img.ppm", "img.pgm", "img.pnm"] {
+            assert!(is_thumbnailable(name, false), "{name}");
+            assert!(!is_thumbnailable(name, true), "{name}");
+        }
+    }
+
+    #[test]
+    fn thumbnail_decision_refuses_symlinks() {
+        // A symlink may point outside the listed directory; the preview
+        // reader rejects links for the same reason.
+        assert!(!is_thumbnailable("photo.png", true));
+        assert!(is_thumbnailable("photo.png", false));
+        assert!(!is_thumbnailable("notes.md", true));
+    }
 
     #[test]
     fn sniffs_magic_numbers() {

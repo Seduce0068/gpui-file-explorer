@@ -9,6 +9,7 @@
 //!   "last_dir": "/home/koppe/document",
 //!   "sort": { "key": "name", "dir": "asc", "dirs_first": true },
 //!   "show_hidden": false,
+//!   "show_thumbnails": true,
 //!   "view": "details",
 //!   "theme": "dark",
 //!   "theme_choice": "dark",
@@ -61,7 +62,7 @@
 //! observed system appearance by the UI ([`resolve_theme`]).
 
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -316,6 +317,13 @@ where
 /// `Settings::default()` explicitly carries `SCHEMA_VERSION`.
 fn legacy_schema_version() -> u32 {
     LEGACY_SCHEMA_VERSION
+}
+
+/// Serde default for the NW09 thumbnail toggle. It is additive (added after
+/// v1), so older files without the key keep the Explorer-class visual clarity
+/// instead of silently switching back to generic file icons.
+fn default_show_thumbnails() -> bool {
+    true
 }
 
 /// Legacy two-state cycle on the *resolved* mode, retained for the historical
@@ -717,6 +725,122 @@ pub enum SettingsSaveError {
     Io,
 }
 
+/// Canonical persisted keys of the four details-view columns, in the order
+/// they are rendered by default. The strings match `SortKey`'s serde names so
+/// the settings UI and the header can share one vocabulary.
+pub const COLUMN_KEYS: [&str; 4] = ["name", "kind", "size", "modified"];
+/// Smallest usable width (px) of a persisted list column.
+pub const COLUMN_MIN_WIDTH: f32 = 60.0;
+/// Largest usable width (px) of a persisted list column.
+pub const COLUMN_MAX_WIDTH: f32 = 600.0;
+
+/// Whether `key` names one of the built-in list columns.
+pub fn is_known_column_key(key: &str) -> bool {
+    COLUMN_KEYS.contains(&key)
+}
+
+/// Built-in width (px) of a column key. `0.0` means "stretch": the Name column
+/// historically uses `flex_1` in the header instead of a fixed cell width.
+pub fn default_column_width(key: &str) -> f32 {
+    match key {
+        "name" => 0.0,
+        "kind" | "size" => 90.0,
+        "modified" => 150.0,
+        _ => 0.0,
+    }
+}
+
+/// Deserialize the visible-column list. Unknown keys are reported through the
+/// shared persisted-enum signal *during parsing*, so a newer build's column
+/// name makes the load read-only instead of being silently dropped and then
+/// overwritten on the next save. `validate()` still removes them in memory.
+fn deserialize_column_visible<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<String>::deserialize(deserializer)?;
+    if values.iter().any(|key| !is_known_column_key(key)) {
+        note_unknown_persisted_enum();
+    }
+    Ok(values)
+}
+
+/// Same reporting rule as [`deserialize_column_visible`], for width keys.
+fn deserialize_column_widths<'de, D>(deserializer: D) -> Result<HashMap<String, f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let widths = HashMap::<String, f32>::deserialize(deserializer)?;
+    if widths.keys().any(|key| !is_known_column_key(key)) {
+        note_unknown_persisted_enum();
+    }
+    Ok(widths)
+}
+
+/// Persisted visibility, order and width of the details-view columns.
+///
+/// Added after v1: a legacy settings file without a `column_prefs` key gets
+/// [`ColumnPrefs::default`] through the field-level `#[serde(default)]`, so the
+/// header renders exactly as before. `visible` stores keys in display order;
+/// `widths` holds only explicit overrides (missing keys keep the built-in
+/// width, so a future change of the built-in value still takes effect).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColumnPrefs {
+    /// Visible column keys in display order. Defaults to all four keys.
+    #[serde(default, deserialize_with = "deserialize_column_visible")]
+    pub visible: Vec<String>,
+    /// Per-column width overrides in px, keyed by [`COLUMN_KEYS`]. Empty by
+    /// default; invalid/unknown entries are dropped by [`ColumnPrefs::validate`].
+    #[serde(default, deserialize_with = "deserialize_column_widths")]
+    pub widths: HashMap<String, f32>,
+}
+
+impl Default for ColumnPrefs {
+    fn default() -> Self {
+        Self {
+            visible: COLUMN_KEYS.iter().map(|key| (*key).to_string()).collect(),
+            widths: HashMap::new(),
+        }
+    }
+}
+
+impl ColumnPrefs {
+    /// Harden a deserialized value: drop unknown keys (already reported during
+    /// parsing by the field deserializers, which keeps the load read-only),
+    /// collapse duplicates without reordering the survivors, and drop
+    /// out-of-range or non-finite widths. An empty visibility list falls back
+    /// to the default order so the header can never disappear entirely.
+    pub fn validate(&mut self) {
+        let mut seen = HashSet::with_capacity(self.visible.len());
+        let mut visible = Vec::with_capacity(self.visible.len().min(COLUMN_KEYS.len()));
+        for key in std::mem::take(&mut self.visible) {
+            if !is_known_column_key(&key) {
+                continue;
+            }
+            if seen.insert(key.clone()) {
+                visible.push(key);
+            }
+        }
+        self.visible = if visible.is_empty() {
+            COLUMN_KEYS.iter().map(|key| (*key).to_string()).collect()
+        } else {
+            visible
+        };
+
+        let mut widths = HashMap::new();
+        for (key, width) in std::mem::take(&mut self.widths) {
+            if !is_known_column_key(&key) {
+                continue;
+            }
+            if width.is_finite() && (COLUMN_MIN_WIDTH..=COLUMN_MAX_WIDTH).contains(&width) {
+                widths.insert(key, width);
+            }
+        }
+        self.widths = widths;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -729,6 +853,17 @@ pub struct Settings {
     pub last_dir: Option<PathBuf>,
     pub sort: SortSpec,
     pub show_hidden: bool,
+    /// NW09: render image files as real thumbnails in the list/grid instead of
+    /// a generic icon. Added after v1: older files get `true` through the
+    /// field-level serde default. Serde rejects non-boolean values, so there is
+    /// nothing further for [`Settings::validate`] to clamp (asserted by tests).
+    #[serde(default = "default_show_thumbnails")]
+    pub show_thumbnails: bool,
+    /// NW07: visibility, order and widths of the details-view header columns.
+    /// Added after v1: older files get the historical four-column layout via
+    /// the field-level serde default.
+    #[serde(default)]
+    pub column_prefs: ColumnPrefs,
     /// Unknown values deserialize to [`ViewLayout::default`] so a single bad
     /// string cannot cost the whole settings file. The load is then read-only
     /// (see the module docs), so saving cannot replace the original string.
@@ -817,6 +952,8 @@ impl Default for Settings {
             last_dir: None,
             sort: SortSpec::default(),
             show_hidden: false,
+            show_thumbnails: default_show_thumbnails(),
+            column_prefs: ColumnPrefs::default(),
             view: ViewLayout::Details,
             theme: default_theme(),
             theme_choice: default_theme_choice(),
@@ -1299,6 +1436,16 @@ impl Settings {
             ThemeChoice::System => {}
         }
 
+        // `show_thumbnails` is a plain bool: serde rejects a wrong-typed value
+        // at load time and a bool has no out-of-range state, so validation
+        // deliberately preserves the user's choice as-is.
+
+        // Column preferences get the same harden-on-load treatment as the
+        // other persisted lists: unknown keys make the session read-only (so a
+        // newer build's column name survives), duplicates collapse and invalid
+        // widths fall back to the built-in defaults.
+        self.column_prefs.validate();
+
         if let Some(dir) = &self.last_dir {
             if !sane_path(dir) || !dir.is_dir() {
                 self.last_dir = None;
@@ -1710,10 +1857,48 @@ mod tests {
         assert_eq!(settings.sort.dir, SortDir::Asc);
         assert!(settings.sort.dirs_first);
         assert!(!settings.show_hidden);
+        assert!(settings.show_thumbnails);
         assert_eq!(settings.view, ViewLayout::Details);
         assert_eq!(settings.theme, ThemeMode::Dark);
         assert_eq!(settings.theme_choice, ThemeChoice::Dark);
         assert!(settings.last_dir.is_none());
+    }
+
+    #[test]
+    fn thumbnails_default_to_true_for_older_settings_files() {
+        // The field is additive: a missing key must not silently turn the
+        // Explorer-class thumbnails off for existing users.
+        let empty: Settings = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(empty.show_thumbnails);
+        let v1: Settings = serde_json::from_str(r#"{"version":1,"show_hidden":true}"#).unwrap();
+        assert!(v1.show_thumbnails);
+        let missing_file = Settings::load_from(&scratch("thumbnails-default-missing.json"));
+        assert!(missing_file.show_thumbnails);
+    }
+
+    #[test]
+    fn thumbnail_preference_roundtrips_and_survives_validation() {
+        let path = scratch("thumbnails-off.json");
+        let _ = fs::remove_file(&path);
+        let settings = Settings {
+            show_thumbnails: false,
+            ..Settings::default()
+        };
+        settings.save_to(&path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"show_thumbnails\": false"), "{text}");
+        let mut loaded = Settings::load_from(&path);
+        assert!(!loaded.show_thumbnails);
+        loaded.validate();
+        assert!(!loaded.show_thumbnails);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn thumbnail_preference_rejects_non_boolean_values() {
+        // A bool has no range to clamp; serde type validation is the gate.
+        assert!(serde_json::from_str::<Settings>(r#"{"show_thumbnails":"yes"}"#).is_err());
+        assert!(serde_json::from_str::<Settings>(r#"{"show_thumbnails":1}"#).is_err());
     }
 
     #[test]
@@ -4620,5 +4805,111 @@ mod keymap_settings_tests {
             settings.keymap[MAX_KEYMAP_OVERRIDES - 1].0,
             format!("action-{}", MAX_KEYMAP_OVERRIDES - 1)
         );
+    }
+}
+
+#[cfg(test)]
+mod column_prefs_tests {
+    // Explicit imports: the crate root glob would shadow the built-in `#[test]`.
+    use super::{ColumnPrefs, Settings, COLUMN_KEYS, COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("gpui-fe-column-prefs-{tag}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn column_prefs_default_to_all_four_columns_for_legacy_files() {
+        // A file written before NW07 has no `column_prefs` key: the field-level
+        // serde default must restore the historical header exactly.
+        let empty: Settings = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(empty.column_prefs.visible, COLUMN_KEYS);
+        assert!(empty.column_prefs.widths.is_empty());
+        let partial: Settings =
+            serde_json::from_str(r#"{"version":1,"show_hidden":true}"#).unwrap();
+        assert_eq!(partial.column_prefs.visible, COLUMN_KEYS);
+        assert!(partial.column_prefs.widths.is_empty());
+        assert_eq!(Settings::default().column_prefs, ColumnPrefs::default());
+
+        // The same must hold through the real loader, including a writable
+        // session (a fallback must not accidentally flip `read_only`).
+        let path = scratch("missing.json");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, r#"{"version":1,"show_hidden":false}"#).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.column_prefs.visible, COLUMN_KEYS);
+        assert!(loaded.column_prefs.widths.is_empty());
+        assert!(!loaded.read_only);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn column_prefs_roundtrip_preserves_order_and_widths() {
+        let path = scratch("roundtrip.json");
+        let _ = std::fs::remove_file(&path);
+        let mut settings = Settings::default();
+        settings.column_prefs.visible = vec!["size".into(), "name".into(), "modified".into()];
+        settings.column_prefs.widths.insert("size".into(), 180.0);
+        settings.column_prefs.widths.insert("name".into(), 320.0);
+        settings.save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"column_prefs\""), "{text}");
+        let loaded = Settings::load_from(&path);
+        assert_eq!(
+            loaded.column_prefs.visible,
+            vec!["size", "name", "modified"]
+        );
+        assert_eq!(loaded.column_prefs.widths.get("size"), Some(&180.0));
+        assert_eq!(loaded.column_prefs.widths.get("name"), Some(&320.0));
+        assert!(!loaded.read_only);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn column_prefs_unknown_key_is_dropped_and_load_becomes_read_only() {
+        // Follows the existing enum fallback pattern: a column introduced by a
+        // newer build is not overwritten by this build on the next save.
+        let path = scratch("unknown.json");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(
+            &path,
+            r#"{"version":1,"column_prefs":{"visible":["name","future_column","size"],"widths":{"kind":120.0,"future_column":90.0}}}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.column_prefs.visible, vec!["name", "size"]);
+        assert_eq!(loaded.column_prefs.widths.len(), 1);
+        assert_eq!(loaded.column_prefs.widths.get("kind"), Some(&120.0));
+        assert!(loaded.read_only);
+        assert!(loaded.load_error.is_some());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn column_prefs_validation_dedupes_ranges_and_empty_visibility() {
+        let mut prefs = ColumnPrefs {
+            visible: vec!["kind".into(), "name".into(), "kind".into()],
+            widths: HashMap::from([
+                ("kind".to_string(), COLUMN_MIN_WIDTH),
+                ("name".to_string(), COLUMN_MAX_WIDTH),
+                ("size".to_string(), COLUMN_MIN_WIDTH - 1.0),
+                ("modified".to_string(), f32::NAN),
+            ]),
+        };
+        prefs.validate();
+        assert_eq!(prefs.visible, vec!["kind", "name"]);
+        assert_eq!(prefs.widths.get("kind"), Some(&COLUMN_MIN_WIDTH));
+        assert_eq!(prefs.widths.get("name"), Some(&COLUMN_MAX_WIDTH));
+        assert!(!prefs.widths.contains_key("size"));
+        assert!(!prefs.widths.contains_key("modified"));
+
+        // Never let a hand-edited file leave the header with zero columns.
+        let mut empty = ColumnPrefs {
+            visible: vec![],
+            widths: HashMap::new(),
+        };
+        empty.validate();
+        assert_eq!(empty.visible, COLUMN_KEYS);
     }
 }

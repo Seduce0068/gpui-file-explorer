@@ -816,7 +816,58 @@ pub fn create_unique_folder(dir: &Path) -> Result<PathBuf, String> {
     ))
 }
 
+/// Pure: filesystem root path for the current OS.
+///
+/// POSIX keeps the historical `/`. Windows uses `C:\`, the conventional system
+/// drive that exists on every installation. No filesystem access is performed,
+/// so the result is deterministic and unit-testable on every host.
+pub fn root_path_for_platform() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        PathBuf::from(r"C:\")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        PathBuf::from("/")
+    }
+}
+
+/// Pure: user-facing label for an OS filesystem root.
+///
+/// POSIX always returns `"/"`. Windows returns the drive prefix (`"C:"`) when
+/// `path` carries one, otherwise `"この PC"` — the Explorer-style label for the
+/// virtual root (e.g. a UNC root or a bare `\`).
+pub fn root_display_for_platform(path: &Path) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::{Component, Prefix};
+        let drive = path.components().find_map(|component| match component {
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(letter) => Some(format!("{}:", char::from(letter))),
+                _ => None,
+            },
+            _ => None,
+        });
+        drive.unwrap_or_else(|| "この PC".to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // The POSIX label does not depend on the path.
+        let _ = path;
+        "/".to_string()
+    }
+}
+
+/// Pure: whether `path` denotes a filesystem root on the current OS.
+///
+/// `has_root()` excludes empty / drive-relative paths; `parent().is_none()`
+/// excludes children such as `/home` or `C:\Windows`.
+pub fn is_root_path(path: &Path) -> bool {
+    path.has_root() && path.parent().is_none()
+}
+
 /// Breadcrumb segments: `("/", "/"), ("home", "/home"), ("koppe", "/home/koppe")`.
+/// The root segment label is OS-specific via [`root_display_for_platform`].
 pub fn breadcrumb_segments(path: &Path) -> Vec<(String, PathBuf)> {
     use std::path::Component;
     let mut segments = Vec::new();
@@ -824,7 +875,9 @@ pub fn breadcrumb_segments(path: &Path) -> Vec<(String, PathBuf)> {
     for component in path.components() {
         accumulated.push(component.as_os_str());
         match component {
-            Component::RootDir => segments.push(("/".to_string(), accumulated.clone())),
+            Component::RootDir => {
+                segments.push((root_display_for_platform(&accumulated), accumulated.clone()))
+            }
             Component::Normal(name) => {
                 segments.push((name.to_string_lossy().to_string(), accumulated.clone()))
             }
@@ -846,9 +899,10 @@ mod tests {
     use super::{
         breadcrumb_segments, clamp_index, compare_names, create_unique_folder, display_path,
         entry_for_path, fingerprint, first_index, human_age, human_datetime, human_size,
-        is_hidden_name, kind_label, last_index, parent_dir, read_entries, sort_entries,
-        step_selection, unique_child_name, visible_entries, AppError, Entry, FsError, FsErrorKind,
-        SortDir, SortKey, SortOrder, SortSpec,
+        is_hidden_name, is_root_path, kind_label, last_index, parent_dir, read_entries,
+        root_display_for_platform, root_path_for_platform, sort_entries, step_selection,
+        unique_child_name, visible_entries, AppError, Entry, FsError, FsErrorKind, SortDir,
+        SortKey, SortOrder, SortSpec,
     };
     use std::ffi::OsString;
     use std::fs;
@@ -1325,6 +1379,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn breadcrumb_segments_build_accumulated_paths() {
         let segments = breadcrumb_segments(Path::new("/home/koppe"));
         assert_eq!(segments.len(), 3);
@@ -1345,6 +1400,45 @@ mod tests {
                 ("b".to_string(), PathBuf::from("./a/../b")),
             ]
         );
+    }
+
+    #[test]
+    fn root_helpers_use_the_platform_appropriate_root() {
+        let root = root_path_for_platform();
+        assert!(is_root_path(&root), "the platform root must be recognized");
+
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(root, PathBuf::from(r"C:\"));
+            assert_eq!(root_display_for_platform(&root), "C:");
+            assert_eq!(root_display_for_platform(Path::new(r"D:\")), "D:");
+            // A root without a drive prefix falls back to the Explorer label.
+            assert_eq!(root_display_for_platform(Path::new("\\")), "この PC");
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(root, PathBuf::from("/"));
+            assert_eq!(root_display_for_platform(&root), "/");
+            assert_eq!(root_display_for_platform(Path::new("/home")), "/");
+        }
+    }
+
+    #[test]
+    fn is_root_path_rejects_children_and_unrooted_paths() {
+        let root = root_path_for_platform();
+        assert!(is_root_path(&root));
+        assert!(!is_root_path(Path::new("")));
+        assert!(!is_root_path(&root.join("child")));
+    }
+
+    #[test]
+    fn breadcrumb_root_segment_uses_platform_root_label() {
+        let root = root_path_for_platform();
+        let destination = root.join("home").join("koppe");
+        let segments = breadcrumb_segments(&destination);
+        assert_eq!(segments[0].0, root_display_for_platform(&root));
+        assert_eq!(segments[0].1, root);
+        assert_eq!(segments.last().unwrap().1, destination);
     }
 
     #[test]
