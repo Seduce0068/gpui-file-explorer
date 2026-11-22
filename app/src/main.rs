@@ -3060,14 +3060,66 @@ fn default_column_width(key: SortKey) -> Option<f32> {
     (width > 0.0).then_some(width)
 }
 
+/// Text of every visible details column of one row, in the exact same order as
+/// [`header_columns`] / [`visible_columns`]. `display_name` is the already
+/// decorated name cell (search line suffix + bookmark label are applied by the
+/// caller), so the name column keeps its existing content while the secondary
+/// columns reuse the very same display helpers as the historical fixed layout.
+/// Pure so header/row alignment can be regression-tested without a GPUI window
+/// (NF01).
+fn row_column_texts(
+    entry: &Entry,
+    view: ViewSource,
+    display_name: &str,
+    columns: &[SortKey],
+) -> Vec<String> {
+    columns
+        .iter()
+        .map(|key| match key {
+            SortKey::Name => display_name.to_owned(),
+            SortKey::Kind => {
+                if view == ViewSource::Trash {
+                    "—".to_string()
+                } else {
+                    model::kind_label(entry)
+                }
+            }
+            SortKey::Size => {
+                if entry.is_dir || view == ViewSource::Trash {
+                    "-".to_string()
+                } else {
+                    human_size(entry.size)
+                }
+            }
+            SortKey::Modified => human_datetime(entry.modified),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod column_prefs_helpers_tests {
     use super::{
         column_from_key, column_key, column_width, default_column_width, header_columns,
-        visible_columns,
+        row_column_texts, visible_columns, Entry, ViewSource,
     };
-    use crate::model::SortKey;
+    use crate::model::{human_datetime, human_size, kind_label, SortKey};
     use crate::settings::ColumnPrefs;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+
+    fn sample_row_entry() -> Entry {
+        Entry {
+            name: OsString::from("notes.txt"),
+            name_text: "notes.txt".to_owned(),
+            sort_key: "notes.txt".to_owned(),
+            path: PathBuf::from("/tmp/notes.txt"),
+            is_dir: false,
+            is_symlink: false,
+            size: 2048,
+            modified: Some(SystemTime::UNIX_EPOCH),
+        }
+    }
 
     #[test]
     fn default_prefs_keep_the_historical_four_columns_and_widths() {
@@ -3147,6 +3199,104 @@ mod column_prefs_helpers_tests {
         assert_eq!(column_width(&prefs, "kind", 90.0), 90.0);
         assert_eq!(column_width(&prefs, "modified", 150.0), 150.0);
         assert_eq!(column_width(&prefs, "unrelated", 123.0), 123.0);
+    }
+
+    #[test]
+    fn row_column_texts_follow_visible_columns_order() {
+        let prefs = ColumnPrefs {
+            visible: vec!["modified".into(), "name".into(), "kind".into()],
+            widths: Default::default(),
+        };
+        let columns = visible_columns(&prefs);
+        let entry = sample_row_entry();
+        let decorated_name = "[重要] notes.txt:42".to_owned();
+        let texts = row_column_texts(&entry, ViewSource::Directory, &decorated_name, &columns);
+        assert_eq!(
+            columns,
+            vec![SortKey::Modified, SortKey::Name, SortKey::Kind]
+        );
+        assert_eq!(texts.len(), columns.len());
+        // The name cell's search/bookmark decoration is passed through as-is.
+        assert_eq!(
+            texts,
+            vec![
+                human_datetime(entry.modified),
+                decorated_name,
+                kind_label(&entry),
+            ]
+        );
+    }
+
+    #[test]
+    fn default_prefs_row_cells_reproduce_the_historical_fixed_layout() {
+        let prefs = ColumnPrefs::default();
+        let cells = header_columns(&prefs);
+        // The exact cell sequence/widths the old hard-coded row used.
+        assert_eq!(
+            cells,
+            vec![
+                (SortKey::Name, None),
+                (SortKey::Kind, Some(90.0)),
+                (SortKey::Size, Some(90.0)),
+                (SortKey::Modified, Some(150.0)),
+            ]
+        );
+        let entry = sample_row_entry();
+        let columns: Vec<SortKey> = cells.iter().map(|(key, _)| *key).collect();
+        let texts = row_column_texts(&entry, ViewSource::Directory, &entry.name_text, &columns);
+        assert_eq!(
+            texts,
+            vec![
+                "notes.txt".to_owned(),
+                kind_label(&entry),
+                human_size(entry.size),
+                human_datetime(entry.modified),
+            ]
+        );
+        // Trash / directory placeholders stay byte-identical as well.
+        let trash = row_column_texts(&entry, ViewSource::Trash, &entry.name_text, &columns);
+        assert_eq!(trash[1], "—");
+        assert_eq!(trash[2], "-");
+        let dir = Entry {
+            is_dir: true,
+            ..entry.clone()
+        };
+        let dir_texts = row_column_texts(&dir, ViewSource::Directory, &dir.name_text, &columns);
+        assert_eq!(dir_texts[2], "-");
+    }
+
+    #[test]
+    fn hidden_and_reordered_columns_update_header_and_row_together() {
+        let mut prefs = ColumnPrefs {
+            visible: vec!["modified".into(), "name".into()],
+            widths: Default::default(),
+        };
+        prefs.widths.insert("modified".into(), 120.0);
+        let cells = header_columns(&prefs);
+        let columns: Vec<SortKey> = cells.iter().map(|(key, _)| *key).collect();
+        let entry = sample_row_entry();
+        let texts = row_column_texts(
+            &entry,
+            ViewSource::Directory,
+            "[ラベル] notes.txt",
+            &columns,
+        );
+        assert_eq!(
+            cells,
+            vec![(SortKey::Modified, Some(120.0)), (SortKey::Name, None)]
+        );
+        assert_eq!(columns, vec![SortKey::Modified, SortKey::Name]);
+        assert_eq!(
+            texts,
+            vec![
+                human_datetime(entry.modified),
+                "[ラベル] notes.txt".to_owned(),
+            ]
+        );
+        // Hidden columns contribute no header cell and no row cell; the row's
+        // width spec is exactly the header's, including the 120 px override.
+        assert_eq!(texts.len(), cells.len());
+        assert!(!texts.iter().any(|text| text == &human_size(entry.size)));
     }
 }
 
@@ -9575,8 +9725,8 @@ impl Explorer {
             .text_color(rgb(p.muted))
             .child(div().w(px(18.0)));
         // Default prefs yield exactly the historical four cells and widths;
-        // only customized prefs change the header. List rows are intentionally
-        // left untouched here (see the NW07 alignment follow-up note).
+        // list rows consume this same spec (NF01), so visibility, order and
+        // width changes stay aligned between header and rows.
         for (key, width) in header_columns(prefs) {
             header = header.child(self.sort_header_cell(key, width, cx));
         }
@@ -9761,140 +9911,128 @@ impl Explorer {
         } else {
             entry.name_text.clone()
         };
+        // NF01: rows use the very same column spec as the header, so hiding,
+        // reordering or resizing a column keeps both sides aligned.
+        let columns = header_columns(&this.settings.column_prefs);
+        let column_keys: Vec<SortKey> = columns.iter().map(|(key, _)| *key).collect();
+        let column_texts = row_column_texts(&entry, this.view, &display_name, &column_keys);
 
-        Some(
-            div()
-                .id(index)
-                .w_full()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .h(px(28.0))
-                .text_sm()
-                .bg(if selected {
+        let mut row = div()
+            .id(index)
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .h(px(28.0))
+            .text_sm()
+            .bg(if selected {
+                rgb(p.overlay)
+            } else if focused {
+                rgb(p.focus)
+            } else {
+                rgb(p.base)
+            })
+            // U-02/U-03: the keyboard cursor gets a distinct high-contrast
+            // left border. It is independent of `selected`, so the cursor
+            // stays visible inside a multi-selection and differs from hover.
+            .when(focused, |row| row.border_l_2().border_color(rgb(p.blue)))
+            .cursor_pointer()
+            .hover(|style| {
+                style.bg(if selected {
                     rgb(p.overlay)
-                } else if focused {
-                    rgb(p.focus)
                 } else {
-                    rgb(p.base)
+                    rgb(p.focus)
                 })
-                // U-02/U-03: the keyboard cursor gets a distinct high-contrast
-                // left border. It is independent of `selected`, so the cursor
-                // stays visible inside a multi-selection and differs from hover.
-                .when(focused, |row| row.border_l_2().border_color(rgb(p.blue)))
-                .cursor_pointer()
-                .hover(|style| {
-                    style.bg(if selected {
-                        rgb(p.overlay)
+            })
+            .on_click(click)
+            .on_mouse_down(MouseButton::Right, right_click)
+            .on_mouse_down(MouseButton::Middle, middle_click)
+            .when(drag_out, |row| {
+                row.on_drag(drag_paths, |_paths, _, _, cx| cx.new(|_| Empty))
+                    .external_drag_payload(|paths: &Vec<PathBuf>, _window, _cx| {
+                        Some(ExternalDragPayload::Files(FileDragPaths::new(
+                            paths.iter().map(|path| (path.clone(), path.is_dir())),
+                        )))
+                    })
+            })
+            .when_some(drop_target, |row, target| {
+                let external_target = target.clone();
+                row.on_drop::<ExternalPaths>(cx.listener(
+                    move |this, paths: &ExternalPaths, _window, cx| {
+                        this.drop_external_into(
+                            external_target.clone(),
+                            paths.paths().to_vec(),
+                            cx,
+                        );
+                    },
+                ))
+                // Accept rows dragged from this window too. `Vec<PathBuf>`
+                // is the value `on_drag` puts on the internal drag, so a
+                // multi-selection arrives here intact (F6-33).
+                .on_drop::<Vec<PathBuf>>(cx.listener(
+                    move |this, paths: &Vec<PathBuf>, _window, cx| {
+                        this.drop_internal_into(paths.clone(), target.clone(), cx);
+                    },
+                ))
+                // Visualise a valid destination while either kind of drag
+                // hovers it, so the drop target is obvious before release.
+                .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(rgb(drag_blue)))
+                .drag_over::<Vec<PathBuf>>(move |style, _, _, _| style.bg(rgb(drag_blue)))
+            })
+            // `.context_menu` wraps the element in `ContextMenu`, which no
+            // longer exposes `tooltip`, so attach the tooltip first.
+            .when_some(trash_parent, |row, parent| {
+                row.tooltip(move |window, cx| {
+                    let text = format!("復元先: {}", parent.clone());
+                    Tooltip::new(text).build(window, cx)
+                })
+            })
+            .context_menu(context_menu)
+            .child(
+                div()
+                    .w(px(18.0))
+                    .flex()
+                    .justify_center()
+                    .child(if show_thumbnail {
+                        gpui_kit::img(entry.path.as_path())
+                            .size(px(18.0))
+                            .with_fallback(icon_fallback)
+                            .into_any_element()
                     } else {
-                        rgb(p.focus)
-                    })
-                })
-                .on_click(click)
-                .on_mouse_down(MouseButton::Right, right_click)
-                .on_mouse_down(MouseButton::Middle, middle_click)
-                .when(drag_out, |row| {
-                    row.on_drag(drag_paths, |_paths, _, _, cx| cx.new(|_| Empty))
-                        .external_drag_payload(|paths: &Vec<PathBuf>, _window, _cx| {
-                            Some(ExternalDragPayload::Files(FileDragPaths::new(
-                                paths.iter().map(|path| (path.clone(), path.is_dir())),
-                            )))
-                        })
-                })
-                .when_some(drop_target, |row, target| {
-                    let external_target = target.clone();
-                    row.on_drop::<ExternalPaths>(cx.listener(
-                        move |this, paths: &ExternalPaths, _window, cx| {
-                            this.drop_external_into(
-                                external_target.clone(),
-                                paths.paths().to_vec(),
-                                cx,
-                            );
-                        },
-                    ))
-                    // Accept rows dragged from this window too. `Vec<PathBuf>`
-                    // is the value `on_drag` puts on the internal drag, so a
-                    // multi-selection arrives here intact (F6-33).
-                    .on_drop::<Vec<PathBuf>>(cx.listener(
-                        move |this, paths: &Vec<PathBuf>, _window, cx| {
-                            this.drop_internal_into(paths.clone(), target.clone(), cx);
-                        },
-                    ))
-                    // Visualise a valid destination while either kind of drag
-                    // hovers it, so the drop target is obvious before release.
-                    .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(rgb(drag_blue)))
-                    .drag_over::<Vec<PathBuf>>(move |style, _, _, _| style.bg(rgb(drag_blue)))
-                })
-                // `.context_menu` wraps the element in `ContextMenu`, which no
-                // longer exposes `tooltip`, so attach the tooltip first.
-                .when_some(trash_parent, |row, parent| {
-                    row.tooltip(move |window, cx| {
-                        let text = format!("復元先: {}", parent.clone());
-                        Tooltip::new(text).build(window, cx)
-                    })
-                })
-                .context_menu(context_menu)
-                .child(
-                    div()
-                        .w(px(18.0))
-                        .flex()
-                        .justify_center()
-                        .child(if show_thumbnail {
-                            gpui_kit::img(entry.path.as_path())
-                                .size(px(18.0))
-                                .with_fallback(icon_fallback)
-                                .into_any_element()
-                        } else {
-                            icon_fallback()
-                        }),
-                )
-                .child(
-                    // `tooltip` needs an interactive (Stateful) element, hence
-                    // the explicit id on the truncated name cell.
-                    div()
-                        .id(("row-name", index))
-                        .flex_1()
-                        .truncate()
-                        .tooltip(move |window, cx| {
-                            Tooltip::new(name_tooltip_text.clone()).build(window, cx)
-                        })
-                        .child(display_name),
-                )
-                .child(
-                    div()
-                        .w(px(90.0))
-                        .text_xs()
-                        .truncate()
-                        .text_color(rgb(p.muted))
-                        .child(if this.view == ViewSource::Trash {
-                            "—".to_string()
-                        } else {
-                            model::kind_label(&entry)
-                        }),
-                )
-                .child(
-                    div()
-                        .w(px(90.0))
-                        .text_xs()
-                        .text_right()
-                        .text_color(rgb(p.muted))
-                        .child(if entry.is_dir || this.view == ViewSource::Trash {
-                            "-".to_string()
-                        } else {
-                            human_size(entry.size)
-                        }),
-                )
-                .child(
-                    div()
-                        .w(px(150.0))
-                        .text_xs()
-                        .text_right()
-                        .text_color(rgb(p.muted))
-                        .child(human_datetime(entry.modified)),
-                )
-                .into_any_element(),
-        )
+                        icon_fallback()
+                    }),
+            );
+        for ((key, width), text) in columns.into_iter().zip(column_texts) {
+            let cell: AnyElement = if key == SortKey::Name {
+                // `tooltip` needs an interactive (Stateful) element, hence
+                // the explicit id on the truncated name cell.
+                let base = div().id(("row-name", index)).truncate();
+                let base = match width {
+                    Some(width) => base.w(px(width)),
+                    None => base.flex_1(),
+                };
+                let tooltip_text = name_tooltip_text.clone();
+                base.tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
+                    .child(text)
+                    .into_any_element()
+            } else {
+                let base = div().text_xs().truncate().text_color(rgb(p.muted));
+                let base = match width {
+                    Some(width) => base.w(px(width)),
+                    None => base.flex_1(),
+                };
+                // Keep the historical per-column alignment: only Size and
+                // Modified are right-aligned; Kind stays left-aligned.
+                let base = match key {
+                    SortKey::Size | SortKey::Modified => base.text_right(),
+                    _ => base,
+                };
+                base.child(text).into_any_element()
+            };
+            row = row.child(cell);
+        }
+        Some(row.into_any_element())
     }
 
     /// One row of the icon grid: up to `columns` cells.
@@ -11350,6 +11488,7 @@ impl Explorer {
         state.set_sort_choice(sort_choice);
         state.set_column_prefs(self.settings.column_prefs.clone());
         state.set_show_hidden(self.settings.show_hidden);
+        state.set_show_thumbnails(self.settings.show_thumbnails);
         state.observe_inputs(cx);
         // `observe_inputs` only watches the search box. The text editors never
         // emit `SetTerminal`/`SetKeymap`, so watch their `Change` events here to
@@ -11482,6 +11621,13 @@ impl SettingsUiHost for Explorer {
                     cx.notify();
                 }
             }
+            SettingsUiAction::ToggleThumbnails(value) => {
+                if let Some(state) = self.settings_ui.as_mut() {
+                    state.set_show_thumbnails(value);
+                    state.dirty = true;
+                    cx.notify();
+                }
+            }
             SettingsUiAction::SetColumnVisible { key, visible } => {
                 if let Some(state) = self.settings_ui.as_mut() {
                     let next = crate::settings_ui::column_visibility(
@@ -11536,6 +11682,7 @@ impl SettingsUiHost for Explorer {
                     sort_choice,
                     column_prefs,
                     show_hidden,
+                    show_thumbnails,
                 ) = {
                     let Some(state) = self.settings_ui.as_ref() else {
                         return;
@@ -11548,6 +11695,7 @@ impl SettingsUiHost for Explorer {
                         state.sort_choice.clone(),
                         state.column_prefs.clone(),
                         state.show_hidden,
+                        state.show_thumbnails,
                     )
                 };
 
@@ -11637,6 +11785,7 @@ impl SettingsUiHost for Explorer {
                     ViewLayout::Details
                 };
                 self.settings.show_hidden = show_hidden;
+                self.settings.show_thumbnails = show_thumbnails;
                 let sort_key = match sort_choice.as_str() {
                     "kind" => SortKey::Kind,
                     "size" => SortKey::Size,

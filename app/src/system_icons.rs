@@ -537,6 +537,18 @@ mod tests {
     }
 
     #[test]
+    fn icon_name_for_kind_treats_pnm_names_as_images() {
+        // NF04: the system-icon helper takes `kind_for_name`'s result. Once
+        // PNM extensions are Image kinds they must fall through to the image
+        // generic icon instead of the old text-x-generic (Unknown) fallback.
+        for name in ["img.pbm", "img.ppm", "img.pgm", "img.pnm"] {
+            let kind = kind_for_name(name);
+            assert_eq!(kind, FileKind::Image, "{name}");
+            assert_eq!(icon_name_for_kind(kind, name), "image-x-generic", "{name}");
+        }
+    }
+
+    #[test]
     fn generic_icon_for_kind_covers_every_file_kind() {
         // Table-driven oracle for every FileKind variant (L08): a missing or
         // regressed branch would surface as a wrong icon name here.

@@ -49,7 +49,9 @@ pub fn kind_for_name(name: &str) -> FileKind {
     let extension = extension.to_ascii_lowercase();
     match extension.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tif" | "tiff"
-        | "avif" | "heic" | "heif" | "raw" | "psd" | "xcf" => FileKind::Image,
+        | "avif" | "heic" | "heif" | "raw" | "psd" | "xcf" | "pbm" | "ppm" | "pgm" | "pnm" => {
+            FileKind::Image
+        }
         "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "rb" | "go" | "java" | "kt"
         | "kts" | "c" | "cc" | "cpp" | "cxx" | "h" | "hpp" | "cs" | "swift" | "php" | "sh"
         | "bash" | "zsh" | "fish" | "lua" | "pl" | "r" | "scala" | "clj" | "ex" | "exs" | "erl"
@@ -164,6 +166,24 @@ mod tests {
         assert_eq!(kind_for_name("weird.xyz"), FileKind::Unknown);
         assert_eq!(kind_for_name("Makefile"), FileKind::Unknown);
         assert_eq!(kind_for_name("no-dot"), FileKind::Unknown);
+    }
+
+    #[test]
+    fn portable_anymap_extensions_map_to_image_kind() {
+        // NF04: `.pbm` / `.ppm` / `.pgm` / `.pnm` are decodable by
+        // `preview::image_format_for_name` and `gpui_kit::img`, so the icon
+        // classifier must agree with the preview allowlist. Matching stays
+        // case-insensitive, like every other extension here.
+        for name in [
+            "img.pbm", "img.ppm", "img.pgm", "img.pnm", "IMG.PBM", "IMG.PPM", "IMG.PGM", "IMG.PNM",
+        ] {
+            assert_eq!(kind_for_name(name), FileKind::Image, "{name}");
+            assert_eq!(
+                format!("{:?}", icon_for_kind(kind_for_name(name))),
+                format!("{:?}", IconName::FileImage),
+                "{name}"
+            );
+        }
     }
 
     #[test]

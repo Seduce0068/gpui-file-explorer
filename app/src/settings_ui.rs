@@ -160,6 +160,8 @@ pub enum SettingsUiAction {
     SetView(String),
     /// Show or hide dot-files.
     ToggleHidden(bool),
+    /// NW09: show or hide image thumbnails in the list/grid.
+    ToggleThumbnails(bool),
     /// Change the sort key.
     SetSort(String),
     /// Show or hide one details-view column.
@@ -195,6 +197,10 @@ pub struct SettingsUiState {
     pub column_prefs: ColumnPrefs,
     /// Current "show hidden files" flag.
     pub show_hidden: bool,
+    /// NW09: current "show image thumbnails" flag. Defaults to `true` to match
+    /// `Settings::default`, so a host that has not wired the setter yet still
+    /// previews the same value it persists.
+    pub show_thumbnails: bool,
     /// Terminal startup command editor.
     pub terminal_input: Entity<InputState>,
     /// Keymap override editor (`action=chord` entries separated by `;`).
@@ -241,6 +247,7 @@ impl SettingsUiState {
             sort_choice: String::new(),
             column_prefs: ColumnPrefs::default(),
             show_hidden: false,
+            show_thumbnails: true,
             terminal_input,
             keymap_input,
             search_input,
@@ -281,6 +288,19 @@ impl SettingsUiState {
     /// Set the "show hidden files" flag.
     pub fn set_show_hidden(&mut self, value: bool) {
         self.show_hidden = value;
+    }
+
+    /// Seed the NW09 thumbnail toggle from persisted settings.
+    ///
+    /// Like [`Self::set_column_prefs`], this only fills the form: the host marks
+    /// the overlay dirty when the user actually flips the switch.
+    pub fn set_show_thumbnails(&mut self, value: bool) {
+        self.show_thumbnails = value;
+    }
+
+    /// Current thumbnail toggle value, read back by the host on Save.
+    pub fn get_show_thumbnails(&self) -> bool {
+        self.show_thumbnails
     }
 
     /// Mark the overlay as read-only (AJ07 / AJ09).
@@ -587,6 +607,24 @@ const FILES_COLUMN_KEYWORDS: &[&str] = &[
     "サイズ",
     "更新日時",
 ];
+/// NW09: keywords of the thumbnail toggle row on the Files page. The persisted
+/// `settings.json` key is included for the "キー名で検索" promise, alongside the
+/// words actually rendered in the row caption/description.
+const FILES_THUMBNAILS_KEYWORDS: &[&str] = &[
+    "サムネイル",
+    "画像サムネイル",
+    "一覧に画像サムネイルを表示",
+    "thumbnail",
+    "thumbnails",
+    "show_thumbnails",
+    "画像",
+    "実画像",
+    "一覧",
+    "表示",
+    "ファイルの表示",
+    "8 MiB",
+    "symlink",
+];
 const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "ショートカット",
     "キー",
@@ -784,6 +822,10 @@ const FILES_SORT_DESCRIPTION: &str = concat!(
     crate::strings::directory_view_only_note!()
 );
 const FILES_COLUMN_DESCRIPTION: &str = "一覧ヘッダに出す列と順番を選びます（チェックボックスで表示/非表示、↑↓で並べ替え。幅は保存済みの値を表示）";
+/// NW09: description of the thumbnail toggle. Kept as a constant so the search
+/// keywords and the rendered wording cannot drift apart.
+const FILES_THUMBNAILS_DESCRIPTION: &str =
+    "画像ファイルを実画像のサムネイルで一覧/グリッドに表示します（8 MiB 以下・非 symlink のみ）";
 
 /// 表示専用のカラーパレット行に添える、編集可能なテーマ行への案内（AB13）。
 ///
@@ -927,6 +969,7 @@ fn tab_keyword_groups(tab: SettingsTab) -> &'static [&'static [&'static str]] {
         SettingsTab::Appearance => &[APPEARANCE_THEME_KEYWORDS, APPEARANCE_VIEW_KEYWORDS],
         SettingsTab::Files => &[
             FILES_HIDDEN_KEYWORDS,
+            FILES_THUMBNAILS_KEYWORDS,
             FILES_SORT_KEYWORDS,
             FILES_COLUMN_KEYWORDS,
         ],
@@ -1495,10 +1538,16 @@ pub fn render_settings_content<V: SettingsUiHost>(
         .on_click(cx.listener(|this: &mut V, checked: &bool, _window, cx| {
             this.on_settings_action(SettingsUiAction::ToggleHidden(*checked), cx);
         }));
+    let thumbnails_switch = Switch::new("settings-show-thumbnails")
+        .checked(state.show_thumbnails)
+        .on_click(cx.listener(|this: &mut V, checked: &bool, _window, cx| {
+            this.on_settings_action(SettingsUiAction::ToggleThumbnails(*checked), cx);
+        }));
 
     let show_appearance_theme = matches_query(query, APPEARANCE_THEME_KEYWORDS);
     let show_appearance_view = matches_query(query, APPEARANCE_VIEW_KEYWORDS);
     let show_files_hidden = matches_query(query, FILES_HIDDEN_KEYWORDS);
+    let show_files_thumbnails = matches_query(query, FILES_THUMBNAILS_KEYWORDS);
     let show_files_sort = matches_query(query, FILES_SORT_KEYWORDS);
     let show_files_columns = matches_query(query, FILES_COLUMN_KEYWORDS);
     let show_shortcuts_keymap = matches_query(query, SHORTCUTS_KEYMAP_KEYWORDS);
@@ -1550,6 +1599,19 @@ pub fn render_settings_content<V: SettingsUiHost>(
                         FILES_HIDDEN_DESCRIPTION,
                         hidden_switch,
                     ));
+            }
+            if show_files_thumbnails {
+                // Both rows share the ファイルの表示 section; repeat its title
+                // only when the hidden-files row was filtered out.
+                if !show_files_hidden {
+                    column = column.child(section_title(palette, "ファイルの表示"));
+                }
+                column = column.child(setting_row(
+                    palette,
+                    "一覧に画像サムネイルを表示",
+                    FILES_THUMBNAILS_DESCRIPTION,
+                    thumbnails_switch,
+                ));
             }
             if show_files_sort {
                 column = column
@@ -1914,10 +1976,11 @@ mod tests {
         SettingsUiPalette, APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS,
         APPEARANCE_VIEW_DESCRIPTION, APPEARANCE_VIEW_KEYWORDS, FILES_HIDDEN_DESCRIPTION,
         FILES_HIDDEN_KEYWORDS, FILES_SORT_DESCRIPTION, FILES_SORT_KEYWORDS,
-        PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS,
-        SEARCH_HISTORY_CHIPS_HELP, SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER,
-        SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES, SHORTCUTS_KEYMAP_KEYWORDS,
-        TERMINAL_COMMAND_KEYWORDS, TERMINAL_COMMAND_SETTINGS_HINT,
+        FILES_THUMBNAILS_DESCRIPTION, FILES_THUMBNAILS_KEYWORDS, PERSONALIZE_INFO_KEYWORDS,
+        PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS, SEARCH_HISTORY_CHIPS_HELP,
+        SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
+        SHORTCUTS_DEFAULT_LINES, SHORTCUTS_KEYMAP_KEYWORDS, TERMINAL_COMMAND_KEYWORDS,
+        TERMINAL_COMMAND_SETTINGS_HINT,
     };
     use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
@@ -2051,6 +2114,7 @@ mod tests {
             ("terminal_command", SettingsTab::Terminal),
             ("theme_choice", SettingsTab::Appearance),
             ("show_hidden", SettingsTab::Files),
+            ("show_thumbnails", SettingsTab::Files),
             ("dark", SettingsTab::Appearance),
             ("light", SettingsTab::Appearance),
             ("system", SettingsTab::Appearance),
@@ -2096,7 +2160,57 @@ mod tests {
             );
         }
         assert!(FILES_HIDDEN_KEYWORDS.contains(&"show_hidden"));
+        assert!(FILES_THUMBNAILS_KEYWORDS.contains(&"show_thumbnails"));
         assert!(TERMINAL_COMMAND_KEYWORDS.contains(&"terminal_command"));
+    }
+
+    #[test]
+    fn thumbnail_toggle_keywords_point_at_the_files_tab() {
+        // NW09: both the visible caption words and the persisted key must lead
+        // to the Files row, otherwise the "キー名で検索" promise dead-ends.
+        for keyword in [
+            "サムネイル",
+            "画像サムネイル",
+            "一覧に画像サムネイルを表示",
+            "thumbnail",
+            "show_thumbnails",
+            "8 MiB",
+            "symlink",
+        ] {
+            assert!(
+                matches_query(keyword, FILES_THUMBNAILS_KEYWORDS),
+                "{keyword} must match the thumbnail toggle row"
+            );
+            assert_eq!(
+                tabs_matching_query(keyword),
+                vec![SettingsTab::Files],
+                "query {keyword} must surface only the Files tab"
+            );
+        }
+        for word in ["サムネイル", "実画像", "8 MiB", "symlink"] {
+            assert!(
+                FILES_THUMBNAILS_DESCRIPTION.contains(word),
+                "description must render the searchable word {word}"
+            );
+        }
+    }
+
+    #[test]
+    fn thumbnail_toggle_action_carries_the_requested_value() {
+        // The host mirrors this action into `SettingsUiState::show_thumbnails`
+        // and marks the form dirty before Save reads it back.
+        assert_eq!(
+            SettingsUiAction::ToggleThumbnails(true),
+            SettingsUiAction::ToggleThumbnails(true)
+        );
+        assert_ne!(
+            SettingsUiAction::ToggleThumbnails(true),
+            SettingsUiAction::ToggleThumbnails(false)
+        );
+        assert_ne!(
+            SettingsUiAction::ToggleThumbnails(true),
+            SettingsUiAction::ToggleHidden(true)
+        );
     }
 
     #[test]

@@ -1344,13 +1344,14 @@ status: current
 
 ### 優先度: 中（新要件フォローアップ）
 
-- [ ] **NF01** 列カスタマイズ時にヘッダと行の列を整列させる（行描画を列ベースへ）
+- [x] **NF01** 列カスタマイズ時にヘッダと行の列を整列させる（行描画を列ベースへ） — 対応: fix-columns
   — NW07 の残作業 / impl-columns 報告
 - [ ] **NF02** Windows 実ドライブ列挙の FFI 実装（windows-sys 直接依存＋unsafe  Narrow scope のレビュー合意が必要）
   — NW05 の documented stub を実装へ / AGENTS.md §15
-- [ ] **NF03** サムネイル設定の Switch を設定UIへ配線 + docs 更新
+- [x] **NF03** サムネイル設定の Switch を設定UIへ配線 + docs 更新
+  — 対応: fix-thumbsettings + 親（main.rs 配線）
   — NW09 のフォローアップ / README.md:148 / DESIGN.md:101
-- [ ] **NF04** icons.rs::kind_for_name に PNM 拡張子（pbm/ppm/pgm/pnm）を追加
+- [x] **NF04** icons.rs::kind_for_name に PNM 拡張子（pbm/ppm/pgm/pnm）を追加 — 対応: fix-icons-pnm
   — NW09 で発見したギャップ
 
 ### 優先度: 低（調査タスク）
