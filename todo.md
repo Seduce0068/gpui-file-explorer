@@ -1276,7 +1276,6 @@ status: current
 - [x] **AI08** キーマップ unbind 未ヒット通知に復帰導線なし — 対応: loop32-core
   — strings.rs:1060
 - [x] **AI09** やり直し空通知に記録対象ヒントなし — strings.rs:1139 — 対応: loop32-core
-- [ ] **AI10** キーマップ一括リセット UI が未配線（F1 が既に明記） （F1/README/設定カードで案内済み、UI 実装は既知の制限として残す）
   — strings.rs:769
 
 ### 優先度: 低（調査タスク）
@@ -1300,6 +1299,9 @@ status: current
 - [x] 最終項目を本 `todo.md` へ反映（2026-11-18）
 
 ## メモ
+
+- **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。
+  F1 / README / 設定カードで `keymap` を `[]` にする手順を案内済み（R30 AI10）。
 
 - グローバルTODO: `~/.config/opencode/todo.md`（複数プロジェクト横断のタスク用）。
 - 前回実行の 55 項目は `notes/task-discovery/round-6/consolidated.md` に存在したが未反映だった。
