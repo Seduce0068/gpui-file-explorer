@@ -1445,7 +1445,8 @@ status: current
 - [x] **AN06** context_menu_anchor のガード失敗分岐が無テスト — main.rs:461 — 対応: impl-r41-tests
 - [x] **AN07** status_color 回帰表に7定数が欠落 — main.rs:12348 — 対応: impl-r41-tests
 - [x] **AN08** オーバーレイヒント定数の配線ガードなし — strings.rs:235 — 対応: impl-r41-tests
-- [ ] **AN09** 列幅の settings.json キーが未文書化 — app/README.md
+- [x] **AN09** 列幅の settings.json キー文書化 — 対応: 親
+  — column_prefs.widths のキーと手編集手順を追記
 
 ### 優先度: 低（調査タスク）
 
