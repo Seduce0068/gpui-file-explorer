@@ -1201,6 +1201,27 @@ status: current
 - [x] **AE08** STATUS_SEARCH_STALE が F5 再検索を案内せず — 対応: loop28-ux
   — strings.rs:590
 
+### 優先度: 中（ループ R27・confirmed）
+
+- [ ] **AF01** status_color が警告をエラーより優先し結合通知が琥珀色に
+  — main.rs:540
+- [ ] **AF02** LOAD_ERROR_HINT_SEARCH が「再読込」（実動作は再検索）
+  — strings.rs:166
+- [ ] **AF03** ラベル編集ダイアログの脚文が DIALOG_FOOTER_HINT 迂回
+  — main.rs:7992
+- [ ] **AF04** 設定カード検索が settings.json の選択値にヒットしない
+  — settings_ui.rs:413
+- [ ] **AF05** 「再読込/再読み込み」の表記ゆれ未集約 — app/README.md:136
+
+### 優先度: 低（ループ R27）
+
+- [ ] **AF06** デバッグ進捗フックが STATUS_CANCEL_HINT 迂回 — main.rs:10529
+- [ ] **AF07** ops.rs require_directory の symlink 追跡分岐が無テスト
+- [ ] **AF08** preview.rs の post-read サイズガード分岐が無テスト
+- [ ] **AF09** watcher.rs DirWatcher::new の初期化失敗分岐が無テスト
+- [ ] **AF10** 設定ダイアログの Esc 表記が凡例と F1/README で不一致
+  — settings_ui.rs:398
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
