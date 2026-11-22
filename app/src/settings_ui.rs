@@ -403,6 +403,15 @@ fn settings_footer_legend() -> &'static str {
     )
 }
 
+/// AG08: F1 help and README both point to the footer legend because F1 is
+/// blocked inside the dialog, but the legend itself never said why F1 is
+/// missing. Close that loop with a separate short line: keeping it out of
+/// [`settings_footer_legend`] preserves the compact one-line key list and
+/// makes it impossible to mistake the note for an F1 key entry.
+fn settings_footer_f1_note() -> &'static str {
+    "F1 はダイアログ内では無効（ヘルプの代わりに下部のキー凡例を参照）"
+}
+
 // Search keyword sets, one per visible row. They are shared by the per-row
 // filter in `render_settings_content` and by `tabs_matching_query`, so a row and
 // the cross-tab hint derived from it can never drift apart.
@@ -542,6 +551,9 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "ctrl+shift+p",
     "quit",
     "ctrl+q",
+    // AG01: the reserved-action note also prints `open_settings`; searching
+    // that action name must surface this tab instead of dead-ending.
+    "open_settings",
 ];
 /// Searchable keywords of the "既定のショートカット" row group.
 ///
@@ -748,7 +760,12 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     // 表示
     "Ctrl+1 / Ctrl+2 … 詳細リスト / アイコングリッド",
     "Ctrl+H … 隠しファイルの表示切替",
-    "Ctrl+R / F5 … 再読込 / 検索の再実行",
+    // AG02: F1 / README と同じ正規文言へ集約する（「再読み込み」は旧表記）。
+    concat!(
+        "Ctrl+R / F5 … ",
+        crate::strings::reload_word!(),
+        " / 検索の再実行"
+    ),
     "Ctrl+F … ファイルを検索",
     "Ctrl+Shift+F … 検索結果を名前で絞り込み",
     "Ctrl+I … プロパティ",
@@ -1532,8 +1549,16 @@ pub fn render_settings_content<V: SettingsUiHost>(
     }
     // P10: F1 is intentionally swallowed while the dialog owns the keyboard,
     // so the footer always carries its own compact key legend (no search
-    // filter or unsaved-state dependency).
+    // filter or unsaved-state dependency). AG08: the note above the legend
+    // explains why F1 is absent instead of leaving a silent omission.
     let footer = footer
+        .child(
+            div()
+                .w_full()
+                .text_xs()
+                .text_color(rgb(palette.muted))
+                .child(settings_footer_f1_note()),
+        )
         .child(
             div()
                 .w_full()
@@ -1577,15 +1602,15 @@ mod tests {
         cancel_label, footer_status_text, matches_query, next_settings_focus, no_match_hint,
         personalize_info_lines, personalize_license_info_line, personalize_source_info_line,
         personalize_version_info_line, selected_index, settings_focus_order,
-        settings_footer_legend, settings_hidden_next, settings_row_is_visible,
-        settings_row_shortcut, settings_theme_next, settings_view_next, tabs_matching_query,
-        SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
-        APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS, APPEARANCE_VIEW_DESCRIPTION,
-        APPEARANCE_VIEW_KEYWORDS, FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS,
-        FILES_SORT_DESCRIPTION, FILES_SORT_KEYWORDS, PERSONALIZE_INFO_KEYWORDS,
-        PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS, SETTINGS_KEYMAP_INPUT_HINT,
-        SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
-        TERMINAL_COMMAND_KEYWORDS,
+        settings_footer_f1_note, settings_footer_legend, settings_hidden_next,
+        settings_row_is_visible, settings_row_shortcut, settings_theme_next, settings_view_next,
+        tabs_matching_query, SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction,
+        SettingsUiPalette, APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS,
+        APPEARANCE_VIEW_DESCRIPTION, APPEARANCE_VIEW_KEYWORDS, FILES_HIDDEN_DESCRIPTION,
+        FILES_HIDDEN_KEYWORDS, FILES_SORT_DESCRIPTION, FILES_SORT_KEYWORDS,
+        PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS,
+        SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
+        SHORTCUTS_DEFAULT_LINES, TERMINAL_COMMAND_KEYWORDS,
     };
     use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
@@ -1817,9 +1842,22 @@ mod tests {
         ] {
             assert!(legend.contains(token), "legend: {legend}");
         }
+        // AG08: F1 help and README point at this legend, so the dialog must
+        // explain the omission. The explanation is a separate note, not an F1
+        // key entry in the legend itself.
+        let note = settings_footer_f1_note();
+        assert!(note.contains("F1"), "F1 note must name the key: {note}");
+        assert!(
+            note.contains("無効"),
+            "F1 note must say it is disabled: {note}"
+        );
+        assert!(
+            note.contains("キー凡例"),
+            "F1 note must point to the legend: {note}"
+        );
         assert!(
             !legend.contains("F1"),
-            "F1 is blocked in the dialog: {legend}"
+            "F1 is blocked in the dialog, so the legend has no F1 entry: {legend}"
         );
         // Q05: naming both directions lengthens the line, but it must still fit
         // the 760px card (one compact line next to the save/cancel buttons).
@@ -2057,7 +2095,15 @@ mod tests {
         // AA05/M09: the example printed in SETTINGS_KEYMAP_INPUT_HINT must not
         // dead-end in the settings search. Every token has to surface the
         // Shortcuts tab so the wording users copy from the hint finds a row.
-        const EXAMPLES: &[&str] = &["open_preview", "ctrl+shift+p", "quit", "ctrl+q"];
+        const EXAMPLES: &[&str] = &[
+            "open_preview",
+            "ctrl+shift+p",
+            "quit",
+            "ctrl+q",
+            // AG01: the reserved-action note names `open_settings` too. It is
+            // not a copy-paste example, but the same dead-end applies.
+            "open_settings",
+        ];
         let hint_lower = SETTINGS_KEYMAP_INPUT_HINT.to_lowercase();
         for example in EXAMPLES {
             assert!(
@@ -2069,6 +2115,11 @@ mod tests {
                 "keymap hint example {example} must surface the Shortcuts tab"
             );
         }
+        assert_eq!(
+            tabs_matching_query("open_settings"),
+            vec![SettingsTab::Shortcuts],
+            "AG01: the reserved action name must resolve to exactly the Shortcuts tab"
+        );
     }
 
     #[test]
@@ -2492,14 +2543,32 @@ mod tests {
             .lines()
             .find(|line| line.contains("`Ctrl+R` / `F5`"))
             .expect("README must show the reload row");
+        // AG02: 「再読」を含むだけでは旧表記「再読み込み」も通ってしまうため、
+        // 正規文言を完全一致で固定し、旧表記の混入も検知する。
+        let expected = concat!(crate::strings::reload_word!(), " / 検索の再実行");
+        assert_eq!(
+            f1, expected,
+            "F1 reload row must use the canonical wording: {f1}"
+        );
+        let legend_desc = legend
+            .split_once(" … ")
+            .map_or(*legend, |(_, desc)| desc.trim());
+        assert_eq!(
+            legend_desc, expected,
+            "settings legend must use the canonical wording: {legend_desc}"
+        );
         for (name, text) in [
             ("F1 help", f1),
-            ("settings legend", *legend),
+            ("settings legend", legend_desc),
             ("README", readme_row),
         ] {
             assert!(
-                text.contains("再読") && text.contains("検索の再実行"),
+                text.contains(expected),
                 "{name} must explain reload and search re-run: {text}"
+            );
+            assert!(
+                !text.contains("再読み込み"),
+                "{name} must not use the stale wording 再読み込み: {text}"
             );
         }
     }
@@ -2699,6 +2768,13 @@ mod tests {
         "ゴミ箱ビュー",
         "ドラッグ&ドロップ",
         "ミドルクリック",
+        // AG05: mouse-operation rows added to F1 help to mirror README. They
+        // have no keyboard chord, so neither the Shortcuts row mirror nor the
+        // README chord lookup should try to match them.
+        "ダブルクリック",
+        "右クリック",
+        "ヘッダクリック",
+        "サイドバー / パンくずクリック",
         "設定ダイアログ",
         "設定ダイアログのタブ",
         "設定ダイアログのタブ（直接）",
@@ -2846,6 +2922,21 @@ mod tests {
         cells.join("\n")
     }
 
+    #[test]
+    fn readme_f4_key_cell_uses_backticks() {
+        // AG09: `readme_key_column()` removes backticks before comparing, so
+        // a lone unquoted F4 key cell passes every chord check. Pin the raw
+        // cell to the same backticked notation as its neighbours.
+        let f4_row = include_str!("../README.md")
+            .lines()
+            .find(|line| line.contains("選択中のフォルダでターミナルを開く"))
+            .expect("README must document F4");
+        assert!(
+            f4_row.starts_with("| `F4` |"),
+            "README F4 key cell must use backticks: {f4_row}"
+        );
+    }
+
     /// Whole-chord match inside a README key cell: `R` must not pass just
     /// because `Ctrl+R` is listed (X15).
     fn cell_has_chord(cell: &str, chord: &str) -> bool {
@@ -2890,6 +2981,38 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn readme_mouse_operations_are_documented_in_f1_help() {
+        // AG05/X15: `every_f1_help_key_has_a_readme_keybinding_row` checks only
+        // F1 → README, so the four mouse operations that lived solely in README
+        // never surfaced in F1 help. Mirror them in that direction too.
+        const MOUSE_KEYS: &[&str] = &[
+            "ダブルクリック",
+            "右クリック",
+            "ヘッダクリック",
+            "サイドバー / パンくずクリック",
+        ];
+        let readme_keys = readme_key_column();
+        let help_keys: Vec<&str> = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().map(|(key, _)| *key))
+            .collect();
+        for key in MOUSE_KEYS {
+            assert!(
+                readme_keys.lines().any(|cell| cell == *key),
+                "README キーバインド表に {key} 行が必要です"
+            );
+            assert!(
+                help_keys.contains(key),
+                "F1 HELP_SECTIONS must mirror README mouse operation {key}"
+            );
+            assert!(
+                HELP_KEY_EXCEPTIONS.contains(key),
+                "mouse operation {key} must be exempt from the chord mirror"
+            );
         }
     }
 

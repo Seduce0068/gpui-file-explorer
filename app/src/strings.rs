@@ -516,6 +516,11 @@ macro_rules! settings_tab_jump_keys {
 }
 pub(crate) use settings_tab_jump_keys;
 
+/// AG02: `reload_word!()` は他モジュール（設定 UI の保存ボタン等）からも
+/// 静的文字列へ埋め込むために使うため、クレート内へ再エクスポートする。
+/// マクロ定義自体は所有範囲外（105 行目）にあり、ここでは再エクスポートのみ。
+pub(crate) use reload_word;
+
 /// タブ直接移動キーの正規表記（Y05）。F1 / フッター / README の同期判定に使う。
 pub const SETTINGS_TAB_JUMP_KEYS: &str = settings_tab_jump_keys!();
 
@@ -589,6 +594,20 @@ pub const DIRECTORY_VIEW_ONLY_NOTE: &str = directory_view_only_note!();
 
 const _: () = assert!(DIRECTORY_VIEW_ONLY_NOTE.len() == directory_view_only_note!().len());
 
+/// ダイアログ共通フッターのキー案内（Z09）。
+/// ターミナル起動コマンド / キーマップ / 名前変更の 3 つのダイアログで
+/// 同じ文言を使う唯一の定義。F1 ヘルプ（「設定ダイアログ」/ Alt+K 行）と
+/// README の「Enter で保存 / Esc でキャンセル」に合わせる。
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// `dialog_footer_hint!()` を使う（入力ガード注記と同じ方式）。
+/// AG03: Alt+K 行からも埋め込むため、定義を F1 ヘルプより前に置く
+/// （macro_rules! は定義順に効く）。
+macro_rules! dialog_footer_hint {
+    () => {
+        "Enter で保存 / Esc でキャンセル"
+    };
+}
+
 /// Keyboard shortcuts shown by the F1 help overlay: (section, [(key, description)]).
 pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
@@ -606,6 +625,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "Ctrl+Shift+L",
                 "サイドバーのホームへ移動（他の場所はマウスのみ）",
             ),
+            // AG05: README のマウス操作表とキー文字列を一致させる（ux 側の
+            // HELP_KEY_EXCEPTIONS / 同期テストと組で運用する）。
+            ("ダブルクリック", "ディレクトリ移動 / ファイルを既定アプリで開く"),
+            ("サイドバー / パンくずクリック", "その場所へ移動"),
         ],
     ),
     (
@@ -642,6 +665,11 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "元に戻す / やり直す（名前変更・ゴミ箱のみ）",
             ),
             ("Ctrl+Shift+U", "操作の履歴を表示"),
+            // AG05: 右クリックのコンテキストメニューも README のキー列に合わせる。
+            (
+                "右クリック",
+                "コンテキストメニュー（開く / パスコピー / ゴミ箱 / ブックマーク他）",
+            ),
         ],
     ),
     (
@@ -649,6 +677,8 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+1 / Ctrl+2", "詳細リスト / アイコングリッド"),
             ("Ctrl+H", "隠しファイルの表示切替"),
+            // AG05: ヘッダクリックによるソートも README のキー列に合わせる。
+            ("ヘッダクリック", "名前 / サイズ / 更新日時でソート"),
             (
                 "Ctrl+R / F5",
                 concat!(reload_word!(), " / 検索の再実行"),
@@ -732,7 +762,9 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             (
                 "Alt+K",
                 concat!(
-                    "キーボードショートカットを設定（アクション名 コード / unbind アクション名で解除、Enter で保存 / Esc でキャンセル）。",
+                    "キーボードショートカットを設定（アクション名 コード / unbind アクション名で解除、",
+                    dialog_footer_hint!(),
+                    "）。",
                     reserved_keys_note!(),
                     "。最大 64 件まで。一括リセットのボタンはありません（KeyMap::reset は UI 未配線）。全既定へ戻す場合は設定ファイルの keymap を [] にするか、アクションごとに unbind してください"
                 ),
@@ -808,6 +840,27 @@ pub const EMPTY_FILTERED: (&str, &str) = (
     "絞り込みで全て除外されました",
     "種別や拡張子、名前（Ctrl+Shift+F）の条件を変更してください",
 );
+// AG10: サイドバーの空セクション用文言を既存の EMPTY_* と同じ場所に集約する。
+// 描画側は空セクションを is_empty() で丸ごと非表示にする設計のため、現時点では
+// 未使用（`-D warnings` を通すため下方の assert! で参照を保持する）。
+/// 最近使った項目が空のときのサイドバー文言。
+pub const EMPTY_RECENT: (&str, &str) = (
+    "最近使った項目はありません",
+    "フォルダを開くとここに表示されます",
+);
+/// ブックマークが空のときのサイドバー文言。
+pub const EMPTY_BOOKMARKS: (&str, &str) = (
+    "ブックマークはありません",
+    "Ctrl+D で現在のフォルダをブックマークできます",
+);
+/// ドライブが見つからないときのサイドバー文言。
+pub const EMPTY_DRIVE: (&str, &str) = (
+    "ドライブが見つかりません",
+    "ドライブの接続を確認してください",
+);
+const _: () = assert!(!EMPTY_RECENT.0.is_empty() && !EMPTY_RECENT.1.is_empty());
+const _: () = assert!(!EMPTY_BOOKMARKS.0.is_empty() && !EMPTY_BOOKMARKS.1.is_empty());
+const _: () = assert!(!EMPTY_DRIVE.0.is_empty() && !EMPTY_DRIVE.1.is_empty());
 pub const LOADING: &str = "読み込み中…";
 /// Recovery hint shown under a load error in the empty-state overlay (U-20).
 pub const LOAD_ERROR_HINT: &str = concat!("F5 で", reload_word!(), " / Ctrl+L で別のパスへ移動");
@@ -1051,6 +1104,11 @@ pub const STATUS_SETTINGS_READ_ONLY_HINT: &str = "（Ctrl+, で設定を確認�
 /// 情報量ルール (F6-36) の「復帰導線」に従い、設定を開き直す操作を併記する（I06）。
 pub const STATUS_SETTINGS_DISCARDED: &str =
     "未保存の変更を破棄しました（Ctrl+, で設定を開き直せます）";
+/// 設定オーバーレイの「保存」が成功したときの完了通知（AG06）。
+/// 上記 `STATUS_SETTINGS_DISCARDED` の成否に対応する成功版で、色分類も
+/// success(green) とする。テーマ変更時は個別の `STATUS_THEME_CHANGED_PREFIX`
+/// 付き通知を優先するため、ここは汎用の保存完了文言だけを保持する。
+pub const STATUS_SETTINGS_SAVED: &str = "設定を保存しました";
 /// 設定ダイアログの共通フッターに表示する「保存」操作の案内。
 /// K13 でターミナル欄の重複表示は削除され、共有フッターの未変更時
 /// （dirty = false）にのみ表示される。唯一の定義として文言のゆれを防ぐ（J08）。
@@ -1117,6 +1175,9 @@ pub const STATUS_TERMINAL_START_PREFIX: &str = "ターミナルを起動";
 /// ターミナル起動コマンドが長すぎる／制御文字を含むときの入力エラー（V03）。
 /// ターミナルコマンドダイアログと設定カードの両方で共有する唯一の定義。
 pub const STATUS_TERMINAL_COMMAND_INVALID: &str = "コマンドが長すぎるか、制御文字を含んでいます";
+/// ターミナル起動コマンドを空にして無効化したときの完了通知（AG04）。
+/// `main.rs` のターミナルコマンドダイアログ保存経路から参照する。
+pub const STATUS_TERMINAL_COMMAND_DISABLED: &str = "ターミナル起動コマンドを無効にしました";
 /// 保存検索の保存失敗（上限超過）の接頭辞（R04）。動的な `{name}` が後続するため、
 /// 接頭辞自体を error マーカーとして登録する。
 pub const STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX: &str = "検索を保存できませんでした: ";
@@ -1192,18 +1253,11 @@ pub const VALUE_UNKNOWN: &str = "-";
 /// Canonical cancel label. Do not use the English `cancel` in prompt buttons.
 pub const LABEL_CANCEL: &str = "キャンセル";
 
-/// ダイアログ共通フッターのキー案内（Z09）。
-/// ターミナル起動コマンド / キーマップ / 名前変更の 3 つのダイアログで
-/// 同じ文言を使う唯一の定義。F1 ヘルプ（「設定ダイアログ」/ Alt+K 行）と
-/// README の「Enter で保存 / Esc でキャンセル」に合わせる。
+/// ダイアログ共通フッターのキー案内（Z09）の正規定数。
+/// ターミナル起動コマンド / キーマップ / 名前変更の 3 つのダイアログで共用し、
+/// F1 ヘルプ（「設定ダイアログ」/ Alt+K 行）と README の表記に合わせる。
 /// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
-/// 下の `dialog_footer_hint!()` を使う（入力ガード注記と同じ方式）。
-macro_rules! dialog_footer_hint {
-    () => {
-        "Enter で保存 / Esc でキャンセル"
-    };
-}
-
+/// 上の `dialog_footer_hint!()` を使う（AG03 で定義を F1 より前に移動）。
 pub const DIALOG_FOOTER_HINT: &str = dialog_footer_hint!();
 
 /// ブックマークラベル編集ダイアログ専用の追記案内（AF03）。
@@ -1700,6 +1754,8 @@ mod tests {
             STATUS_SETTINGS_READ_ONLY,
             STATUS_SETTINGS_READ_ONLY_HINT,
             STATUS_SETTINGS_DISCARDED,
+            // AG06: 保存成功も在庫に登録し、空文字列や登録漏れを検出する。
+            STATUS_SETTINGS_SAVED,
             STATUS_SETTINGS_UNSAVED_HINT,
             STATUS_TAB_RESTORED,
             STATUS_TAB_RESTORE_EMPTY,
@@ -1731,6 +1787,8 @@ mod tests {
             STATUS_ACCESS_DENIED,
             STATUS_TERMINAL_START_PREFIX,
             STATUS_TERMINAL_COMMAND_INVALID,
+            // AG04: 無効化の完了通知も在庫に登録する。
+            STATUS_TERMINAL_COMMAND_DISABLED,
             STATUS_TERMINAL_DISABLED_HINT,
             STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
             STATUS_SAVED_SEARCH_INVALID_INPUT,
@@ -2001,10 +2059,15 @@ mod tests {
             // 拒否でも失敗でもない。完了通知 STATUS_CANCELLED は warning だが、
             // 進行中は成功 green のままとする（下の検証で例外として明示）。
             ("STATUS_CANCELLING", STATUS_CANCELLING, "success"),
+            // AG06: 設定保存の成功通知も success(green)。破棄通知（warning）
+            // との成否の非対称をここで解消する。
+            ("STATUS_SETTINGS_SAVED", STATUS_SETTINGS_SAVED, "success"),
         ];
         // W10: success 分類を許可するのは一時的な進行中通知だけ。意図なき
         // green 回帰を防ぐため、拒否語チェックの対象外もこの一覧で固定する。
         const TRANSIENT_IN_PROGRESS: &[&str] = &["STATUS_CANCELLING"];
+        // AG06: 完了型の成功通知（拒否語を持たない）も success として明示する。
+        const SUCCESS_NOTICES: &[&str] = &["STATUS_SETTINGS_SAVED"];
         // X02: データ消失の通知は拒否語（「〜ません」）を含まないが成功でもない。
         // 一時進行通知と同じく一般ルールの対象外とし、破棄の事実と復帰導線を
         // 個別に検証する（分類は warning 固定）。
@@ -2066,6 +2129,14 @@ mod tests {
                     message.contains("破棄しました") && message.contains("開き直せます"),
                     "{name} must describe the loss and its recovery: {message}"
                 );
+            } else if SUCCESS_NOTICES.contains(name) {
+                // AG06: 保存成功は「〜しました」で終わる完了通知で、拒否語を
+                // 含まないため一般ルールから除外する（色は success/green）。
+                assert!(*class == "success", "{name} must be success");
+                assert!(
+                    message.ends_with("しました") && !message.contains("ません"),
+                    "{name} must be a success notice: {message}"
+                );
             } else if AMBER_STATUS_NOTICES.contains(name) {
                 // AE04: 鮮度 / キャンセル / 読み取り専用は warning として分類表に
                 // 登録済みであること（下の逆方向チェック）だけを固定する。
@@ -2094,7 +2165,9 @@ mod tests {
             assert!(
                 *class == "warning"
                     || *class == "error"
-                    || (*class == "success" && TRANSIENT_IN_PROGRESS.contains(name)),
+                    || (*class == "success"
+                        && (TRANSIENT_IN_PROGRESS.contains(name)
+                            || SUCCESS_NOTICES.contains(name))),
                 "{name} has unknown class: {class}"
             );
         }
@@ -2140,9 +2213,11 @@ mod tests {
                     has_marker(error_markers, name),
                     "{name} is documented as error but missing from STATUS_ERROR_MARKERS"
                 ),
-                // W10: STATUS_CANCELLING のみ一時進行通知（success）で、
-                // 意図的にどちらのマーカーにも登録しない。
-                "success" => assert!(TRANSIENT_IN_PROGRESS.contains(name)),
+                // W10 / AG06: 一時進行通知（STATUS_CANCELLING）と保存成功通知
+                // （STATUS_SETTINGS_SAVED）は success で、どちらのマーカーにも登録しない。
+                "success" => {
+                    assert!(TRANSIENT_IN_PROGRESS.contains(name) || SUCCESS_NOTICES.contains(name))
+                }
                 other => panic!("{name} has unknown class: {other}"),
             }
         }
@@ -2196,6 +2271,28 @@ mod tests {
         assert!(
             STATUS_SETTINGS_DISCARDED.ends_with('）') && STATUS_SETTINGS_DISCARDED.contains('（'),
             "recovery hint must be a parenthesized suffix: {STATUS_SETTINGS_DISCARDED}"
+        );
+    }
+
+    #[test]
+    fn saved_settings_notice_is_the_success_counterpart_of_discarded() {
+        // AG06: 設定の成否で色が非対称にならないよう、保存成功にも専用定数を
+        // 持ち、破棄通知（warning）に対する成功（green）の対を固定する。
+        assert_eq!(STATUS_SETTINGS_SAVED, "設定を保存しました");
+        assert!(STATUS_SETTINGS_SAVED.ends_with("しました"));
+        assert!(STATUS_SETTINGS_DISCARDED.contains("しました"));
+        assert_ne!(STATUS_SETTINGS_SAVED, STATUS_SETTINGS_DISCARDED);
+        // 成功通知は破棄の復帰導線を誤って併記しない。
+        assert!(!STATUS_SETTINGS_SAVED.contains("破棄"));
+        assert!(!STATUS_SETTINGS_SAVED.contains('（'));
+        let main_source = include_str!("main.rs");
+        assert!(
+            main_source.contains("STATUS_SETTINGS_SAVED"),
+            "settings overlay Save must route through STATUS_SETTINGS_SAVED"
+        );
+        assert!(
+            !main_source.contains("\"設定を保存しました\""),
+            "settings save success must not inline the literal"
         );
     }
 
@@ -2273,7 +2370,15 @@ mod tests {
         // 落とさない。キャンセルは完了分岐で最も優先される。
         assert_eq!(OP_RESULT_PRIORITY[0], "キャンセル");
         assert_eq!(OP_RESULT_PRIORITY[1], "一部失敗");
+        // AG07: 「失敗のみ」は成功を消さない分岐の中核で、未テストだった。
+        assert_eq!(OP_RESULT_PRIORITY[2], "失敗のみ");
         assert_eq!(OP_RESULT_PRIORITY[3], "成功");
+        // STATUS_PRIORITY と同じく、長さと重複を固定して分岐の増減・重複を検出する。
+        assert_eq!(OP_RESULT_PRIORITY.len(), 4);
+        let mut seen = std::collections::HashSet::new();
+        for label in OP_RESULT_PRIORITY {
+            assert!(seen.insert(*label), "duplicate priority label: {label}");
+        }
         assert!(STATUS_PARTIAL_FAILURE_SUFFIX.contains("一部失敗"));
         assert!(STATUS_OP_FAILED_SUFFIX.starts_with("できません"));
         // 進行中と完了は別フェーズで、同じ文言に潰してはならない。
@@ -2353,6 +2458,37 @@ mod tests {
         assert!(
             !main_source.contains("Enter で確定 / 空にして確定すると削除 / Esc でキャンセル"),
             "label dialog must not inline the composed footer"
+        );
+    }
+
+    #[test]
+    fn alt_k_help_row_uses_canonical_dialog_footer() {
+        // AG03: F1 の Alt+K 行は Z09 の共通フッターを埋め込み、古い直書き
+        // リテラルを再導入しないことを固定する。
+        let alt_k = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "Alt+K")
+            .map(|(_, text)| *text)
+            .expect("Alt+K help row must exist");
+        assert!(
+            alt_k.contains(DIALOG_FOOTER_HINT),
+            "Alt+K row must contain the canonical footer: {alt_k}"
+        );
+        let source = include_str!("strings.rs");
+        let lines: Vec<&str> = source.lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| line.trim() == "\"Alt+K\",")
+            .expect("Alt+K help row source must exist");
+        let row = lines[start..start + 8].join("\n");
+        assert!(
+            row.contains("dialog_footer_hint!()"),
+            "Alt+K row must embed the canonical macro: {row}"
+        );
+        assert!(
+            !row.contains("Enter で保存 / Esc でキャンセル"),
+            "Alt+K row must not inline the footer literal: {row}"
         );
     }
 
@@ -2637,6 +2773,26 @@ mod tests {
             "main.rs must route through STATUS_TERMINAL_COMMAND_INVALID"
         );
         assert!(main_source.contains("STATUS_TERMINAL_COMMAND_INVALID"));
+    }
+
+    #[test]
+    fn terminal_command_disabled_literal_has_one_definition() {
+        // AG04: 起動コマンド無効化の完了通知は定数定義だけに置き、main.rs の
+        // 保存経路は必ずその定数を参照する。
+        let literal = STATUS_TERMINAL_COMMAND_DISABLED;
+        assert!(literal.ends_with("無効にしました"));
+        let strings_source = include_str!("strings.rs");
+        assert_eq!(
+            strings_source.matches(literal).count(),
+            1,
+            "the literal must appear only in its constant definition"
+        );
+        let main_source = include_str!("main.rs");
+        assert!(
+            !main_source.contains(&format!("\"{literal}\"")),
+            "main.rs must route through STATUS_TERMINAL_COMMAND_DISABLED"
+        );
+        assert!(main_source.contains("STATUS_TERMINAL_COMMAND_DISABLED"));
     }
 
     #[test]

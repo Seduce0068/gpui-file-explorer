@@ -1225,24 +1225,24 @@ status: current
 
 ### 優先度: 中（ループ R28・confirmed）
 
-- [ ] **AG01** 設定検索で open_settings が零命中（キーワード未登録）
+- [x] **AG01** 設定検索で open_settings が零命中（キーワード未登録） — 対応: loop30-ux
   — settings_ui.rs:515
-- [ ] **AG02** reload_word! が未公開で「再読込」リテラルが重複
+- [x] **AG02** reload_word! が未公開で「再読込」リテラルが重複 — 対応: loop30-core（実バグ修正）
   — strings.rs:105 / settings_ui.rs:751
-- [ ] **AG03** Alt+K ヘルプ行が DIALOG_FOOTER_HINT を迂回
+- [x] **AG03** Alt+K ヘルプ行が DIALOG_FOOTER_HINT を迂回 — 対応: loop30-core
   — strings.rs:735
-- [ ] **AG04** ターミナル無効化成功通知が未定数化 — main.rs:4582
-- [ ] **AG05** F1 ヘルプが主要マウス操作4種を欠く — strings.rs:592
-- [ ] **AG06** 設定保存成功の通知文言が未定義（破棄通知と非対称）
+- [x] **AG04** ターミナル無効化成功通知が未定数化 — main.rs:4582 — 対応: loop30-core
+- [x] **AG05** F1 ヘルプが主要マウス操作4種を欠く — strings.rs:592 — 対応: loop30-ux（実バグ修正）
+- [x] **AG06** 設定保存成功の通知文言が未定義（破棄通知と非対称） — 対応: loop30-core
   — strings.rs:1033
 
 ### 優先度: 低（ループ R28）
 
-- [ ] **AG07** OP_RESULT_PRIORITY[2]「失敗のみ」が未検証 — strings.rs:1182
-- [ ] **AG08** 設定ダイアログ内で F1 無効の理由が示されない
+- [x] **AG07** OP_RESULT_PRIORITY[2]「失敗のみ」が未検証 — strings.rs:1182 — 対応: loop30-core
+- [x] **AG08** 設定ダイアログ内で F1 無効の理由が示されない — 対応: loop30-ux
   — settings_ui.rs:393
-- [ ] **AG09** README の F4 だけバッククォート表記でない — app/README.md:114
-- [ ] **AG10** サイドバー空セクションの文言が未定義（speculative）
+- [x] **AG09** README の F4 だけバッククォート表記でない — app/README.md:114 — 対応: loop30-ux
+- [x] **AG10** サイドバー空セクションの文言が未定義（speculative） — 対応: loop30-ux
   — strings.rs:791
 
 ### 優先度: 低（調査タスク）
