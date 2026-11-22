@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 
-use crate::icons::{kind_for_name, FileKind};
+use crate::icons::{kind_for_entry, FileKind};
 use crate::model::Entry;
 
 /// Contexts searched inside each theme, in priority order. `mimetypes` holds
@@ -231,13 +231,11 @@ impl SystemIconResolver {
     /// the extension table and then fall back to the icon for their
     /// [`FileKind`]. Returns `None` when no installed theme provides the icon.
     pub fn icon_path_for_entry(&mut self, entry: &Entry, size: u32) -> Option<PathBuf> {
-        let kind = if entry.is_dir {
-            FileKind::Folder
-        } else if entry.is_symlink {
-            FileKind::Symlink
-        } else {
-            kind_for_name(&entry.name_text)
-        };
+        // Delegate the state classification to `icons::kind_for_entry` so the
+        // directory > symlink > extension priority has a single source of
+        // truth (AK06). `icon_name_for_kind` derives its `is_dir` argument from
+        // the resulting `FileKind`, preserving the previous output exactly.
+        let kind = kind_for_entry(entry);
         let name = icon_name_for_kind(kind, &entry.name_text);
         self.icon_path_for_name(name, size)
     }
@@ -575,6 +573,74 @@ mod tests {
         SystemIconResolver,
     };
     use crate::icons::{icon_for_kind, kind_for_name, FileKind};
+    use crate::model::Entry;
+    use std::path::{Path, PathBuf};
+
+    /// Unique, self-cleaning fixture directory under `std::env::temp_dir()`.
+    ///
+    /// The tag distinguishes tests and the process id keeps parallel cargo
+    /// invocations from clobbering each other, so no `tempfile` dependency is
+    /// needed. `Drop` removes the tree even when an assertion fails.
+    struct TempIconTree {
+        root: PathBuf,
+    }
+
+    impl TempIconTree {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "gpui-file-explorer-icons-{tag}-{}",
+                std::process::id()
+            ));
+            // Discard leftovers from a previously crashed run.
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).expect("create fixture root");
+            Self { root }
+        }
+
+        fn root(&self) -> &Path {
+            &self.root
+        }
+
+        /// Create `<root>/<theme>/<context>/<size>/<name>.<ext>`. The resolver
+        /// only calls `is_file()`, so the bytes are intentionally a stub.
+        fn put(&self, theme: &str, context: &str, size: &str, name: &str, ext: &str) -> PathBuf {
+            let dir = self.root.join(theme).join(context).join(size);
+            std::fs::create_dir_all(&dir).expect("create fixture icon dir");
+            let file = dir.join(format!("{name}.{ext}"));
+            std::fs::write(&file, b"<svg/>").expect("write fixture icon");
+            file
+        }
+    }
+
+    impl Drop for TempIconTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// Host-independent resolver: only the fixture tree is searched, so no
+    /// installed icon theme can change the outcome.
+    fn fixture_resolver(tree: &TempIconTree, themes: &[&str]) -> SystemIconResolver {
+        SystemIconResolver {
+            cache: std::collections::HashMap::new(),
+            roots: vec![tree.root().to_path_buf()],
+            themes: themes.iter().map(|theme| theme.to_string()).collect(),
+            prefer_dark: false,
+        }
+    }
+
+    fn fixture_entry(name: &str, is_dir: bool, is_symlink: bool) -> Entry {
+        Entry {
+            name: name.into(),
+            name_text: name.to_string(),
+            sort_key: name.to_lowercase(),
+            path: PathBuf::from(name),
+            is_dir,
+            is_symlink,
+            size: 0,
+            modified: None,
+        }
+    }
 
     #[test]
     fn theme_names_for_kde_desktop_list_selects_breeze_first() {
@@ -938,6 +1004,109 @@ mod tests {
     }
 
     #[test]
+    fn entry_icon_uses_directory_then_symlink_then_extension_priority() {
+        // AK06: `icon_path_for_entry` used to duplicate the classification
+        // owned by `icons::kind_for_entry`. It now delegates, so a change to
+        // that shared priority must be visible through this test.
+        let tree = TempIconTree::new("entry-priority");
+        for name in ["inode-directory", "inode-symlink", "text-rust"] {
+            tree.put("hicolor", "mimetypes", "16", name, "svg");
+        }
+        let mut resolver = fixture_resolver(&tree, &["hicolor"]);
+
+        let cases = [
+            (fixture_entry("link.rs", true, true), "inode-directory.svg"),
+            (fixture_entry("link.rs", false, true), "inode-symlink.svg"),
+            (fixture_entry("main.rs", false, false), "text-rust.svg"),
+        ];
+        for (entry, expected) in cases {
+            let path = resolver
+                .icon_path_for_entry(&entry, 16)
+                .unwrap_or_else(|| panic!("no icon resolved for {entry:?}"));
+            assert_eq!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(expected),
+                "unexpected icon for is_dir={} is_symlink={} name={}",
+                entry.is_dir,
+                entry.is_symlink,
+                entry.name_text
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_resolution_prefers_the_first_search_root() {
+        let first = TempIconTree::new("root-first-a");
+        let second = TempIconTree::new("root-first-b");
+        let first_icon = first.put("hicolor", "mimetypes", "16", "text-rust", "svg");
+        second.put("hicolor", "mimetypes", "16", "text-rust", "svg");
+
+        let mut resolver = SystemIconResolver {
+            cache: std::collections::HashMap::new(),
+            roots: vec![first.root().to_path_buf(), second.root().to_path_buf()],
+            themes: vec!["hicolor".to_string()],
+            prefer_dark: false,
+        };
+        assert_eq!(
+            resolver.icon_path_for_name("text-rust", 16),
+            Some(first_icon)
+        );
+    }
+
+    #[test]
+    fn fixture_resolution_prefers_mimetypes_context_over_places() {
+        let tree = TempIconTree::new("context-order");
+        // CONTEXTS is the outer loop: a 32px icon in `mimetypes` must beat an
+        // exact 16px icon in the later `places` context.
+        let expected = tree.put("hicolor", "mimetypes", "32", "inode-directory", "svg");
+        tree.put("hicolor", "places", "16", "inode-directory", "svg");
+
+        let mut resolver = fixture_resolver(&tree, &["hicolor"]);
+        assert_eq!(
+            resolver.icon_path_for_name("inode-directory", 16),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn fixture_resolution_prefers_exact_size_over_scalable() {
+        let tree = TempIconTree::new("exact-over-scalable");
+        let expected = tree.put("hicolor", "mimetypes", "16", "text-rust", "svg");
+        tree.put("hicolor", "mimetypes", "scalable", "text-rust", "svg");
+
+        let mut resolver = fixture_resolver(&tree, &["hicolor"]);
+        assert_eq!(resolver.icon_path_for_name("text-rust", 16), Some(expected));
+    }
+
+    #[test]
+    fn fixture_resolution_prefers_svg_over_png() {
+        let tree = TempIconTree::new("svg-over-png");
+        let expected = tree.put("hicolor", "mimetypes", "16", "text-rust", "svg");
+        tree.put("hicolor", "mimetypes", "16", "text-rust", "png");
+
+        let mut resolver = fixture_resolver(&tree, &["hicolor"]);
+        assert_eq!(resolver.icon_path_for_name("text-rust", 16), Some(expected));
+    }
+
+    #[test]
+    fn fixture_resolution_caches_a_miss_even_after_the_file_appears() {
+        let tree = TempIconTree::new("cached-miss");
+        let mut resolver = fixture_resolver(&tree, &["hicolor"]);
+
+        assert_eq!(resolver.icon_path_for_name("text-rust", 16), None);
+        assert_eq!(resolver.cache.len(), 1, "the miss must be cached");
+
+        // A later filesystem change must not be observed through the cache.
+        tree.put("hicolor", "mimetypes", "16", "text-rust", "svg");
+        assert_eq!(
+            resolver.icon_path_for_name("text-rust", 16),
+            None,
+            "the cached miss must be returned without another lookup"
+        );
+        assert_eq!(resolver.cache.len(), 1);
+    }
+
+    #[test]
     fn resolver_caches_misses_by_name_and_size() {
         let mut resolver = SystemIconResolver::new();
         let missing = "definitely-not-a-real-icon-name-gpui-test";
@@ -951,8 +1120,6 @@ mod tests {
 
     #[test]
     fn zero_size_shares_cache_key_with_one() {
-        use std::path::PathBuf;
-
         let mut resolver = SystemIconResolver::new();
         let name = "text-rust";
         let sentinel = PathBuf::from("/nonexistent-sentinel/icon.svg");
@@ -1022,8 +1189,6 @@ mod tests {
 
     #[test]
     fn push_unique_path_skips_duplicates() {
-        use std::path::PathBuf;
-
         let mut paths = Vec::new();
         let candidate = PathBuf::from("/usr/share/icons");
         push_unique_path(&mut paths, candidate.clone());

@@ -19,7 +19,8 @@ status: draft
 
 ## コンテキスト
 
-NW10（[todo.md:1338](../../todo.md#L1338)）は OS ファイルクリップボード相互運用を扱う。
+NW10（[todo.md](../../todo.md) の ID `NW10`。行番号は更新で変わるため ID で参照）は
+OS ファイルクリップボード相互運用を扱う。
 対象は Windows の CF_HDROP、POSIX の `text/uri-list`（X11 / Wayland）、
 Android / iOS の共有 Intent である。
 
@@ -191,7 +192,8 @@ X11 では `text/uri-list` と `x-special/gnome-copied-files`（先頭行が `co
 Windows では `CF_HDROP` の生成と `Preferred DropEffect` による Copy / Move の区別が必要になる。
 
 いずれも FFI と `unsafe` を伴う。AGENTS.md §15 の禁止事項に加え、
-[NF02 の FFI 実装](../../todo.md#L1349)と同種のレビュー合意が必須である。
+[todo.md](../../todo.md) の ID `NF02`（Windows 実ドライブ列挙の FFI 実装）と
+同種のレビュー合意が必須である。
 合意がない限り実装しない。
 
 ### 選択肢 C: 内部専用を維持する
@@ -278,7 +280,8 @@ Android / iOS の共有 Intent は本 ADR の範囲外とし、別の ADR で設
 ## 参照
 
 - [notes/os-file-clipboard-notes.md](../../notes/os-file-clipboard-notes.md)
-- [todo.md:1338](../../todo.md#L1338)（NW10）、[todo.md:1349](../../todo.md#L1349)（NF02）
+- [todo.md](../../todo.md) の ID `NW10`（OS クリップボード調査と ADR）、
+  ID `NF02`（Windows 実ドライブ列挙の FFI 実装）
 - [RESEARCH.md:364-377](../../RESEARCH.md#L364-L377)（D&D とクリップボードの混同に注意）
 - ローカル取得源码: `gpui-pre-0.3.12`、`gpui-pre-linux-0.3.12`、
   `gpui-pre-windows-0.3.12`、`gpui-pre-macos-0.3.12`、`gpui-pre-ios-0.3.12`

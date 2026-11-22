@@ -244,6 +244,21 @@ fn effective_sidebar_width(viewport: f32) -> f32 {
     }
 }
 
+/// Sidebar width after applying the user's explicit toggle.
+///
+/// Pure so both the sidebar render and the icon-grid column calculation agree:
+/// forcing the sidebar open uses the full `SIDEBAR_WIDTH_PX` even on a phone
+/// viewport where [`effective_sidebar_width`] would collapse it to zero. The
+/// toggle is an override, not a third width mode — without it behaviour is
+/// unchanged at every viewport size.
+fn resolved_sidebar_width(viewport: f32, forced_open: bool) -> f32 {
+    if forced_open {
+        SIDEBAR_WIDTH_PX
+    } else {
+        effective_sidebar_width(viewport)
+    }
+}
+
 /// Dialog width for a requested size and viewport width.
 ///
 /// `pub(crate)` so `settings_ui` can drive its card through the same clamp.
@@ -1309,6 +1324,11 @@ enum KeyAction {
     /// click-only, so this is the minimal keyboard path into the sidebar
     /// (U-07); the other places stay mouse-only.
     FocusSidebar,
+    /// Ctrl+B: hold the sidebar open even on a narrow viewport. Chosen because
+    /// `b` is unused by the shipped table (unlike Ctrl+S/Ctrl+Alt+S territory),
+    /// it is not a reserved dialog key, and it matches the editor convention of
+    /// Ctrl+B toggling a sidebar.
+    ToggleSidebar,
     /// Ctrl+Space: toggle the focused row in the non-contiguous selection,
     /// the keyboard equivalent of Ctrl+click (U-08).
     ToggleSelection,
@@ -1587,8 +1607,8 @@ impl KeyMap {
             MoveUp, NewFolder, NewTab, NextTab, OpenContextMenu, OpenLocation, OpenPreview,
             OpenProperties, OpenSearch, OpenSelected, OpenSettings, OpenTerminal, PageDown, PageUp,
             Paste, PrevTab, Quit, Redo, Reload, RestoreClosedTab, RestoreSelected, SelectAll,
-            SelectFirst, SelectLast, StartRename, ToggleBookmark, ToggleHidden, ToggleTheme,
-            ToggleUndoHistory, TrashSelected, Undo,
+            SelectFirst, SelectLast, StartRename, ToggleBookmark, ToggleHidden, ToggleSidebar,
+            ToggleTheme, ToggleUndoHistory, TrashSelected, Undo,
         };
         let binding = |key: &str, ctrl, alt, shift, action| KeyBinding {
             key: key.to_string(),
@@ -1637,6 +1657,10 @@ impl KeyMap {
                 // OpenLocation above is shift=Some(false), so the shifted
                 // chord cannot collide under `binding_matches`.
                 binding("l", true, false, Some(true), KeyAction::FocusSidebar),
+                // Ctrl+B toggles the sidebar open on narrow viewports. `b` was
+                // unused in the shipped table; `shift: Some(false)` leaves
+                // Ctrl+Shift+B unbound for a future action.
+                binding("b", true, false, Some(false), ToggleSidebar),
                 binding("z", true, false, Some(false), Undo),
                 binding("z", true, false, Some(true), Redo),
                 binding("u", true, false, Some(true), ToggleUndoHistory),
@@ -2049,6 +2073,20 @@ enum ViewSource {
     Directory,
     Trash,
     Search,
+}
+
+/// Whether an entry may render a thumbnail in the list or grid.
+///
+/// Pure and shared by both row renderers so the 8 MiB read guard and the
+/// symlink refusal from `preview.rs` cannot drift between them. `gpui_kit::img`
+/// loads path resources with an unbounded `fs::read`, so the size cap must stay
+/// ahead of the extension check; trash ids are not real image paths at all.
+fn thumbnail_eligible(show_thumbnails: bool, view: ViewSource, entry: &Entry) -> bool {
+    show_thumbnails
+        && view != ViewSource::Trash
+        && !entry.is_dir
+        && entry.size <= preview::MAX_IMAGE_BYTES
+        && preview::is_thumbnailable(&entry.name_text, entry.is_symlink)
 }
 
 /// Keyboard intent while the trash view owns the key events. Permanent
@@ -2914,6 +2952,10 @@ struct Explorer {
     undo: UndoStack,
     /// Whether the undo-history overlay (Ctrl+Shift+H) is open.
     undo_history_open: bool,
+    /// Whether the sidebar is explicitly held open (Ctrl+B). Lets a narrow
+    /// viewport show the full 190px sidebar instead of the collapsed zero-width
+    /// one; purely a UI toggle, never persisted.
+    sidebar_forced_open: bool,
     /// Set after a successful rename; the next render refocuses the list.
     focus_list_on_next_render: bool,
     /// Development-only hooks (screenshot / deterministic smoke tests).
@@ -3490,6 +3532,7 @@ impl Explorer {
             preview: None,
             undo: UndoStack::new(),
             undo_history_open: false,
+            sidebar_forced_open: false,
             focus_list_on_next_render: false,
             debug,
         };
@@ -5413,6 +5456,7 @@ impl Explorer {
                         theme: &state.theme_choice,
                         view: &state.view_choice,
                         hidden: state.show_hidden,
+                        thumbnails: state.show_thumbnails,
                     };
                     settings_row_shortcut(state.tab, key, values)
                 })
@@ -5636,6 +5680,10 @@ impl Explorer {
             ToggleHidden => self.toggle_hidden(cx),
             ToggleTheme => self.toggle_theme(cx),
             FocusSidebar => self.focus_sidebar(cx),
+            ToggleSidebar => {
+                self.sidebar_forced_open = !self.sidebar_forced_open;
+                cx.notify();
+            }
             ToggleSelection => self.toggle_selection(cx),
             CopyPath => self.copy_path_for_selection(cx),
             OpenContextMenu => self.open_context_menu_for_selection(window, cx),
@@ -6517,7 +6565,7 @@ impl Explorer {
             div()
                 .text_xs()
                 .text_color(rgb(p.muted))
-                .child("Ctrl+Shift+U / Esc で閉じる（読み取り専用）"),
+                .child(crate::strings::HISTORY_DIALOG_FOOTER_HINT),
         );
         Some(
             div()
@@ -7396,7 +7444,7 @@ impl Explorer {
                 div()
                     .text_xs()
                     .text_color(rgb(p.muted))
-                    .child("Enter で移動 / Esc で閉じる"),
+                    .child(crate::strings::LOCATION_BAR_HINT),
             );
         if let Some(error) = &location.error {
             bar = bar.child(div().text_xs().text_color(rgb(p.red)).child(error.clone()));
@@ -7763,7 +7811,7 @@ impl Explorer {
                     div()
                         .text_xs()
                         .text_color(rgb(p.muted))
-                        .child("F1 / Esc で閉じる（一覧はスクロールできます）"),
+                        .child(crate::strings::HELP_OVERLAY_FOOTER_HINT),
                 )
                 .child(Button::new("help-close").label("閉じる").on_click(close)),
         );
@@ -8067,7 +8115,7 @@ impl Explorer {
             div()
                 .text_xs()
                 .text_color(rgb(p.muted))
-                .child("Esc で閉じる（読み取り専用）"),
+                .child(crate::strings::PROPERTIES_READ_ONLY_HINT),
         );
         Some(
             div()
@@ -9006,9 +9054,9 @@ impl Explorer {
         let input = self.search.input.as_ref()?;
         let p = self.palette;
         let hint = if self.load.is_loading() {
-            "検索中…"
+            crate::strings::SEARCH_IN_PROGRESS_LABEL
         } else {
-            "Enter で検索 / Esc で閉じる"
+            crate::strings::SEARCH_BAR_HINT
         };
         let mut modes = div().flex().items_center().gap_1();
         for (mode, label) in [(SearchMode::Name, "名前"), (SearchMode::Content, "内容")] {
@@ -9844,11 +9892,7 @@ impl Explorer {
         // The size guard matters: `gpui_kit::img` loads path resources with an
         // unbounded `fs::read`, so apply preview.rs's 8 MiB cap here. Trash ids
         // are not real image paths and are excluded explicitly.
-        let show_thumbnail = this.settings.show_thumbnails
-            && this.view != ViewSource::Trash
-            && !entry.is_dir
-            && entry.size <= preview::MAX_IMAGE_BYTES
-            && preview::is_thumbnailable(&entry.name_text, entry.is_symlink);
+        let show_thumbnail = thumbnail_eligible(this.settings.show_thumbnails, this.view, &entry);
 
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_handle.focus(window, cx);
@@ -10133,11 +10177,7 @@ impl Explorer {
                 }
             }
         };
-        let show_thumbnail = this.settings.show_thumbnails
-            && this.view != ViewSource::Trash
-            && !entry.is_dir
-            && entry.size <= preview::MAX_IMAGE_BYTES
-            && preview::is_thumbnailable(&entry.name_text, entry.is_symlink);
+        let show_thumbnail = thumbnail_eligible(this.settings.show_thumbnails, this.view, &entry);
 
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_handle.focus(window, cx);
@@ -10272,12 +10312,12 @@ impl Explorer {
         )
     }
 
-    fn sidebar(&self, viewport_width: f32, cx: &mut Context<Self>) -> Div {
-        let width = effective_sidebar_width(viewport_width);
-        // On a phone-sized viewport collapse the sidebar entirely instead of
-        // squeezing its rows into an unreadable strip. Re-opening it from a
-        // narrow viewport needs a dedicated toggle action; that is a follow-up
-        // (the existing FocusSidebar action only focuses the element).
+    fn sidebar(&self, viewport_width: f32, forced_open: bool, cx: &mut Context<Self>) -> Div {
+        let width = resolved_sidebar_width(viewport_width, forced_open);
+        // Without the Ctrl+B override a phone-sized viewport collapses the
+        // sidebar entirely instead of squeezing its rows into an unreadable
+        // strip. The toggle deliberately uses the full 190px so the rows stay
+        // legible; `FocusSidebar` alone only navigates to Home.
         if width <= 0.0 {
             return div().w(px(0.0)).h_full();
         }
@@ -11309,8 +11349,13 @@ impl Render for Explorer {
         } else {
             Some(self.sort_header(cx))
         };
-        let columns =
-            grid_columns_for_viewport(viewport_width, effective_sidebar_width(viewport_width));
+        // Keep the icon grid's available width in sync with the sidebar the
+        // render below actually draws (Ctrl+B can force it open on a narrow
+        // viewport). Without this the grid would overflow behind the sidebar.
+        let columns = grid_columns_for_viewport(
+            viewport_width,
+            resolved_sidebar_width(viewport_width, self.sidebar_forced_open),
+        );
         self.grid_column_count = columns;
         let item_count = if grid_mode {
             grid_row_count(self.entries.len(), columns)
@@ -11366,7 +11411,7 @@ impl Render for Explorer {
             .flex_1()
             .min_h_0()
             .flex()
-            .child(self.sidebar(viewport_width, cx))
+            .child(self.sidebar(viewport_width, self.sidebar_forced_open, cx))
             .child(
                 div()
                     .flex_1()
@@ -12214,30 +12259,31 @@ mod tests {
         labeled_display_name, load_error_display_text, middle_click_tab_dir,
         normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
         pending_rename_index, rank_fuzzy, read_properties_snapshot, reconcile_aware_status,
-        remove_keymap_override, saved_search_caption, saved_search_save_status,
-        search_filter_status, set_view_status, settings_discard_status, settings_read_only_status,
-        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
-        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        remove_keymap_override, resolved_sidebar_width, saved_search_caption,
+        saved_search_save_status, search_filter_status, set_view_status, settings_discard_status,
+        settings_read_only_status, settings_row_key_is_bare, settings_save_error_status,
+        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
         settings_validation_status, settings_write_needs_rollback, settings_write_status,
         startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
         terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
-        transfer_progress_status, transfer_skip_notice, trash_batch, trash_delete_status,
-        trash_key_action, trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
-        trashed_ids_from_snapshot, undo_missing_status, upsert_keymap_override, validate_cli_dir,
-        version_label, visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides,
-        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
-        Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction,
-        UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW,
-        GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT,
-        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
-        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
-        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
-        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
-        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
-        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
+        terminal_started_status, terminal_target_dir, theme_choice_label, thumbnail_eligible,
+        transfer_log_level, transfer_progress_status, transfer_skip_notice, trash_batch,
+        trash_delete_status, trash_key_action, trash_load_error_status,
+        trash_redo_cancelled_status, trash_undo_status, trashed_ids_from_snapshot,
+        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
+        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
+        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers,
+        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, UndoAction,
+        ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX,
+        GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT, SECONDARY_SLOT_PRIORITY,
+        SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
+        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+        STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
+        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+        STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
+        STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
+        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
         STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
         STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
         STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
@@ -13159,6 +13205,96 @@ mod tests {
             previous = width;
         }
         assert_eq!(previous, SIDEBAR_WIDTH_PX);
+    }
+
+    #[test]
+    fn resolved_sidebar_width_forces_full_width_only_when_toggled() {
+        // AK01: the Ctrl+B override must not change any existing width.
+        for viewport in [320.0, 390.0, 519.0, 520.0, 700.0, 900.0, 1280.0] {
+            assert_eq!(
+                resolved_sidebar_width(viewport, false),
+                effective_sidebar_width(viewport),
+                "viewport {viewport} without the toggle must be unchanged"
+            );
+        }
+        // Narrow viewports are the regression: collapsed by default, full 190px
+        // when forced open so sidebar rows stay legible.
+        assert_eq!(resolved_sidebar_width(390.0, false), 0.0);
+        assert_eq!(resolved_sidebar_width(390.0, true), SIDEBAR_WIDTH_PX);
+        assert_eq!(resolved_sidebar_width(390.0, true), 190.0);
+        // Wide viewports are already full width, with or without the toggle.
+        assert_eq!(resolved_sidebar_width(1280.0, false), SIDEBAR_WIDTH_PX);
+        assert_eq!(resolved_sidebar_width(1280.0, true), SIDEBAR_WIDTH_PX);
+        // A medium viewport also snaps to the full width when forced open.
+        assert_eq!(resolved_sidebar_width(710.0, true), SIDEBAR_WIDTH_PX);
+    }
+
+    #[test]
+    fn resolved_sidebar_width_keeps_grid_and_sidebar_in_agreement() {
+        // The same resolved value feeds both the sidebar render and the icon
+        // grid; on a forced-open phone viewport the grid must lose the sidebar
+        // width instead of drawing behind it.
+        let viewport = 390.0;
+        assert_eq!(effective_sidebar_width(viewport), 0.0);
+        assert_eq!(resolved_sidebar_width(viewport, true), SIDEBAR_WIDTH_PX);
+        assert_eq!(
+            grid_columns_for_viewport(viewport, resolved_sidebar_width(viewport, true)),
+            grid_columns_for_width(viewport - SIDEBAR_WIDTH_PX)
+        );
+    }
+
+    #[test]
+    fn thumbnail_eligible_applies_every_guard_consistently() {
+        // AK05: one table drives both row renderers through the shared helper.
+        use super::ViewSource;
+
+        let entry = |name: &str, is_dir: bool, is_symlink: bool, size: u64| Entry {
+            name: OsString::from(name),
+            name_text: name.to_string(),
+            sort_key: name.to_lowercase(),
+            path: PathBuf::from(format!("/tmp/{name}")),
+            is_dir,
+            is_symlink,
+            size,
+            modified: None,
+        };
+        let normal = entry("photo.png", false, false, 1024);
+        let directory = entry("photo.png", true, false, 1024);
+        let oversize = entry(
+            "photo.png",
+            false,
+            false,
+            crate::preview::MAX_IMAGE_BYTES + 1,
+        );
+        let symlink = entry("photo.png", false, true, 1024);
+        let unknown_ext = entry("notes.txt", false, false, 1024);
+
+        let cases = [
+            ("settings off", false, ViewSource::Directory, &normal, false),
+            ("trash view", true, ViewSource::Trash, &normal, false),
+            ("directory", true, ViewSource::Directory, &directory, false),
+            ("oversize", true, ViewSource::Directory, &oversize, false),
+            ("symlink", true, ViewSource::Directory, &symlink, false),
+            (
+                "non-image name",
+                true,
+                ViewSource::Directory,
+                &unknown_ext,
+                false,
+            ),
+            ("normal image", true, ViewSource::Directory, &normal, true),
+            ("search view image", true, ViewSource::Search, &normal, true),
+        ];
+        for (label, show_thumbnails, view, item, expected) in cases {
+            assert_eq!(
+                thumbnail_eligible(show_thumbnails, view, item),
+                expected,
+                "case: {label}"
+            );
+        }
+        // Exactly at the limit is still eligible; the guard is `<=`.
+        let at_limit = entry("photo.png", false, false, crate::preview::MAX_IMAGE_BYTES);
+        assert!(thumbnail_eligible(true, ViewSource::Directory, &at_limit));
     }
 
     #[test]
@@ -16353,6 +16489,17 @@ mod tests {
         assert_eq!(
             keymap.resolve("l", true, true, false),
             KeyAction::FocusSidebar
+        );
+        // AK01: Ctrl+B is the free chord chosen for the narrow-viewport sidebar
+        // toggle; it must not shadow any pre-existing shortcut.
+        assert_eq!(
+            keymap.resolve("b", true, false, false),
+            KeyAction::ToggleSidebar
+        );
+        assert_eq!(
+            keymap.resolve("b", true, true, false),
+            KeyAction::None,
+            "Ctrl+Shift+B stays unbound"
         );
         assert_eq!(
             keymap.resolve("space", true, false, false),

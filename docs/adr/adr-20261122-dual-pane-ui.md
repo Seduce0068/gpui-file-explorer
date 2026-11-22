@@ -30,23 +30,24 @@ status: draft
 
 ### 単一ペイン前提の状態設計（God Object）
 
-- `app/src/main.rs:2702` の `struct Explorer` は `cwd: PathBuf`（:2709）、
-  `all_entries` / `entries`（:2711-2713）、`selected` / `selection`
-  （:2717-2719）、`history: History`（:2732）、
-  `scroll_handle: UniformListScrollHandle`（:2734）、
-  `watcher: DirWatcher`（:2770）、`view` / `load` を 1 構造体に保持する。
+- `app/src/main.rs` の `struct Explorer` は `cwd: PathBuf`、
+  `all_entries` / `entries`、`selected` / `selection`、`history: History`、
+  `scroll_handle: UniformListScrollHandle`、`watcher: DirWatcher`、
+  `view` / `load` を 1 構造体に保持する。
   ペインごとの状態分離は存在しない。
-- `app/src/tabs.rs:9-14` の `Tab` は `cwd` と `History` のみ。
+  （行番号は main.rs の更新で頻繁に変わるため、以降はシンボル名で参照する。）
+- `app/src/tabs.rs` の `struct Tab` は `cwd` と `History` のみ。
   `Pane` / `PaneState` 型は `app/src` 全体を grep しても存在しない。
-- `app/src/main.rs:10841-10854` の `body` は 1 つの `sidebar` と
+- `app/src/main.rs` の `Explorer::render` 内の `body` は 1 つの `sidebar` と
   1 つの `flex_col(header + list_area)` だけを子に持つ。
-  ルート Entity は `explorer-root` の 1 つのみ（:10856-10859）。
+  ルート要素の id は `explorer-root` の 1 つのみ。
 
 ### 設計上の先送りと既知のギャップ
 
-- `DESIGN.md:427`（ADR-002）は「P0 は単一 Entity。タブ導入時に初めて分割
-  すればよい」と明記し、`DESIGN.md:1182` の ADR 表も同じ方針。
-  `DESIGN.md:125` は「タブ / 複数ウィンドウ」を P2 △ / P3 ◎ とし、
+- `DESIGN.md` の「決定（ADR-002）: P0 は単一 Entity」（§4.2）は
+  「P0 は単一 Entity。タブ導入時に初めて分割すればよい」と明記し、
+  ADR 表の ADR-002 行も同じ方針。
+  `DESIGN.md` の「タブ / 複数ウィンドウ」行は P2 △ / P3 ◎ とし、
   分割ビューは明記されていない。
 - `notes/task-discovery/round-2/competitor.md:37-41`（r2-cmp-01）は、
   「単一 Entity 前提の ADR-002 を再設計し、ペインごとの
@@ -57,11 +58,13 @@ status: draft
 
 ### 入力・操作の配線
 
-- 既存 `KeyAction`: `NextTab` / `PrevTab`（:1203-1204）、
-  `FocusSidebar`（:1231）、`ToggleSelection`（:1234）、`CopyPath`（:1237）。
-  ディスパッチは :5229-5248。アクティブペインを切替える列挙は存在しない。
-- コンテキストメニューは `ContextMenuExt`（:39）を row 要素へ適用
-  （:9485, :9735）。マウス起点の UI であり、キー操作の代替ではない。
+- 既存 `KeyAction` 列挙の `NextTab` / `PrevTab`、`FocusSidebar`、
+  `ToggleSelection`、`CopyPath`。ディスパッチは
+  `Explorer::on_key_down` の `match action`。
+  アクティブペインを切替える列挙は存在しない。
+- コンテキストメニューは `ContextMenuExt` を `Explorer::render` の row / cell
+  要素へ適用（`.context_menu(...)`）。マウス起点の UI であり、
+  キー操作の代替ではない。
 
 ### ライセンス
 
@@ -82,7 +85,7 @@ status: draft
   各ペインが独立した cwd / 選択 / スクロール / 監視を持ち、
   r2-scn-01 の同期スクロールや r2-cmp-01 のコピー元/先の同時表示を
   同じモデルで表現できる。純粋関数によるテストが可能。
-- 欠点: 工数が最大。`app/src/main.rs`（16,345 行）の God Object に触れ、
+- 欠点: 工数が最大。`app/src/main.rs`（約 1.7 万行）の God Object に触れ、
   `update_watcher` / load generation / 選択 reconciliation / `on_drop`
   など密結合な配線をほぼ作り直す（r2-cmp-01 の effort: L と一致）。
   ADR-002 の「単一 Entity」決定を明示的に改訂する必要がある。
@@ -133,7 +136,7 @@ ADR-002 を維持し、現在の単一ペイン UX の改善を先に行う。
 
 ### Phase 1: 2 ペインレイアウトとアクティブペイン routing
 
-- `body` を sidebar + 2 つの pane へ拡張（:10841-10854 の変更点）。
+- `Explorer::render` の `body` を sidebar + 2 つの pane へ拡張。
 - `ActivePane { Left, Right }` を導入し、フォーカス・キー・`on_drop` を
   アクティブペインへ振り分ける。タブ bar は各ペイン内へ配置する。
 
@@ -157,7 +160,8 @@ ADR-002 を維持し、現在の単一ペイン UX の改善を先に行う。
   保持し、片方の操作でもう片方の cwd が変わらない。
 - `NextTab` / `PrevTab` / `ToggleSelection` / `CopyPath` が
   アクティブペインに対してのみ作用する。
-- ドロップ（:10833-10836）がアクティブペインの cwd を宛先にする。
+- `Explorer::render` の `on_drop::<ExternalPaths>` がアクティブペインの
+  cwd を宛先にする。
 - ペイン間コピー/移動が Phase 2 で動作し、衝突時は既存の安全側
   （エラー表示）に従う。
 - 新規依存を追加しない。ライセンスは AGPL-3.0-or-later を維持する。
@@ -170,7 +174,7 @@ ADR-002 を維持し、現在の単一ペイン UX の改善を先に行う。
 - `PaneState` の生成・切替・履歴・選択の不変条件を
   `#[cfg(test)]` のユニットテストで検証する。
 - feature flag の on/off 双方で既存 keymap テスト
-  （:15475-15476, :15575-15596）を通す。
+  （`app/src/main.rs` の `keymap_*` ユニットテスト）を通す。
 - GUI の目視確認は Wayland 実機で実施し、
   `xwininfo -root -tree` / `xprop` でウィンドウ構成を記録する。
 - Rust コードに `unsafe` は導入しない（AGENTS.md §15 準拠）。
@@ -182,7 +186,7 @@ ADR-002 を維持し、現在の単一ペイン UX の改善を先に行う。
   （Windows パリティ）を先に実施する。**Windows / モバイル ADR の
   Phase 0 を優先し、本 ADR の Phase 0 はその後に着手する**。
 - 本 ADR の Phase 0 は ADR-002 の明示的な改訂を伴う。
-  `DESIGN.md` の ADR 表（:1182）は承認後に更新対象とする
+  `DESIGN.md` の ADR 表（ADR-002 行）は承認後に更新対象とする
   （本タスクでは設計文書を変更しない）。
 
 ## 結果とリスク
@@ -203,10 +207,12 @@ ADR-002 を維持し、現在の単一ペイン UX の改善を先に行う。
 
 ## 参照
 
-- `app/src/main.rs:2702-2770`, `:5229-5248`, `:9485`, `:9735`,
-  `:10833-10836`, `:10841-10859`
-- `app/src/tabs.rs:9-14`
-- `DESIGN.md:125`, `:427`, `:1182`
+- `app/src/main.rs`: `struct Explorer`, `Explorer::render`（`body` /
+  `explorer-root` / `.context_menu(...)` / `on_drop::<ExternalPaths>`）、
+  `enum KeyAction`、`Explorer::on_key_down` の `match action`
+- `app/src/tabs.rs`: `struct Tab`
+- `DESIGN.md`: 「タブ / 複数ウィンドウ」行、「決定（ADR-002）: P0 は単一
+  Entity」（§4.2）、ADR 表の ADR-002 行
 - `notes/task-discovery/round-2/competitor.md:37-41`（r2-cmp-01）
 - `notes/task-discovery/round-2/scenario.md:61-62`（r2-scn-01, r2-scn-02）
 - `app/Cargo.toml:7`, `app/src/main.rs:1`

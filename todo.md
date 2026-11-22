@@ -1359,33 +1359,33 @@ status: current
 
 ### 優先度: 中（ループ R37・confirmed）
 
-- [ ] **AK01** 狭い幅で折りたたんだサイドバーを再表示する手段がない
+- [x] **AK01** 狭い幅で折りたたんだサイドバーを再表示する手段がない — 対応: impl-r37-core
   — main.rs:10275
-- [ ] **AK02** サムネイル/列 Switch にキーボード操作経路がない（t/v/h のみ）
+- [x] **AK02** サムネイル/列 Switch にキーボード操作経路がない（t/v/h のみ） — 対応: impl-r37-ux
   — settings_ui.rs:1040
-- [ ] **AK03** モバイル ADR「作成中」表記が実態と乖離（作成済み・draft）
+- [x] **AK03** モバイル ADR「作成中」表記が実態と乖離（作成済み・draft） — 対応: impl-r37-ux
   — README.md:165 / DESIGN.md:58
-- [ ] **AK04** デュアルペイン ADR の main.rs 行アンカーが drift
+- [x] **AK04** デュアルペイン ADR の main.rs 行アンカーが drift — 対応: impl-r37-ux
   — docs/adr/adr-20261122-dual-pane-ui.md:33
-- [ ] **AK05** サムネイル表示条件が一覧/グリッドで重複し無テスト
+- [x] **AK05** サムネイル表示条件が一覧/グリッドで重複し無テスト — 対応: impl-r37-core
   — main.rs:9847,10136
-- [ ] **AK06** icon_path_for_entry の分類分岐が無テスト — system_icons.rs:233
-- [ ] **AK07** アイコンパス探索優先順位のフィクスチャテストなし
+- [x] **AK06** icon_path_for_entry の分類分岐が無テスト — system_icons.rs:233 — 対応: impl-r37-tests
+- [x] **AK07** アイコンパス探索優先順位のフィクスチャテストなし — 対応: impl-r37-tests
   — system_icons.rs:259
 
 ### 優先度: 低（ループ R37）
 
-- [ ] **AK08** 操作履歴ダイアログのキーヒントが未集約 — main.rs:6520
-- [ ] **AK09** パス入力バーのキーヒントが未集約 — main.rs:7399
-- [ ] **AK10** F1 ヘルプのフッターヒントが未集約 — main.rs:7766
-- [ ] **AK11** プロパティダイアログのキーヒントが未集約 — main.rs:8070
-- [ ] **AK12** 検索バーの待機/検索中ヒントが未集約 — main.rs:9009
-- [ ] **AK13** クリップボード ADR の todo アンカーが 1〜3 行ずれ
+- [x] **AK08** 操作履歴ダイアログのキーヒントが未集約 — main.rs:6520 — 対応: impl-r37-core + impl-r37-ux
+- [x] **AK09** パス入力バーのキーヒントが未集約 — main.rs:7399 — 対応: impl-r37-core + impl-r37-ux
+- [x] **AK10** F1 ヘルプのフッターヒントが未集約 — main.rs:7766 — 対応: impl-r37-core + impl-r37-ux
+- [x] **AK11** プロパティダイアログのキーヒントが未集約 — main.rs:8070 — 対応: impl-r37-core + impl-r37-ux
+- [x] **AK12** 検索バーの待機/検索中ヒントが未集約 — main.rs:9009 — 対応: impl-r37-core + impl-r37-ux
+- [x] **AK13** クリップボード ADR の todo アンカーが 1〜3 行ずれ — 対応: impl-r37-ux
   — docs/adr/adr-20261123-os-file-clipboard.md:22
-- [ ] **AK14** README 構成表に docs/adr/ が未掲載 — README.md:88
-- [ ] **AK15** column_label/column_ids の全バリアントが無テスト
+- [x] **AK14** README 構成表に docs/adr/ が未掲載 — README.md:88 — 対応: impl-r37-ux
+- [x] **AK15** column_label/column_ids の全バリアントが無テスト — 対応: impl-r37-ux
   — settings_ui.rs:1150
-- [ ] **AK16** 列 visibility/reorder の no-op 分岐が無テスト
+- [x] **AK16** 列 visibility/reorder の no-op 分岐が無テスト — 対応: impl-r37-ux
   — settings_ui.rs:1197
 
 ### 優先度: 低（調査タスク）

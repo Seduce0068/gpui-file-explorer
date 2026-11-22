@@ -624,6 +624,11 @@ const FILES_THUMBNAILS_KEYWORDS: &[&str] = &[
     "ファイルの表示",
     "8 MiB",
     "symlink",
+    // AK02: the bare-key hint rendered in FILES_THUMBNAILS_DESCRIPTION must be
+    // searchable, just like the t/v/h rows.
+    "キーボード",
+    "切替",
+    "b",
 ];
 const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "ショートカット",
@@ -691,6 +696,7 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "↑",
     "↓",
     "Ctrl+L",
+    "Ctrl+B",
     "Alt+←",
     "Alt+→",
     "Alt+↑",
@@ -755,6 +761,8 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "Alt+5",
     "Alt+1〜5",
     "Alt+S",
+    // AK02: bare Files-page key for the thumbnail row (F1 help "その他").
+    "b",
 ];
 
 /// Placeholder of the settings-page search field. Chord names such as `Alt+K`
@@ -785,11 +793,11 @@ const SETTINGS_KEYMAP_INPUT_HINT: &str = concat!(
     crate::strings::keymap_reset_guidance!()
 );
 
-/// Descriptions of the three rows with a bare-letter shortcut, plus the
+/// Descriptions of the four rows with a bare-letter shortcut, plus the
 /// existing Alt+S row. Kept as constants so the visible hint can be regression
 /// tested without a GPUI window. F1 is blocked while the settings dialog owns
 /// the keyboard, so each row still names its own key inline even though the
-/// same t/v/h keys are also listed in `strings::HELP_SECTIONS` (N04). The
+/// same t/v/h/b keys are also listed in `strings::HELP_SECTIONS` (N04). The
 /// shared typing-guard suffix (W07/X13) comes from the single canonical
 /// `strings::settings_input_guard_note!()` literal and is mirrored by the F1
 /// help rows, the Shortcuts-tab Alt+S row and README;
@@ -823,9 +831,13 @@ const FILES_SORT_DESCRIPTION: &str = concat!(
 );
 const FILES_COLUMN_DESCRIPTION: &str = "一覧ヘッダに出す列と順番を選びます（チェックボックスで表示/非表示、↑↓で並べ替え。幅は保存済みの値を表示）";
 /// NW09: description of the thumbnail toggle. Kept as a constant so the search
-/// keywords and the rendered wording cannot drift apart.
-const FILES_THUMBNAILS_DESCRIPTION: &str =
-    "画像ファイルを実画像のサムネイルで一覧/グリッドに表示します（8 MiB 以下・非 symlink のみ）";
+/// keywords and the rendered wording cannot drift apart. AK02 adds the same
+/// bare-key hint and canonical typing-guard note as the other row shortcuts.
+const FILES_THUMBNAILS_DESCRIPTION: &str = concat!(
+    "画像ファイルを実画像のサムネイルで一覧/グリッドに表示します（8 MiB 以下・非 symlink のみ）",
+    "（b でキーボードから切替）",
+    crate::strings::settings_input_guard_note!()
+);
 
 /// 表示専用のカラーパレット行に添える、編集可能なテーマ行への案内（AB13）。
 ///
@@ -856,6 +868,7 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "Enter … 選択項目を開く",
     "↑ / ↓ … 選択項目を上下に移動",
     "Ctrl+L … 場所を入力",
+    "Ctrl+B … サイドバーを表示 / 非表示",
     "Alt+← / Alt+→ … 戻る / 進む",
     "Alt+↑ / Backspace … 親フォルダ",
     "Home / End … 先頭 / 末尾へ",
@@ -905,6 +918,11 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "Alt+1〜5 … 設定ダイアログのタブへ直接移動",
     concat!(
         "Alt+S … ファイルタブの並び順を切替",
+        crate::strings::settings_input_guard_note!()
+    ),
+    // AK02: 1:1 mirror of the new F1 "b" row (T06 bidirectional test).
+    concat!(
+        "b … 設定ダイアログのファイルタブで画像サムネイルを切替（修飾キーなし）",
         crate::strings::settings_input_guard_note!()
     ),
 ];
@@ -1033,9 +1051,10 @@ pub fn no_match_hint(matching_tabs: &[SettingsTab]) -> String {
 /// `SettingsUiAction` deliberately has no "cycle" variant: adding one would
 /// break the exhaustive `match` in `main.rs`'s `on_settings_action`, which is
 /// outside this module's scope. The existing `SetTheme` / `SetView` /
-/// `ToggleHidden` actions are already wired to the dirty-flag and Save path, so
-/// the helper resolves the next value here instead. The caller can fill this
-/// struct straight from its `SettingsUiState` fields.
+/// `ToggleHidden` / `ToggleThumbnails` actions are already wired to the
+/// dirty-flag and Save path, so the helper resolves the next value here
+/// instead. The caller can fill this struct straight from its `SettingsUiState`
+/// fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SettingsRowValues<'a> {
     /// Current theme choice (`dark` / `light` / `system`).
@@ -1044,13 +1063,15 @@ pub struct SettingsRowValues<'a> {
     pub view: &'a str,
     /// Current "show hidden files" switch state.
     pub hidden: bool,
+    /// AK02: current "show image thumbnails" switch state.
+    pub thumbnails: bool,
 }
 
 /// Map a bare letter pressed on a settings page to the row it controls.
 ///
 /// The settings card's key guard in `main.rs` swallows global shortcuts, and
 /// gpui-component 0.9.1 excludes `RadioGroup` / `Switch` from the Tab focus
-/// cycle, so three rows are otherwise keyboard-inaccessible while the dialog
+/// cycle, so four rows are otherwise keyboard-inaccessible while the dialog
 /// is open. This mapping is deliberately pure: it takes only the page, the key
 /// and the current values, and returns an *existing* action for the host to
 /// pass to `SettingsUiHost::on_settings_action`.
@@ -1064,6 +1085,11 @@ pub struct SettingsRowValues<'a> {
 /// | 外観 (`Appearance`) | `t` | 配色 (テーマ) | [`SettingsUiAction::SetTheme`] with [`settings_theme_next`] |
 /// | 外観 (`Appearance`) | `v` | 既定のビュー | [`SettingsUiAction::SetView`] with [`settings_view_next`] |
 /// | ファイル (`Files`) | `h` | 隠しファイルを表示 | [`SettingsUiAction::ToggleHidden`] with [`settings_hidden_next`] |
+/// | ファイル (`Files`) | `b` | 一覧に画像サムネイルを表示 | [`SettingsUiAction::ToggleThumbnails`] with [`settings_thumbnails_next`] |
+///
+/// AK02: `b` is free on the Files page — `h` is the hidden-files row, `s` is
+/// reserved for `Alt+S` sorting (and must stay unclaimed by a bare key), and
+/// the settings guard only claims Tab / Enter / Escape / Alt+digit / Alt+S.
 ///
 /// Host requirements when wiring this in `main.rs`:
 /// 1. Ignore the key while a text input owns focus (search / keymap / terminal)
@@ -1092,6 +1118,9 @@ pub fn settings_row_shortcut(
         (SettingsTab::Files, "h") => Some(SettingsUiAction::ToggleHidden(settings_hidden_next(
             current.hidden,
         ))),
+        (SettingsTab::Files, "b") => Some(SettingsUiAction::ToggleThumbnails(
+            settings_thumbnails_next(current.thumbnails),
+        )),
         _ => None,
     }
 }
@@ -1104,6 +1133,7 @@ fn settings_row_keywords(tab: SettingsTab, key: &str) -> Option<&'static [&'stat
         (SettingsTab::Appearance, "t") => Some(APPEARANCE_THEME_KEYWORDS),
         (SettingsTab::Appearance, "v") => Some(APPEARANCE_VIEW_KEYWORDS),
         (SettingsTab::Files, "h") => Some(FILES_HIDDEN_KEYWORDS),
+        (SettingsTab::Files, "b") => Some(FILES_THUMBNAILS_KEYWORDS),
         _ => None,
     }
 }
@@ -1139,6 +1169,11 @@ pub fn settings_view_next(choice: &str) -> &'static str {
 
 /// Next switch value for the ファイル `h` shortcut.
 pub fn settings_hidden_next(current: bool) -> bool {
+    !current
+}
+
+/// AK02: next switch value for the ファイル `b` shortcut (image thumbnails).
+pub fn settings_thumbnails_next(current: bool) -> bool {
     !current
 }
 
@@ -1971,16 +2006,16 @@ mod tests {
         personalize_info_lines, personalize_license_info_line, personalize_source_info_line,
         personalize_version_info_line, save_label, selected_index, settings_focus_order,
         settings_footer_f1_note, settings_footer_legend, settings_hidden_next,
-        settings_row_is_visible, settings_row_shortcut, settings_theme_next, settings_view_next,
-        tabs_matching_query, SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction,
-        SettingsUiPalette, APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS,
-        APPEARANCE_VIEW_DESCRIPTION, APPEARANCE_VIEW_KEYWORDS, FILES_HIDDEN_DESCRIPTION,
-        FILES_HIDDEN_KEYWORDS, FILES_SORT_DESCRIPTION, FILES_SORT_KEYWORDS,
-        FILES_THUMBNAILS_DESCRIPTION, FILES_THUMBNAILS_KEYWORDS, PERSONALIZE_INFO_KEYWORDS,
-        PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS, SEARCH_HISTORY_CHIPS_HELP,
-        SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
-        SHORTCUTS_DEFAULT_LINES, SHORTCUTS_KEYMAP_KEYWORDS, TERMINAL_COMMAND_KEYWORDS,
-        TERMINAL_COMMAND_SETTINGS_HINT,
+        settings_row_is_visible, settings_row_shortcut, settings_theme_next,
+        settings_thumbnails_next, settings_view_next, tabs_matching_query, SettingsFocusTarget,
+        SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
+        APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS, APPEARANCE_VIEW_DESCRIPTION,
+        APPEARANCE_VIEW_KEYWORDS, FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS,
+        FILES_SORT_DESCRIPTION, FILES_SORT_KEYWORDS, FILES_THUMBNAILS_DESCRIPTION,
+        FILES_THUMBNAILS_KEYWORDS, PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT,
+        PERSONALIZE_PALETTE_KEYWORDS, SEARCH_HISTORY_CHIPS_HELP, SETTINGS_KEYMAP_INPUT_HINT,
+        SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
+        SHORTCUTS_KEYMAP_KEYWORDS, TERMINAL_COMMAND_KEYWORDS, TERMINAL_COMMAND_SETTINGS_HINT,
     };
     use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
@@ -3212,6 +3247,7 @@ mod tests {
             theme: "dark",
             view: "details",
             hidden: false,
+            thumbnails: false,
         };
         assert_eq!(
             settings_row_shortcut(SettingsTab::Appearance, "t", current),
@@ -3225,10 +3261,18 @@ mod tests {
             settings_row_shortcut(SettingsTab::Files, "h", current),
             Some(SettingsUiAction::ToggleHidden(true))
         );
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Files, "b", current),
+            Some(SettingsUiAction::ToggleThumbnails(true))
+        );
         // Upper-case and surrounding whitespace behave like the lower-case key.
         assert_eq!(
             settings_row_shortcut(SettingsTab::Appearance, " T ", current),
             Some(SettingsUiAction::SetTheme("light".to_string()))
+        );
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Files, " B ", current),
+            Some(SettingsUiAction::ToggleThumbnails(true))
         );
 
         // The returned value follows the current state, not a fixed default.
@@ -3236,6 +3280,7 @@ mod tests {
             theme: "system",
             view: "icons",
             hidden: true,
+            thumbnails: true,
         };
         assert_eq!(
             settings_row_shortcut(SettingsTab::Appearance, "t", other),
@@ -3249,6 +3294,10 @@ mod tests {
             settings_row_shortcut(SettingsTab::Files, "h", other),
             Some(SettingsUiAction::ToggleHidden(false))
         );
+        assert_eq!(
+            settings_row_shortcut(SettingsTab::Files, "b", other),
+            Some(SettingsUiAction::ToggleThumbnails(false))
+        );
     }
 
     #[test]
@@ -3257,9 +3306,11 @@ mod tests {
             theme: "dark",
             view: "details",
             hidden: false,
+            thumbnails: false,
         };
         for (tab, key) in [
             (SettingsTab::Appearance, "h"),
+            (SettingsTab::Appearance, "b"),
             (SettingsTab::Files, "t"),
             (SettingsTab::Files, "v"),
             (SettingsTab::Shortcuts, "t"),
@@ -3268,10 +3319,13 @@ mod tests {
             // Alt+1..5 and Alt+S belong to the existing tab/sort handlers.
             (SettingsTab::Appearance, "alt+t"),
             (SettingsTab::Files, "alt+h"),
+            // AK02: b is a bare key only; Alt+b belongs to the global keymap.
+            (SettingsTab::Files, "alt+b"),
             (SettingsTab::Appearance, "1"),
             (SettingsTab::Files, "s"),
             (SettingsTab::Appearance, ""),
             (SettingsTab::Appearance, "tt"),
+            (SettingsTab::Files, "bb"),
         ] {
             assert_eq!(
                 settings_row_shortcut(tab, key, current),
@@ -3288,12 +3342,22 @@ mod tests {
         assert!(settings_row_is_visible(SettingsTab::Appearance, "t", ""));
         assert!(settings_row_is_visible(SettingsTab::Appearance, "v", "  "));
         assert!(settings_row_is_visible(SettingsTab::Files, "h", "隠し"));
+        assert!(settings_row_is_visible(
+            SettingsTab::Files,
+            "b",
+            "サムネイル"
+        ));
         assert!(!settings_row_is_visible(
             SettingsTab::Appearance,
             "t",
             "隠し"
         ));
         assert!(!settings_row_is_visible(SettingsTab::Files, "h", "テーマ"));
+        assert!(!settings_row_is_visible(
+            SettingsTab::Files,
+            "b",
+            "隠しファイル"
+        ));
         assert!(!settings_row_is_visible(SettingsTab::Appearance, "s", ""));
         assert!(!settings_row_is_visible(SettingsTab::Files, "T", ""));
     }
@@ -3315,6 +3379,59 @@ mod tests {
 
         assert!(settings_hidden_next(false));
         assert!(!settings_hidden_next(true));
+
+        assert!(settings_thumbnails_next(false));
+        assert!(!settings_thumbnails_next(true));
+    }
+
+    #[test]
+    fn thumbnail_row_shortcut_is_mirrored_in_row_help_and_readme() {
+        // AK02: the new bare key must be reachable from every surface that
+        // documents row shortcuts, just like the M08 t/v/h keys.
+        assert!(
+            FILES_THUMBNAILS_DESCRIPTION.contains("（b でキーボードから切替）"),
+            "row description must advertise its key: {FILES_THUMBNAILS_DESCRIPTION}"
+        );
+        assert!(
+            FILES_THUMBNAILS_DESCRIPTION.contains(crate::strings::SETTINGS_INPUT_GUARD_NOTE),
+            "row description must use the canonical typing-guard note"
+        );
+        for word in ["キーボード", "切替", "b"] {
+            assert!(
+                FILES_THUMBNAILS_KEYWORDS.contains(&word),
+                "thumbnail keywords must stay searchable: {word}"
+            );
+        }
+        let f1 = crate::strings::HELP_SECTIONS
+            .iter()
+            .find(|(title, _)| *title == "その他")
+            .expect("その他 section exists")
+            .1
+            .iter()
+            .find(|(key, _)| *key == "b")
+            .map(|(_, text)| *text)
+            .expect("F1 must document the b row shortcut");
+        assert!(f1.contains("画像サムネイル"));
+        assert!(f1.ends_with(crate::strings::SETTINGS_INPUT_GUARD_NOTE));
+        assert!(
+            SHORTCUTS_DEFAULT_LINES
+                .iter()
+                .any(|line| line.starts_with("b … 設定ダイアログのファイルタブで画像サムネイル")),
+            "Shortcuts tab must mirror the F1 b row"
+        );
+        for readme in [
+            include_str!("../README.md"),
+            include_str!("../../README.md"),
+        ] {
+            let row = readme
+                .lines()
+                .find(|line| line.starts_with("| `b` |"))
+                .expect("README keybinding table must have a `b` row");
+            assert!(
+                row.contains("サムネイル"),
+                "README `b` row must name thumbnails: {row}"
+            );
+        }
     }
 
     #[test]
@@ -3853,10 +3970,10 @@ mod column_prefs_ui_tests {
     // Explicit imports: the module-level `use gpui_kit::*` would shadow the
     // built-in `#[test]` attribute if pulled in through `use super::*`.
     use super::{
-        column_label, column_reordered, column_visibility, column_width_label, matches_query,
-        tabs_matching_query, FILES_COLUMN_DESCRIPTION, FILES_COLUMN_KEYWORDS,
+        column_ids, column_label, column_reordered, column_visibility, column_width_label,
+        matches_query, tabs_matching_query, FILES_COLUMN_DESCRIPTION, FILES_COLUMN_KEYWORDS,
     };
-    use crate::settings::ColumnPrefs;
+    use crate::settings::{ColumnPrefs, COLUMN_KEYS};
     use crate::settings_ui::SettingsTab;
 
     #[test]
@@ -3905,6 +4022,63 @@ mod column_prefs_ui_tests {
         assert_eq!(column_reordered(&visible, "name", -1), None);
         assert_eq!(column_reordered(&visible, "size", 1), None);
         assert_eq!(column_reordered(&visible, "modified", 1), None);
+    }
+
+    #[test]
+    fn column_label_and_ids_cover_every_persisted_key_and_unknown_fallback() {
+        let expected = [
+            ("name", "名前"),
+            ("kind", "種類"),
+            ("size", "サイズ"),
+            ("modified", "更新日時"),
+        ];
+        assert_eq!(COLUMN_KEYS.len(), expected.len());
+        let mut ids = Vec::new();
+        for (key, label) in expected {
+            assert!(COLUMN_KEYS.contains(&key), "COLUMN_KEYS must contain {key}");
+            assert_eq!(column_label(key), label);
+            let (switch, up, down) = column_ids(key);
+            let base = format!("settings-column-{key}");
+            assert_eq!(switch, base.as_str());
+            assert_eq!(up, format!("{base}-up").as_str());
+            assert_eq!(down, format!("{base}-down").as_str());
+            ids.push((switch, up, down));
+        }
+        for index in 0..ids.len() {
+            for other in index + 1..ids.len() {
+                assert_ne!(ids[index], ids[other], "widget ids must be unique");
+            }
+        }
+        assert_eq!(column_label("unknown"), "不明");
+        assert_eq!(
+            column_ids("unknown"),
+            (
+                "settings-column-unknown",
+                "settings-column-unknown-up",
+                "settings-column-unknown-down",
+            )
+        );
+    }
+
+    #[test]
+    fn column_no_op_branches_keep_the_original_list() {
+        let visible = vec!["name".to_string(), "kind".to_string()];
+        // 既に表示中の列を再表示しても順序は変わらない。
+        assert_eq!(column_visibility(&visible, "name", true), None);
+        assert_eq!(column_visibility(&visible, "kind", true), None);
+        // 未知の列・最後の 1 列の非表示も no-op。
+        assert_eq!(column_visibility(&visible, "future", false), None);
+        assert_eq!(column_visibility(&["name".into()], "name", false), None);
+        // delta 0 / 範囲外（負・正・極値）はすべて no-op。
+        assert_eq!(column_reordered(&visible, "kind", 0), None);
+        assert_eq!(column_reordered(&visible, "name", -1), None);
+        assert_eq!(column_reordered(&visible, "name", -10), None);
+        assert_eq!(column_reordered(&visible, "name", isize::MIN), None);
+        assert_eq!(column_reordered(&visible, "kind", 1), None);
+        assert_eq!(column_reordered(&visible, "kind", 10), None);
+        assert_eq!(column_reordered(&visible, "kind", isize::MAX), None);
+        assert_eq!(column_reordered(&visible, "future", -1), None);
+        assert_eq!(column_reordered(&visible, "future", 1), None);
     }
 
     #[test]

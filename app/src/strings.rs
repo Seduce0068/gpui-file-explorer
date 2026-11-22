@@ -198,6 +198,91 @@ const _: () = assert!(
 );
 
 // ---------------------------------------------------------------------------
+// AK08-AK12: ダイアログ / バー / オーバーレイの固定ヒント
+//
+// main.rs のインラインリテラルをここへ集約する。呼び出し側が参照する前に
+// 空文字列や文言の変化を検出できるよう、定数アサーションとテストを併設する。
+// ---------------------------------------------------------------------------
+
+/// 操作履歴ダイアログのフッター案内（AK08）。
+pub const HISTORY_DIALOG_FOOTER_HINT: &str = "Ctrl+Shift+U / Esc で閉じる（読み取り専用）";
+/// 場所入力バーの操作案内（AK09）。
+pub const LOCATION_BAR_HINT: &str = "Enter で移動 / Esc で閉じる";
+/// F1 ヘルプオーバーレイのフッター案内（AK10）。
+pub const HELP_OVERLAY_FOOTER_HINT: &str = "F1 / Esc で閉じる（一覧はスクロールできます）";
+/// プロパティダイアログの読み取り専用案内（AK11）。
+pub const PROPERTIES_READ_ONLY_HINT: &str = "Esc で閉じる（読み取り専用）";
+/// 検索バーの通常時の操作案内（AK12）。
+pub const SEARCH_BAR_HINT: &str = "Enter で検索 / Esc で閉じる";
+/// 検索実行中に検索バーへ表示するラベル（AK12）。
+pub const SEARCH_IN_PROGRESS_LABEL: &str = "検索中…";
+
+const _: () = assert!(!HISTORY_DIALOG_FOOTER_HINT.is_empty());
+const _: () = assert!(!LOCATION_BAR_HINT.is_empty());
+const _: () = assert!(!HELP_OVERLAY_FOOTER_HINT.is_empty());
+const _: () = assert!(!PROPERTIES_READ_ONLY_HINT.is_empty());
+const _: () = assert!(!SEARCH_BAR_HINT.is_empty());
+const _: () = assert!(!SEARCH_IN_PROGRESS_LABEL.is_empty());
+
+#[cfg(test)]
+mod dialog_and_bar_hint_tests {
+    use super::*;
+
+    #[test]
+    fn all_hints_are_nonempty() {
+        for hint in [
+            HISTORY_DIALOG_FOOTER_HINT,
+            LOCATION_BAR_HINT,
+            HELP_OVERLAY_FOOTER_HINT,
+            PROPERTIES_READ_ONLY_HINT,
+            SEARCH_BAR_HINT,
+            SEARCH_IN_PROGRESS_LABEL,
+        ] {
+            assert!(!hint.is_empty(), "hint must not be empty");
+            assert_eq!(hint, hint.trim(), "hint must not carry stray whitespace");
+        }
+    }
+
+    #[test]
+    fn hint_wording_matches_the_main_rs_call_sites() {
+        // 既存のインラインリテラルを正規文言として固定する。main.rs 側が
+        // 定数へ切り替えても文言が変わらないことを保証する回帰テスト。
+        assert_eq!(
+            HISTORY_DIALOG_FOOTER_HINT,
+            "Ctrl+Shift+U / Esc で閉じる（読み取り専用）"
+        );
+        assert_eq!(LOCATION_BAR_HINT, "Enter で移動 / Esc で閉じる");
+        assert_eq!(
+            HELP_OVERLAY_FOOTER_HINT,
+            "F1 / Esc で閉じる（一覧はスクロールできます）"
+        );
+        assert_eq!(PROPERTIES_READ_ONLY_HINT, "Esc で閉じる（読み取り専用）");
+        assert_eq!(SEARCH_BAR_HINT, "Enter で検索 / Esc で閉じる");
+        assert_eq!(SEARCH_IN_PROGRESS_LABEL, "検索中…");
+    }
+
+    #[test]
+    fn hints_keep_their_dismiss_keys_and_read_only_notice() {
+        assert!(HISTORY_DIALOG_FOOTER_HINT.contains("Ctrl+Shift+U"));
+        assert!(HISTORY_DIALOG_FOOTER_HINT.contains("読み取り専用"));
+        assert!(LOCATION_BAR_HINT.contains("Enter で移動"));
+        assert!(HELP_OVERLAY_FOOTER_HINT.contains("スクロールできます"));
+        assert!(PROPERTIES_READ_ONLY_HINT.contains("読み取り専用"));
+        assert!(SEARCH_BAR_HINT.contains("Enter で検索"));
+        assert!(SEARCH_IN_PROGRESS_LABEL.ends_with('…'));
+        for hint in [
+            HISTORY_DIALOG_FOOTER_HINT,
+            LOCATION_BAR_HINT,
+            HELP_OVERLAY_FOOTER_HINT,
+            PROPERTIES_READ_ONLY_HINT,
+            SEARCH_BAR_HINT,
+        ] {
+            assert!(hint.contains("Esc"), "hint must explain Esc: {hint}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AI01 / AI02 / AI04 / AI06 / AI07: F1 ・ README ・ 設定カードの共通文言
 //
 // 280 行目以降は別エージェントが所有するため、正規定義はすべてここに置く。
@@ -935,6 +1020,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Enter", "選択項目を開く"),
             ("↑ / ↓", "選択項目を上下に移動"),
             ("Ctrl+L", "パスを直接入力して移動"),
+            ("Ctrl+B", "サイドバーを表示 / 非表示（狭い画面で再表示）"),
             ("Alt+← / Alt+→", "戻る / 進む"),
             ("Alt+↑ / Backspace", PARENT_FOLDER_LABEL),
             ("Home / End", "先頭 / 末尾へ"),
@@ -1076,6 +1162,15 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "設定ダイアログの行ショートカット",
                 concat!(
                     "外観タブで t=配色 / v=既定のビュー、ファイルタブで h=隠しファイルを切替（修飾キーなし）",
+                    settings_input_guard_note!()
+                ),
+            ),
+            // AK02: b は設定ダイアログのファイルタブ専用の行ショートカット。
+            // ダイアログ内では F1 が無効なので、ここと下部のキー凡例に掲載する。
+            (
+                "b",
+                concat!(
+                    "設定ダイアログのファイルタブで画像サムネイルを切替（修飾キーなし）",
                     settings_input_guard_note!()
                 ),
             ),

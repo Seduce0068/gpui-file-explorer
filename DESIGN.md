@@ -47,15 +47,16 @@
 | Linux | Kubuntu 2026.04 / KDE Plasma 6 / Wayland（NVIDIA） | ✅ 実機で受入 | ✅ | ✅ | 従来どおり本命。X11 は feature で同時ビルド（⚠ 実機未検証） |
 | Windows | Windows 11 / MSVC | △ ビルド設計のみ | ✅ 実機ターゲット | ✅ 実機 | **第一級ターゲットへ昇格**。`gpui-pre-windows` にバックエンド API あり。長パス・大小文字・Recycle Bin |
 | macOS | macOS 15+ / Metal | × | × | ✅ 実機 | NFD・サンドボックス方針は Phase2 で決定（⚠） |
-| Android | Android 16 / モバイル | × | × | × | **要件化（実現可能性 ADR 作成中、未実装）** |
-| iOS | iOS / モバイル | × | × | × | **要件化（実現可能性 ADR 作成中、未実装）** |
+| Android | Android 16 / モバイル | × | × | × | **要件化（[モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md) は作成済み（draft・未承認）、未実装）** |
+| iOS | iOS / モバイル | × | × | × | **要件化（[モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md) は作成済み（draft・未承認）、未実装）** |
 
 - P0 の受入は Linux/Wayland のみ（[`RESEARCH.md`](RESEARCH.md) §7.1、[`notes/poc-report.md`](notes/poc-report.md) §0）。
 - macOS は Phase2 まで「コンパイル可能性を壊さない」ことが目標
   （OS 固有処理は `#[cfg]` で分離、§7）。Windows は Phase1（MVP）で
   実機対応を目標に昇格（§1.2 の新要件）。
 - Android / iOS は**要件化のみで未実装**。実現可能性は
-  「モバイル対応 ADR（作成中）」で評価中で、採用決定はまだ無い。
+  [モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md)
+  を作成済み（draft・未承認）で評価中であり、採用決定はまだ無い。
   現状の制約: `gpui-kit` 0.9.1 は iOS/Android を除外、Android
   バックエンドは不在、iOS のファイル API はスタブ、`trash` クレートは
   モバイルを除外。
@@ -70,7 +71,8 @@
   Double Commander の既存ユーザー。二画面・列表示・コンテキスト
   メニューなど、見やすさと使いやすさを重視（§1.2 の新要件）。
 - 第四（要件化、未実装）: Android / iOS のモバイルユーザー。
-  実現可能性は「モバイル対応 ADR（作成中）」で評価中。
+  実現可能性は[モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md)
+  を作成済み（draft・未承認）で評価中。
 - 非ターゲット: 大量のクラウドストレージ運用。
   Windows ヘビーユーザーは非ターゲットから第一級ターゲットへ変更。
 
@@ -1270,7 +1272,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | 0.1-as-built | 2026-11-17 | 実装完了に伴う差分を記録。P1 機能（安全な操作エンジン / 検索 / タブ / ゴミ箱 / プレビュー / undo 他）を実装。`strings.rs` 追加、`tracing` 構造化ログ導入、設定の読み取り専用モード（退避失敗・未知スキーマ）追加。設計との逸脱と保留項目の詳細は `app/README.md` の「設計（DESIGN.md）からの差分」と `review-report.md` を参照。 |
 | 0.1-as-built | 2026-11-21 | OS アイコン（Breeze）と as-built 差分を反映 |
 | 0.1-as-built | 2026-11-22 | 保存検索 / ブックマークラベルの as-built 反映、Z14 / AA01 修正、日付統一 |
-| 0.1-要件 | 2026-11-22 | 新要件を反映: Windows を第一級ターゲットへ昇格、Explorer / Double Commander 並みの UX を明示要件化、Android / iOS を要件化（実現可能性 ADR 作成中・未実装） |
+| 0.1-要件 | 2026-11-22 | 新要件を反映: Windows を第一級ターゲットへ昇格、Explorer / Double Commander 並みの UX を明示要件化、Android / iOS を要件化（[モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md) を作成済み（draft・未承認）・未実装） |
 
 2026-11-22 の as-built 差分の内訳。保存検索 / ブックマークラベルは §4.1
 の差分表と [app/README.md](app/README.md) の「再帰検索」を参照。
