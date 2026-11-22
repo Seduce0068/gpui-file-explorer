@@ -1405,6 +1405,28 @@ status: current
 
 - [x] **AL06** DESIGN の dirs バージョン差「要確認」が解消済み — DESIGN.md:1245 — 対応: impl-r38-docs
 
+### 優先度: 中（ループ R40・confirmed）
+
+- [ ] **AM01** F2 リネーム拒否が self.status にミラーされず（AJ03 残件）
+  — main.rs:8309
+- [ ] **AM02** プレビュー/クイックジャンプのフッターヒント未集約
+  — main.rs:7336,7707
+- [ ] **AM03** エラー対応表の「次の操作」列に回帰ガードなし
+  — strings.rs:1853
+- [ ] **AM04** trash_view::restore_by_id のテストが空振り — trash_view.rs:374
+- [ ] **AM05** ヘッダクリック/Alt+S のキー案内に「種類」列・順序が欠落
+  — strings.rs:1108,1174
+
+### 優先度: 低（ループ R40）
+
+- [ ] **AM06** 五十音順/クリップボード ADR の行アンカーが drift
+  — docs/adr/adr-20261123-*.md
+- [ ] **AM07** DESIGN §3.1 の PageUp/Down 行アンカーが 5134 のまま
+  — DESIGN.md:189
+- [ ] **AM08** AppError::source() の3バリアントが未検証 — error.rs:245
+- [ ] **AM09** sniff_image_format の非 WEBP RIFF 分岐が無テスト
+  — preview.rs:100
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
