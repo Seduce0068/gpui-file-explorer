@@ -197,6 +197,82 @@ const _: () = assert!(
         == concat!("F5 で", reload_word!(), " / ").len() + TRASH_EXIT_HINT.len()
 );
 
+// ---------------------------------------------------------------------------
+// AI01 / AI02 / AI04 / AI06 / AI07: F1 ・ README ・ 設定カードの共通文言
+//
+// 280 行目以降は別エージェントが所有するため、正規定義はすべてここに置く。
+// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+// 同名のマクロを使う（他ファイルからは `pub(crate) use` されたものを参照）。
+// ---------------------------------------------------------------------------
+
+/// Ctrl+クリック / Shift+クリック の選択動作（AI04）。
+///
+/// F1 の旧文言「追加選択」は Ctrl+クリックがトグル動作であることを誤って
+/// 示していた。README の「個別トグル」を正規とし、F1 も同じ語に揃える。
+macro_rules! mouse_selection_click_description {
+    () => {
+        "個別トグル / 範囲選択"
+    };
+}
+pub const MOUSE_SELECTION_CLICK_DESCRIPTION: &str = mouse_selection_click_description!();
+
+/// ドラッグ&ドロップの対象（AI01 / AI04）。
+///
+/// ファイル行や空き領域へドロップした場合はカレントディレクトリへコピー
+/// される（README のドラッグ&ドロップ節と `main.rs` の実装が根拠）。
+macro_rules! mouse_drag_drop_description {
+    () => {
+        "OS からコピー / フォルダ行へドロップでそのフォルダへ / OS へドラッグ"
+    };
+}
+pub const MOUSE_DRAG_DROP_DESCRIPTION: &str = mouse_drag_drop_description!();
+
+/// ミドルクリックで開くタブの対象（AI01 / AI04）。
+///
+/// `main.rs::middle_click_tab_dir` はディレクトリ行ならそのフォルダ、
+/// ファイル行ならカレントディレクトリを返す。旧 F1 行「行のフォルダを…」は
+/// 後者を落としていたので、README の正確な記述を正規とする。
+macro_rules! mouse_middle_click_description {
+    () => {
+        "行 / グリッドセルを新しいタブで開く（フォルダ行はそのフォルダ、それ以外は現在のディレクトリ）"
+    };
+}
+pub const MOUSE_MIDDLE_CLICK_DESCRIPTION: &str = mouse_middle_click_description!();
+
+/// キーマップの一括リセットに関する案内（AI06 / AI10）。
+///
+/// `KeyMap::reset` に UI は配線されておらず、ボタンも存在しない。
+/// F1 の Alt+K 行・設定ダイアログのショートカットタブ・README で共用する。
+/// F1 は設定ダイアログ内で無効（Esc / F1 がダイアログに吸われる）ため、
+/// ダイアログ内の入力ヒントがアプリ内で唯一の手掛かりになる。
+macro_rules! keymap_reset_guidance {
+    () => {
+        "一括リセットのボタンはありません（KeyMap::reset は UI 未配線）。全既定へ戻す場合は設定ファイルの keymap を [] にするか、アクションごとに unbind してください"
+    };
+}
+pub(crate) use keymap_reset_guidance;
+pub const KEYMAP_RESET_GUIDANCE: &str = keymap_reset_guidance!();
+
+/// ターミナル設定欄の説明（AI07）。
+///
+/// この欄が F4 で起動するコマンドを設定するものであることを明示する。
+/// F4 行・Alt+T 行・設定ダイアログのターミナルタブ・README で共用する。
+macro_rules! terminal_command_description {
+    () => {
+        "F4 で開くターミナルの起動コマンドを設定（選択中のフォルダを作業ディレクトリとして起動、空欄で無効化）"
+    };
+}
+pub(crate) use terminal_command_description;
+pub const TERMINAL_COMMAND_DESCRIPTION: &str = terminal_command_description!();
+
+const _: () =
+    assert!(MOUSE_SELECTION_CLICK_DESCRIPTION.len() == mouse_selection_click_description!().len());
+const _: () = assert!(MOUSE_DRAG_DROP_DESCRIPTION.len() == mouse_drag_drop_description!().len());
+const _: () =
+    assert!(MOUSE_MIDDLE_CLICK_DESCRIPTION.len() == mouse_middle_click_description!().len());
+const _: () = assert!(KEYMAP_RESET_GUIDANCE.len() == keymap_reset_guidance!().len());
+const _: () = assert!(TERMINAL_COMMAND_DESCRIPTION.len() == terminal_command_description!().len());
+
 /// AC07 / AC08 の定数は既存の `mod tests`（280 行目以降）からは触らない。
 /// 所有範囲内に小さなテストモジュールを置き、各案内が宣伝するキーを固定する。
 #[cfg(test)]
@@ -273,6 +349,106 @@ mod view_hint_and_keymap_format_tests {
     }
 
     #[test]
+    fn mouse_operation_descriptions_are_canonical_in_f1_and_readme() {
+        // AI01/AI04: F1 と README のキー表でマウス操作の説明を共有する。
+        for (key, canonical) in [
+            (
+                "Ctrl+クリック / Shift+クリック",
+                MOUSE_SELECTION_CLICK_DESCRIPTION,
+            ),
+            ("ドラッグ&ドロップ", MOUSE_DRAG_DROP_DESCRIPTION),
+            ("ミドルクリック", MOUSE_MIDDLE_CLICK_DESCRIPTION),
+        ] {
+            let (_, text) = HELP_SECTIONS
+                .iter()
+                .flat_map(|(_, rows)| *rows)
+                .find(|(help_key, _)| *help_key == key)
+                .unwrap_or_else(|| panic!("F1 must have a {key} row"));
+            assert_eq!(
+                *text, canonical,
+                "F1 {key} row must use the canonical description"
+            );
+            let row = include_str!("../README.md")
+                .lines()
+                .find(|line| {
+                    line.starts_with('|') && line.replace('`', "").contains(&format!("| {key} |"))
+                })
+                .unwrap_or_else(|| panic!("README must have a {key} keybinding row"));
+            assert!(
+                row.replace('`', "").contains(canonical),
+                "README {key} row must use the canonical description: {row}"
+            );
+        }
+    }
+
+    /// README の散文を行末で折り返したまま比較できる形に正規化する。
+    /// バッククォート（コード記法）と行頭のインデントを除き、各行を連結する。
+    fn readme_prose() -> String {
+        include_str!("../README.md")
+            .lines()
+            .map(|line| line.trim().replace('`', ""))
+            .collect()
+    }
+
+    #[test]
+    fn trash_help_row_carries_the_canonical_exit_hint() {
+        // AI02: 読み込み失敗ヒント・空状態と同じ「一覧へ戻る」導線を F1 にも載せる。
+        let text = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "ゴミ箱ビュー")
+            .map(|(_, text)| *text)
+            .expect("trash F1 row must exist");
+        assert!(
+            text.contains(TRASH_EXIT_HINT),
+            "F1 trash row must embed TRASH_EXIT_HINT: {text}"
+        );
+        let readme = readme_prose();
+        assert!(
+            readme.contains(TRASH_EXIT_HINT),
+            "README must document the canonical trash exit hint"
+        );
+    }
+
+    #[test]
+    fn keymap_reset_guidance_is_shared_by_f1_and_readme() {
+        // AI06/AI10: 一括リセット UI が無い旨と既定へ戻す手順を共用する。
+        let alt_k = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "Alt+K")
+            .map(|(_, text)| *text)
+            .expect("Alt+K F1 row must exist");
+        assert!(
+            alt_k.contains(KEYMAP_RESET_GUIDANCE),
+            "F1 Alt+K row must embed the canonical reset guidance: {alt_k}"
+        );
+        let readme = readme_prose();
+        assert!(
+            readme.contains(KEYMAP_RESET_GUIDANCE),
+            "README must embed the canonical reset guidance"
+        );
+    }
+
+    #[test]
+    fn terminal_description_names_f4_and_matches_readme() {
+        // AI07: ターミナル設定欄が F4 の起動コマンドを設定するものであることを
+        // 正規文言に固定し、README も同じ語で案内する。
+        for token in ["F4", "起動コマンド", "作業ディレクトリ", "空欄で無効化"]
+        {
+            assert!(
+                TERMINAL_COMMAND_DESCRIPTION.contains(token),
+                "canonical terminal description must name {token}: {TERMINAL_COMMAND_DESCRIPTION}"
+            );
+        }
+        let readme = readme_prose();
+        assert!(
+            readme.contains(TERMINAL_COMMAND_DESCRIPTION),
+            "README must embed the canonical terminal description"
+        );
+    }
+
+    #[test]
     fn settings_dialog_help_names_the_discard_warning_only_once() {
         // AD05: 旧文言「破棄され通知されます」と正規文言の二重掲載を防ぐ。
         let dialog = HELP_SECTIONS
@@ -335,6 +511,19 @@ mod view_hint_and_keymap_format_tests {
             "EMPTY_TRASH must reuse the canonical exit hint: {empty}"
         );
         assert!(!empty.contains("前の場所へ"), "stale exit wording: {empty}");
+        // AI02: F1 の「ゴミ箱ビュー」行も同じ正規ヒントを埋め込む。
+        // 186-187 行目のコメントが宣言する F1 / README / 空状態の 3 way sync
+        // のうち、F1 側の乖離をここで検出する（HELP_SECTIONS は read-only）。
+        let trash_help = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "ゴミ箱ビュー")
+            .map(|(_, text)| *text)
+            .expect("trash-view help row must exist");
+        assert!(
+            trash_help.contains(TRASH_EXIT_HINT),
+            "F1 trash-view row must embed the canonical exit hint: {trash_help}"
+        );
     }
 
     #[test]
@@ -637,7 +826,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+A", "全選択"),
             ("Ctrl+Space", "フォーカス行の選択を切替（非連続選択）"),
             ("Shift+↑↓", "範囲選択"),
-            ("Ctrl+クリック / Shift+クリック", "追加選択 / 範囲選択"),
+            (
+                "Ctrl+クリック / Shift+クリック",
+                mouse_selection_click_description!(),
+            ),
         ],
     ),
     (
@@ -653,13 +845,13 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("R / Ctrl+Enter", "選択項目を元の場所へ復元（ゴミ箱ビュー）"),
             (
                 "ゴミ箱ビュー",
-                "Enter / R で復元、Delete は完全削除しません",
+                concat!(
+                    "Enter / R で復元、Delete は完全削除しません。",
+                    trash_exit_hint!()
+                ),
             ),
             ("Ctrl+Shift+N", "新規フォルダ"),
-            (
-                "ドラッグ&ドロップ",
-                "OS からコピー / フォルダ行へコピー / OS へドラッグ",
-            ),
+            ("ドラッグ&ドロップ", mouse_drag_drop_description!()),
             (
                 "Ctrl+Z / Ctrl+Shift+Z",
                 "元に戻す / やり直す（名前変更・ゴミ箱のみ）",
@@ -700,7 +892,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "Ctrl+Shift+PageUp / Ctrl+Shift+PageDown",
                 "タブを左 / 右へ移動",
             ),
-            ("ミドルクリック", "行のフォルダを新しいタブで開く"),
+            ("ミドルクリック", mouse_middle_click_description!()),
             ("Ctrl+D", "現在のディレクトリをブックマーク"),
         ],
     ),
@@ -766,7 +958,8 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                     dialog_footer_hint!(),
                     "）。",
                     reserved_keys_note!(),
-                    "。最大 64 件まで。一括リセットのボタンはありません（KeyMap::reset は UI 未配線）。全既定へ戻す場合は設定ファイルの keymap を [] にするか、アクションごとに unbind してください"
+                    "。最大 64 件まで。",
+                    keymap_reset_guidance!()
                 ),
             ),
             ("Esc", "キャンセル / ダイアログを閉じる"),
@@ -1060,6 +1253,14 @@ pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: 
 /// キーマップの `unbind` で解除するオーバーライドがなかったときの通知接頭辞。
 /// 動的な `{action}` を連結するため、接頭辞自体を色判定のマーカーとして登録する。
 pub const STATUS_KEYMAP_NO_UNBIND_PREFIX: &str = "解除する設定はありません: ";
+/// キーマップ解除の no-op 通知に添える復帰導線（AI08）。
+///
+/// F6-36 の情報量ルール（復帰導線）に従い、上書きの確認先を案内する。
+/// `STATUS_SETTINGS_DISCARDED` / `STATUS_RESCAN_FAILED` /
+/// `STATUS_TERMINAL_DISABLED_HINT` と同じく、失敗だけで終わらせない。
+/// 動的な `{action}` の後ろに連結するため、接頭辞自体はマーカーのまま維持する。
+pub const STATUS_KEYMAP_NO_UNBIND_HINT: &str =
+    "（Ctrl+, で設定を開きショートカットタブで現在の上書きを確認）";
 /// キーマップ入力の形式が不正なときの通知（V04）。
 /// Alt+K ダイアログ専用。設定カードは `STATUS_KEYMAP_INVALID_PREFIX + KEYMAP_FORMAT_HINT`。
 /// AD03: 書式の説明は `keymap_format_hint!()` に一本化する。個別に書いた
@@ -1742,6 +1943,7 @@ mod tests {
             STATUS_OPENED_DEFAULT_SUFFIX,
             STATUS_REVEALED_PREFIX,
             STATUS_KEYMAP_NO_UNBIND_PREFIX,
+            STATUS_KEYMAP_NO_UNBIND_HINT,
             STATUS_KEYMAP_FORMAT_INVALID,
             STATUS_KEYMAP_LIMIT_PREFIX,
             STATUS_KEYMAP_LIMIT_SUFFIX,
@@ -2405,6 +2607,45 @@ mod tests {
     }
 
     #[test]
+    fn keymap_no_unbind_notice_carries_the_canonical_recovery_hint() {
+        // AI08: 他の設定通知と同じく、no-op の unbind も失敗だけで終わらせず
+        // 上書きの確認導線を併記する（F6-36 の情報量ルール）。
+        assert_eq!(
+            STATUS_KEYMAP_NO_UNBIND_HINT,
+            "（Ctrl+, で設定を開きショートカットタブで現在の上書きを確認）"
+        );
+        for token in ["Ctrl+,", "設定を開き", "ショートカットタブ", "上書きを確認"]
+        {
+            assert!(
+                STATUS_KEYMAP_NO_UNBIND_HINT.contains(token),
+                "recovery hint must name the settings route: {STATUS_KEYMAP_NO_UNBIND_HINT}"
+            );
+        }
+        // 接頭辞は色判定マーカーとして変更しない（マーカー一致が壊れないこと）。
+        assert_eq!(STATUS_KEYMAP_NO_UNBIND_PREFIX, "解除する設定はありません: ");
+        let notice =
+            format!("{STATUS_KEYMAP_NO_UNBIND_PREFIX}open_preview{STATUS_KEYMAP_NO_UNBIND_HINT}");
+        assert!(
+            notice.starts_with(STATUS_KEYMAP_NO_UNBIND_PREFIX),
+            "{notice}"
+        );
+        assert!(notice.ends_with(STATUS_KEYMAP_NO_UNBIND_HINT), "{notice}");
+        // main.rs の no-op 分岐が正規ヒントを連結し、 inline リテラルを
+        // 再導入していないことを固定する。
+        let main_source = include_str!("main.rs");
+        assert!(
+            main_source
+                .contains("{STATUS_KEYMAP_NO_UNBIND_PREFIX}{action}{STATUS_KEYMAP_NO_UNBIND_HINT}"),
+            "no-op unbind caption must append the canonical recovery hint"
+        );
+        assert!(
+            !main_source
+                .contains("\"（Ctrl+, で設定を開きショートカットタブで現在の上書きを確認）\""),
+            "recovery hint must go through STATUS_KEYMAP_NO_UNBIND_HINT"
+        );
+    }
+
+    #[test]
     fn skip_notice_wording_is_shared() {
         // T02: コピー／移動／外部ドロップのスキップ通知は、main.rs の
         // `transfer_skip_notice` を通してこの定数だけを使う。括弧と件数接尾の
@@ -2527,6 +2768,12 @@ mod tests {
             format!("{STATUS_UNDO_EMPTY}{STATUS_UNDO_HISTORY_HINT}"),
             "元に戻せる操作はありません（名前変更とゴミ箱のみ記録します）"
         );
+        // AI09: Redo 側も同じ履歴スコープの補足を共有し、Undo との
+        // 非対称を解消する（専用の別文言は作らない）。
+        assert_eq!(
+            format!("{STATUS_REDO_EMPTY}{STATUS_UNDO_HISTORY_HINT}"),
+            "やり直せる操作がありません（名前変更とゴミ箱のみ記録します）"
+        );
         assert_eq!(
             STATUS_PLACE_GONE_HINT,
             "フォルダがありません（F5 で再確認）"
@@ -2535,6 +2782,14 @@ mod tests {
         assert!(
             !source.contains("\"元に戻せる操作はありません（名前変更とゴミ箱のみ記録します）\""),
             "the undo history hint must be composed from constants"
+        );
+        assert!(
+            source.contains("{STATUS_REDO_EMPTY}{STATUS_UNDO_HISTORY_HINT}"),
+            "redo-empty status must append the shared history hint"
+        );
+        assert!(
+            !source.contains("\"やり直せる操作がありません（名前変更とゴミ箱のみ記録します）\""),
+            "the redo history hint must be composed from constants"
         );
         assert!(
             !source.contains("Tooltip::new(\"フォルダがありません（F5 で再確認）\")"),

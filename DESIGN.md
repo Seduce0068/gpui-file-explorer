@@ -100,7 +100,7 @@
 | OS ネイティブアイコン | × | × | ◎ | | **as-built**: Breeze 実装済み（§8.3、fs-notes §3） |
 | 画像サムネイル | × | × | ◎ | | `img(PathBuf)` で可能（api-notes §7.2）。非同期+LRU |
 | 再帰検索（名前/複数ルート） | ○ | ◎ | ◎ | 単一実装 | `std::fs` walker（symlink 非追跡・上限付き）、範囲: 現在/タブ/ブックマーク |
-| ボリューム/空き容量 | × | × | ◎ | | `sysinfo` Disks（fs-notes §4） |
+| ボリューム/空き容量 | × | × | ◎ | | as-built: `/proc/mounts` 解析、空き容量/Win/mac 未対応 |
 | タブ / 複数ウィンドウ | × | × | △ | ◎ | まず 1 ウィンドウ 1 状態（ADR-002） |
 | OS からの D&D（取り込み） | × | × | △ | ◎ | `on_drop::<ExternalPaths>`（api-notes §4.2） |
 | アプリ外への D&D | × | × | × | △ | 実装コスト大（fs-notes §7.4） |
@@ -860,7 +860,7 @@ pub fn confirm_and_trash(
 | 通知 | gpui-component `push_notification` ✅ source / ⚠ Wayland 実機 | 同左 | 同左 | ✅ | | | component `src/window_ext.rs:118` |
 | パス正規化 | `PathBuf`/`OsStr` 保持、表示のみ lossy ✅ | 長パス `\\?\` + `dunce`（P2） | NFD→NFC 表示（P2） | Linux のみ | | ✅ | fs-notes §5.3 |
 | 隠しファイル | `.` 始まり ✅ | FILE_ATTRIBUTE_HIDDEN（P2） | `.` + UF_HIDDEN（P2） | ✅ | | | fs-notes §5.4 |
-| ボリューム/空き容量 | sysinfo（P2） | sysinfo（P2） | sysinfo（P2） |  |  | ✅ | fs-notes §4 |
+| ボリューム/空き容量 | sysinfo | sysinfo | sysinfo | - | - | ✅ | as-built: /proc 解析 |
 | D&D IN | `on_drop::<ExternalPaths>`（Wayland ✅/他 ⚠） | 同左 | 同左 |  |  | △ | api-notes §4.2 |
 | D&D OUT | `external_drag_payload`（Wayland ✅） | ⚠ | ⚠ |  |  |  | api-notes §4.3 |
 

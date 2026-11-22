@@ -1258,25 +1258,25 @@ status: current
 
 ### 優先度: 中（ループ R30・confirmed）
 
-- [ ] **AI01** マウス操作の双方向同期テストが F1 の3行を漏らす
+- [x] **AI01** マウス操作の双方向同期テストが F1 の3行を漏らす — 対応: loop32-ux
   — settings_ui.rs:3075
-- [ ] **AI02** TRASH_EXIT_HINT が F1 ヘルプで共用されていない
+- [x] **AI02** TRASH_EXIT_HINT が F1 ヘルプで共用されていない — 対応: loop32-ux + loop32-core
   — strings.rs:186,655
-- [ ] **AI03** DESIGN のボリューム行に sysinfo 根拠が残存
+- [x] **AI03** DESIGN のボリューム行に sysinfo 根拠が残存 — 対応: loop32-docs（親が lint 修正）
   — DESIGN.md:103,863
 
 ### 優先度: 低（ループ R30）
 
-- [ ] **AI04** マウス操作の説明文が F1 と README で漂移 — strings.rs:640
-- [ ] **AI05** サイドバー空セクションの文言が未表示 — strings.rs:843
-- [ ] **AI06** 設定カードに一括リセット非配線の案内なし
+- [x] **AI04** マウス操作の説明文が F1 と README で漂移 — strings.rs:640 — 対応: loop32-ux
+- [x] **AI05** サイドバー空セクションの文言が未表示 — strings.rs:843 — 対応: loop32-docs
+- [x] **AI06** 設定カードに一括リセット非配線の案内なし — 対応: loop32-ux
   — settings_ui.rs:678
-- [ ] **AI07** ターミナル設定タブが F4 関連を案内せず
+- [x] **AI07** ターミナル設定タブが F4 関連を案内せず — 対応: loop32-ux
   — settings_ui.rs:1391
-- [ ] **AI08** キーマップ unbind 未ヒット通知に復帰導線なし
+- [x] **AI08** キーマップ unbind 未ヒット通知に復帰導線なし — 対応: loop32-core
   — strings.rs:1060
-- [ ] **AI09** やり直し空通知に記録対象ヒントなし — strings.rs:1139
-- [ ] **AI10** キーマップ一括リセット UI が未配線（F1 が既に明記）
+- [x] **AI09** やり直し空通知に記録対象ヒントなし — strings.rs:1139 — 対応: loop32-core
+- [ ] **AI10** キーマップ一括リセット UI が未配線（F1 が既に明記） （F1/README/設定カードで案内済み、UI 実装は既知の制限として残す）
   — strings.rs:769
 
 ### 優先度: 低（調査タスク）

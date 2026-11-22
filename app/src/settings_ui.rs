@@ -675,11 +675,16 @@ const SETTINGS_SEARCH_PLACEHOLDER: &str = "設定・キー名で検索…";
 /// the canonical `strings.rs` definitions via the shared macro/literal.
 /// AC08: the format itself also comes from `strings::KEYMAP_FORMAT_HINT`, so
 /// the invalid-input notice in `main.rs` can quote the very same wording.
+/// AI06/AI10: the "no bulk reset button" guidance is embedded from
+/// `strings::keymap_reset_guidance!()` too. F1 is blocked while the settings
+/// dialog owns the keyboard, so this in-card hint is the only in-app place
+/// that explains how to return all overrides to their defaults.
 const SETTINGS_KEYMAP_INPUT_HINT: &str = concat!(
     crate::strings::keymap_format_hint!(),
     "複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。",
     crate::strings::reserved_keys_note!(),
-    "。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。最大 64 件まで。"
+    "。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。最大 64 件まで。",
+    crate::strings::keymap_reset_guidance!()
 );
 
 /// Descriptions of the three rows with a bare-letter shortcut, plus the
@@ -800,6 +805,11 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
         crate::strings::settings_input_guard_note!()
     ),
 ];
+/// AI07: ターミナルタブの入力欄の説明。F4 が起動するコマンドを設定する欄
+/// であることを明示するため、正規文言は `strings.rs` 1-279 の
+/// `terminal_command_description!()` に置き、ここでは定数として参照する。
+const TERMINAL_COMMAND_SETTINGS_HINT: &str = crate::strings::terminal_command_description!();
+
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &[
     "ターミナル",
     "terminal",
@@ -808,7 +818,7 @@ const TERMINAL_COMMAND_KEYWORDS: &[&str] = &[
     "terminal_command",
     "コマンド",
     "起動",
-    // "選択中のフォルダを作業ディレクトリとして起動するコマンド（空欄で無効化）"
+    // 正規文言: strings::TERMINAL_COMMAND_DESCRIPTION
     "作業ディレクトリ",
     "無効化",
     "フォルダ",
@@ -1396,7 +1406,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                             .w_full()
                             .text_xs()
                             .text_color(rgb(palette.subtext))
-                            .child("選択中のフォルダを作業ディレクトリとして起動するコマンド（空欄で無効化）"),
+                            .child(TERMINAL_COMMAND_SETTINGS_HINT),
                     )
                     .child(Input::new(&state.terminal_input).w_full());
             }
@@ -1621,6 +1631,7 @@ mod tests {
         PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS,
         SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
         SHORTCUTS_DEFAULT_LINES, SHORTCUTS_KEYMAP_KEYWORDS, TERMINAL_COMMAND_KEYWORDS,
+        TERMINAL_COMMAND_SETTINGS_HINT,
     };
     use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
@@ -3069,14 +3080,20 @@ mod tests {
 
     #[test]
     fn readme_mouse_operations_are_documented_in_f1_help() {
-        // AG05/X15: `every_f1_help_key_has_a_readme_keybinding_row` checks only
-        // F1 → README, so the four mouse operations that lived solely in README
-        // never surfaced in F1 help. Mirror them in that direction too.
+        // AG05/X15/AI01: `every_f1_help_key_has_a_readme_keybinding_row` checks
+        // only F1 → README, so mouse operations that lived solely on one side
+        // never surfaced on the other. Mirror both directions: the four rows
+        // originally README-only and the three F1-only gestures.
         const MOUSE_KEYS: &[&str] = &[
             "ダブルクリック",
             "右クリック",
             "ヘッダクリック",
             "サイドバー / パンくずクリック",
+            // AI01: F1 側に既存する 3 つのマウス操作行も README キー表に
+            // 載せる。README 専用だった 4 行との双方向同期を保つ。
+            "Ctrl+クリック / Shift+クリック",
+            "ドラッグ&ドロップ",
+            "ミドルクリック",
         ];
         let readme_keys = readme_key_column();
         let help_keys: Vec<&str> = crate::strings::HELP_SECTIONS
@@ -3095,6 +3112,53 @@ mod tests {
             assert!(
                 HELP_KEY_EXCEPTIONS.contains(key),
                 "mouse operation {key} must be exempt from the chord mirror"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_keymap_hint_carries_the_canonical_bulk_reset_guidance() {
+        // AI06/AI10: F1 は設定ダイアログ内で無効なので、一括リセットが
+        // 存在しない旨と既定へ戻す手順は設定カードの入力ヒントに載せる。
+        assert!(
+            SETTINGS_KEYMAP_INPUT_HINT.contains(crate::strings::KEYMAP_RESET_GUIDANCE),
+            "settings keymap hint must embed KEYMAP_RESET_GUIDANCE verbatim: {SETTINGS_KEYMAP_INPUT_HINT}"
+        );
+        for token in [
+            "一括リセットのボタンはありません",
+            "keymap を [] にする",
+            "unbind",
+        ] {
+            assert!(
+                crate::strings::KEYMAP_RESET_GUIDANCE.contains(token),
+                "canonical reset guidance must name {token}"
+            );
+        }
+        let alt_k = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "Alt+K")
+            .map(|(_, text)| *text)
+            .expect("F1 Alt+K row must exist");
+        assert!(
+            alt_k.contains(crate::strings::KEYMAP_RESET_GUIDANCE),
+            "F1 Alt+K row must embed the same reset guidance: {alt_k}"
+        );
+    }
+
+    #[test]
+    fn terminal_settings_hint_names_the_f4_command_it_configures() {
+        // AI07: ターミナルタブの説明は F4 が起動するコマンドを設定する欄
+        // であることを明示し、F1 / README と同じ正規文言を使う。
+        assert_eq!(
+            TERMINAL_COMMAND_SETTINGS_HINT,
+            crate::strings::TERMINAL_COMMAND_DESCRIPTION
+        );
+        for token in ["F4", "起動コマンド", "作業ディレクトリ", "空欄で無効化"]
+        {
+            assert!(
+                TERMINAL_COMMAND_SETTINGS_HINT.contains(token),
+                "terminal settings hint must name {token}: {TERMINAL_COMMAND_SETTINGS_HINT}"
             );
         }
     }
