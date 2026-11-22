@@ -1182,6 +1182,25 @@ status: current
 - [x] **AD06** 隠しファイル/並び順行にディレクトリ表示専用の案内なし — 対応: loop27-ux
   — settings_ui.rs:664
 
+### 優先度: 中（ループ R26・confirmed）
+
+- [ ] **AE01** Search 入力フォーカス中は F5 が届かず再検索しない（実バグ）
+  — main.rs:5066
+- [ ] **AE02** app/README の LOAD_ERROR_HINT_TRASH が旧文言（Esc 案内）
+  — app/README.md:373
+- [ ] **AE03** Rust MSRV 表記がドキュメント間で不一致（1.92 vs 1.99.1）
+  — README.md:30 / Cargo.toml:6
+- [ ] **AE04** 色分類表とマーカー表の相互照合が片方向のみ
+  — strings.rs:1806
+
+### 優先度: 低（ループ R26）
+
+- [ ] **AE05** EMPTY_TRASH が Backspace 復帰を省く — strings.rs:543
+- [ ] **AE06** tab_label の file_name 不在分岐が無テスト — main.rs:939
+- [ ] **AE07** ゴミ箱並び替え拒否に復帰導線なし — strings.rs:612
+- [ ] **AE08** STATUS_SEARCH_STALE が F5 再検索を案内せず
+  — strings.rs:590
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
