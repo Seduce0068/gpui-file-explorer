@@ -1492,6 +1492,23 @@ status: current
 - [x] **AQ06** ADR/DESIGN の行アンカー方形針自己矛盾（4箇所） — 対応: impl-r44-docs
   — docs/adr/*.md / DESIGN.md:190
 
+### 優先度: 中（ループ R45・confirmed）
+
+- [ ] **AR01** 設定検索欄にクリア手段が無い（零命中案内と矛盾）
+  — settings_ui.rs:243
+- [ ] **AR02** read-only 時に「Enter 保存」案内と無効 Save が残る
+  — settings_ui.rs:461,1363
+
+### 優先度: 低（ループ R45）
+
+- [ ] **AR03** strings.rs モジュール doc の DESIGN 行アンカーが陳腐化
+  — strings.rs:26
+- [ ] **AR04** 設定検索 `column_prefs.widths` / `widths` が零命中
+  — settings_ui.rs:600
+- [ ] **AR05** default_column_width の未知キー分岐が無テスト — settings.rs:744
+- [ ] **AR06** image_format_for_name の "tif" 別名が無テスト — preview.rs:50
+- [ ] **AR07** Shortcuts タブの Esc 行に破棄警告が無い — settings_ui.rs:954
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
