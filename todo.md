@@ -1223,6 +1223,28 @@ status: current
 - [x] **AF10** 設定ダイアログの Esc 表記が凡例と F1/README で不一致 — 対応: loop29-ux
   — settings_ui.rs:398
 
+### 優先度: 中（ループ R28・confirmed）
+
+- [ ] **AG01** 設定検索で open_settings が零命中（キーワード未登録）
+  — settings_ui.rs:515
+- [ ] **AG02** reload_word! が未公開で「再読込」リテラルが重複
+  — strings.rs:105 / settings_ui.rs:751
+- [ ] **AG03** Alt+K ヘルプ行が DIALOG_FOOTER_HINT を迂回
+  — strings.rs:735
+- [ ] **AG04** ターミナル無効化成功通知が未定数化 — main.rs:4582
+- [ ] **AG05** F1 ヘルプが主要マウス操作4種を欠く — strings.rs:592
+- [ ] **AG06** 設定保存成功の通知文言が未定義（破棄通知と非対称）
+  — strings.rs:1033
+
+### 優先度: 低（ループ R28）
+
+- [ ] **AG07** OP_RESULT_PRIORITY[2]「失敗のみ」が未検証 — strings.rs:1182
+- [ ] **AG08** 設定ダイアログ内で F1 無効の理由が示されない
+  — settings_ui.rs:393
+- [ ] **AG09** README の F4 だけバッククォート表記でない — app/README.md:114
+- [ ] **AG10** サイドバー空セクションの文言が未定義（speculative）
+  — strings.rs:791
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
