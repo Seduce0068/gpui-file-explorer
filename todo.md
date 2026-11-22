@@ -1427,6 +1427,25 @@ status: current
 - [x] **AM09** sniff_image_format の非 WEBP RIFF 分岐が無テスト — 対応: impl-r40-tests
   — preview.rs:100
 
+### 優先度: 中（ループ R41・confirmed）
+
+- [ ] **AN01** エラー対応表のターミナル文言が実表示と不一致
+  — app/README.md:544
+- [ ] **AN02** DESIGN のサイドバー幅「固定」表記がレスポンシブ実装と矛盾
+  — DESIGN.md:197
+- [ ] **AN03** 列カスタマイズが README/F1 に未記載 — app/README.md:118
+
+### 優先度: 低（ループ R41）
+
+- [ ] **AN04** 五十音順 ADR の DESIGN 行アンカーが 1 行ずれ
+  — docs/adr/adr-20261123-japanese-collation.md:56
+- [ ] **AN05** モバイル ADR の wasm ノートへのリンク切れ
+  — docs/adr/adr-20261122-mobile-android-ios-support.md:256
+- [ ] **AN06** context_menu_anchor のガード失敗分岐が無テスト — main.rs:461
+- [ ] **AN07** status_color 回帰表に7定数が欠落 — main.rs:12348
+- [ ] **AN08** オーバーレイヒント定数の配線ガードなし — strings.rs:235
+- [ ] **AN09** 列幅の settings.json キーが未文書化 — app/README.md
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
