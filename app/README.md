@@ -538,6 +538,10 @@ bash packaging/linux/build-deb.sh
   `version` は現状 1 固定です。未知の version（新しいビルドが書いた設定）
   は値を保持したまま**読み取り専用**として扱い、保存を no-op にして
   未知フィールドの消失を防ぎます。
+   読み取り専用セッションでは設定ダイアログのフッターに
+   `この設定は読み取り専用です（保存は行われません）` を表示し、保存ボタンを
+   `保存不可`（無効）に切り替えます。個人化タブの保存先案内も
+   `現在は読み取り専用のため保存されません` に切り替わります。
 - **キーを生で記録するキャプチャ UI は未実装**です（GPUI の `key_down` が
   グローバルなため）。代わりに **`Alt+K` のテキスト入力ダイアログ**を実装し、
   `アクション名 コード` を入力して `settings.json` の `keymap` に保存・即時反映
@@ -698,7 +702,7 @@ DESIGN.md §4.1 の指示に従い、P0 実装で設計からずれた点を記�
 
 | 項目 | DESIGN.md | 本実装（P0） | 扱い |
 |---|---|---|---|
-| モジュール構成 | `app.rs` + `model/*` + `fs/*` + `ui/*` に分割 | `main.rs` + データ層モジュール（GPUI 非依存）。`strings.rs` を新設し、`DebugHooks` / `SearchState` / `LoadState` へ状態を集約、描画フックも専用メソッドへ抽出 | `ui/*` の完全分割は残課題 |
+| モジュール構成 | `app.rs` + `model/*` + `fs/*` + `ui/*` に分割 | `main.rs` + データ層モジュール（GPUI 非依存）。`strings.rs` を新設し、`DebugHooks` / `SearchState` / `LoadState` へ状態を集約、描画フックも専用メソッドへ抽出 | 完全分割は設計判断で実施しない（現状維持）、段階的集約で代替済み（review-report.md H-1） |
 | キー入力 | 大半を `actions!` + `KeyBinding` + `.key_context("Explorer")` で実装 | ルート要素の `track_focus` + `on_key_down` で実装（矢印キー等と同じ経路に統一） | キー動作は §3.4 の表をカバー。Action 化は設計判断のため保留 |
 | 設定スキーマ | `version` / `sort`（`key`/`dir`/`dirs_first`）/ `show_hidden` / `view` | **DESIGN.md §5.7・§8.1 のスキーマに一致**（`settings.json` サンプル参照） | 一致 |
 | 選択 | `Selection`（`PathBuf` キー、複数選択） | `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択・バッチ操作対応） | 一致（`BTreeSet` 化は見送り） |

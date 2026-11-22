@@ -191,28 +191,30 @@ fn with_cleanup_failure(primary: OpError, dest: &Path, cleanup: Result<(), OpErr
 /// no NUL byte, and no characters that Windows reserves.
 pub fn validate_file_name(name: &str) -> Result<(), OpError> {
     if name.is_empty() {
-        return Err(OpError::InvalidTarget("名前が空です".to_string()));
+        return Err(OpError::InvalidTarget(
+            crate::strings::STATUS_RENAME_INVALID_EMPTY.to_string(),
+        ));
     }
     if name == "." || name == ".." {
         return Err(OpError::InvalidTarget(
-            "`.` と `..` は名前として使えません".to_string(),
+            crate::strings::STATUS_RENAME_INVALID_DOT.to_string(),
         ));
     }
     if name.contains('/') {
         return Err(OpError::InvalidTarget(
-            "名前にパス区切り文字は使えません".to_string(),
+            crate::strings::STATUS_RENAME_INVALID_SEPARATOR.to_string(),
         ));
     }
     if name.contains('\0') {
         return Err(OpError::InvalidTarget(
-            "名前に NUL 文字は使えません".to_string(),
+            crate::strings::STATUS_RENAME_INVALID_NUL.to_string(),
         ));
     }
     #[cfg(windows)]
     {
         if name.contains('\\') {
             return Err(OpError::InvalidTarget(
-                "名前にパス区切り文字は使えません".to_string(),
+                crate::strings::STATUS_RENAME_INVALID_SEPARATOR.to_string(),
             ));
         }
         const RESERVED: [&str; 22] = [
@@ -222,12 +224,13 @@ pub fn validate_file_name(name: &str) -> Result<(), OpError> {
         let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
         if RESERVED.contains(&stem.as_str()) {
             return Err(OpError::InvalidTarget(format!(
-                "Windows の予約名は使えません: {name}"
+                "{}{name}",
+                crate::strings::STATUS_RENAME_INVALID_RESERVED_PREFIX
             )));
         }
         if name.contains(['<', '>', ':', '"', '|', '?', '*']) {
             return Err(OpError::InvalidTarget(
-                "Windows で使えない文字が含まれています".to_string(),
+                crate::strings::STATUS_RENAME_INVALID_CHAR.to_string(),
             ));
         }
     }

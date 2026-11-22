@@ -1280,26 +1280,26 @@ status: current
 
 ### 優先度: 中（ループ R31・confirmed）
 
-- [ ] **AJ01** Alt+T ダイアログが TERMINAL_COMMAND_DESCRIPTION を迂回
+- [x] **AJ01** Alt+T ダイアログが TERMINAL_COMMAND_DESCRIPTION を迂回 — 対応: loop33-core
   — main.rs:4640
-- [ ] **AJ02** F2 リネームの入力検証拒否が未定数化（P08 残件）
+- [x] **AJ02** F2 リネームの入力検証拒否が未定数化（P08 残件） — 対応: loop33-core
   — ops.rs:193
-- [ ] **AJ03** ダイアログ拒否が self.status にミラーされず色分類対象外
+- [x] **AJ03** ダイアログ拒否が self.status にミラーされず色分類対象外 — 対応: loop33-core（実バグ修正）
   — main.rs:4736,4567
-- [ ] **AJ04** ADR-011「モジュール分割」に as-built 注記なし
+- [x] **AJ04** ADR-011「モジュール分割」に as-built 注記なし — 対応: loop33-docs
   — DESIGN.md:1170
-- [ ] **AJ05** ui/* 分割を「残課題」と記載するドキュメントが決定と矛盾
+- [x] **AJ05** ui/* 分割を「残課題」と記載するドキュメントが決定と矛盾 — 対応: loop33-docs
   — DESIGN.md:376 / app/README.md:701
-- [ ] **AJ06** WindowBoundsState::is_valid の上限分岐が無テスト
+- [x] **AJ06** WindowBoundsState::is_valid の上限分岐が無テスト — 対応: loop33-docs
   — settings.rs:611
-- [ ] **AJ07** 設定ダイアログ内に read-only 表示なし — settings_ui.rs:383
+- [x] **AJ07** 設定ダイアログ内に read-only 表示なし — settings_ui.rs:383 — 対応: loop33-ux + 親（read_only 配線）
 
 ### 優先度: 低（ループ R31）
 
 - [ ] **AJ08** fuzzy_score の min(40) キャップ分岐が無テスト — main.rs:1831
-- [ ] **AJ09** 個人化タブが read-only でも保存されると表示
+- [x] **AJ09** 個人化タブが read-only でも保存されると表示 — 対応: loop33-ux + 親（read_only 配線）
   — settings_ui.rs:1218
-- [ ] **AJ10** F1 に検索履歴/保存検索の導線なし — strings.rs:878
+- [x] **AJ10** F1 に検索履歴/保存検索の導線なし — strings.rs:878 — 対応: loop33-core
 
 ### 優先度: 低（調査タスク）
 

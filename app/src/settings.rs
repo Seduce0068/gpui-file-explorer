@@ -3465,7 +3465,7 @@ mod schema_validation_tests {
 mod window_session_tests {
     use super::{
         Settings, TabSession, WindowBoundsState, WindowMode, WindowSession, MAX_HISTORY_ENTRIES,
-        MAX_WINDOW_SESSIONS,
+        MAX_WINDOW_SESSIONS, MAX_WINDOW_SIZE_PX,
     };
     use crate::history::{History, HistorySnapshot};
     use crate::tabs::Tab;
@@ -3504,6 +3504,23 @@ mod window_session_tests {
         let mut bad = frame();
         bad.x = f32::INFINITY;
         assert!(bad.as_window_bounds().is_none());
+        // AJ06: finite-but-out-of-range coordinates and oversized dimensions
+        // must also be rejected (the cap branches of `is_valid`).
+        let mut bad = frame();
+        bad.x = 500_000.0;
+        assert!(bad.as_window_bounds().is_none(), "x above the 100_000 cap");
+        let mut bad = frame();
+        bad.y = -500_000.0;
+        assert!(bad.as_window_bounds().is_none(), "y below the -100_000 cap");
+        let mut bad = frame();
+        bad.width = MAX_WINDOW_SIZE_PX + 1.0;
+        assert!(bad.as_window_bounds().is_none(), "width above the size cap");
+        let mut bad = frame();
+        bad.height = MAX_WINDOW_SIZE_PX + 1.0;
+        assert!(
+            bad.as_window_bounds().is_none(),
+            "height above the size cap"
+        );
     }
 
     #[test]

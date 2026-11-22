@@ -522,6 +522,13 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     // 負けていた。呼び出し側は STATUS_ERROR_PREFIX を付けるが（下の status_color
     // の早期 return も参照）、分類表との整合のため明示的に error 登録する。
     STATUS_INVALID_CLI_DIR,
+    // AJ02: F2 名前変更の入力検証エラーは具体的な失敗として red。
+    STATUS_RENAME_INVALID_EMPTY,
+    STATUS_RENAME_INVALID_DOT,
+    STATUS_RENAME_INVALID_SEPARATOR,
+    STATUS_RENAME_INVALID_NUL,
+    STATUS_RENAME_INVALID_RESERVED_PREFIX,
+    STATUS_RENAME_INVALID_CHAR,
 ];
 
 /// Pure colour decision for the primary status text (U-01). An explicit
@@ -2061,28 +2068,31 @@ use crate::strings::{
     STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
     STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
     STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
-    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_NO_PARENT,
-    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
-    STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
-    STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
-    STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
-    STATUS_SEARCH_PROMPT, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
-    STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_SAVED,
-    STATUS_SETTINGS_SAVE_FAILED, STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE,
-    STATUS_SKIPPED_PREFIX, STATUS_SKIPPED_SUFFIX, STATUS_SKIP_REASON_MISSING,
-    STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL, STATUS_SPECIAL_FILE_NO_COPY,
-    STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT,
-    STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE,
-    STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_DISABLED, STATUS_TERMINAL_COMMAND_INVALID,
-    STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
-    STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING, STATUS_TRASH_LOAD_FAILED_PREFIX,
-    STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_AUTO_REFRESH, STATUS_TRASH_NO_COPY,
-    STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
-    STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_NO_TERMINAL_PREFIX,
-    STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED,
-    STATUS_UNDO_HISTORY_HINT, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX,
-    STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
-    THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR,
+    STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL,
+    STATUS_RENAME_INVALID_RESERVED_PREFIX, STATUS_RENAME_INVALID_SEPARATOR,
+    STATUS_RENAME_NO_PARENT, STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED,
+    STATUS_REVEALED_PREFIX, STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT,
+    STATUS_SAVED_SEARCH_NAME_REQUIRED, STATUS_SAVED_SEARCH_QUERY_REQUIRED,
+    STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
+    STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_PROMPT, STATUS_SEARCH_STALE,
+    STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_READ_ONLY_HINT,
+    STATUS_SETTINGS_SAVED, STATUS_SETTINGS_SAVE_FAILED, STATUS_SETTINGS_SAVE_LOCKED,
+    STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SKIPPED_PREFIX, STATUS_SKIPPED_SUFFIX,
+    STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
+    STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY,
+    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY,
+    STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_DISABLED,
+    STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
+    STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
+    STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_AUTO_REFRESH,
+    STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE,
+    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
+    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
+    STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED,
+    STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
+    TERMINAL_COMMAND_DESCRIPTION, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -4591,6 +4601,10 @@ impl Explorer {
         if let Some(editor) = self.terminal_command_editor.as_mut() {
             editor.error = Some(error.to_string());
         }
+        // AJ03: ダイアローグ内のエラーだけに留めず、設定カードと同じ
+        // エラー接頭辞付きでステータスバーにもミラーする。これにより
+        // status_color の赤分類が両経路で一貫して適用される。
+        self.status = settings_validation_status(error);
         cx.notify();
     }
 
@@ -4637,7 +4651,7 @@ impl Explorer {
                 div()
                     .text_sm()
                     .text_color(rgb(p.subtext))
-                    .child("F4 で開くターミナルの起動コマンド（空白で無効化）"),
+                    .child(TERMINAL_COMMAND_DESCRIPTION),
             )
             .child(Input::new(&editor.input).w_full());
         if let Some(error) = &editor.error {
@@ -4782,6 +4796,9 @@ impl Explorer {
         if let Some(editor) = self.keymap_editor.as_mut() {
             editor.error = Some(error.to_string());
         }
+        // AJ03: 設定カードの検証エラーと同じく、ステータスバーにもミラーする。
+        // ダイアログを閉じた後も理由が残り、赤 classified で表示される。
+        self.status = settings_validation_status(error);
         cx.notify();
     }
 
@@ -10924,6 +10941,9 @@ impl Explorer {
             &self.settings.terminal_command,
             &keymap,
         );
+        // AJ07/AJ09: let the dialog show its read-only footer and disable Save
+        // instead of silently accepting edits that `Settings::save` will no-op.
+        state.set_read_only(self.settings.read_only);
         let theme_choice = match self.settings.theme_choice {
             crate::settings::ThemeChoice::Dark => "dark",
             crate::settings::ThemeChoice::Light => "light",
@@ -11661,14 +11681,14 @@ mod tests {
     use crate::settings::{Settings, SettingsSaveError, ThemeChoice, MAX_KEYMAP_OVERRIDES};
     use crate::strings::{
         STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
-        STATUS_DROP_NO_DESTINATION, STATUS_INVALID_CLI_DIR, STATUS_MAX_TABS_SUFFIX,
-        STATUS_NO_CLIPBOARD, STATUS_RENAME_FAILED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
-        STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
-        STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
-        STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
-        STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
-        STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
-        STATUS_WATCH_PARTIAL,
+        STATUS_DROP_NO_DESTINATION, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID,
+        STATUS_MAX_TABS_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_RENAME_FAILED,
+        STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, STATUS_SKIP_REASON_MISSING,
+        STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL, STATUS_TRASH_ALL_FAILED,
+        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+        STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+        STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED,
+        STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
     use std::ffi::OsString;
@@ -12114,6 +12134,36 @@ mod tests {
             assert_eq!(mirrored, format!("{STATUS_ERROR_PREFIX}{message}"));
             assert_eq!(status_color(&mirrored), C_RED, "mirrored: {mirrored}");
         }
+    }
+
+    #[test]
+    fn dialog_validation_errors_are_mirrored_to_a_red_status() {
+        // AJ03: Alt+K / Alt+T のダイアログ内エラーも設定カードと同じく
+        // `settings_validation_status` を通してステータスバーへミラーする。
+        // ヘルパーは GPUI Context を要するため、ここではソース配線を固定し、
+        // 実際のミラー文言が赤に分類されることを確認する。
+        let source = include_str!("main.rs");
+        for helper in ["fn set_keymap_error(", "fn set_terminal_command_error("] {
+            let body = source_region(source, helper, "\n    }\n");
+            assert!(
+                body.contains("settings_validation_status(error)"),
+                "{helper} must mirror the dialog error into self.status"
+            );
+            assert!(
+                body.contains("self.status = settings_validation_status(error)"),
+                "{helper} must assign the mirrored status"
+            );
+        }
+        for message in [
+            STATUS_KEYMAP_FORMAT_INVALID,
+            STATUS_TERMINAL_COMMAND_INVALID,
+        ] {
+            let mirrored = settings_validation_status(message);
+            assert_eq!(status_color(&mirrored), C_RED, "dialog error: {mirrored}");
+        }
+        // 動的な上限通知も同じ経路で赤になること。
+        let limit = keymap_limit_status();
+        assert_eq!(status_color(&settings_validation_status(&limit)), C_RED);
     }
 
     #[test]

@@ -265,6 +265,51 @@ macro_rules! terminal_command_description {
 pub(crate) use terminal_command_description;
 pub const TERMINAL_COMMAND_DESCRIPTION: &str = terminal_command_description!();
 
+/// 読み取り専用セッションで設定ダイアログのフッターに表示する文言（AJ07）。
+///
+/// 保存ボタンが無効であることと、変更が永続化されないことを明示する。
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// `settings_read_only_footer!()` を使う。
+macro_rules! settings_read_only_footer {
+    () => {
+        "この設定は読み取り専用です（保存は行われません）"
+    };
+}
+pub(crate) use settings_read_only_footer;
+pub const SETTINGS_READ_ONLY_FOOTER: &str = settings_read_only_footer!();
+
+/// 読み取り専用セッションで個人化ページに表示する保存先の注記（AJ09）。
+///
+/// 通常時に表示する `~/.config/.../settings.json` への保存案内と排他に使う。
+macro_rules! settings_read_only_save_note {
+    () => {
+        "現在は読み取り専用のため保存されません"
+    };
+}
+pub(crate) use settings_read_only_save_note;
+pub const SETTINGS_READ_ONLY_SAVE_NOTE: &str = settings_read_only_save_note!();
+
+/// 読み取り専用時の配色注記（AJ09）。通常時の「変更は保存時に反映されます」は
+/// 保存できないセッションでは誤解を招くため、連動関係だけを案内する。
+macro_rules! settings_read_only_palette_note {
+    () => {
+        "配色はテーマ設定に連動します（保存は行われません）"
+    };
+}
+pub(crate) use settings_read_only_palette_note;
+pub const SETTINGS_READ_ONLY_PALETTE_NOTE: &str = settings_read_only_palette_note!();
+
+/// 検索履歴 / 保存検索チップの操作案内（AJ10）。
+///
+/// `app/README.md` の検索履歴・保存検索節と F1 ヘルプで共用する。
+macro_rules! search_history_chips_description {
+    () => {
+        "検索語は最大 10 件を設定に保存し、検索欄が空のとき「最近の検索:」チップとして表示。保存検索は「保存検索:」欄に名前を入力して「保存」、最大 50 件を settings.json に保存。チップをクリックで呼び出し、「×」で削除（同名は上書き）"
+    };
+}
+pub(crate) use search_history_chips_description;
+pub const SEARCH_HISTORY_CHIPS_DESCRIPTION: &str = search_history_chips_description!();
+
 const _: () =
     assert!(MOUSE_SELECTION_CLICK_DESCRIPTION.len() == mouse_selection_click_description!().len());
 const _: () = assert!(MOUSE_DRAG_DROP_DESCRIPTION.len() == mouse_drag_drop_description!().len());
@@ -272,6 +317,12 @@ const _: () =
     assert!(MOUSE_MIDDLE_CLICK_DESCRIPTION.len() == mouse_middle_click_description!().len());
 const _: () = assert!(KEYMAP_RESET_GUIDANCE.len() == keymap_reset_guidance!().len());
 const _: () = assert!(TERMINAL_COMMAND_DESCRIPTION.len() == terminal_command_description!().len());
+const _: () = assert!(SETTINGS_READ_ONLY_FOOTER.len() == settings_read_only_footer!().len());
+const _: () = assert!(SETTINGS_READ_ONLY_SAVE_NOTE.len() == settings_read_only_save_note!().len());
+const _: () =
+    assert!(SETTINGS_READ_ONLY_PALETTE_NOTE.len() == settings_read_only_palette_note!().len());
+const _: () =
+    assert!(SEARCH_HISTORY_CHIPS_DESCRIPTION.len() == search_history_chips_description!().len());
 
 /// AC07 / AC08 の定数は既存の `mod tests`（280 行目以降）からは触らない。
 /// 所有範囲内に小さなテストモジュールを置き、各案内が宣伝するキーを固定する。
@@ -691,6 +742,85 @@ mod view_hint_and_keymap_format_tests {
             "F5 row must mention search re-run: {row}"
         );
     }
+
+    #[test]
+    fn read_only_wording_is_canonical_for_footer_and_personalize_page() {
+        // AJ07 / AJ09: 読み取り専用セッションの文言は一箇所で定義し、
+        // マクロ経由の静的文字列と定数が一致することを固定する。
+        assert_eq!(SETTINGS_READ_ONLY_FOOTER, settings_read_only_footer!());
+        assert_eq!(
+            SETTINGS_READ_ONLY_SAVE_NOTE,
+            settings_read_only_save_note!()
+        );
+        assert_eq!(
+            SETTINGS_READ_ONLY_PALETTE_NOTE,
+            settings_read_only_palette_note!()
+        );
+        for token in ["読み取り専用", "保存は行われません"] {
+            assert!(
+                SETTINGS_READ_ONLY_FOOTER.contains(token),
+                "read-only footer must name {token}: {SETTINGS_READ_ONLY_FOOTER}"
+            );
+        }
+        assert_eq!(
+            SETTINGS_READ_ONLY_SAVE_NOTE,
+            "現在は読み取り専用のため保存されません"
+        );
+        assert!(!SETTINGS_READ_ONLY_SAVE_NOTE.contains("settings.json"));
+        assert!(SETTINGS_READ_ONLY_PALETTE_NOTE.contains("保存は行われません"));
+    }
+
+    #[test]
+    fn search_history_chips_description_is_canonical_and_matches_readme() {
+        // AJ10: F1 の prose 行と README の検索履歴 / 保存検索節で共用する。
+        assert_eq!(
+            SEARCH_HISTORY_CHIPS_DESCRIPTION,
+            search_history_chips_description!()
+        );
+        let readme = include_str!("../README.md").replace('`', "");
+        for token in [
+            "最近の検索:",
+            "保存検索:",
+            "最大 10 件",
+            "最大 50 件",
+            "同名は上書き",
+        ] {
+            assert!(
+                SEARCH_HISTORY_CHIPS_DESCRIPTION.contains(token),
+                "canonical chips description must name {token}: {SEARCH_HISTORY_CHIPS_DESCRIPTION}"
+            );
+            assert!(
+                readme.contains(token),
+                "README must document the chip token {token}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_description_macro_is_exported_for_other_modules() {
+        // AJ01 support: 正規文言マクロが settings_ui.rs / main.rs から
+        // 参照できること（pub(crate) use）を固定する。
+        assert_eq!(
+            TERMINAL_COMMAND_DESCRIPTION,
+            terminal_command_description!()
+        );
+        let settings_hint = include_str!("settings_ui.rs");
+        assert!(
+            settings_hint.contains("crate::strings::terminal_command_description!()"),
+            "settings_ui.rs must reference the exported macro"
+        );
+        let main_source = include_str!("main.rs");
+        assert!(
+            main_source.contains("TERMINAL_COMMAND_DESCRIPTION")
+                || main_source.contains("terminal_command_description!()"),
+            "main.rs must use the canonical terminal description"
+        );
+        let stale = "F4 で開くターミナルの起動コマンド（空白で無効化）";
+        assert!(
+            !main_source.contains(stale),
+            "main.rs must not repeat the stale Alt+T dialog wording"
+        );
+    }
 }
 
 /// 設定ダイアログのタブ直接移動キーの正規表記（Y05）。
@@ -876,6 +1006,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 concat!(reload_word!(), " / 検索の再実行"),
             ),
             ("Ctrl+F", "検索（名前 / 内容）"),
+            // AJ10: 検索欄上部のチップ（検索履歴 / 保存検索）を F1 にも載せる。
+            // キー列を持たない説明行なので settings_ui.rs の
+            // HELP_KEY_EXCEPTIONS にも同じ文字列を登録する（ux 担当）。
+            ("検索履歴 / 保存検索", search_history_chips_description!()),
             ("Ctrl+Shift+F", "検索結果を名前で絞り込み"),
             ("Ctrl+I", "プロパティ"),
             ("Space / F3", "テキストプレビュー"),
@@ -950,7 +1084,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 ),
             ),
             ("F4", "選択中のフォルダでターミナルを開く"),
-            ("Alt+T", "F4 で開くターミナルの起動コマンドを設定"),
+            ("Alt+T", terminal_command_description!()),
             (
                 "Alt+K",
                 concat!(
@@ -1475,6 +1609,18 @@ const _: () = assert!(DIALOG_FOOTER_HINT.len() == dialog_footer_hint!().len());
 pub const KIND_FOLDER: &str = "フォルダ";
 pub const KIND_LINK: &str = "リンク";
 pub const KIND_NONE: &str = "—";
+
+/// AJ02: `ops::validate_file_name` の入力エラー文言。
+/// F2 名前変更ダイアログの検証エラーは、表示文言と色分類を一箇所で固定する
+/// ため、ここで定義する 6 定数へ集約する（`STATUS_ERROR_MARKERS` と
+/// 非空在庫にも登録済み）。動的な名前が入る Windows 予約名だけは接頭辞と
+/// 接尾に分け、呼び出し側が `format!` で組み立てる。
+pub const STATUS_RENAME_INVALID_EMPTY: &str = "名前が空です";
+pub const STATUS_RENAME_INVALID_DOT: &str = "`.` と `..` は名前として使えません";
+pub const STATUS_RENAME_INVALID_SEPARATOR: &str = "名前にパス区切り文字は使えません";
+pub const STATUS_RENAME_INVALID_NUL: &str = "名前に NUL 文字は使えません";
+pub const STATUS_RENAME_INVALID_RESERVED_PREFIX: &str = "Windows の予約名は使えません: ";
+pub const STATUS_RENAME_INVALID_CHAR: &str = "Windows で使えない文字が含まれています";
 
 /// 相対時刻の単語（`model::human_age` で使用）。
 pub const AGE_FUTURE: &str = "未来";
@@ -2006,6 +2152,13 @@ mod tests {
             // X03 / X04: 呼び出し側の format! に残っていた接頭辞も一元化した。
             STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
             STATUS_TRASH_LOAD_FAILED_PREFIX,
+            // AJ02: F2 名前変更の検証エラー 6 ケース。
+            STATUS_RENAME_INVALID_EMPTY,
+            STATUS_RENAME_INVALID_DOT,
+            STATUS_RENAME_INVALID_SEPARATOR,
+            STATUS_RENAME_INVALID_NUL,
+            STATUS_RENAME_INVALID_RESERVED_PREFIX,
+            STATUS_RENAME_INVALID_CHAR,
         ] {
             assert!(!message.is_empty(), "status message must not be empty");
         }
@@ -2067,6 +2220,37 @@ mod tests {
                 "STATUS_KEYMAP_NO_UNBIND_PREFIX",
                 STATUS_KEYMAP_NO_UNBIND_PREFIX,
                 "warning",
+            ),
+            // AJ02: F2 名前変更の入力検証エラーも concrete failure(red)。
+            (
+                "STATUS_RENAME_INVALID_EMPTY",
+                STATUS_RENAME_INVALID_EMPTY,
+                "error",
+            ),
+            (
+                "STATUS_RENAME_INVALID_DOT",
+                STATUS_RENAME_INVALID_DOT,
+                "error",
+            ),
+            (
+                "STATUS_RENAME_INVALID_SEPARATOR",
+                STATUS_RENAME_INVALID_SEPARATOR,
+                "error",
+            ),
+            (
+                "STATUS_RENAME_INVALID_NUL",
+                STATUS_RENAME_INVALID_NUL,
+                "error",
+            ),
+            (
+                "STATUS_RENAME_INVALID_RESERVED_PREFIX",
+                STATUS_RENAME_INVALID_RESERVED_PREFIX,
+                "error",
+            ),
+            (
+                "STATUS_RENAME_INVALID_CHAR",
+                STATUS_RENAME_INVALID_CHAR,
+                "error",
             ),
             // 既に error markers に登録済みの concrete failure。
             ("STATUS_UNDO_FAILED", STATUS_UNDO_FAILED, "error"),
@@ -2360,7 +2544,9 @@ mod tests {
                         // W06: 具体的な失敗（「再スキャンに失敗しました」）。
                         || message.contains("失敗しました")
                         // AB07: 監視の一部無効 / 無効（secondary slot 直接描画）。
-                        || message.contains("無効"),
+                        || message.contains("無効")
+                        // AJ02: Windows の不正文字は「使えない文字が含まれています」。
+                        || message.contains("使えない"),
                     "{name} is not refusal-worded: {message}"
                 );
             }
@@ -3190,5 +3376,80 @@ mod tests {
         }
         // X09: 移動済みであることを示す陳腐なコメントも削除されていること。
         assert!(!source.contains("strings.rs is intentionally out of scope"));
+    }
+
+    #[test]
+    fn rename_validation_errors_are_canonical_and_classified_as_errors() {
+        // AJ02: `ops::validate_file_name` の 6 ケースをここで固定する。
+        // 各定数が非空で、ops.rs の現行文言と一致することを検証する。
+        // テスト自身がリテラルを増やさないよう、期待値は定数から取得し、
+        // 「定数定義の 1 回だけ」を source 走査で確認する。
+        let strings_source = include_str!("strings.rs");
+        for (name, message) in [
+            ("STATUS_RENAME_INVALID_EMPTY", STATUS_RENAME_INVALID_EMPTY),
+            ("STATUS_RENAME_INVALID_DOT", STATUS_RENAME_INVALID_DOT),
+            (
+                "STATUS_RENAME_INVALID_SEPARATOR",
+                STATUS_RENAME_INVALID_SEPARATOR,
+            ),
+            ("STATUS_RENAME_INVALID_NUL", STATUS_RENAME_INVALID_NUL),
+            (
+                "STATUS_RENAME_INVALID_RESERVED_PREFIX",
+                STATUS_RENAME_INVALID_RESERVED_PREFIX,
+            ),
+            ("STATUS_RENAME_INVALID_CHAR", STATUS_RENAME_INVALID_CHAR),
+        ] {
+            assert!(!message.is_empty(), "{name} must not be empty");
+            assert_eq!(
+                strings_source.matches(message).count(),
+                1,
+                "{name} literal must appear only in its constant definition"
+            );
+        }
+        // 予約名だけは動的な名前を連結するため接頭辞の形を取る。
+        assert!(STATUS_RENAME_INVALID_RESERVED_PREFIX.ends_with(": "));
+        // 6 つの定数はすべて error 分類であり、main.rs のマーカー表に登録済み。
+        let main_source = include_str!("main.rs");
+        let error_markers = main_source
+            .split("const STATUS_ERROR_MARKERS: &[&str] = &[")
+            .nth(1)
+            .expect("STATUS_ERROR_MARKERS must exist")
+            .split("\n];")
+            .next()
+            .expect("marker array must terminate");
+        for name in [
+            "STATUS_RENAME_INVALID_EMPTY",
+            "STATUS_RENAME_INVALID_DOT",
+            "STATUS_RENAME_INVALID_SEPARATOR",
+            "STATUS_RENAME_INVALID_NUL",
+            "STATUS_RENAME_INVALID_RESERVED_PREFIX",
+            "STATUS_RENAME_INVALID_CHAR",
+        ] {
+            assert!(
+                error_markers.contains(name),
+                "{name} must be registered in STATUS_ERROR_MARKERS"
+            );
+        }
+    }
+
+    #[test]
+    fn aj10_help_row_uses_the_canonical_search_history_description() {
+        // AJ10: F1 の「検索履歴 / 保存検索」行は共有文言をそのまま使い、
+        // キー列を持たない行として settings_ui.rs の例外表にも登録される。
+        let (_, rows) = HELP_SECTIONS
+            .iter()
+            .find(|(title, _)| *title == "表示")
+            .expect("表示 section must exist");
+        let description = rows
+            .iter()
+            .find(|(key, _)| *key == "検索履歴 / 保存検索")
+            .map(|(_, text)| *text)
+            .expect("F1 表示 must list 検索履歴 / 保存検索");
+        assert_eq!(description, SEARCH_HISTORY_CHIPS_DESCRIPTION);
+        let settings_ui = include_str!("settings_ui.rs");
+        assert!(
+            settings_ui.contains("\"検索履歴 / 保存検索\""),
+            "settings_ui.rs HELP_KEY_EXCEPTIONS must register the prose row"
+        );
     }
 }

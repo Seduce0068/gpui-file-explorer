@@ -360,7 +360,7 @@ app/
 
 #### P0 実装の現状（as-built）との差分（初版 2026-11-11、以降随時更新（最終更新は変更履歴を参照））
 
-fe-dev が並行実装中の `app/src/` は、時間優先で次の**フラット構成**を採っている。設計の目標構成（上図）との差分を記録する。**受入条件（§10.4）には影響しない**。P1 冒頭で目標構成へ寄せる（機能追加と同時に分割すると差分レビューが困難になるため、P0 は現状維持）。
+fe-dev が並行実装中の `app/src/` は、時間優先で次の**フラット構成**を採っている。設計の目標構成（上図）との差分を記録する。**受入条件（§10.4）には影響しない**。目標構成への完全分割は設計判断で実施しない（現状維持）、段階的集約で代替済み（review-report.md H-1）。
 
 > **as-built 注記（2026-11-22）**: 下表のうち初版で「P1 で…」と予定されていた 4 項目
 > （`Entry` の `OsString` + `sort_key` 事前計算、`Selection` の `PathBuf` キー複数選択、
@@ -373,7 +373,7 @@ fe-dev が並行実装中の `app/src/` は、時間優先で次の**フラッ�
 
 | 実装（現状） | 設計（§4.1/§5） | 評価・扱い |
 |---|---|---|
-| `main.rs` に `Explorer`(root Entity) + UI 描画を集約 | `app.rs` + `ui/*` に分割 | P0 は許容。1200 行超のため P1 で `ui/{toolbar,breadcrumb,sidebar,list,status_bar,context_menu}` へ抽出 |
+| `main.rs` に `Explorer`(root Entity) + UI 描画を集約 | `app.rs` + `ui/*` に分割 | 完全分割は設計判断で実施しない（現状維持）、段階的集約で代替済み（review-report.md H-1） |
 | `model.rs` に Entry/ソート/列挙/整形を集約（GPUI 非依存） | `model/{entry,sort,listing,format}.rs` + `fs/listing.rs` | GPUI 非依存は設計どおり（◎）。分割のみ P1 |
 | `Entry { name: OsString（+ lossy の name_text）, sort_key（構築時事前計算）, path: PathBuf, is_dir, is_symlink, size, modified }` | `Entry { name: OsString, sort_key, kind, size: Option<u64>, is_hidden }` | **移行済み（as-built）**: `name` を `OsString` 化し lossy の `name_text` を追加、`sort_key` を構築時に事前計算。非 UTF-8 名の I/O 保持を Unix テストで検証済み（review-report.md 207-224 行目）。設計列は当初案を維持 |
 | `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択。順序保持 `Vec` + `HashSet` インデックス） | `Selection`（PathBuf キー、複数） | **移行済み（as-built）**: §5.3 の型へ置換し、バッチ操作・O(1) の `contains` を実装。行 index 競合を回避（review-report.md 217-220, 393-394 行目） |
@@ -1167,7 +1167,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | ADR-008 | 削除確認は **`Window::prompt`** を第一候補 | gpui-component `open_alert_dialog` / 独自モーダル | GPUI 標準 API で Windows/macOS ではネイティブになる。Linux は GPUI fallback（✅ ソース確認）。UI が見劣りする場合のみ AlertDialog へ |
 | ADR-009 | Breeze システムアイコン優先、Lucide フォールバック | ネイティブのみ/なし | §8.3 |
 | ADR-010 | 設定は **JSON + `dirs` + 原子的書込**、UI スレッドで同期保存（≤1KB） | TOML / 非同期保存 / DB | 可読性・依存最小・実装容易。書込は 1KB 未満で例外扱い（§4.4） |
-| ADR-011 | **モジュール分割を最初から行う**（main/app/model/fs/ui） | POC の単一 main.rs を拡張 | テスト容易性・並行安全レビュー・将来のタブ/複数ウィンドウ対応 |
+| ADR-011 | **モジュール分割を最初から行う**（main/app/model/fs/ui） | POC の単一 main.rs を拡張 | テスト容易性・並行安全レビュー・将来のタブ/複数ウィンドウ対応。as-built: 分割は実施せず、段階的改善（DebugHooks/SearchState/strings.rs）で代替。完全分割は設計判断で保留（review-report.md H-1） |
 | ADR-012 | ライセンスは **AGPL-3.0-or-later**、Zed GPL は不取込 | MIT/Apache で配布 | 依頼者決定。Argus 流用可能・コピーレフト。配布時ソース提供の運用を §9 に固定 |
 
 - ADR-009 の初期決定は「Lucide + 拡張子マップ、OS ネイティブは P2」だった。

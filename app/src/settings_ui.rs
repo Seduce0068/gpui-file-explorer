@@ -22,6 +22,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::TabBar;
+use gpui_kit::component::Disableable;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -200,6 +201,10 @@ pub struct SettingsUiState {
     pub error: Option<String>,
     /// Whether any control has been edited since opening.
     pub dirty: bool,
+    /// Read-only session: the dialog explains that changes are not persisted,
+    /// and the Save button is disabled (AJ07 / AJ09). Defaults to `false` so
+    /// existing hosts keep their writable behavior until they opt in.
+    pub read_only: bool,
     /// Reserved for hosts that want to attach their own input subscriptions.
     pub subscriptions: Vec<Subscription>,
 }
@@ -234,6 +239,7 @@ impl SettingsUiState {
             save_focus: cx.focus_handle(),
             error: None,
             dirty: false,
+            read_only: false,
             subscriptions: Vec::new(),
         }
     }
@@ -261,6 +267,14 @@ impl SettingsUiState {
     /// Set the "show hidden files" flag.
     pub fn set_show_hidden(&mut self, value: bool) {
         self.show_hidden = value;
+    }
+
+    /// Mark the overlay as read-only (AJ07 / AJ09).
+    ///
+    /// Hosts call this right after construction when the session cannot write
+    /// settings; the footer and Save button then reflect that state.
+    pub fn set_read_only(&mut self, value: bool) {
+        self.read_only = value;
     }
 
     /// Current terminal command text.
@@ -367,12 +381,23 @@ fn matches_query(query: &str, keywords: &[&str]) -> bool {
 
 /// Caption of the dismiss button. With unsaved edits the neutral `キャンセル`
 /// would hide the fact that closing discards them, so the label names the
-/// consequence instead (`E12`).
-fn cancel_label(dirty: bool) -> &'static str {
-    if dirty {
+/// consequence instead (`E12`). In a read-only session no edit can be saved,
+/// so the neutral caption is enough even when controls were touched.
+fn cancel_label(dirty: bool, read_only: bool) -> &'static str {
+    if dirty && !read_only {
         "保存せず閉じる"
     } else {
         crate::strings::LABEL_CANCEL
+    }
+}
+
+/// Caption of the Save button (AJ07). Read-only sessions must not offer a
+/// button that silently does nothing, so the label says why saving is absent.
+fn save_label(read_only: bool) -> &'static str {
+    if read_only {
+        "保存不可"
+    } else {
+        "保存"
     }
 }
 
@@ -380,8 +405,12 @@ fn cancel_label(dirty: bool) -> &'static str {
 ///
 /// K13: this is the only place the "changes apply on Save" hint is rendered;
 /// the Terminal tab used to repeat it in its body when the form was clean.
-fn footer_status_text(dirty: bool) -> &'static str {
-    if dirty {
+/// AJ07: a read-only session replaces every dirty/clean hint with the canonical
+/// read-only footer so users are never told to press a disabled Save button.
+fn footer_status_text(dirty: bool, read_only: bool) -> &'static str {
+    if read_only {
+        crate::strings::settings_read_only_footer!()
+    } else if dirty {
         "未保存の変更があります"
     } else {
         crate::strings::STATUS_SETTINGS_UNSAVED_HINT
@@ -810,6 +839,9 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
 /// `terminal_command_description!()` に置き、ここでは定数として参照する。
 const TERMINAL_COMMAND_SETTINGS_HINT: &str = crate::strings::terminal_command_description!();
 
+/// AJ10: F1 の検索履歴 / 保存検索 prose 行と同じ正規文言を共有する。
+const SEARCH_HISTORY_CHIPS_HELP: &str = crate::strings::search_history_chips_description!();
+
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &[
     "ターミナル",
     "terminal",
@@ -1209,14 +1241,28 @@ fn personalize_app_info_line() -> &'static str {
 /// Pure so both the renderer and the keyword-visibility test use the exact same
 /// strings (X14). Duplicating the literals in the test would let the page drift
 /// silently and reintroduce the M09 failure.
-fn personalize_info_lines() -> Vec<String> {
+///
+/// AJ09: a read-only session must not promise that settings will be written to
+/// `settings.json`; the canonical note from `strings.rs` replaces that line.
+fn personalize_info_lines(read_only: bool) -> Vec<String> {
+    let (save_line, palette_line) = if read_only {
+        (
+            crate::strings::settings_read_only_save_note!().to_string(),
+            crate::strings::settings_read_only_palette_note!().to_string(),
+        )
+    } else {
+        (
+            "設定は ~/.config/gpui-file-explorer/settings.json に保存されます。".to_string(),
+            "配色はテーマ設定に連動し、変更は保存時に反映されます。".to_string(),
+        )
+    };
     vec![
         personalize_app_info_line().to_string(),
         personalize_version_info_line(),
         personalize_license_info_line(),
         personalize_source_info_line(),
-        "設定は ~/.config/gpui-file-explorer/settings.json に保存されます。".to_string(),
-        "配色はテーマ設定に連動し、変更は保存時に反映されます。".to_string(),
+        save_line,
+        palette_line,
     ]
 }
 
@@ -1463,7 +1509,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                 column = column
                     .child(divider(palette))
                     .child(section_title(palette, "このアプリについて"));
-                for line in personalize_info_lines() {
+                for line in personalize_info_lines(state.read_only) {
                     column = column.child(info_line(palette, &line));
                 }
             }
@@ -1533,23 +1579,24 @@ pub fn render_settings_content<V: SettingsUiHost>(
             div()
                 .flex_1()
                 .text_xs()
-                .text_color(rgb(if state.dirty {
+                .text_color(rgb(if state.dirty && !state.read_only {
                     palette.red
                 } else {
                     palette.muted
                 }))
-                .child(footer_status_text(state.dirty)),
+                .child(footer_status_text(state.dirty, state.read_only)),
         )
         .child(
             Button::new("settings-cancel")
-                .label(cancel_label(state.dirty))
+                .label(cancel_label(state.dirty, state.read_only))
                 .track_focus(&state.cancel_focus)
                 .on_click(cancel_click),
         )
         .child(
             Button::new("settings-save")
-                .label("保存")
+                .label(save_label(state.read_only))
                 .primary()
+                .disabled(state.read_only)
                 .track_focus(&state.save_focus)
                 .on_click(save_click),
         );
@@ -1621,7 +1668,7 @@ mod tests {
     use super::{
         cancel_label, footer_status_text, matches_query, next_settings_focus, no_match_hint,
         personalize_info_lines, personalize_license_info_line, personalize_source_info_line,
-        personalize_version_info_line, selected_index, settings_focus_order,
+        personalize_version_info_line, save_label, selected_index, settings_focus_order,
         settings_footer_f1_note, settings_footer_legend, settings_hidden_next,
         settings_row_is_visible, settings_row_shortcut, settings_theme_next, settings_view_next,
         tabs_matching_query, SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction,
@@ -1629,9 +1676,9 @@ mod tests {
         APPEARANCE_VIEW_DESCRIPTION, APPEARANCE_VIEW_KEYWORDS, FILES_HIDDEN_DESCRIPTION,
         FILES_HIDDEN_KEYWORDS, FILES_SORT_DESCRIPTION, FILES_SORT_KEYWORDS,
         PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS,
-        SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
-        SHORTCUTS_DEFAULT_LINES, SHORTCUTS_KEYMAP_KEYWORDS, TERMINAL_COMMAND_KEYWORDS,
-        TERMINAL_COMMAND_SETTINGS_HINT,
+        SEARCH_HISTORY_CHIPS_HELP, SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER,
+        SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES, SHORTCUTS_KEYMAP_KEYWORDS,
+        TERMINAL_COMMAND_KEYWORDS, TERMINAL_COMMAND_SETTINGS_HINT,
     };
     use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
@@ -1689,11 +1736,26 @@ mod tests {
     #[test]
     fn cancel_label_makes_unsaved_changes_explicit() {
         // Clean form keeps the canonical, neutral label (E13).
-        assert_eq!(cancel_label(false), crate::strings::LABEL_CANCEL);
-        assert_eq!(cancel_label(false), "キャンセル");
+        assert_eq!(cancel_label(false, false), crate::strings::LABEL_CANCEL);
+        assert_eq!(cancel_label(false, false), "キャンセル");
         // Dirty form names the consequence so closing is not mistaken for a
         // reversible cancel (E12).
-        assert_eq!(cancel_label(true), "保存せず閉じる");
+        assert_eq!(cancel_label(true, false), "保存せず閉じる");
+        // AJ07: nothing can be saved in a read-only session, so the warning
+        // about discarding edits would be misleading.
+        assert_eq!(cancel_label(true, true), crate::strings::LABEL_CANCEL);
+        assert_eq!(cancel_label(false, true), crate::strings::LABEL_CANCEL);
+    }
+
+    #[test]
+    fn save_label_disables_the_affordance_in_read_only_sessions() {
+        // AJ07: the writable path keeps the original button label.
+        assert_eq!(save_label(false), "保存");
+        // Read-only sessions must not offer a button that silently no-ops.
+        let ro = save_label(true);
+        assert_eq!(ro, "保存不可");
+        assert_ne!(ro, save_label(false));
+        assert!(ro.contains("保存"));
     }
 
     #[test]
@@ -1840,11 +1902,32 @@ mod tests {
         // K13: the shared footer is the only renderer of the "apply on Save"
         // hint; the Terminal tab body must not repeat it.
         assert_eq!(
-            footer_status_text(false),
+            footer_status_text(false, false),
             crate::strings::STATUS_SETTINGS_UNSAVED_HINT
         );
-        assert_eq!(footer_status_text(true), "未保存の変更があります");
-        assert_ne!(footer_status_text(true), footer_status_text(false));
+        assert_eq!(footer_status_text(true, false), "未保存の変更があります");
+        assert_ne!(
+            footer_status_text(true, false),
+            footer_status_text(false, false)
+        );
+    }
+
+    #[test]
+    fn read_only_footer_replaces_both_dirty_and_clean_hints() {
+        // AJ07: the dialog must always say it is read-only, regardless of
+        // whether the user touched a control, and must never point at Save.
+        let ro = crate::strings::SETTINGS_READ_ONLY_FOOTER;
+        assert_eq!(footer_status_text(false, true), ro);
+        assert_eq!(footer_status_text(true, true), ro);
+        assert_eq!(ro, crate::strings::settings_read_only_footer!());
+        assert!(ro.contains("読み取り専用"));
+        assert!(ro.contains("保存は行われません"));
+        for writable in [
+            footer_status_text(false, false),
+            footer_status_text(true, false),
+        ] {
+            assert_ne!(ro, writable);
+        }
     }
 
     #[test]
@@ -2480,7 +2563,7 @@ mod tests {
             "このアプリについて",
         ]
         .join("\n");
-        let visible = format!("{visible}\n{}", personalize_info_lines().join("\n"));
+        let visible = format!("{visible}\n{}", personalize_info_lines(false).join("\n"));
         let visible_lower = visible.to_lowercase();
         for keyword in PERSONALIZE_INFO_KEYWORDS
             .iter()
@@ -2500,8 +2583,36 @@ mod tests {
             );
         }
         // The two keywords that motivated X14 are now rendered verbatim.
-        let app_line = personalize_info_lines()[0].clone();
+        let app_line = personalize_info_lines(false)[0].clone();
         assert!(app_line.contains("情報") && app_line.contains("about"));
+    }
+
+    #[test]
+    fn personalize_save_hint_switch_with_read_only_state() {
+        // AJ09: the writable page keeps the canonical settings.json path, while
+        // a read-only page must never promise that settings will be saved.
+        let writable = personalize_info_lines(false);
+        let read_only = personalize_info_lines(true);
+        assert_eq!(writable.len(), read_only.len());
+        assert!(
+            writable
+                .iter()
+                .any(|line| line.contains("settings.json") && line.contains("保存されます")),
+            "writable page must name the save location: {writable:?}"
+        );
+        assert!(!writable.iter().any(|line| line.contains("読み取り専用")));
+        let note = crate::strings::SETTINGS_READ_ONLY_SAVE_NOTE;
+        assert_eq!(note, crate::strings::settings_read_only_save_note!());
+        assert_eq!(note, "現在は読み取り専用のため保存されません");
+        assert_eq!(read_only[4], note);
+        assert!(!read_only.iter().any(|line| line.contains("settings.json")));
+        assert!(!read_only
+            .iter()
+            .any(|line| line.contains("保存時に反映されます")));
+        assert_eq!(
+            read_only[5],
+            crate::strings::SETTINGS_READ_ONLY_PALETTE_NOTE
+        );
     }
 
     #[test]
@@ -2699,6 +2810,46 @@ mod tests {
     }
 
     #[test]
+    fn search_history_chips_help_row_is_canonical_and_chord_free() {
+        // AJ10: README documents the search-history / saved-search chips, and
+        // F1 must carry the same canonical description. The row has no chord,
+        // so it must stay in the Shortcuts-tab exception list.
+        const KEY: &str = "検索履歴 / 保存検索";
+        let canonical = crate::strings::SEARCH_HISTORY_CHIPS_DESCRIPTION;
+        assert_eq!(canonical, SEARCH_HISTORY_CHIPS_HELP);
+        assert_eq!(
+            canonical,
+            crate::strings::search_history_chips_description!()
+        );
+        let row = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == KEY)
+            .unwrap_or_else(|| panic!("F1 must have a {KEY} row"));
+        assert_eq!(
+            row.1, canonical,
+            "F1 {KEY} row must use the canonical chips description"
+        );
+        assert!(
+            HELP_KEY_EXCEPTIONS.contains(&KEY),
+            "the chord-free chips row must be exempt from the chord mirror"
+        );
+        let readme = include_str!("../README.md").replace('`', "");
+        for token in [
+            "最近の検索:",
+            "保存検索:",
+            "最大 10 件",
+            "最大 50 件",
+            "同名は上書き",
+        ] {
+            assert!(
+                readme.contains(token) && canonical.contains(token),
+                "README and F1 must share the chip token {token}"
+            );
+        }
+    }
+
+    #[test]
     fn settings_row_shortcut_maps_bare_keys_per_tab() {
         // M08: RadioGroup/Switch rows have no Tab stop and the settings guard
         // swallows the global chords, so each row gets a bare letter scoped to
@@ -2876,6 +3027,9 @@ mod tests {
         "設定ダイアログの行ショートカット",
         "設定ダイアログの操作",
         "ディレクトリ表示",
+        // AJ10: prose row documenting search-history / saved-search chips;
+        // it has no keyboard chord to mirror on the Shortcuts tab.
+        "検索履歴 / 保存検索",
         "AGPL-3.0-or-later",
     ];
 
