@@ -1292,7 +1292,8 @@ status: current
   — DESIGN.md:376 / app/README.md:701
 - [x] **AJ06** WindowBoundsState::is_valid の上限分岐が無テスト — 対応: loop33-docs
   — settings.rs:611
-- [x] **AJ07** 設定ダイアログ内に read-only 表示なし — settings_ui.rs:383 — 対応: loop33-ux + 親（read_only 配線）
+- [x] **AJ07** 設定ダイアログ内に read-only 表示なし — settings_ui.rs:383
+  — 対応: loop33-ux + 親（read_only 配線）
 
 ### 優先度: 低（ループ R31）
 
