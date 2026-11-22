@@ -253,4 +253,4 @@ iOS は SwiftUI、Android は Jetpack Compose（または KMP で共有）のUI�
 - `gpui-pre-ios-0.3.12/src/ios/platform.rs`, `gpui-pre-ios-0.3.12/examples/ios.rs`
 - `gpui-pre-windows-0.3.12/src/platform.rs`
 - `trash-5.3.0/Cargo.toml`
-- [wasm-browser-notes.md](../notes/wasm-browser-notes.md)
+- [wasm-browser-notes.md](../../notes/wasm-browser-notes.md)

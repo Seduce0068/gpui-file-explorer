@@ -328,6 +328,45 @@ mod dialog_and_bar_hint_tests {
             assert!(hint.contains("Esc"), "hint must explain Esc: {hint}");
         }
     }
+
+    #[test]
+    fn overlay_footer_hints_are_wired_as_constants_in_main_rs() {
+        // AM02 / AN08: 3 つのオーバーレイ（プレビュー / あいまいジャンプ /
+        // F1 ヘルプ）のフッター案内は strings.rs の定数を参照して描画する。
+        // 既存の文言テストだけではインライン化に戻せたため、main.rs の
+        // 描画サイトを source-guard で固定する。
+        let main_source = include_str!("main.rs");
+        for (render_site, constant) in [
+            (
+                ".child(PREVIEW_OVERLAY_FOOTER_HINT)",
+                "PREVIEW_OVERLAY_FOOTER_HINT",
+            ),
+            (
+                ".child(FUZZY_JUMP_OVERLAY_FOOTER_HINT)",
+                "FUZZY_JUMP_OVERLAY_FOOTER_HINT",
+            ),
+            (
+                ".child(crate::strings::HELP_OVERLAY_FOOTER_HINT)",
+                "HELP_OVERLAY_FOOTER_HINT",
+            ),
+        ] {
+            assert!(
+                main_source.contains(render_site),
+                "main.rs must render the {constant} footer via `{render_site}`"
+            );
+        }
+        // 定数参照が消えて文言リテラルが main.rs へ埋め込まれた場合も検出する。
+        for literal in [
+            PREVIEW_OVERLAY_FOOTER_HINT,
+            FUZZY_JUMP_OVERLAY_FOOTER_HINT,
+            HELP_OVERLAY_FOOTER_HINT,
+        ] {
+            assert!(
+                !main_source.contains(literal),
+                "overlay footer must not be inlined into main.rs: {literal}"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,6 +1180,17 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "ヘッダクリック",
                 "名前 / 種類 / サイズ / 更新日時でソート（同一列で昇順⇔降順）",
             ),
+            // R41/AN03: ファイルタブの列カスタマイズを F1 にも掲載。キー列を
+            // 持たない散文行なので settings_ui.rs の HELP_KEY_EXCEPTIONS に
+            // `"一覧の列"` の登録が必要（親担当）。
+            (
+                "一覧の列",
+                concat!(
+                    "設定（Ctrl+,）のファイルタブ「一覧の列」で表示列と順番を変更。",
+                    "Switch で表示 / 非表示、↑↓で並べ替え（最後の 1 列は非表示にできません）。",
+                    "行ショートカットはこれらの Switch にはありません"
+                ),
+            ),
             (
                 "Ctrl+R / F5",
                 concat!(reload_word!(), " / 検索の再実行"),
@@ -1890,38 +1940,78 @@ mod tests {
             readme.contains(ERROR_RECOVERY_HELP),
             "README must quote the canonical recovery guidance"
         );
-        let readme_prose = readme
-            .lines()
-            .map(|line| line.trim().replace('`', ""))
-            .collect::<String>();
-        for token in [
-            "アクセスが拒否されました",
-            "既に存在します",
-            "再スキャンに失敗しました",
-            "ターミナル起動コマンドが未設定",
-        ] {
-            assert!(
-                readme_prose.contains(token),
-                "README error table must carry the displayed message {token}"
-            );
-        }
-        // AM03: 「次の操作」列のキー導線も回帰対象にする。文言全体の一致は
-        // 要求せず、キートークン（F5 / 親フォルダ / F2 / Ctrl+,）の存在を
-        // エラー回復テーブル内で固定する。
-        let recovery_table = readme
+        // R41/AN01: README 全体のトークン検索ではなく、`## エラーが出たら` 節の
+        // 表だけを検査する。各「表示される文言」セルが strings.rs の正規定数
+        // （または動的接頭辞の前方一致部分）と一致することを固定する。
+        let error_section = readme
             .split("## エラーが出たら")
             .nth(1)
             .expect("README must have the error-recovery section")
             .split("\n## ")
             .next()
-            .expect("error-recovery section must terminate")
+            .expect("error-recovery section must terminate");
+        let rows = error_section
             .lines()
             .filter(|line| line.trim_start().starts_with('|'))
-            .map(|line| line.replace('`', ""))
+            .skip(2) // 見出し行と区切り行
+            .filter_map(|line| {
+                let mut cells = line
+                    .split('|')
+                    .skip(1)
+                    .map(|cell| cell.trim().replace('`', ""));
+                Some((cells.next()?, cells.next()?))
+            })
+            .collect::<Vec<_>>();
+        let terminal_hint_head = STATUS_TERMINAL_DISABLED_HINT
+            .split_once("です")
+            .map_or(STATUS_TERMINAL_DISABLED_HINT, |(head, _)| head);
+        let expected_messages = [
+            ("STATUS_ACCESS_DENIED", STATUS_ACCESS_DENIED.to_string()),
+            (
+                "STATUS_RENAME_EXISTS_PREFIX",
+                format!("{STATUS_RENAME_EXISTS_PREFIX}..."),
+            ),
+            (
+                "STATUS_RESCAN_FAILED",
+                STATUS_RESCAN_FAILED
+                    .split_once('（')
+                    .map_or(STATUS_RESCAN_FAILED, |(head, _)| head)
+                    .to_string(),
+            ),
+            (
+                "terminal_disabled_status() prefix",
+                format!("ターミナルを{STATUS_CANNOT_OPEN_SUFFIX}{terminal_hint_head}"),
+            ),
+        ];
+        assert_eq!(
+            rows.len(),
+            expected_messages.len(),
+            "README error table must have exactly one row per canonical message"
+        );
+        for (name, message) in &expected_messages {
+            assert!(
+                rows.iter().any(|(shown, _)| shown == message),
+                "README error table must show the canonical message from {name}: {message}"
+            );
+        }
+        for (shown, _) in &rows {
+            assert!(
+                expected_messages
+                    .iter()
+                    .any(|(_, message)| message == shown),
+                "README error table has a message not backed by a canonical string: {shown}"
+            );
+        }
+        // AM03: 「次の操作」列のキー導線も回帰対象にする。文言全体の一致は
+        // 要求せず、キートークン（F5 / 親フォルダ / F2 / Ctrl+,）の存在を
+        // エラー回復テーブル内で固定する。
+        let actions = rows
+            .iter()
+            .map(|(_, action)| action.as_str())
             .collect::<String>();
         for token in ["F5", "親フォルダ", "F2", "Ctrl+,"] {
             assert!(
-                recovery_table.contains(token),
+                actions.contains(token),
                 "README error table must carry the recovery key {token}"
             );
         }
@@ -3683,6 +3773,53 @@ mod tests {
         let settings_ui = include_str!("settings_ui.rs");
         assert!(
             settings_ui.contains("\"検索履歴 / 保存検索\""),
+            "settings_ui.rs HELP_KEY_EXCEPTIONS must register the prose row"
+        );
+    }
+
+    #[test]
+    fn files_column_customization_is_documented_in_f1_and_readme() {
+        // R41/AN03: 列の表示 / 非表示と並べ替えが F1・README・設定 UI の
+        // 3 箇所で案内されていることを固定する。
+        let (_, rows) = HELP_SECTIONS
+            .iter()
+            .find(|(title, _)| *title == "表示")
+            .expect("表示 section must exist");
+        let description = rows
+            .iter()
+            .find(|(key, _)| *key == "一覧の列")
+            .map(|(_, text)| *text)
+            .expect("F1 表示 must list the 一覧の列 row");
+        for token in ["ファイルタブ", "Switch", "↑↓", "行ショートカット"] {
+            assert!(
+                description.contains(token),
+                "F1 files-column row must mention {token}"
+            );
+        }
+        let readme = include_str!("../README.md");
+        let column_note = readme
+            .split("**ファイルタブの「一覧の列」**")
+            .nth(1)
+            .expect("README must document the 一覧の列 settings section")
+            .split("\n**")
+            .next()
+            .expect("files-column note must terminate");
+        for token in ["ファイルタブ", "Switch", "↑ / ↓", "行ショートカット"] {
+            assert!(
+                column_note.contains(token),
+                "README files-column note must mention {token}"
+            );
+        }
+        let settings_ui = include_str!("settings_ui.rs");
+        let exceptions = settings_ui
+            .split("const HELP_KEY_EXCEPTIONS: &[&str] = &[")
+            .nth(1)
+            .expect("settings_ui.rs must define HELP_KEY_EXCEPTIONS")
+            .split("];")
+            .next()
+            .expect("HELP_KEY_EXCEPTIONS must terminate");
+        assert!(
+            exceptions.contains("\"一覧の列\""),
             "settings_ui.rs HELP_KEY_EXCEPTIONS must register the prose row"
         );
     }

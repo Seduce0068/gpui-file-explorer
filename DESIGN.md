@@ -194,9 +194,15 @@ symlink 拒否・ゴミ箱ビュー除外。カスタム LRU / ローダ側バ�
   図の 112px と矛盾する数値ではない。ネイティブ枠の実高は OS/テーマで変動し得るため、
   28px は as-built 定数が見込む枠高として読む。
 - 幅 1100×高 700 を初期値（`WindowOptions::window_bounds`、POC の起動実績に準拠）。
-- **as-built（2026-11-22 現在）**: サイドバー幅は
-  `SIDEBAR_WIDTH_PX = 190.0`（`app/src/main.rs`）に固定。設計当初の 200px
-  表記は実装と異なるため 190px へ更新し、グリッド列計算も同一定数を参照する。
+- **as-built（2026-11-23、NW04 反映）**: サイドバー幅は固定ではない。
+  `SIDEBAR_WIDTH_PX = 190.0`（`app/src/main.rs`）は広い画面での上限で、
+  `effective_sidebar_width()` が `SIDEBAR_FULL_VIEWPORT_PX`（900px）以上では
+  190px、`SIDEBAR_COLLAPSE_VIEWPORT_PX`（520px）以下では 0px、その間は
+  線形補間する。ユーザーが `Ctrl+B` で表示を強制した場合は
+  `resolved_sidebar_width()` が狭い画面でも 190px を返す。グリッド列数は
+  `grid_columns_for_viewport()` がこの実効幅をビューポート幅から引いて
+  算出する。上図の「190px 固定」は初期設計（P0）の図示であり、
+  現行実装では狭い画面ほど一覧領域が広がる。
 - 下部ステータスは **左: 件数 / 中央: 選択・エラー・読込状態 / 右: 監視状態・バージョン**。
 - 列ヘッダは P0 ではソート切替なし（名前昇順・dirs first 固定）。P1 でクリックソート。
 - 長い名前は `.truncate()`（1 行省略）。ツールチップは P1（api-notes §7.3）。

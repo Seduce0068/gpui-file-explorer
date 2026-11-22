@@ -3549,6 +3549,8 @@ mod tests {
     /// the settings dialog, so those are surfaced in the dialog footer) and
     /// the license/source metadata row (T06).
     const HELP_KEY_EXCEPTIONS: &[&str] = &[
+        // AN03: files-column prose row has no keyboard chord to mirror.
+        "一覧の列",
         "Ctrl+クリック / Shift+クリック",
         "ゴミ箱ビュー",
         "ドラッグ&ドロップ",

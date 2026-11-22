@@ -1429,21 +1429,22 @@ status: current
 
 ### 優先度: 中（ループ R41・confirmed）
 
-- [ ] **AN01** エラー対応表のターミナル文言が実表示と不一致
+- [x] **AN01** エラー対応表のターミナル文言が実表示と不一致 — 対応: impl-r41-docs
   — app/README.md:544
-- [ ] **AN02** DESIGN のサイドバー幅「固定」表記がレスポンシブ実装と矛盾
+- [x] **AN02** DESIGN のサイドバー幅「固定」表記がレスポンシブ実装と矛盾 — 対応: impl-r41-docs
   — DESIGN.md:197
-- [ ] **AN03** 列カスタマイズが README/F1 に未記載 — app/README.md:118
+- [x] **AN03** 列カスタマイズが README/F1 に未記載 — app/README.md:118
+  — 対応: impl-r41-docs + 親（例外登録）
 
 ### 優先度: 低（ループ R41）
 
-- [ ] **AN04** 五十音順 ADR の DESIGN 行アンカーが 1 行ずれ
+- [x] **AN04** 五十音順 ADR の DESIGN 行アンカーが 1 行ずれ — 対応: impl-r41-docs
   — docs/adr/adr-20261123-japanese-collation.md:56
-- [ ] **AN05** モバイル ADR の wasm ノートへのリンク切れ
+- [x] **AN05** モバイル ADR の wasm ノートへのリンク切れ — 対応: impl-r41-docs
   — docs/adr/adr-20261122-mobile-android-ios-support.md:256
-- [ ] **AN06** context_menu_anchor のガード失敗分岐が無テスト — main.rs:461
-- [ ] **AN07** status_color 回帰表に7定数が欠落 — main.rs:12348
-- [ ] **AN08** オーバーレイヒント定数の配線ガードなし — strings.rs:235
+- [x] **AN06** context_menu_anchor のガード失敗分岐が無テスト — main.rs:461 — 対応: impl-r41-tests
+- [x] **AN07** status_color 回帰表に7定数が欠落 — main.rs:12348 — 対応: impl-r41-tests
+- [x] **AN08** オーバーレイヒント定数の配線ガードなし — strings.rs:235 — 対応: impl-r41-tests
 - [ ] **AN09** 列幅の settings.json キーが未文書化 — app/README.md
 
 ### 優先度: 低（調査タスク）

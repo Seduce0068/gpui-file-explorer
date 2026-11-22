@@ -12327,13 +12327,15 @@ mod tests {
         STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_DROP_NO_DESTINATION,
         STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_MAX_TABS_SUFFIX,
         STATUS_NO_CLIPBOARD, STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED,
-        STATUS_RENAME_NO_PARENT, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
-        STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
-        STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
-        STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
-        STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
-        STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
-        STATUS_WATCH_PARTIAL,
+        STATUS_RENAME_INVALID_CHAR, STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY,
+        STATUS_RENAME_INVALID_NUL, STATUS_RENAME_INVALID_RESERVED_PREFIX,
+        STATUS_RENAME_INVALID_SEPARATOR, STATUS_RENAME_NO_PARENT,
+        STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, STATUS_SKIP_REASON_MISSING,
+        STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL, STATUS_TRASH_ALL_FAILED,
+        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+        STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+        STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED,
+        STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
     use std::ffi::OsString;
@@ -12357,6 +12359,14 @@ mod tests {
             // Y01: 回帰表に欠けていた concrete error マーカーを全て固定する。
             (STATUS_TRASH_ALL_FAILED, C_RED),
             (STATUS_RENAME_FAILED, C_RED),
+            // AN07: F2 名前変更の入力検証エラー 6 種も STATUS_ERROR_MARKERS
+            // に登録済みの concrete error なので、回帰表でも赤を固定する。
+            (STATUS_RENAME_INVALID_EMPTY, C_RED),
+            (STATUS_RENAME_INVALID_DOT, C_RED),
+            (STATUS_RENAME_INVALID_SEPARATOR, C_RED),
+            (STATUS_RENAME_INVALID_NUL, C_RED),
+            (STATUS_RENAME_INVALID_RESERVED_PREFIX, C_RED),
+            (STATUS_RENAME_INVALID_CHAR, C_RED),
             // AM01: 同期検証の拒否文言自身も concrete error（ミラー前でも赤）。
             (STATUS_RENAME_NO_PARENT, C_RED),
             (STATUS_RENAME_EXISTS_PREFIX, C_RED),
@@ -12374,6 +12384,8 @@ mod tests {
             (STATUS_INVALID_CLI_DIR, C_RED),
             (STATUS_RESTORE_FAILED, C_RED),
             (STATUS_REDO_FAILED, C_RED),
+            // AN07: UNDO 失敗も FAILED 系 concrete error として赤を固定する。
+            (STATUS_UNDO_FAILED, C_RED),
             (STATUS_ACCESS_DENIED, C_RED),
             (STATUS_PATH_GONE, C_RED),
             // I01: a vanished drop/move target and a non-directory path are
@@ -16491,6 +16503,15 @@ mod tests {
         // Grid view: the selected column's slot, not the gap between cells.
         let grid = context_menu_anchor(viewport, px(0.0), 112.0, 1, Some((2, 4)));
         assert_eq!(grid, point(px(700.0), px(268.0)));
+        // AN06: an invalid column spec (zero columns or index >= count) must
+        // take the viewport-centre fallback instead of dividing by zero or
+        // landing outside the painted cells.
+        let centre_x = viewport.center().x;
+        for invalid in [Some((0, 0)), Some((4, 4))] {
+            let anchored = context_menu_anchor(viewport, px(0.0), 28.0, 3, invalid);
+            assert_eq!(anchored.x, centre_x, "invalid column spec {invalid:?}");
+            assert_eq!(anchored.y, px(198.0), "invalid column spec {invalid:?}");
+        }
     }
 
     #[test]
