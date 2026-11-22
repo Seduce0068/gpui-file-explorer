@@ -1245,6 +1245,17 @@ status: current
 - [x] **AG10** サイドバー空セクションの文言が未定義（speculative） — 対応: loop30-ux
   — strings.rs:791
 
+### 優先度: 低（ループ R29・confirmed）
+
+- [ ] **AH01** DESIGN as-built 表が P1 完了後も旧主張のまま — DESIGN.md:358
+- [ ] **AH02** app/README 差分表が「明記なし」と誤記 — app/README.md:702
+- [ ] **AH03** 予約キー注記の「escape」が検索キーワードに欠落
+  — settings_ui.rs:668
+- [ ] **AH04** 「ディレクトリ」がファイル設定行のキーワードに欠落
+  — settings_ui.rs:696
+- [ ] **AH05** DESIGN クローム高と実装定数 140px の基準差
+  — DESIGN.md:140 / main.rs:206（speculative）
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
