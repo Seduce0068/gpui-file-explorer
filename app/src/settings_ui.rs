@@ -488,6 +488,9 @@ const FILES_HIDDEN_KEYWORDS: &[&str] = &[
     "一覧",
     "キーボード",
     "切替",
+    // AH04: the canonical directory-view-only note embedded in this row prints
+    // ディレクトリ; searching that visible word must surface this row.
+    "ディレクトリ",
 ];
 const FILES_SORT_KEYWORDS: &[&str] = &[
     "並び",
@@ -520,6 +523,9 @@ const FILES_SORT_KEYWORDS: &[&str] = &[
     "更新日時",
     "昇順",
     "降順",
+    // AH04: the canonical directory-view-only note embedded in this row prints
+    // ディレクトリ; searching that visible word must surface this row.
+    "ディレクトリ",
 ];
 const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "ショートカット",
@@ -554,6 +560,10 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     // AG01: the reserved-action note also prints `open_settings`; searching
     // that action name must surface this tab instead of dead-ending.
     "open_settings",
+    // AH03: the same reserved-keys note prints the lowercase word `escape`.
+    // `Esc` in SHORTCUTS_DEFAULTS_KEYWORDS does not contain it, so without this
+    // alias copying the visible word into the search box dead-ends.
+    "escape",
 ];
 /// Searchable keywords of the "既定のショートカット" row group.
 ///
@@ -1610,7 +1620,7 @@ mod tests {
         FILES_HIDDEN_KEYWORDS, FILES_SORT_DESCRIPTION, FILES_SORT_KEYWORDS,
         PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS,
         SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
-        SHORTCUTS_DEFAULT_LINES, TERMINAL_COMMAND_KEYWORDS,
+        SHORTCUTS_DEFAULT_LINES, SHORTCUTS_KEYMAP_KEYWORDS, TERMINAL_COMMAND_KEYWORDS,
     };
     use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
@@ -2103,6 +2113,9 @@ mod tests {
             // AG01: the reserved-action note names `open_settings` too. It is
             // not a copy-paste example, but the same dead-end applies.
             "open_settings",
+            // AH03: that note also prints the lowercase word `escape`, which
+            // the `Esc` chord alias does not cover as a substring.
+            "escape",
         ];
         let hint_lower = SETTINGS_KEYMAP_INPUT_HINT.to_lowercase();
         for example in EXAMPLES {
@@ -2120,6 +2133,61 @@ mod tests {
             vec![SettingsTab::Shortcuts],
             "AG01: the reserved action name must resolve to exactly the Shortcuts tab"
         );
+        assert_eq!(
+            tabs_matching_query("escape"),
+            vec![SettingsTab::Shortcuts],
+            "AH03: the visible reserved word must resolve to exactly the Shortcuts tab"
+        );
+    }
+
+    #[test]
+    fn canonical_note_words_rendered_in_a_row_are_searchable() {
+        // M09/AH03/AH04: a canonical note from strings.rs that a settings row
+        // renders must be searchable through that row's keyword array, otherwise
+        // the very word shown on screen dead-ends in the search box (AG01 was
+        // `open_settings`, AH03 `escape`, AH04 `ディレクトリ`).
+        struct CanonicalNoteCase {
+            note: &'static str,
+            words: &'static [&'static str],
+            rendered_in: &'static [&'static str],
+            keyword_arrays: &'static [&'static [&'static str]],
+        }
+        let cases: &[CanonicalNoteCase] = &[
+            CanonicalNoteCase {
+                note: crate::strings::RESERVED_KEYS_NOTE,
+                words: crate::strings::RESERVED_CHORD_KEYS,
+                rendered_in: &[SETTINGS_KEYMAP_INPUT_HINT],
+                keyword_arrays: &[SHORTCUTS_KEYMAP_KEYWORDS],
+            },
+            CanonicalNoteCase {
+                note: crate::strings::DIRECTORY_VIEW_ONLY_NOTE,
+                words: &["ディレクトリ"],
+                rendered_in: &[FILES_HIDDEN_DESCRIPTION, FILES_SORT_DESCRIPTION],
+                keyword_arrays: &[FILES_HIDDEN_KEYWORDS, FILES_SORT_KEYWORDS],
+            },
+        ];
+        for case in cases {
+            for row in case.rendered_in {
+                assert!(
+                    row.contains(case.note),
+                    "row must embed the canonical note {}: {row}",
+                    case.note
+                );
+            }
+            for word in case.words {
+                assert!(
+                    case.note.contains(word),
+                    "word {word} must be in the canonical note {}",
+                    case.note
+                );
+                for keywords in case.keyword_arrays {
+                    assert!(
+                        matches_query(word, keywords),
+                        "canonical note word {word} must be searchable on its row"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2287,6 +2355,21 @@ mod tests {
         assert!(
             FILES_SORT_DESCRIPTION.contains("昇順/降順は一覧のヘッダクリックで切替"),
             "sort row must explain the header-click direction toggle: {FILES_SORT_DESCRIPTION}"
+        );
+        // AH04: both Files descriptions embed the canonical directory-view-only
+        // note, so its visible word ディレクトリ must surface the Files tab.
+        // Terminal also matches through 作業ディレクトリ, hence containment
+        // rather than an exact single-tab result.
+        for description in [FILES_HIDDEN_DESCRIPTION, FILES_SORT_DESCRIPTION] {
+            assert!(
+                description.contains("ディレクトリ"),
+                "Files description must show the directory-only note: {description}"
+            );
+        }
+        let directory_matches = tabs_matching_query("ディレクトリ");
+        assert!(
+            directory_matches.contains(&SettingsTab::Files),
+            "AH04: visible ディレクトリ must surface the Files tab: {directory_matches:?}"
         );
     }
 

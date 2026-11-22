@@ -1247,13 +1247,13 @@ status: current
 
 ### 優先度: 低（ループ R29・confirmed）
 
-- [ ] **AH01** DESIGN as-built 表が P1 完了後も旧主張のまま — DESIGN.md:358
-- [ ] **AH02** app/README 差分表が「明記なし」と誤記 — app/README.md:702
-- [ ] **AH03** 予約キー注記の「escape」が検索キーワードに欠落
+- [x] **AH01** DESIGN as-built 表が P1 完了後も旧主張のまま — DESIGN.md:358 — 対応: loop31-docs
+- [x] **AH02** app/README 差分表が「明記なし」と誤記 — app/README.md:702 — 対応: loop31-docs
+- [x] **AH03** 予約キー注記の「escape」が検索キーワードに欠落 — 対応: loop31-ux
   — settings_ui.rs:668
-- [ ] **AH04** 「ディレクトリ」がファイル設定行のキーワードに欠落
+- [x] **AH04** 「ディレクトリ」がファイル設定行のキーワードに欠落 — 対応: loop31-ux
   — settings_ui.rs:696
-- [ ] **AH05** DESIGN クローム高と実装定数 140px の基準差
+- [x] **AH05** DESIGN クローム高と実装定数 140px の基準差 — 対応: loop31-docs
   — DESIGN.md:140 / main.rs:206（speculative）
 
 ### 優先度: 低（調査タスク）

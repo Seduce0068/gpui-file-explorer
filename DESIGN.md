@@ -157,6 +157,15 @@ OS の外観を監視して実効テーマを追従する。設定オーバー�
    ↑ サイドバー 190px 固定（P0）           ↑ 行 28px・仮想化（可視範囲のみ構築）
 ```
 
+- **クローム高さの算定基盤（as-built 注記, 2026-11-22）**: 上図の数値は内容領域の
+  クロームのみ（toolbar 36 + breadcrumb 28 + 列ヘッダ 24 + status bar 24 =
+  **112px**）で、2 行目の KDE ネイティブ枠（タイトルバー）は含まない。一方、実装の
+  `LIST_CHROME_HEIGHT_PX = 140.0`（`app/src/main.rs` 206 行目、
+  review-report.md 794-795 行目）は PageUp/PageDown のステップ算出で
+  `viewport_size().height - 140` をリスト行領域として使う（同 5134 行目）。
+  この 140px はタイトルバー約 28px を含む **112 + 28 = 140px** の基盤であり、
+  図の 112px と矛盾する数値ではない。ネイティブ枠の実高は OS/テーマで変動し得るため、
+  28px は as-built 定数が見込む枠高として読む。
 - 幅 1100×高 700 を初期値（`WindowOptions::window_bounds`、POC の起動実績に準拠）。
 - **as-built（2026-11-22 現在）**: サイドバー幅は
   `SIDEBAR_WIDTH_PX = 190.0`（`app/src/main.rs`）に固定。設計当初の 200px
@@ -353,14 +362,23 @@ app/
 
 fe-dev が並行実装中の `app/src/` は、時間優先で次の**フラット構成**を採っている。設計の目標構成（上図）との差分を記録する。**受入条件（§10.4）には影響しない**。P1 冒頭で目標構成へ寄せる（機能追加と同時に分割すると差分レビューが困難になるため、P0 は現状維持）。
 
+> **as-built 注記（2026-11-22）**: 下表のうち初版で「P1 で…」と予定されていた 4 項目
+> （`Entry` の `OsString` + `sort_key` 事前計算、`Selection` の `PathBuf` キー複数選択、
+> `LoadState` / `FsError` 型化、`history` の `apply` 統一 API）はすべて実装済み。
+> 「実装（現状）」「評価・扱い」列は as-built へ更新した。**「設計（§4.1/§5）」列は
+> 当初案を歴史的記録としてそのまま残している**。根拠は
+> [`review-report.md`](review-report.md) の「エラー処理」（191-196 行目）、
+> 「データモデル」（207-224 行目）、「Low / Info（要約）」（318-322 行目）の
+> 各「解消済み」項目を参照。
+
 | 実装（現状） | 設計（§4.1/§5） | 評価・扱い |
 |---|---|---|
 | `main.rs` に `Explorer`(root Entity) + UI 描画を集約 | `app.rs` + `ui/*` に分割 | P0 は許容。1200 行超のため P1 で `ui/{toolbar,breadcrumb,sidebar,list,status_bar,context_menu}` へ抽出 |
 | `model.rs` に Entry/ソート/列挙/整形を集約（GPUI 非依存） | `model/{entry,sort,listing,format}.rs` + `fs/listing.rs` | GPUI 非依存は設計どおり（◎）。分割のみ P1 |
-| `Entry { name: String（lossy）, path: PathBuf, is_dir, is_symlink, size, modified }` | `Entry { name: OsString, sort_key, kind, size: Option<u64>, is_hidden }` | **I/O は `path` 経由なので非 UTF-8 名でも壊れない**。表示・ソートは lossy。P1 で `OsString` + 事前計算 `sort_key` に移行（§5.1） |
-| 選択は `selected: usize`（単一） | `Selection`（PathBuf キー、複数） | P0 要件は単一選択なので可。P1 で §5.3 の型へ置換 |
-| `loading: bool` + `error: Option<String>` | `LoadState` / `FsError` | P0 は簡略表現で可。エラー文言の日本語化は実装済み。P1 で型化 |
-| `history.rs`（`visit/go_back/go_forward`） | `model/history.rs`（`apply(target, mode)`） | 意味は同等。統合は P1 |
+| `Entry { name: OsString（+ lossy の name_text）, sort_key（構築時事前計算）, path: PathBuf, is_dir, is_symlink, size, modified }` | `Entry { name: OsString, sort_key, kind, size: Option<u64>, is_hidden }` | **移行済み（as-built）**: `name` を `OsString` 化し lossy の `name_text` を追加、`sort_key` を構築時に事前計算。非 UTF-8 名の I/O 保持を Unix テストで検証済み（review-report.md 207-224 行目）。設計列は当初案を維持 |
+| `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択。順序保持 `Vec` + `HashSet` インデックス） | `Selection`（PathBuf キー、複数） | **移行済み（as-built）**: §5.3 の型へ置換し、バッチ操作・O(1) の `contains` を実装。行 index 競合を回避（review-report.md 217-220, 393-394 行目） |
+| `LoadState`（Loading/Ready/Error、generation 保持）+ `FsError` / `FsErrorKind` | `LoadState` / `FsError` | **移行済み（as-built）**: 排他状態へ置換し generation で古い結果を破棄。エラー文言の日本語化も済み（review-report.md 191-196 行目） |
+| `history.rs` に `NavMode` + `apply` を追加（Push/Back/Forward/Up/Replace の統一 API） | `model/history.rs`（`apply(target, mode)`） | **移行済み（as-built）**: `apply(target, mode)` で統一 API 化。`go_parent` は `Up`、同一パス再読込は `Replace` へ接続（review-report.md 318-322 行目） |
 | `watcher.rs`（`DirWatcher`）が `async-channel` 経由で前景ループへ通知 | `fs/watch.rs` + mpsc/timer pump（ADR-006） | **async-channel 採用は許容**（GPUI の依存に既にあり、`Cargo.toml` に明示追加済み）。前景ループ + 10s tick で設計意図（UI スレッドで I/O しない/バッチ化）は満たす |
 | `chrono` を日時表示に使用 | §8.4 は std で可とした | P0 は許容（表示専用）。依存を増やしたくない場合は P1 で `std::time` に戻す |
 | `icons.rs`（FileKind + IconName） | `icons.rs`（同じ役割） | 一致 |
