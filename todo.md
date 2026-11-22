@@ -1475,6 +1475,23 @@ status: current
 - [x] **AP05** 設定検索「一括リセット」「予約キー」が欠落 — 対応: impl-r43-ux
   — settings_ui.rs:633
 
+### 優先度: 中（ループ R44・confirmed）
+
+- [ ] **AQ01** DESIGN の create_unique_folder 参照が 805（実 803）
+  — DESIGN.md:315,866
+- [ ] **AQ02** app/README「ソートはヘッダクリックのみ」が Alt+S と矛盾
+  — app/README.md:660
+
+### 優先度: 低（ループ R44）
+
+- [ ] **AQ03** 設定検索 `reset` がゼロヒット — settings_ui.rs:641
+- [ ] **AQ04** `settings.json` がファイル列タブから検索できない
+  — settings_ui.rs:598
+- [ ] **AQ05** column_width_label の不正保存値分岐が無テスト
+  — settings_ui.rs:1300
+- [ ] **AQ06** ADR/DESIGN の行アンカー方形針自己矛盾（4箇所）
+  — docs/adr/*.md / DESIGN.md:190
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
