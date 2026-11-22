@@ -323,7 +323,7 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 - `model.rs:493`（解消済み）: fingerprint が秒単位に丸められる
   ため、1 秒未満の連続変更は検出できない旨を doc コメントへ
   明記（watcher が主検出、reconcile は粗い保険）。
-- `app/Cargo.toml:23`（方針明記）: `chrono = "0.4"` は日時表示と
+- `app/Cargo.toml:22`（方針明記、WASM 節は `app/README.md:733-738`）: `chrono = "0.4"` は日時表示と
   バックアップ名に使用。wasm 対応時は `js-sys` ベースの時刻取得へ
   差し替える必要がある旨を `app/README.md` の WASM 節に追記。
 - `app/build.rs:21` / `poc/build.rs:21`: libxkbcommon shim は

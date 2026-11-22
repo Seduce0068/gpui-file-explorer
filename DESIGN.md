@@ -125,8 +125,8 @@
 | 再帰検索（名前/複数ルート） | ○ | ◎ | ◎ | 単一実装 | `std::fs` walker（symlink 非追跡・上限付き）、範囲: 現在/タブ/ブックマーク |
 | ボリューム/空き容量 | × | × | ◎ | | as-built: `/proc/mounts` 解析、空き容量/Win/mac 未対応 |
 | タブ / 複数ウィンドウ | × | × | △ | ◎ | まず 1 ウィンドウ 1 状態（ADR-002） |
-| OS からの D&D（取り込み） | × | × | △ | ◎ | `on_drop::<ExternalPaths>`（api-notes §4.2） |
-| アプリ外への D&D | × | × | × | △ | 実装コスト大（fs-notes §7.4） |
+| OS からの D&D（取り込み） | × | × | △ | ◎ | **as-built**: P1 実装済み（ExternalPaths、§4.1） |
+| アプリ外への D&D | × | × | × | △ | **as-built**: P1 実装済み（ExternalDragPayload、§4.1） |
 | ファイルリスト clipboard | × | × | ◎ | | arboard 3.7（外部アプリ連携） |
 | アプリメニューバー | × | × | △ | | `set_menus`。ツールバーで代替（api-notes §8.2） |
 | 完全削除 | × | × | △ | | **P0/MVP 禁止**。P2 で明示確認付きの限定解禁（§6.7） |
@@ -894,8 +894,8 @@ pub fn confirm_and_trash(
 | パス正規化 | `PathBuf`/`OsStr` 保持、表示のみ lossy ✅ | 長パス `\\?\` + `dunce`（P2） | NFD→NFC 表示（P2） | Linux のみ | | ✅ | fs-notes §5.3 |
 | 隠しファイル | `.` 始まり ✅ | FILE_ATTRIBUTE_HIDDEN（P2） | `.` + UF_HIDDEN（P2） | ✅ | | | fs-notes §5.4 |
 | ボリューム/空き容量 | sysinfo | sysinfo | sysinfo | - | - | ✅ | as-built: /proc 解析 |
-| D&D IN | `on_drop::<ExternalPaths>`（Wayland ✅/他 ⚠） | 同左 | 同左 |  |  | △ | api-notes §4.2 |
-| D&D OUT | `external_drag_payload`（Wayland ✅） | ⚠ | ⚠ |  |  |  | api-notes §4.3 |
+| D&D IN | `on_drop::<ExternalPaths>`（Wayland ✅/他 ⚠） | 同左 | 同左 |  |  | △ | api-notes §4.2 / as-built: P1 実装済み（ExternalPaths 受信→Rename コピー） |
+| D&D OUT | `external_drag_payload`（Wayland ✅） | ⚠ | ⚠ |  |  |  | api-notes §4.3 / as-built: P1 実装済み（ExternalDragPayload で OS へドラッグアウト） |
 
 - ファイルリスト clipboard の Wayland/X11 は gpui-pre 0.3.12 で
   テキスト/画像のみ。**URI list は D&D 専用**でクリップボード未対応。
@@ -1083,7 +1083,7 @@ app/
 実キー入力は KWin ポータル制約で未検証。UI ヘッドレスは未実装（P2 先送り）、
 性能実測は [`notes/perf-baseline.md`](notes/perf-baseline.md) を参照（200 MB 目標は未達）。
 
-- **注意（✅ POC 実測）**: `use gpui_kit::*` は GPUI の `test` マクロを glob import し、組み込み `#[test]` を shadow する（"recursion limit reached"）。**テストモジュールでは明示 import を使い、`use super::*;` を避ける**（[`notes/poc-report.md`](notes/poc-report.md) §4-2 / [`poc/src/main.rs`](poc/src/main.rs) 420-425 行）。
+- **注意（✅ POC 実測）**: `use gpui_kit::*` は GPUI の `test` マクロを glob import し、組み込み `#[test]` を shadow する（"recursion limit reached"）。**テストモジュールでは明示 import を使い、`use super::*;` を避ける**（[`notes/poc-report.md`](notes/poc-report.md) §4-2 / [`poc/src/main.rs`](poc/src/main.rs) 414-416 行の NOTE）。
 
 ### 10.2 単体テスト一覧（最低ライン）
 

@@ -1540,11 +1540,11 @@ status: current
 
 ### 優先度: 低（ループ R48・confirmed）
 
-- [ ] **AU01** 非空在庫に4つの STATUS_* 定数が未登録 — strings.rs:2413
-- [ ] **AU02** DESIGN D&D 行に P1 実装済みの as-built 注記なし
+- [x] **AU01** 非空在庫に4つの STATUS_* 定数が未登録 — strings.rs:2413 — 対応: impl-r48（誤検知・登録済みを確認、変更不要）
+- [x] **AU02** DESIGN D&D 行に P1 実装済みの as-built 注記なし — 対応: impl-r48
   — DESIGN.md:128,897
-- [ ] **AU03** review-report chrono 参照が 1 行ずれ — review-report.md:326
-- [ ] **AU04** DESIGN PoC 行アンカーが 6 行ずれ — DESIGN.md:1086
+- [x] **AU03** review-report chrono 参照が 1 行ずれ — review-report.md:326 — 対応: impl-r48
+- [x] **AU04** DESIGN PoC 行アンカーが 6 行ずれ — DESIGN.md:1086 — 対応: impl-r48
 
 ### 優先度: 低（調査タスク）
 
