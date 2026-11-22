@@ -1303,6 +1303,43 @@ status: current
   — settings_ui.rs:1218
 - [x] **AJ10** F1 に検索履歴/保存検索の導線なし — strings.rs:878 — 対応: loop33-core
 
+## 新要件（Windows Explorer / Double Commander 級 UX + Android / iOS）
+
+> ユーザー要件: 「Windowsのfiles、Windowsのデフォルトファイルエクスプローラー、
+> ダブルコマンダー並みの見やすさ、使いやすさにしてね。あとAndroid版、ios版も
+> 要件に入れて。」（2026-11-22）
+
+### 優先度: 高（新要件・設計判断が必要）
+
+- [ ] **NW01** DESIGN の対象OS/非目的を改訂: Windows を第一級、Android/iOS を要件化
+  — DESIGN.md:26,37-54 / R1-DOC01
+- [ ] **NW02** デュアルペイン（左右2画面）の設計 ADR を作成
+  — PaneState 抽出 / ADR-002 改訂 / R1-UX01,R1-ARCH01,R1-PRD01
+- [ ] **NW03** Android/iOS の実現可能性 ADR（gpui-pre 直依存 / Platform trait / FS 権限）
+  — gpui-kit がモバイル明示除外 / Android backend 不在 / iOS ファイルAPI スタブ
+  — R1-MOB01 の実確認に基づく設計判断必须先
+- [ ] **NW04** レスポンシブレイアウト（固定190pxサイドバー・固定pxダイアログを画面幅適応へ）
+  — main.rs:205-215,4634 / R1-ARCH01
+
+### 優先度: 中（新要件・実装）
+
+- [ ] **NW05** Windows ドライブ列挙（GetLogicalDrives）とルート表現の OS 別化
+  — mounts.rs:155 / main.rs:2122 / R1-ARCH01
+- [ ] **NW06** OS ファイルアイコン抽象化（Windows: SHGetFileInfo / モバイル: バンドル asset）
+  — system_icons.rs:160 / R1-ARCH01
+- [ ] **NW07** 列のカスタマイズ（表示/非表示・幅・並び）を Settings に永続化
+  — main.rs:9246 / R1-UX01
+- [ ] **NW08** コンテキストメニューをキーボードから開く（Shift+F10 / Menu キー）
+  — main.rs:1176 / R1-UX01
+- [ ] **NW09** 一覧の画像サムネイル（preview.rs の安全則を流用、非同期 + LRU）
+  — preview.rs:1 / R1-PRD01
+- [ ] **NW10** OS ファイルクリップボード相互運用（CF_HDROP / text-uri-list / 共有 Intent）
+  — main.rs:2300 / R1-PRD01
+- [ ] **NW11** タッチ入力層（tap/long-press/swipe）と platform 修飾子（Cmd）対応
+  — main.rs:1246 / R1-ARCH01
+- [ ] **NW12** 日本語ファイル名の五十音順（ICU4X、オプトイン）
+  — strings.rs:25 / R1-PRD01
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
