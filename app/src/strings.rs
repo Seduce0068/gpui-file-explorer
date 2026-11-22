@@ -2764,6 +2764,14 @@ mod tests {
                 STATUS_UNDO_MISSING_SUFFIX,
                 "error",
             ),
+            // AS03: 対称の「既に存在します」側も concrete failure。以前は
+            // main.rs のマーカー表に欠けていたため、分類表と実際の色判定が
+            // 乖離していた。error として明記し main.rs にも登録する。
+            (
+                "STATUS_UNDO_EXISTS_SUFFIX",
+                STATUS_UNDO_EXISTS_SUFFIX,
+                "error",
+            ),
             // L06: 未登録のため green で表示される定数。main.rs の
             // STATUS_WARNING_MARKERS に追加すべき正規一覧（下の配列と同期）。
             (
@@ -2886,6 +2894,9 @@ mod tests {
         // 含まないが、concrete error として分類する。一般ルールから外して
         // 接頭辞としての形も専用に検証する。
         const DYNAMIC_EXISTS_ERROR_PREFIX: &[&str] = &["STATUS_RENAME_EXISTS_PREFIX"];
+        // AS03: Undo の既存排斥接尾辞（「 が既に存在します」）も拒否語を
+        // 含まない concrete error。接頭辞と形状が異なるため専用の例外とする。
+        const DYNAMIC_EXISTS_ERROR_SUFFIX: &[&str] = &["STATUS_UNDO_EXISTS_SUFFIX"];
         // AP01: キーマップ形式ヒントとターミナルコマンド検証は拒否語
         // （〜ません / 無効 / 最大 / ください 等）を含まないが、concrete error として
         // 分類する。DYNAMIC_EXISTS_ERROR_PREFIX と同じく一般ルールから外し、
@@ -2962,6 +2973,13 @@ mod tests {
                 assert!(
                     message.contains("存在します") && message.ends_with(": "),
                     "{name} must be the dynamic exists-refusal prefix: {message}"
+                );
+            } else if DYNAMIC_EXISTS_ERROR_SUFFIX.contains(name) {
+                // AS03: 動的なパスを連結する Undo の既存排斥接尾辞も error。
+                assert!(*class == "error", "{name} must be error");
+                assert!(
+                    message.starts_with(" が") && message.ends_with("既に存在します"),
+                    "{name} must be the dynamic exists-refusal suffix: {message}"
                 );
             } else if VALIDATION_ERROR_NOTICES.contains(name) {
                 // AP01: 拒否語を持たない入力検証エラーは concrete error。

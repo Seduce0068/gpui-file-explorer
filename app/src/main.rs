@@ -612,6 +612,11 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
     STATUS_TRASH_LOAD_FAILED_PREFIX,
     STATUS_UNDO_MISSING_SUFFIX,
+    // AS03: 「既に存在します」側も MISSING と対称の concrete failure なので
+    // 接尾辞自体を error マーカーに登録する。呼び出し側 (undo) は現在
+    // STATUS_UNDO_FAILED を連結して赤くなるが、プレフィックスが外れても
+    // 成功 green に落ちないようにする。
+    STATUS_UNDO_EXISTS_SUFFIX,
     // X09 / Y01: 起動ディレクトリ拒否は strings.rs の分類表で error だが、
     // 「開けません」(STATUS_CANNOT_OPEN_SUFFIX) を含むため、単体では warning に
     // 負けていた。呼び出し側は STATUS_ERROR_PREFIX を付けるが（下の status_color
@@ -12350,8 +12355,8 @@ mod tests {
         STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
         STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
         STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
-        STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
-        STATUS_WATCH_PARTIAL,
+        STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED,
+        STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
     use std::ffi::OsString;
@@ -12774,6 +12779,18 @@ mod tests {
         assert_eq!(status_color(&missing_search), C_RED, "{missing_search}");
         let missing_count = format!("3{STATUS_MISSING_COUNT_SUFFIX}");
         assert_eq!(status_color(&missing_count), C_RED, "{missing_count}");
+
+        // AS03: Undo の「既に存在します」側も動的なパスを連結する concrete
+        // failure。接尾辞単体と undo が実際に組み立てる文言の両方で赤を固定し、
+        // STATUS_UNDO_FAILED が外れても green に落ちないことを保証する。
+        let exists = format!("{STATUS_UNDO_FAILED}: /tmp/target{STATUS_UNDO_EXISTS_SUFFIX}");
+        assert!(exists.contains(STATUS_UNDO_EXISTS_SUFFIX), "{exists}");
+        assert_eq!(
+            status_color(STATUS_UNDO_EXISTS_SUFFIX),
+            C_RED,
+            "suffix alone must be red"
+        );
+        assert_eq!(status_color(&exists), C_RED, "{exists}");
 
         // N08: 動的な上限値を含む「タブは最大 {n} 個までです」もwarning(amber)。
         let max_tabs = format!("{STATUS_MAX_TABS_PREFIX}8{STATUS_MAX_TABS_SUFFIX}");

@@ -1512,12 +1512,12 @@ status: current
 
 ### 優先度: 中（ループ R46・confirmed）
 
-- [ ] **AS01** 設定検索「破棄」「未保存」が零命中 — settings_ui.rs:666
+- [x] **AS01** 設定検索「破棄」「未保存」が零命中 — settings_ui.rs:666 — 対応: impl-r46
 
 ### 優先度: 低（ループ R46）
 
-- [ ] **AS02** 設定検索「アクション」が零命中 — settings_ui.rs:666
-- [ ] **AS03** STATUS_UNDO_EXISTS_SUFFIX がマーカー表に未登録
+- [x] **AS02** 設定検索「アクション」が零命中 — settings_ui.rs:666 — 対応: impl-r46
+- [x] **AS03** STATUS_UNDO_EXISTS_SUFFIX がマーカー表に未登録 — 対応: impl-r46
   — main.rs:614
 
 ### 優先度: 低（調査タスク）

@@ -685,6 +685,11 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "入力",
     "unbind",
     "置き換え",
+    // AS02: `keymap_format_hint!()` (embedded in SETTINGS_KEYMAP_INPUT_HINT)
+    // and the F1 Alt+K row both say 「アクション名」/「unbind アクション名」.
+    // Without this alias, copying that visible word into the search box
+    // dead-ends; the shorter substring 「アクション」 is covered by it too.
+    "アクション名",
     // AA05/M09: SETTINGS_KEYMAP_INPUT_HINT prints the example
     // "open_preview=ctrl+shift+p; quit=ctrl+q". Users copy that wording into
     // this search box, so every token must resolve to the Shortcuts tab
@@ -801,6 +806,11 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "Alt+T",
     "Alt+K",
     "Esc",
+    // AS01: the Esc row and the footer legend both render
+    // `settings_escape_hint!()` = 「Esc で閉じる（未保存変更は破棄）」.
+    // 「未保存」/「破棄」are visible words, so they must resolve here as well.
+    "未保存",
+    "破棄",
     "Ctrl+Q",
     "Ctrl+,",
     "Alt+1",
@@ -2735,6 +2745,9 @@ mod tests {
             // AH03: that note also prints the lowercase word `escape`, which
             // the `Esc` chord alias does not cover as a substring.
             "escape",
+            // AS02: the format hint prints 「アクション名」; searching the
+            // visible bare word 「アクション」 must also reach Shortcuts.
+            "アクション",
         ];
         let hint_lower = SETTINGS_KEYMAP_INPUT_HINT.to_lowercase();
         for example in EXAMPLES {
@@ -2756,6 +2769,11 @@ mod tests {
             tabs_matching_query("escape"),
             vec![SettingsTab::Shortcuts],
             "AH03: the visible reserved word must resolve to exactly the Shortcuts tab"
+        );
+        assert_eq!(
+            tabs_matching_query("アクション"),
+            vec![SettingsTab::Shortcuts],
+            "AS02: the visible アクション word must resolve to exactly the Shortcuts tab"
         );
     }
 
@@ -2849,6 +2867,15 @@ mod tests {
                 words: &["settings.json"],
                 rendered_in: &[FILES_COLUMN_DESCRIPTION],
                 keyword_arrays: &[FILES_COLUMN_KEYWORDS],
+            },
+            // AS01: the canonical Esc hint is rendered by the Shortcuts row
+            // (and the footer legend). Its visible 「未保存」/「破棄」 words
+            // must stay searchable through that row's keyword array.
+            CanonicalNoteCase {
+                note: crate::strings::SETTINGS_ESCAPE_HINT,
+                words: &["未保存", "破棄"],
+                rendered_in: &[concat!("Esc … ", crate::strings::settings_escape_hint!())],
+                keyword_arrays: &[SHORTCUTS_DEFAULTS_KEYWORDS],
             },
         ];
         for case in cases {
