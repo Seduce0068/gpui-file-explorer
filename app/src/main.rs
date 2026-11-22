@@ -236,9 +236,11 @@ fn path_present(path: &Path) -> bool {
 ///
 /// The watcher may have flagged the snapshot as stale
 /// ([`STATUS_SEARCH_STALE`]); a mere filter tweak must not bury that
-/// "再検索が必要です" notice under a plain result count.
+/// "再検索が必要です" notice under a plain result count. When the summary is
+/// already that same sentinel (the Rescan/Renamed watch branch composes it),
+/// keep it as-is instead of duplicating the warning.
 fn search_filter_status(current: &str, summary: String) -> String {
-    if current.starts_with(STATUS_SEARCH_STALE) {
+    if current.starts_with(STATUS_SEARCH_STALE) && !summary.starts_with(STATUS_SEARCH_STALE) {
         format!("{STATUS_SEARCH_STALE}・{summary}")
     } else {
         summary
@@ -249,12 +251,18 @@ fn search_filter_status(current: &str, summary: String) -> String {
 ///
 /// A failed reconciliation sets `STATUS_RESCAN_FAILED` with its F5 recovery
 /// hint and must stay visible until the next *successful* read (strings.rs
-/// F6-36). The three watch sites all route their "changed" notice through this
-/// helper so a bare watch event cannot bury the failure under a green status.
+/// F6-36). The watch sites all route their "changed" notice through this helper
+/// so a bare watch event cannot bury the failure under a green status.
+/// `STATUS_SEARCH_STALE` is the Search-view form of the same watch notice (it
+/// starts with `STATUS_CHANGED`), so it must be guarded too: otherwise the
+/// Rescan/Renamed branch in the Search watch loop would overwrite a held
+/// failure (AC01).
 /// Any other `next` status (a success path, or a different failure) passes
 /// through unchanged, so the guard does not pin the status permanently.
 fn reconcile_aware_status(current: &str, next: &str) -> String {
-    if current.starts_with(STATUS_RESCAN_FAILED) && next == STATUS_CHANGED {
+    if current.starts_with(STATUS_RESCAN_FAILED)
+        && (next == STATUS_CHANGED || next == STATUS_SEARCH_STALE)
+    {
         current.to_string()
     } else {
         next.to_string()
@@ -289,15 +297,17 @@ fn clear_rescan_failure_after_successful_read(status: &mut String) -> bool {
 /// search text input owns focus. Text editing keys stay with the query field;
 /// once focus moves to the result list, navigation, copy, F4 (terminal) and
 /// Ctrl+Q (quit) reach the existing handlers. Alt variants keep their prior
-/// (blocked) behaviour.
-fn search_view_key_allowed(key: &str, ctrl: bool, alt: bool) -> bool {
+/// (blocked) behaviour. Ctrl+C / Ctrl+Q are unshifted only: Ctrl+Shift+C maps
+/// to `CopyPath` (not an allowed Search action), so the hardcoded OR must not
+/// forward it regardless of shift (AC02).
+fn search_view_key_allowed(key: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
     if alt {
         return false;
     }
     matches!(
         key,
         "up" | "down" | "pageup" | "pagedown" | "home" | "end" | "enter" | "f4"
-    ) || (ctrl && matches!(key, "c" | "q"))
+    ) || (ctrl && !shift && matches!(key, "c" | "q"))
 }
 
 /// The actions the Search-view allowlist above is meant to reach. Checking the
@@ -305,7 +315,9 @@ fn search_view_key_allowed(key: &str, ctrl: bool, alt: bool) -> bool {
 /// them still fires while browsing results (finding 4). OpenSettings belongs
 /// here too: Ctrl+, must open preferences even while browsing results (L04).
 /// Destructive actions such as trash/restore stay blocked because they are not
-/// in this set.
+/// in this set. Reload (F5) belongs here so the "F5 で再読込" recovery hint on
+/// `STATUS_RESCAN_FAILED` is advertised by a key that is actually reachable
+/// while browsing results; `reload` keeps the search query untouched (AC03).
 fn search_view_action_allowed(action: KeyAction) -> bool {
     matches!(
         action,
@@ -320,6 +332,7 @@ fn search_view_action_allowed(action: KeyAction) -> bool {
             | KeyAction::OpenSettings
             | KeyAction::Copy
             | KeyAction::Quit
+            | KeyAction::Reload
     )
 }
 
@@ -340,7 +353,7 @@ fn search_view_key_reaches_keymap(
     if alt {
         return false;
     }
-    search_view_key_allowed(key, ctrl, alt)
+    search_view_key_allowed(key, ctrl, shift, alt)
         || search_view_action_allowed(keymap.resolve(key, ctrl, shift, alt))
 }
 
@@ -1942,9 +1955,16 @@ fn empty_state_message(
 ) -> Option<(String, Option<String>)> {
     if let Some(error) = error {
         // U-20: an error overlay with no next action leaves the user stuck.
+        // AC07: the recovery chord depends on the view — Ctrl+L is only useful
+        // in the Directory view, while Trash/Search offer Esc instead.
+        let hint = match view {
+            ViewSource::Directory => LOAD_ERROR_HINT_DIRECTORY,
+            ViewSource::Trash => LOAD_ERROR_HINT_TRASH,
+            ViewSource::Search => LOAD_ERROR_HINT_SEARCH,
+        };
         return Some((
             format!("{STATUS_ERROR_PREFIX}{error}"),
-            Some(LOAD_ERROR_HINT.to_string()),
+            Some(hint.to_string()),
         ));
     }
     if loading {
@@ -1977,8 +1997,9 @@ fn empty_state_message(
 
 use crate::strings::{
     DIALOG_FOOTER_HINT, EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH,
-    ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING,
-    LOAD_ERROR_HINT, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
+    ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT,
+    LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH,
+    LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
     PARENT_FOLDER_LABEL, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
     STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
     STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
@@ -3682,7 +3703,13 @@ impl Explorer {
                             .iter()
                             .any(|event| matches!(event, FsEvent::Rescan | FsEvent::Renamed { .. }))
                         {
-                            this.status = STATUS_SEARCH_STALE.to_string();
+                            // AC01: a rescan/rename notice is a watch notice,
+                            // not a successful read. Compose the same guard as
+                            // the removed-entry branch below so a held
+                            // RESCAN_FAILED (with its F5 hint) survives.
+                            let reconciled =
+                                reconcile_aware_status(&this.status, STATUS_SEARCH_STALE);
+                            this.status = search_filter_status(&this.status, reconciled);
                             cx.notify();
                             return;
                         }
@@ -11040,7 +11067,11 @@ impl SettingsUiHost for Explorer {
                             remove_keymap_override(&mut overrides, &action);
                         }
                         None => {
-                            error = Some(format!("{STATUS_KEYMAP_INVALID_PREFIX}{entry}"));
+                            // AC08: the card's footer mirrors the Alt+K dialog
+                            // error, so append the same canonical format hint.
+                            error = Some(format!(
+                                "{STATUS_KEYMAP_INVALID_PREFIX}{entry}（{KEYMAP_FORMAT_HINT}）"
+                            ));
                             break;
                         }
                     }
@@ -11535,15 +11566,15 @@ mod tests {
         Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
         Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction,
         UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW,
-        GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, SECONDARY_SLOT_PRIORITY,
-        SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
-        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-        STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
-        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-        STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
-        STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
-        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
+        GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT,
+        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
+        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
+        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
+        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
         STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY,
         STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
         STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX,
@@ -11573,7 +11604,8 @@ mod tests {
         STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
         STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
         STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
-        STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_INIT_FAILED,
+        STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
+        STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
     use std::ffi::OsString;
@@ -11674,6 +11706,10 @@ mod tests {
             // Y08: 監視の初期化失敗は secondary slot で直接黄色に描画されるが、
             // 色分類でも warning マーカーとして固定する。
             (STATUS_WATCH_INIT_FAILED, C_YELLOW),
+            // AC04: 部分的/無効な監視も STATUS_WARNING_MARKERS 登録済みなので、
+            // 回帰表にも固定して成功 green への落下を防ぐ。
+            (STATUS_WATCH_PARTIAL, C_YELLOW),
+            (STATUS_WATCH_DISABLED, C_YELLOW),
             // W10: 「キャンセルしています…」は進行中の一時通知で拒否ではない。
             // 完了通知 STATUS_CANCELLED（黄色）と意図的に色を分け、成功 green
             // のままとする。strings.rs の分類表と同じ判断をここでも固定する。
@@ -11755,6 +11791,11 @@ mod tests {
         let after_watch = reconcile_aware_status(&failed, STATUS_CHANGED);
         assert_eq!(after_watch, failed, "watch event must not bury the failure");
         assert_eq!(status_color(&after_watch), C_RED);
+
+        // AC01: the Search-view form of the same watch notice
+        // (STATUS_SEARCH_STALE) must be guarded identically; otherwise the
+        // Search rescan/rename branch buries the held failure.
+        assert_eq!(reconcile_aware_status(&failed, STATUS_SEARCH_STALE), failed);
 
         // 成功側の通知は同じヘルパーを素通りし、赤を解除できる（固定されない）。
         let success = "再読込しました";
@@ -11933,8 +11974,23 @@ mod tests {
         // messages as success green even though the footer paints them red.
         // Use the same helper the Save handler calls, so a future refactor that
         // drops the prefix fails here instead of silently turning errors green.
+        // AC08: the settings-card invalid-keymap error must carry the same
+        // canonical format hint as the Alt+K dialog. The Save handler needs a
+        // live GPUI context, so pin its wiring in source and check that the
+        // composed message still classifies as red when mirrored.
+        let source = include_str!("main.rs");
+        let handler = source_region(source, "    fn on_settings_action(", "fn classify_cli(");
+        assert!(handler.contains("STATUS_KEYMAP_INVALID_PREFIX"));
+        assert!(
+            handler.contains("KEYMAP_FORMAT_HINT"),
+            "settings-card invalid-keymap error must include the shared format hint"
+        );
+        let invalid_keymap =
+            format!("{STATUS_KEYMAP_INVALID_PREFIX}ctrl+x（{KEYMAP_FORMAT_HINT}）");
+        assert!(invalid_keymap.contains(KEYMAP_FORMAT_HINT));
+
         let messages = [
-            format!("{STATUS_KEYMAP_INVALID_PREFIX}ctrl+x"),
+            invalid_keymap,
             keymap_limit_status(),
             STATUS_TERMINAL_COMMAND_INVALID.to_string(),
         ];
@@ -12013,6 +12069,9 @@ mod tests {
             (STATUS_BOOKMARK_NOT_PERSISTABLE, dark.yellow, light.yellow),
             // Y08: 監視の初期化失敗も warning 色へマップされる。
             (STATUS_WATCH_INIT_FAILED, dark.yellow, light.yellow),
+            // AC04: 部分的/無効な監視の警告もテーマ色へマップされる。
+            (STATUS_WATCH_PARTIAL, dark.yellow, light.yellow),
+            (STATUS_WATCH_DISABLED, dark.yellow, light.yellow),
             // L06: refusal / empty-target notices use the warning color.
             (STATUS_TABS_ONLY_DIRECTORY, dark.yellow, light.yellow),
             (STATUS_BOOKMARKS_ONLY_DIRECTORY, dark.yellow, light.yellow),
@@ -12775,10 +12834,35 @@ mod tests {
         let (title, _) = empty_state_message(ViewSource::Directory, true, None, 0, 0).unwrap();
         assert_eq!(title, "読み込み中…");
 
+        // AC07: the load-error recovery hint is view-specific. Ctrl+L only
+        // applies to the Directory view; Trash/Search advertise Esc instead.
         let (title, hint) =
             empty_state_message(ViewSource::Directory, false, Some("読めません"), 0, 0).unwrap();
         assert_eq!(title, "エラー: 読めません");
-        assert_eq!(hint.as_deref(), Some(crate::strings::LOAD_ERROR_HINT));
+        assert_eq!(
+            hint.as_deref(),
+            Some(crate::strings::LOAD_ERROR_HINT_DIRECTORY)
+        );
+        assert!(hint.unwrap().contains("Ctrl+L"));
+
+        let (_, hint) =
+            empty_state_message(ViewSource::Trash, false, Some("読めません"), 0, 0).unwrap();
+        assert_eq!(hint.as_deref(), Some(crate::strings::LOAD_ERROR_HINT_TRASH));
+        let trash_hint = hint.unwrap();
+        assert!(trash_hint.contains("F5"));
+        assert!(trash_hint.contains("Esc"));
+        assert!(!trash_hint.contains("Ctrl+L"));
+
+        let (_, hint) =
+            empty_state_message(ViewSource::Search, false, Some("読めません"), 0, 0).unwrap();
+        assert_eq!(
+            hint.as_deref(),
+            Some(crate::strings::LOAD_ERROR_HINT_SEARCH)
+        );
+        let search_hint = hint.unwrap();
+        assert!(search_hint.contains("F5"));
+        assert!(search_hint.contains("Esc"));
+        assert!(!search_hint.contains("Ctrl+L"));
 
         assert!(empty_state_message(ViewSource::Directory, false, None, 3, 2).is_none());
     }
@@ -12905,9 +12989,18 @@ mod tests {
 
         let nested_parent = PathBuf::from("/data");
         let nested_child = PathBuf::from("/data/shared");
-        let nested_roots = vec![cwd.clone(), nested_parent, nested_child];
+        let nested_roots = vec![cwd.clone(), nested_parent.clone(), nested_child.clone()];
         assert_eq!(
             display_name_for(&in_other_root, ViewSource::Search, &cwd, &nested_roots),
+            "docs/notes.txt"
+        );
+
+        // AC05: the "keep current best when a later root is longer" branch.
+        // With roots in short→long order the first relative name is already
+        // the shortest, so the later (longer) relative name must not replace it.
+        let short_first_roots = vec![nested_child, nested_parent];
+        assert_eq!(
+            display_name_for(&in_other_root, ViewSource::Search, &cwd, &short_first_roots),
             "docs/notes.txt"
         );
 
@@ -13557,24 +13650,27 @@ mod tests {
 
     #[test]
     fn search_view_key_routing_is_limited_to_navigation_and_copy() {
-        use super::search_view_key_allowed;
+        use super::{search_view_key_allowed, search_view_key_reaches_keymap};
 
         for key in ["up", "down", "pageup", "pagedown", "home", "end", "enter"] {
-            assert!(search_view_key_allowed(key, false, false), "blocked {key}");
             assert!(
-                !search_view_key_allowed(key, false, true),
+                search_view_key_allowed(key, false, false, false),
+                "blocked {key}"
+            );
+            assert!(
+                !search_view_key_allowed(key, false, false, true),
                 "Alt+{key} must keep its old behaviour"
             );
         }
-        assert!(search_view_key_allowed("c", true, false));
+        assert!(search_view_key_allowed("c", true, false, false));
         // F4 (terminal) and Ctrl+Q (quit) are global actions: they must reach
         // normal dispatch while browsing results, but stay blocked in the input.
         // The input-focus guard lives in `on_key_down`, not in this pure helper.
-        assert!(search_view_key_allowed("f4", false, false));
-        assert!(!search_view_key_allowed("f4", false, true));
-        assert!(search_view_key_allowed("q", true, false));
-        assert!(!search_view_key_allowed("q", false, false));
-        assert!(!search_view_key_allowed("q", true, true));
+        assert!(search_view_key_allowed("f4", false, false, false));
+        assert!(!search_view_key_allowed("f4", false, false, true));
+        assert!(search_view_key_allowed("q", true, false, false));
+        assert!(!search_view_key_allowed("q", false, false, false));
+        assert!(!search_view_key_allowed("q", true, true, false));
         for (key, ctrl) in [
             ("c", false),
             ("a", true),
@@ -13583,10 +13679,30 @@ mod tests {
             ("delete", false),
         ] {
             assert!(
-                !search_view_key_allowed(key, ctrl, false),
+                !search_view_key_allowed(key, ctrl, false, false),
                 "unexpectedly forwarded {key} (ctrl={ctrl})"
             );
         }
+
+        // AC02: the hardcoded Ctrl+C / Ctrl+Q shortcuts must be unshifted.
+        // Ctrl+Shift+C resolves to `CopyPath`, which is not an allowed Search
+        // action, so the old shift-blind hardcoded OR leaked it to the keymap.
+        assert!(!search_view_key_allowed("c", true, true, false));
+        assert!(search_view_key_allowed("c", true, false, false));
+        assert!(!search_view_key_allowed("q", true, true, false));
+        let default = KeyMap::default_keymap();
+        assert_eq!(default.resolve("c", true, true, false), KeyAction::CopyPath);
+        assert!(!search_view_key_reaches_keymap(
+            &default, "c", true, true, false
+        ));
+        // Contrast: plain Ctrl+C still reaches normal dispatch.
+        assert!(search_view_key_reaches_keymap(
+            &default, "c", true, false, false
+        ));
+        // Ctrl+Shift+Q resolves to Quit (its binding is shift-agnostic), which
+        // is allowed in Search just like in the normal view; only the
+        // hardcoded shortcut is now shift-sensitive.
+        assert_eq!(default.resolve("q", true, true, false), KeyAction::Quit);
     }
 
     #[test]
@@ -13610,7 +13726,7 @@ mod tests {
         // that key reach normal dispatch in the Search view (finding 4).
         let mut rebound = KeyMap::default_keymap();
         assert!(rebound.rebind(KeyAction::Copy, "y", true, false, false));
-        assert!(!search_view_key_allowed("y", true, false));
+        assert!(!search_view_key_allowed("y", true, false, false));
         assert!(search_view_key_reaches_keymap(
             &rebound, "y", true, false, false
         ));
@@ -13638,8 +13754,9 @@ mod tests {
             search_view_action_allowed, search_view_key_allowed, search_view_key_reaches_keymap,
         };
 
-        // Unlisted single-letter chords. `rebind` refuses OpenSettings, so the
-        // eleventh allowed action is verified via its shipped Ctrl+, below.
+        // Unlisted single-letter chords. `rebind` refuses OpenSettings, so that
+        // allowed action is verified via its shipped Ctrl+, below. AC03 adds
+        // Reload (F5) to the set; its default chord is checked separately.
         let cases: &[(KeyAction, &str)] = &[
             (KeyAction::MoveUp, "y"),
             (KeyAction::MoveDown, "u"),
@@ -13651,8 +13768,9 @@ mod tests {
             (KeyAction::OpenTerminal, "j"),
             (KeyAction::Copy, "k"),
             (KeyAction::Quit, "l"),
+            (KeyAction::Reload, "b"),
         ];
-        assert_eq!(cases.len() + 1, 11, "all allowed actions must be covered");
+        assert_eq!(cases.len() + 1, 12, "all allowed actions must be covered");
         for &(action, key) in cases {
             assert!(
                 search_view_action_allowed(action),
@@ -13664,7 +13782,7 @@ mod tests {
                 "rebind {action:?} to {key} failed"
             );
             assert!(
-                !search_view_key_allowed(key, false, false),
+                !search_view_key_allowed(key, false, false, false),
                 "{key} must be unlisted so only the action path can forward it"
             );
             assert_eq!(keymap.resolve(key, false, false, false), action);
@@ -13713,6 +13831,28 @@ mod tests {
         ));
     }
 
+    // AC03: `STATUS_RESCAN_FAILED` advertises "F5 で再読込" and the status is
+    // visible while browsing Search results, so the advertised key must be
+    // reachable in that view. F5 is not in the hardcoded key allowlist; it
+    // reaches normal dispatch through the allowed `Reload` action instead.
+    #[test]
+    fn search_view_advertised_f5_reload_key_reaches_keymap() {
+        use super::{
+            search_view_action_allowed, search_view_key_allowed, search_view_key_reaches_keymap,
+        };
+
+        let default = KeyMap::default_keymap();
+        assert!(search_view_action_allowed(KeyAction::Reload));
+        assert!(!search_view_key_allowed("f5", false, false, false));
+        assert_eq!(
+            default.resolve("f5", false, false, false),
+            KeyAction::Reload
+        );
+        assert!(search_view_key_reaches_keymap(
+            &default, "f5", false, false, false
+        ));
+    }
+
     #[test]
     fn search_view_forwards_ctrl_comma_to_open_settings() {
         use super::{search_view_key_allowed, search_view_key_reaches_keymap};
@@ -13720,7 +13860,7 @@ mod tests {
         // L04: while browsing results, Ctrl+, must reach the normal keymap so
         // the preferences overlay can be opened without leaving the Search view.
         let keymap = KeyMap::default_keymap();
-        assert!(!search_view_key_allowed(",", true, false));
+        assert!(!search_view_key_allowed(",", true, false, false));
         assert_eq!(
             keymap.resolve(",", true, false, false),
             KeyAction::OpenSettings
@@ -13777,6 +13917,21 @@ mod tests {
         assert_eq!(stale.matches(STATUS_SEARCH_STALE).count(), 1);
 
         assert_eq!(compose("検索中…「rs」"), STATUS_CHANGED);
+
+        // AC01: the Rescan/Renamed branch uses the same composition with the
+        // Search-view stale notice as `next`. A held RESCAN_FAILED must survive
+        // it too (the old code assigned STATUS_SEARCH_STALE directly), and a
+        // repeated stale notice must not be duplicated.
+        let compose_rescan = |current: &str| {
+            let reconciled = reconcile_aware_status(current, STATUS_SEARCH_STALE);
+            search_filter_status(current, reconciled)
+        };
+
+        let failed_with_reason = format!("{STATUS_RESCAN_FAILED}: permission denied");
+        assert_eq!(compose_rescan(&failed_with_reason), failed_with_reason);
+        assert_eq!(compose_rescan(STATUS_RESCAN_FAILED), STATUS_RESCAN_FAILED);
+        assert_eq!(compose_rescan(STATUS_SEARCH_STALE), STATUS_SEARCH_STALE);
+        assert_eq!(compose_rescan("検索中…「rs」"), STATUS_SEARCH_STALE);
     }
 
     #[test]

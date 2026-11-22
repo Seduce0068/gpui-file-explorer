@@ -97,6 +97,120 @@ pub const SETTINGS_INPUT_GUARD_NOTE: &str = settings_input_guard_note!();
 /// テスト以外のビルドでも定数を参照させ、`-D warnings` の dead_code を防ぐ。
 const _: () = assert!(SETTINGS_INPUT_GUARD_NOTE.len() == settings_input_guard_note!().len());
 
+// ---------------------------------------------------------------------------
+// AC07 / AC08 / AC09: 追加の正規文言
+//
+// このブロックは 280 行目より前（本ファイルの所有範囲）に置く。280 行目以降は
+// 別エージェントが所有するため、既存の `LOAD_ERROR_HINT` / ステータス定数や
+// 末尾の `mod tests` はここでは変更しない。
+// ---------------------------------------------------------------------------
+
+/// 設定ダイアログにテキスト入力欄があるタブの注記（AC09）。
+///
+/// F1 ヘルプと `app/README.md` で同じ条件を案内するための唯一の定義。
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// `settings_input_fields_note!()` を使う。
+macro_rules! settings_input_fields_note {
+    () => {
+        "入力欄はショートカット / ターミナルタブのみ"
+    };
+}
+
+/// 入力欄タブ注記の正規表記（AC09）。F1 / README の同期判定に使う。
+pub const SETTINGS_INPUT_FIELDS_NOTE: &str = settings_input_fields_note!();
+
+const _: () = assert!(SETTINGS_INPUT_FIELDS_NOTE.len() == settings_input_fields_note!().len());
+
+/// キーマップ入力の正規形式ヒント（AC08）。
+///
+/// Alt+K ダイアログ（空白区切り）と設定カード（`=` 区切り）の両方で同じ
+/// 「アクション名 + コード」形式を案内するための唯一の定義。設定カードの
+/// 不正入力通知（`main.rs::settings_save` の `STATUS_KEYMAP_INVALID_PREFIX`
+/// 経由）でもこの文言を併記する。`concat!` は定数識別子を受け付けないので、
+/// 静的文字列へ埋め込む場合は `keymap_format_hint!()` を使う。
+macro_rules! keymap_format_hint {
+    () => {
+        "形式: アクション名 コード または unbind アクション名（例: open_preview ctrl+shift+p）。設定カードでは 操作=キー も可（例: open_preview=ctrl+shift+p）"
+    };
+}
+pub(crate) use keymap_format_hint;
+
+/// キーマップ形式ヒントの正規表記（AC08）。設定カードの入力欄・エラー通知の
+/// 同期判定に使う。
+pub const KEYMAP_FORMAT_HINT: &str = keymap_format_hint!();
+
+const _: () = assert!(KEYMAP_FORMAT_HINT.len() == keymap_format_hint!().len());
+
+/// 読み込み失敗時の復帰案内（AC07）。ビューごとに有効なキーが異なるため、
+/// `empty_state_message` は `ViewSource` でこの 3 つを選ぶこと。
+///
+/// ディレクトリ表示では `Ctrl+L`（OpenLocation）が有効なので、既存の
+/// [`LOAD_ERROR_HINT`] をそのまま共用する（355 行目の定義は変更しない）。
+pub const LOAD_ERROR_HINT_DIRECTORY: &str = LOAD_ERROR_HINT;
+/// ゴミ箱ビューでは `Ctrl+L` が拒否されるため、一覧へ戻る導線を案内する。
+pub const LOAD_ERROR_HINT_TRASH: &str = "F5 で再読込 / Esc で一覧へ戻る";
+/// 検索ビューでは `Ctrl+L` がキー許可リストになく、Esc で閉じるのが復帰導線。
+pub const LOAD_ERROR_HINT_SEARCH: &str = "F5 で再読込 / Esc で閉じる";
+
+/// `main.rs` の rewiring が未適用でも `-D warnings` の dead_code を出さない。
+/// 呼び出し側が3定数を使い始めた後も、この参照は無害に残る。
+const _: () = assert!(!LOAD_ERROR_HINT_DIRECTORY.is_empty());
+const _: () = assert!(!LOAD_ERROR_HINT_TRASH.is_empty());
+const _: () = assert!(!LOAD_ERROR_HINT_SEARCH.is_empty());
+
+/// AC07 / AC08 の定数は既存の `mod tests`（280 行目以降）からは触らない。
+/// 所有範囲内に小さなテストモジュールを置き、各案内が宣伝するキーを固定する。
+#[cfg(test)]
+mod view_hint_and_keymap_format_tests {
+    use super::*;
+
+    #[test]
+    fn load_error_hints_advertise_only_keys_available_in_each_view() {
+        // ディレクトリ表示: Ctrl+L (OpenLocation) は有効。
+        assert_eq!(LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT);
+        for token in ["F5", "Ctrl+L"] {
+            assert!(
+                LOAD_ERROR_HINT_DIRECTORY.contains(token),
+                "directory load-error hint: {LOAD_ERROR_HINT_DIRECTORY}"
+            );
+        }
+        // ゴミ箱: Ctrl+L は拒否されるので案内せず、Esc で戻る経路を示す。
+        for token in ["F5", "Esc で一覧へ戻る"] {
+            assert!(
+                LOAD_ERROR_HINT_TRASH.contains(token),
+                "trash load-error hint: {LOAD_ERROR_HINT_TRASH}"
+            );
+        }
+        assert!(!LOAD_ERROR_HINT_TRASH.contains("Ctrl+L"));
+        // 検索: 同様に Ctrl+L は許可外。Esc で閉じる経路を示す。
+        for token in ["F5", "Esc で閉じる"] {
+            assert!(
+                LOAD_ERROR_HINT_SEARCH.contains(token),
+                "search load-error hint: {LOAD_ERROR_HINT_SEARCH}"
+            );
+        }
+        assert!(!LOAD_ERROR_HINT_SEARCH.contains("Ctrl+L"));
+        assert_ne!(LOAD_ERROR_HINT_TRASH, LOAD_ERROR_HINT_SEARCH);
+    }
+
+    #[test]
+    fn keymap_format_hint_covers_both_editors() {
+        for token in [
+            "アクション名 コード",
+            "unbind アクション名",
+            "open_preview ctrl+shift+p",
+            "操作=キー",
+            "open_preview=ctrl+shift+p",
+        ] {
+            assert!(
+                KEYMAP_FORMAT_HINT.contains(token),
+                "canonical keymap format hint: {KEYMAP_FORMAT_HINT}"
+            );
+        }
+        assert_eq!(KEYMAP_FORMAT_HINT, keymap_format_hint!());
+    }
+}
+
 /// 設定ダイアログのタブ直接移動キーの正規表記（Y05）。
 ///
 /// フッターのキー凡例・F1 ヘルプ・README で同じ表記を使うための唯一の定義。
@@ -270,7 +384,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "設定ダイアログの操作",
-                "Tab / Shift+Tab で検索欄 → 入力欄 → キャンセル / 保存へフォーカス移動（循環）",
+                concat!(
+                    "Tab / Shift+Tab で検索欄 → 入力欄 → キャンセル / 保存へフォーカス移動（循環）。",
+                    settings_input_fields_note!()
+                ),
             ),
             ("F4", "選択中のフォルダでターミナルを開く"),
             ("Alt+T", "F4 で開くターミナルの起動コマンドを設定"),
@@ -549,7 +666,7 @@ pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: 
 /// 動的な `{action}` を連結するため、接頭辞自体を色判定のマーカーとして登録する。
 pub const STATUS_KEYMAP_NO_UNBIND_PREFIX: &str = "解除する設定はありません: ";
 /// キーマップ入力の形式が不正なときの通知（V04）。
-/// Alt+K ダイアログと設定カードの Shortcuts 欄で同じ文言を共有する。
+/// Alt+K ダイアログ専用。設定カードは `STATUS_KEYMAP_INVALID_PREFIX + KEYMAP_FORMAT_HINT`。
 pub const STATUS_KEYMAP_FORMAT_INVALID: &str =
     "形式は「アクション名 コード」または「unbind アクション名」です（例: open_preview ctrl+shift+p）";
 /// キーマップの上書き件数が上限に達したときの拒否通知の接頭辞（V04）。

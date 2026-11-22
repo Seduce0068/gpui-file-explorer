@@ -1136,28 +1136,33 @@ status: current
 
 ### 優先度: 高（ループ R24・confirmed）
 
-- [ ] **AC01** Search の Rescan/Renamed が RESCAN_FAILED を上書き（実バグ）
+- [x] **AC01** Search の Rescan/Renamed が RESCAN_FAILED を上書き（実バグ） — 対応: loop26-core（実バグ修正）
   — main.rs:3685
-- [ ] **AC02** Search の Ctrl+Shift+C が allowlist をすり抜け（実バグ）
+- [x] **AC02** Search の Ctrl+Shift+C が allowlist をすり抜け（実バグ） — 対応: loop26-core（実バグ修正）
   — main.rs:293
-- [ ] **AC03** Search で RESCAN_FAILED の F5 ヒントが届かない（実バグ）
+- [x] **AC03** Search で RESCAN_FAILED の F5 ヒントが届かない（実バグ） — 対応: loop26-core（実バグ修正）
   — main.rs:293 / strings.rs:533
 
 ### 優先度: 中（ループ R24）
 
-- [ ] **AC04** WATCH_PARTIAL/DISABLED が status_color 回帰表に未登録
+- [x] **AC04** WATCH_PARTIAL/DISABLED が status_color 回帰表に未登録 — 対応: loop26-core
   — main.rs:11588
-- [ ] **AC05** display_name_for の best 維持分岐が未テスト — main.rs:604
-- [ ] **AC06** 設定検索が Files タブの見出し/ラベルを検索できない
+- [x] **AC05** display_name_for の best 維持分岐が未テスト — main.rs:604 — 対応: loop26-core
+- [x] **AC06** 設定検索が Files タブの見出し/ラベルを検索できない — 対応: loop26-ux
   — settings_ui.rs:1292
-- [ ] **AC07** 読込失敗ヒントが Trash/Search で無効な Ctrl+L を案内
+- [x] **AC07** 読込失敗ヒントが Trash/Search で無効な Ctrl+L を案内 — 対応: loop26-ux
   — strings.rs:355
-- [ ] **AC08** キーマップ不正通知に入力形式の案内なし — strings.rs:562
+- [x] **AC08** キーマップ不正通知に入力形式の案内なし — strings.rs:562 — 対応: loop26-ux
 
 ### 優先度: 低（ループ R24）
 
-- [ ] **AC09** F1 の Tab 移動行が全タブに入力欄があるかのように案内
+- [x] **AC09** F1 の Tab 移動行が全タブに入力欄があるかのように案内 — 対応: loop26-ux
   — strings.rs:271
+
+### 優先度: 中（ループ R24 フォローアップ・confirmed）
+
+- [ ] **AC10** Search で F5 が keymap に到達しても reload() が early-return し実質デッド
+  — main.rs:3057（AC03 の残課題、次ラウンド）
 
 ### 優先度: 低（調査タスク）
 

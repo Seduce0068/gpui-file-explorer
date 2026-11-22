@@ -439,6 +439,9 @@ const APPEARANCE_VIEW_KEYWORDS: &[&str] = &[
     "一覧",
     "アイコン",
     "表示",
+    // AC06: the section heading rendered above this row is "表示レイアウト";
+    // searching the whole visible phrase must land on this row.
+    "表示レイアウト",
     "外観",
     // "既定のビュー" / "詳細一覧またはアイコン一覧を選択します（v でキーボードから切替）"
     "ビュー",
@@ -456,6 +459,8 @@ const FILES_HIDDEN_KEYWORDS: &[&str] = &[
     "ファイル",
     "ドットファイル",
     // Visible on this row: "ファイルの表示" (section) / "隠しファイルを表示" (label).
+    // AC06: the whole section heading is a likely search phrase, not just 表示.
+    "ファイルの表示",
     "表示",
     // "名前が . で始まるファイルとフォルダを一覧に含めます（h でキーボードから切替）"
     "ドット",
@@ -470,6 +475,10 @@ const FILES_SORT_KEYWORDS: &[&str] = &[
     "ファイル",
     "順序",
     "Alt+S",
+    // AC06: the rendered section heading is "並び替え" and the row label is
+    // "既定の並び順"; users copy those whole phrases into the search box.
+    "並び替え",
+    "既定の並び順",
     // "既定の並び順" / "…基準となる項目（Alt+S でキーボードから切替）"
     "並び順",
     "既定",
@@ -625,8 +634,11 @@ const SETTINGS_SEARCH_PLACEHOLDER: &str = "設定・キー名で検索…";
 /// from either editor, so promising otherwise here would mislead the user.
 /// Z07/Z12: the reserved-key note and the `MAX_KEYMAP_OVERRIDES` cap come from
 /// the canonical `strings.rs` definitions via the shared macro/literal.
+/// AC08: the format itself also comes from `strings::KEYMAP_FORMAT_HINT`, so
+/// the invalid-input notice in `main.rs` can quote the very same wording.
 const SETTINGS_KEYMAP_INPUT_HINT: &str = concat!(
-    "「操作=キー」形式で入力します。複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。",
+    crate::strings::keymap_format_hint!(),
+    "複数指定は ; で区切ります（例: open_preview=ctrl+shift+p; quit=ctrl+q）。保存すると一覧は入力内容で置き換わります（一部追加ではありません）。この欄でも `unbind アクション名` で解除できます。",
     crate::strings::reserved_keys_note!(),
     "。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。最大 64 件まで。"
 );
@@ -1545,10 +1557,11 @@ mod tests {
         settings_row_shortcut, settings_theme_next, settings_view_next, tabs_matching_query,
         SettingsFocusTarget, SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
         APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS, APPEARANCE_VIEW_DESCRIPTION,
-        FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS, FILES_SORT_DESCRIPTION,
-        PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS,
-        SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS,
-        SHORTCUTS_DEFAULT_LINES, TERMINAL_COMMAND_KEYWORDS,
+        APPEARANCE_VIEW_KEYWORDS, FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS,
+        FILES_SORT_DESCRIPTION, FILES_SORT_KEYWORDS, PERSONALIZE_INFO_KEYWORDS,
+        PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS, SETTINGS_KEYMAP_INPUT_HINT,
+        SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
+        TERMINAL_COMMAND_KEYWORDS,
     };
     use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
@@ -1846,6 +1859,25 @@ mod tests {
             app_readme.contains(DISCARD_NOTE),
             "app README must warn about discarding unsaved edits"
         );
+
+        // AC09: the Tab-cycle row must not promise an input field on every tab.
+        // Only Shortcuts and Terminal render one; README:150-153 says so, and
+        // the F1 row now carries the identical canonical note.
+        let focus = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "設定ダイアログの操作")
+            .map(|(_, text)| text)
+            .expect("F1 help must include the settings focus row");
+        assert!(focus.contains("Tab / Shift+Tab"), "{focus}");
+        assert!(
+            focus.ends_with(crate::strings::SETTINGS_INPUT_FIELDS_NOTE),
+            "F1 focus row must limit input fields to the two tabs: {focus}"
+        );
+        assert!(
+            app_readme.contains(crate::strings::SETTINGS_INPUT_FIELDS_NOTE),
+            "README must state the same input-field tab limit"
+        );
     }
 
     #[test]
@@ -1922,12 +1954,12 @@ mod tests {
         // Z01: the same failure mode as V13 (Trash Ctrl+H), now for Search.
         // Read the real allowlists so a future change to either one breaks the
         // test instead of leaving a hint that points at a dead key.
-        assert!(!crate::search_view_key_allowed("f", true, false));
+        assert!(!crate::search_view_key_allowed("f", true, false, false));
         assert!(!crate::search_view_action_allowed(
             crate::KeyAction::OpenSearch
         ));
         // The keys the rewritten hint promises must actually reach handlers.
-        assert!(crate::search_view_key_allowed("enter", false, false));
+        assert!(crate::search_view_key_allowed("enter", false, false, false));
 
         let (_, hint) = crate::strings::EMPTY_SEARCH;
         assert!(
@@ -1947,7 +1979,11 @@ mod tests {
         // H04: the shared field looks like an additive editor, so the hint must
         // say Save replaces everything. K04: it must also advertise the unbind
         // syntax this very field accepts, not point users to Alt+K only.
-        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("「操作=キー」形式で入力します"));
+        // AC08: the format wording is the canonical `strings::KEYMAP_FORMAT_HINT`
+        // so the save-error notice can quote the exact same guidance.
+        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains(crate::strings::KEYMAP_FORMAT_HINT));
+        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("アクション名 コード"));
+        assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("操作=キー"));
         assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("; で区切ります"));
         assert!(SETTINGS_KEYMAP_INPUT_HINT.contains("置き換わります（一部追加ではありません）"));
         assert!(
@@ -2095,6 +2131,12 @@ mod tests {
             ("詳細一覧", SettingsTab::Appearance),
             ("アイコン", SettingsTab::Appearance),
             ("既定のビュー", SettingsTab::Appearance),
+            // AC06: whole rendered phrases, not just their component words.
+            // Copying a visible heading/label into the search box must work.
+            ("表示レイアウト", SettingsTab::Appearance),
+            ("ファイルの表示", SettingsTab::Files),
+            ("並び替え", SettingsTab::Files),
+            ("既定の並び順", SettingsTab::Files),
             ("ドット", SettingsTab::Files),
             // Y04: the sort radio labels come from `SortKey::label()` in the
             // host's `sort_options`; searching what is visible must not dead-end.
@@ -2123,6 +2165,13 @@ mod tests {
                 "lowercase wording {query} must surface {expected:?}"
             );
         }
+        // AC06: guard the keyword arrays themselves, so a future rewrite cannot
+        // drop the rendered headings while the substring tests still pass via
+        // some shorter keyword such as "表示" or "並び".
+        assert!(APPEARANCE_VIEW_KEYWORDS.contains(&"表示レイアウト"));
+        assert!(FILES_HIDDEN_KEYWORDS.contains(&"ファイルの表示"));
+        assert!(FILES_SORT_KEYWORDS.contains(&"並び替え"));
+        assert!(FILES_SORT_KEYWORDS.contains(&"既定の並び順"));
         // The display form shown in the default list is searchable verbatim,
         // alongside each individual Alt+digit chord (L03/M09).
         assert_eq!(
