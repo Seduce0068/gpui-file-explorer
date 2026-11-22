@@ -1215,7 +1215,8 @@ status: current
 
 ### 優先度: 低（ループ R27）
 
-- [x] **AF06** デバッグ進捗フックが STATUS_CANCEL_HINT 迂回 — 対応: 親（transfer_progress_status を共用）
+- [x] **AF06** デバッグ進捗フックが STATUS_CANCEL_HINT 迂回
+  — 対応: 親（transfer_progress_status を共用）
 - [x] **AF07** ops.rs require_directory の symlink 追跡分岐が無テスト — 対応: loop29-tests
 - [x] **AF08** preview.rs の post-read サイズガード分岐が無テスト — 対応: loop29-tests
 - [x] **AF09** watcher.rs DirWatcher::new の初期化失敗分岐が無テスト — 対応: loop29-tests
