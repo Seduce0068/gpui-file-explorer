@@ -11,6 +11,13 @@
 //! Resolution is deliberately dependency-light: no D-Bus, no `gio`, no
 //! `IconTheme` binding. We search the standard theme directories directly and
 //! cache the result (including misses) per `(icon name, target size)`.
+//!
+//! The platform-neutral [`OsIconProvider`] abstraction at the bottom of this
+//! file only decides *which name* an entry maps to. It is FFI-free by design:
+//! native OS icon extraction (Windows `SHGetFileInfo`) needs the NF02 approval
+//! because the crate enforces `#![forbid(unsafe_code)]`. Until then every
+//! platform uses either the Breeze/freedesktop names or the bundled gpui-kit
+//! (Lucide) names via [`BundledIconProvider`].
 
 // `main.rs` resolves icons via `icon_path_for_entry`. The optional
 // `icon_path_for_name` / `roots` helpers are test-only, so the allow stays
@@ -290,18 +297,156 @@ impl SystemIconResolver {
     }
 }
 
+// ----------------------------------------------------------- OS icon providers
+//
+// A deliberately tiny strategy layer: providers only choose a *name*. Resolving
+// that name to an on-disk path stays in `SystemIconResolver`, and rendering via
+// `gpui_kit::img` stays in `main.rs`. Nothing here touches FFI or adds a
+// dependency, so `#![forbid(unsafe_code)]` remains intact.
+
+/// Platform-neutral strategy for naming a file/folder icon.
+///
+/// Object-safe on purpose: callers can hold a `&dyn OsIconProvider` without any
+/// generic plumbing. `extension` is the text after the last `.` of the entry
+/// name (empty when there is none); providers that care about extensions are
+/// responsible for normalising its case. `is_dir` makes the folder decision
+/// explicit so a caller does not have to rely on `kind` being up to date.
+pub trait OsIconProvider {
+    /// Primary icon name for this entry. Never panics, including for empty or
+    /// non-ASCII extensions.
+    fn icon_name_for(&self, kind: FileKind, extension: &str, is_dir: bool) -> &'static str;
+
+    /// Whether this provider can supply distinct folder artwork (rather than a
+    /// single bundled glyph for every kind).
+    fn supports_folder_icons(&self) -> bool;
+}
+
+/// Freedesktop/Breeze-first provider: the app's current, default behaviour.
+///
+/// Mirrors the historical `icon_name_for_kind` mapping exactly: directories
+/// win first, then symlinks, then the extension table, then the coarse kind.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FreedesktopIconProvider;
+
+impl OsIconProvider for FreedesktopIconProvider {
+    fn icon_name_for(&self, kind: FileKind, extension: &str, is_dir: bool) -> &'static str {
+        if is_dir || kind == FileKind::Folder {
+            return "inode-directory";
+        }
+        if kind == FileKind::Symlink {
+            return "inode-symlink";
+        }
+        match extension_icon_names(extension) {
+            Some(names) => names[0],
+            None => generic_icon_for_kind(kind),
+        }
+    }
+
+    fn supports_folder_icons(&self) -> bool {
+        true
+    }
+}
+
+/// Stub provider for platforms without an OS icon API (mobile targets, and
+/// Windows until NF02 is approved). It reports the same gpui-kit (Lucide) names
+/// already used as the monochrome fallback in [`crate::icons::icon_for_kind`].
+///
+/// NOTE: real bundled *full-colour* assets are a follow-up. This provider only
+/// names the existing gpui-kit icons; it extracts no OS-native artwork and
+/// makes no FFI calls, so it is safe under `#![forbid(unsafe_code)]`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BundledIconProvider;
+
+impl OsIconProvider for BundledIconProvider {
+    fn icon_name_for(&self, kind: FileKind, _extension: &str, is_dir: bool) -> &'static str {
+        if is_dir || kind == FileKind::Folder {
+            "folder"
+        } else {
+            lucide_name_for_kind(kind)
+        }
+    }
+
+    fn supports_folder_icons(&self) -> bool {
+        false
+    }
+}
+
+/// gpui-kit Lucide names (asset stems from `gpui-kit-assets`) matching
+/// [`crate::icons::icon_for_kind`] one-for-one. Kept private to this module so
+/// the FFI-free provider layer stays self-contained; a unit test cross-checks
+/// every name against `IconName::path()`.
+fn lucide_name_for_kind(kind: FileKind) -> &'static str {
+    match kind {
+        FileKind::Folder => "folder",
+        FileKind::Symlink => "file-symlink",
+        FileKind::Image => "file-image",
+        FileKind::Code => "file-code",
+        FileKind::Archive => "file-archive",
+        FileKind::Pdf => "file-type",
+        FileKind::Text => "file-text",
+        FileKind::Audio => "file-music",
+        FileKind::Video => "file-video-camera",
+        FileKind::Unknown => "file",
+    }
+}
+
+/// Concrete provider selected for a target OS. Small enough to be `Copy`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IconProviderKind {
+    /// Breeze/freedesktop theme lookup — the Linux-first default.
+    Freedesktop,
+    /// Bundled gpui-kit names — used where no OS icon API is available yet.
+    Bundled,
+}
+
+impl IconProviderKind {
+    /// Resolve the kind into a stateless provider instance.
+    pub fn provider(self) -> &'static dyn OsIconProvider {
+        match self {
+            Self::Freedesktop => &FreedesktopIconProvider,
+            Self::Bundled => &BundledIconProvider,
+        }
+    }
+}
+
+/// The provider [`icon_name_for_kind`] routes through: unchanged Linux
+/// behaviour, so the existing freedesktop mapping stays byte-identical.
+const DEFAULT_PROVIDER: IconProviderKind = IconProviderKind::Freedesktop;
+
+/// Pure target-OS → provider selection (pass `std::env::consts::OS`).
+///
+/// * `linux` keeps Breeze/freedesktop resolution.
+/// * `windows` deliberately uses [`IconProviderKind::Bundled`]: native
+///   `SHGetFileInfo` extraction requires an FFI call and therefore the NF02
+///   approval, which is not granted while `#![forbid(unsafe_code)]` is on.
+/// * `android` / `ios` and any unknown target use the bundled fallback too —
+///   there is no OS-native file-icon API available in this FFI-free round.
+pub fn choose_icon_provider(target_os: &str) -> IconProviderKind {
+    match target_os {
+        "linux" => IconProviderKind::Freedesktop,
+        "windows" | "android" | "ios" => IconProviderKind::Bundled,
+        _ => IconProviderKind::Bundled,
+    }
+}
+
 /// Pure mapping from a coarse [`FileKind`] plus a file name to the primary
 /// freedesktop icon name to try. Extension matches win; otherwise the kind's
 /// generic icon is used. No filesystem access, directly unit-testable.
+///
+/// Delegates to the default ([`IconProviderKind::Freedesktop`]) provider so the
+/// old call sites keep their exact output while new code can select a strategy
+/// with [`choose_icon_provider`].
 pub fn icon_name_for_kind(kind: FileKind, name: &str) -> &'static str {
-    match kind {
-        FileKind::Folder => "inode-directory",
-        FileKind::Symlink => "inode-symlink",
-        _ => match extension_icon_names(name) {
-            Some(names) => names[0],
-            None => generic_icon_for_kind(kind),
-        },
-    }
+    DEFAULT_PROVIDER
+        .provider()
+        .icon_name_for(kind, extension_of(name), kind == FileKind::Folder)
+}
+
+/// Suffix after the final `.`, without the dot; empty when there is none.
+fn extension_of(name: &str) -> &str {
+    name.rsplit_once('.')
+        .map(|(_, extension)| extension)
+        .unwrap_or("")
 }
 
 fn generic_icon_for_kind(kind: FileKind) -> &'static str {
@@ -317,9 +462,10 @@ fn generic_icon_for_kind(kind: FileKind) -> &'static str {
     }
 }
 
-/// Return the extension-specific candidate names for a file name, if any.
-fn extension_icon_names(name: &str) -> Option<&'static [&'static str]> {
-    let (_, extension) = name.rsplit_once('.')?;
+/// Return the extension-specific candidate names for an extension (without
+/// its leading dot), if any. Case-insensitive, like the original name-based
+/// helper this replaced.
+fn extension_icon_names(extension: &str) -> Option<&'static [&'static str]> {
     let extension = extension.to_ascii_lowercase();
     EXTENSION_ICONS
         .iter()
@@ -423,10 +569,12 @@ fn reorder_breeze_themes(themes: &mut [String], prefer_dark: bool) {
 #[cfg(test)]
 mod tests {
     use super::{
-        generic_icon_for_kind, icon_name_for_kind, icon_name_variants, push_unique_path,
-        size_dir_candidates, theme_names_for, SystemIconResolver,
+        choose_icon_provider, extension_of, generic_icon_for_kind, icon_name_for_kind,
+        icon_name_variants, push_unique_path, size_dir_candidates, theme_names_for,
+        BundledIconProvider, FreedesktopIconProvider, IconProviderKind, OsIconProvider,
+        SystemIconResolver,
     };
-    use crate::icons::{kind_for_name, FileKind};
+    use crate::icons::{icon_for_kind, kind_for_name, FileKind};
 
     #[test]
     fn theme_names_for_kde_desktop_list_selects_breeze_first() {
@@ -888,5 +1036,173 @@ mod tests {
 
         push_unique_path(&mut paths, PathBuf::from("/usr/local/share/icons"));
         assert_eq!(paths.len(), 2, "a distinct path must still be appended");
+    }
+
+    // --- NW06: platform-neutral OS icon provider --------------------------
+
+    #[test]
+    fn choose_icon_provider_selects_expected_kind() {
+        // Pure selection table: Linux keeps Breeze; every target without an
+        // available (FFI-free) native icon API falls back to bundled names.
+        let cases = [
+            ("linux", IconProviderKind::Freedesktop),
+            ("windows", IconProviderKind::Bundled),
+            ("android", IconProviderKind::Bundled),
+            ("ios", IconProviderKind::Bundled),
+            ("macos", IconProviderKind::Bundled),
+            ("", IconProviderKind::Bundled),
+            ("linux-gnu", IconProviderKind::Bundled),
+        ];
+        for (target, expected) in cases {
+            assert_eq!(
+                choose_icon_provider(target),
+                expected,
+                "unexpected provider for target_os={target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn freedesktop_provider_matches_legacy_mapping() {
+        // Independent oracle: a literal table of the pre-abstraction output.
+        // `icon_name_for_kind` now routes through the default provider, so both
+        // paths must agree for every representative kind/extension.
+        let provider = FreedesktopIconProvider;
+        let cases = [
+            (FileKind::Folder, "anything.rs", "inode-directory"),
+            (FileKind::Symlink, "link.rs", "inode-symlink"),
+            (FileKind::Code, "main.rs", "text-rust"),
+            (FileKind::Code, "main.RS", "text-rust"),
+            (FileKind::Pdf, "paper.pdf", "application-pdf"),
+            (FileKind::Image, "photo.PNG", "image-png"),
+            (FileKind::Archive, "bundle.zip", "application-zip"),
+            (FileKind::Video, "clip.mp4", "video-mp4"),
+            (FileKind::Text, "notes.md", "text-x-markdown"),
+            (FileKind::Image, "picture.xyz", "image-x-generic"),
+            (FileKind::Code, "module.xyz", "text-x-generic"),
+            (FileKind::Image, "img.pnm", "image-x-generic"),
+            (FileKind::Unknown, "no-extension", "text-x-generic"),
+            (FileKind::Unknown, ".bashrc", "text-x-generic"),
+        ];
+        for (kind, name, expected) in cases {
+            let is_dir = kind == FileKind::Folder;
+            assert_eq!(
+                provider.icon_name_for(kind, extension_of(name), is_dir),
+                expected,
+                "provider mismatch for {kind:?} / {name}"
+            );
+            assert_eq!(
+                icon_name_for_kind(kind, name),
+                expected,
+                "legacy helper must route through the default provider ({kind:?} / {name})"
+            );
+        }
+        assert!(provider.supports_folder_icons());
+    }
+
+    #[test]
+    fn extension_of_matches_the_legacy_last_dot_rule() {
+        assert_eq!(extension_of("main.rs"), "rs");
+        assert_eq!(extension_of("archive.tar.gz"), "gz");
+        assert_eq!(extension_of("photo.PNG"), "PNG");
+        assert_eq!(extension_of("no-extension"), "");
+        assert_eq!(extension_of(".bashrc"), "bashrc");
+        assert_eq!(extension_of(""), "");
+    }
+
+    #[test]
+    fn providers_treat_is_dir_as_authoritative() {
+        // A stale `kind` must not lose to an explicit directory flag.
+        let freedesktop = FreedesktopIconProvider;
+        let bundled = BundledIconProvider;
+        assert_eq!(
+            freedesktop.icon_name_for(FileKind::Code, "rs", true),
+            "inode-directory"
+        );
+        assert_eq!(bundled.icon_name_for(FileKind::Code, "rs", true), "folder");
+    }
+
+    #[test]
+    fn bundled_provider_never_panics_for_any_kind_or_extension() {
+        // The stub must be total: every kind, empty/odd extensions, both
+        // directory states, and a non-ASCII extension all return a name.
+        let provider = BundledIconProvider;
+        let kinds = [
+            FileKind::Folder,
+            FileKind::Symlink,
+            FileKind::Image,
+            FileKind::Code,
+            FileKind::Archive,
+            FileKind::Pdf,
+            FileKind::Text,
+            FileKind::Audio,
+            FileKind::Video,
+            FileKind::Unknown,
+        ];
+        let extensions = ["", "rs", "PNG", "tar.gz", "日本語", "no-dot-at-all"];
+        for kind in kinds {
+            for extension in extensions {
+                for is_dir in [false, true] {
+                    let name = provider.icon_name_for(kind, extension, is_dir);
+                    assert!(
+                        !name.is_empty(),
+                        "empty bundled name for {kind:?} / {extension:?} / is_dir={is_dir}"
+                    );
+                }
+            }
+        }
+        assert!(!provider.supports_folder_icons());
+    }
+
+    #[test]
+    fn bundled_names_match_gpui_kit_icon_paths() {
+        // "Same gpui-kit names" is verified against the asset paths emitted by
+        // `gpui-kit-assets` for the exact `IconName`s in `icon_for_kind`.
+        let cases = [
+            (FileKind::Folder, "folder"),
+            (FileKind::Symlink, "file-symlink"),
+            (FileKind::Image, "file-image"),
+            (FileKind::Code, "file-code"),
+            (FileKind::Archive, "file-archive"),
+            (FileKind::Pdf, "file-type"),
+            (FileKind::Text, "file-text"),
+            (FileKind::Audio, "file-music"),
+            (FileKind::Video, "file-video-camera"),
+            (FileKind::Unknown, "file"),
+        ];
+        assert_eq!(cases.len(), 10, "all FileKind variants must be listed");
+        for (kind, name) in cases {
+            assert_eq!(
+                BundledIconProvider.icon_name_for(kind, "", false),
+                name,
+                "bundled name for {kind:?}"
+            );
+            let shared_path = icon_for_kind(kind).path();
+            let path: &str = shared_path.as_ref();
+            assert_eq!(
+                path,
+                format!("icons/{name}.svg"),
+                "name must match the gpui-kit icon for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_kind_resolves_to_stateless_providers() {
+        // Object-safe dispatch through `&dyn OsIconProvider` keeps the door
+        // open for an NF02-approved native provider later.
+        let freedesktop = IconProviderKind::Freedesktop.provider();
+        assert_eq!(
+            freedesktop.icon_name_for(FileKind::Code, "rs", false),
+            "text-rust"
+        );
+        assert!(freedesktop.supports_folder_icons());
+
+        let bundled = IconProviderKind::Bundled.provider();
+        assert_eq!(
+            bundled.icon_name_for(FileKind::Code, "rs", false),
+            "file-code"
+        );
+        assert!(!bundled.supports_folder_icons());
     }
 }

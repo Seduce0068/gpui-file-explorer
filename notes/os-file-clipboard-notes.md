@@ -77,3 +77,20 @@ data_source.offer(state.clipboard.self_mime());
 - `gpui-pre-linux-0.3.12/src/linux/wayland/client.rs`（write_to_clipboard の MIME offer）
 - `gpui-pre-linux-0.3.12/src/linux/x11/clipboard.rs`（URI_LIST コメントアウト）
 - `gpui-pre-0.3.12/src/platform.rs`（ClipboardEntry::ExternalPaths の型定義）
+
+## 2026-11-23 時点のステータス
+
+詳細は [ADR](../docs/adr/adr-20261123-os-file-clipboard.md)（status: draft）を参照。
+
+- ローカル取得源码を再読した結果、Linux の結論は変わらない。
+  Wayland / X11 ともクリップボードの `text/uri-list` を読み書きしない。
+  `FILE_LIST_MIME_TYPE` は D&D の送受信で使われ、クリップボードとは経路が別。
+- ただし Windows は `CF_HDROP`、macOS は `NSFilenamesPboardType` の
+  読み取りが gpui-pre 0.3.12 で実装済み（`ClipboardEntry::ExternalPaths` を生成）。
+  書き込みはいずれのプラットフォームも未対応。
+- iOS は `UIPasteboard` の文字列のみ。Android 用 gpui-pre バックエンドは
+  ローカルに存在しない。共有 Intent は別 ADR の対象。
+- Windows の `Preferred DropEffect` はローカルの gpui-pre-windows に未実装で、
+  cut / copy の区別は GPUI API からは得られない。
+- 推奨方針: 選択肢 A（上流 API の読み取りを活用）を先行。
+  選択肢 B（直接実装）は NF02 と同形式の承認後のみ。

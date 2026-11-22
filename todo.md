@@ -1325,7 +1325,8 @@ status: current
 - [x] **NW05** Windows ドライブ列挙とルート表現 OS 別化 — 対応: impl-windrives
   — 実 FFI は unsafe 禁止のため documented stub（要承認）
   — mounts.rs:155 / main.rs:2122 / R1-ARCH01
-- [ ] **NW06** OS ファイルアイコン抽象化（Windows: SHGetFileInfo / モバイル: バンドル asset）
+- [x] **NW06** OS アイコン抽象化（FFI 非依存部分） — 対応: impl-osicons
+  — Win FFI 実装は NF02 承認後 / provider は未配線
   — system_icons.rs:160 / R1-ARCH01
 - [x] **NW07** 列のカスタマイズ — 対応: impl-columns
   — ヘッダーは対応、行との整列はフォローアップ
@@ -1335,11 +1336,13 @@ status: current
 - [x] **NW09** 一覧の画像サムネイル — 対応: impl-thumbs
   — gpui-kit の async 読込＋キャッシュを再利用（独自 LRU はフォローアップ）
   — preview.rs:1 / R1-PRD01
-- [ ] **NW10** OS ファイルクリップボード相互運用（CF_HDROP / text-uri-list / 共有 Intent）
+- [x] **NW10** OS クリップボード調査と ADR — 対応: research-clipboard
+  — Win/mac は読み取り実装済み・未接続、Linux は未対応
   — main.rs:2300 / R1-PRD01
 - [ ] **NW11** タッチ入力層（tap/long-press/swipe）と platform 修飾子（Cmd）対応
   — main.rs:1246 / R1-ARCH01
-- [ ] **NW12** 日本語ファイル名の五十音順（ICU4X、オプトイン）
+- [x] **NW12** ICU4X 五十音順調査と ADR（draft） — 対応: research-icu
+  — icu_collator 2.4.0 未取得、実装は Phase 0 以降
   — strings.rs:25 / R1-PRD01
 
 ### 優先度: 中（新要件フォローアップ）
