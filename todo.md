@@ -1164,6 +1164,24 @@ status: current
 - [x] **AC10** Search で F5 が keymap に到達しても reload() が early-return し実質デッド
   — 対応: 親（reload_reruns_search で run_search へ振り分け）
 
+### 優先度: 中（ループ R25・confirmed）
+
+- [ ] **AD01** ゴミ箱読込エラーのオーバーレイで接頭辞が二重付与
+  — main.rs:1974
+- [ ] **AD02** LOAD_ERROR_HINT_TRASH の「Esc で一覧へ戻る」が実動作と不一致
+  — strings.rs:150
+- [ ] **AD03** キーマップ形式説明が3定義に散在（AC08 の片側配線）
+  — strings.rs:126,670,443
+- [ ] **AD04** F1/設定一覧のタブ移動キーが PageDown 単体と誤記
+  — strings.rs:338
+
+### 優先度: 低（ループ R25）
+
+- [ ] **AD05** F1 設定ダイアログ行に未保存破棄警告が2通り重複
+  — strings.rs:351
+- [ ] **AD06** 隠しファイル/並び順行にディレクトリ表示専用の案内なし
+  — settings_ui.rs:664
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
