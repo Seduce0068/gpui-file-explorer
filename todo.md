@@ -1397,7 +1397,8 @@ status: current
 - [x] **AL03** DESIGN 変更履歴/参照に draft ADR 3件が未反映 — DESIGN.md:1252 — 対応: impl-r38-docs
 - [x] **AL04** 設定検索から Shift+F10 / Menu に到達できない — 対応: impl-r38-core
   — settings_ui.rs:680
-- [ ] **AL05** エラー→対処の対応表が README/F1 に存在しない
+- [x] **AL05** エラー→対処の対応表 — 対応: impl-r39-errorhelp
+  — README に4行の対応表、F1 に正規文言を追加
   — app/README.md:532
 
 ### 優先度: 低（ループ R38）

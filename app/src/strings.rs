@@ -113,6 +113,22 @@ pub const RELOAD_WORD: &str = reload_word!();
 
 const _: () = assert!(RELOAD_WORD.len() == reload_word!().len());
 
+/// エラー時の復帰原則（AL05 / r5-err-10）。
+///
+/// README の「エラーが出たら」節と F1 ヘルプの「その他」行で共用する唯一の定義。
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// `error_recovery_help!()` を使う。
+macro_rules! error_recovery_help {
+    () => {
+        "エラー時は F5 再読込 / 親フォルダへ移動 / 名前変更で対処"
+    };
+}
+
+/// エラー復帰の正規表記（AL05）。F1 / README の同期判定に使う。
+pub const ERROR_RECOVERY_HELP: &str = error_recovery_help!();
+
+const _: () = assert!(ERROR_RECOVERY_HELP.len() == error_recovery_help!().len());
+
 // ---------------------------------------------------------------------------
 // AC07 / AC08 / AC09: 追加の正規文言
 //
@@ -1123,6 +1139,9 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "その他",
         &[
             ("F1", "このヘルプ"),
+            // AL05 / r5-err-10: エラー時の復帰原則を F1 にも載せる。キー列は
+            // settings_ui.rs の HELP_KEY_EXCEPTIONS に登録済みの散文行。
+            ("エラーが出たら", error_recovery_help!()),
             ("Ctrl+,", "設定を開く"),
             (
                 "設定ダイアログ",
@@ -1808,6 +1827,49 @@ mod tests {
         };
         assert_eq!(find("Ctrl+P"), Some(FUZZY_JUMP_LABEL));
         assert_eq!(find("Alt+↑ / Backspace"), Some(PARENT_FOLDER_LABEL));
+    }
+
+    #[test]
+    fn error_recovery_help_is_shared_by_f1_and_readme() {
+        // AL05 / r5-err-10: 復帰原則の正規文言が F1 と README で drift しない。
+        let row = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "エラーが出たら")
+            .map(|(_, text)| *text)
+            .expect("その他 section must have an error-recovery help row");
+        assert_eq!(
+            row, ERROR_RECOVERY_HELP,
+            "F1 help row must use the canonical recovery guidance"
+        );
+        // 正規文言が約束する 3 つの導線を F1 側でも固定する。
+        for token in ["F5 再読込", "親フォルダへ移動", "名前変更"] {
+            assert!(
+                ERROR_RECOVERY_HELP.contains(token),
+                "canonical guidance must contain {token}"
+            );
+            assert!(row.contains(token), "F1 row must contain {token}");
+        }
+        let readme = include_str!("../README.md");
+        assert!(
+            readme.contains(ERROR_RECOVERY_HELP),
+            "README must quote the canonical recovery guidance"
+        );
+        let readme_prose = readme
+            .lines()
+            .map(|line| line.trim().replace('`', ""))
+            .collect::<String>();
+        for token in [
+            "アクセスが拒否されました",
+            "既に存在します",
+            "再スキャンに失敗しました",
+            "ターミナル起動コマンドが未設定",
+        ] {
+            assert!(
+                readme_prose.contains(token),
+                "README error table must carry the displayed message {token}"
+            );
+        }
     }
 
     #[test]

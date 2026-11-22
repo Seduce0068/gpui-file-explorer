@@ -3509,6 +3509,7 @@ mod tests {
         // AJ10: prose row documenting search-history / saved-search chips;
         // it has no keyboard chord to mirror on the Shortcuts tab.
         "検索履歴 / 保存検索",
+        "エラーが出たら",
         "AGPL-3.0-or-later",
     ];
 
