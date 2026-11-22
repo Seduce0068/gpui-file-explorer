@@ -16172,6 +16172,13 @@ mod tests {
         let loose = fuzzy_score("main.rs", "mns").unwrap();
         assert!(exact > loose, "exact={exact} loose={loose}");
         assert!(fuzzy_score("src/main.rs", "mr").is_some());
+        // AJ08: the position penalty is capped at 40 — a match at position 40
+        // and one far past it must score the same (relative comparison avoids
+        // pinning the exact heuristic constants).
+        let prefix = "x".repeat(40);
+        let at_cap = fuzzy_score(&format!("{prefix}a"), "a").unwrap();
+        let past_cap = fuzzy_score(&format!("{}a", "x".repeat(80)), "a").unwrap();
+        assert_eq!(at_cap, past_cap, "position penalty must cap at 40");
     }
 
     #[test]

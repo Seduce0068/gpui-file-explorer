@@ -1296,7 +1296,8 @@ status: current
 
 ### 優先度: 低（ループ R31）
 
-- [ ] **AJ08** fuzzy_score の min(40) キャップ分岐が無テスト — main.rs:1831
+- [x] **AJ08** fuzzy_score の min(40) キャップ分岐が無テスト
+  — 対応: 親（相対スコアで固定）
 - [x] **AJ09** 個人化タブが read-only でも保存されると表示 — 対応: loop33-ux + 親（read_only 配線）
   — settings_ui.rs:1218
 - [x] **AJ10** F1 に検索履歴/保存検索の導線なし — strings.rs:878 — 対応: loop33-core
