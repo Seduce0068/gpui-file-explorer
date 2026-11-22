@@ -170,6 +170,27 @@ pub struct DirWatcher {
 }
 
 impl DirWatcher {
+    /// Format the user-visible reason for a failed watcher initialization.
+    ///
+    /// Pure and shared by both failure branches in [`Self::new`]; the status
+    /// bar maps `last_error` to `STATUS_WATCH_INIT_FAILED` and shows the reason.
+    fn init_failure_reason(error: impl std::fmt::Display) -> String {
+        format!("ファイル監視を初期化できませんでした: {error}")
+    }
+
+    /// Build the state left behind by a failed initialization.
+    ///
+    /// Kept as a small constructor so the contract the UI depends on
+    /// (`is_supported() == false` with an actionable `last_error`) is testable
+    /// without forcing a kernel-level watcher failure (ENOSPC / EMFILE / EACCES).
+    fn init_failed(reason: String) -> Self {
+        Self {
+            debouncer: None,
+            watched: Vec::new(),
+            last_error: Some(reason),
+        }
+    }
+
     /// Create the debounced watcher. `on_change` is called (from the watcher
     /// thread) with normalized events after every debounced batch.
     pub fn new(on_change: impl Fn(Vec<FsEvent>) + Send + 'static) -> Self {
@@ -177,13 +198,9 @@ impl DirWatcher {
         // watcher. Fail here, while no thread exists yet, for the common case
         // of an unavailable watcher; `SafeWatcher` covers the TOCTOU remainder.
         if let Err(error) = RecommendedWatcher::new(|_| {}, Config::default()) {
-            let reason = format!("ファイル監視を初期化できませんでした: {error}");
+            let reason = Self::init_failure_reason(&error);
             error!(%reason, "watcher initialization failed");
-            return Self {
-                debouncer: None,
-                watched: Vec::new(),
-                last_error: Some(reason),
-            };
+            return Self::init_failed(reason);
         }
 
         match new_debouncer_opt::<_, SafeWatcher, _>(
@@ -204,13 +221,9 @@ impl DirWatcher {
                 // Preserve the underlying cause (ENOSPC / EMFILE / permission)
                 // instead of a fixed string so the status bar is actionable
                 // (second cross-review H-5).
-                let reason = format!("ファイル監視を初期化できませんでした: {error}");
+                let reason = Self::init_failure_reason(&error);
                 error!(%reason, "watcher initialization failed");
-                Self {
-                    debouncer: None,
-                    watched: Vec::new(),
-                    last_error: Some(reason),
-                }
+                Self::init_failed(reason)
             }
         }
     }
@@ -318,6 +331,30 @@ mod tests {
     #[test]
     fn watcher_errors_become_rescan() {
         assert_eq!(normalize_events(&Err(vec![])), vec![FsEvent::Rescan]);
+    }
+
+    #[test]
+    fn failed_init_is_unsupported_and_keeps_the_reason() {
+        // Both `DirWatcher::new` failure branches use these two helpers, so the
+        // UI-visible failure contract can be verified without provoking a real
+        // ENOSPC / EMFILE / permission failure from the OS watcher.
+        let reason = DirWatcher::init_failure_reason("injected ENOSPC");
+        assert_eq!(
+            reason,
+            "ファイル監視を初期化できませんでした: injected ENOSPC"
+        );
+
+        let mut watcher = DirWatcher::init_failed(reason.clone());
+        assert!(!watcher.is_supported());
+        assert_eq!(watcher.last_error(), Some(reason.as_str()));
+        assert!(watcher.watched_paths().is_empty());
+
+        // A failed watcher ignores watch requests and does not silently clear
+        // the error that STATUS_WATCH_INIT_FAILED depends on.
+        watcher.watch(&[PathBuf::from("unused")]);
+        assert!(!watcher.is_supported());
+        assert_eq!(watcher.last_error(), Some(reason.as_str()));
+        assert!(watcher.watched_paths().is_empty());
     }
 
     #[test]

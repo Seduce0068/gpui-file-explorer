@@ -395,7 +395,9 @@ fn footer_status_text(dirty: bool) -> &'static str {
 /// fit the 760px card next to the save/cancel buttons.
 fn settings_footer_legend() -> &'static str {
     concat!(
-        "Tab/Shift+Tab 移動 / Ctrl+Tab・Ctrl+Shift+Tab タブ / Enter 保存 / Esc 閉じる / ",
+        "Tab/Shift+Tab 移動 / Ctrl+Tab・Ctrl+Shift+Tab タブ / Enter 保存 / ",
+        crate::strings::settings_escape_hint!(),
+        " / ",
         crate::strings::settings_tab_jump_keys!(),
         " 直接移動"
     )
@@ -417,6 +419,11 @@ const APPEARANCE_THEME_KEYWORDS: &[&str] = &[
     // recovery hints (e.g. strings.rs) name that key, and the placeholder
     // promises "キー名で検索". Without it those hints lead to a zero-hit search.
     "theme_choice",
+    // AF04: README shows the persisted serde values verbatim, so searching the
+    // exact `settings.json` value must land on this editable row as well.
+    "dark",
+    "light",
+    "system",
     "ダーク",
     "ライト",
     "システム",
@@ -436,6 +443,10 @@ const APPEARANCE_THEME_KEYWORDS: &[&str] = &[
 const APPEARANCE_VIEW_KEYWORDS: &[&str] = &[
     "レイアウト",
     "view",
+    // AF04: the serde values quoted in README (`"details"` / `"icons"`) are
+    // what users copy out of settings.json, so they must be searchable too.
+    "details",
+    "icons",
     "一覧",
     "アイコン",
     "表示",
@@ -486,9 +497,14 @@ const FILES_SORT_KEYWORDS: &[&str] = &[
     "切替",
     "基準",
     // Y04: the radio group shows `SortKey::label()` values (main.rs
-    // `sort_options`) — users search the visible choice labels, not the
-    // internal `name`/`kind`/`size`/`modified` values. The direction words
-    // are the header-click wording documented in README.
+    // `sort_options`), so the visible choice labels stay searchable.
+    // AF04: README also documents the persisted serde values verbatim, so the
+    // exact `name`/`kind`/`size`/`modified` strings must resolve here too.
+    // The direction words are the header-click wording documented in README.
+    "name",
+    "kind",
+    "size",
+    "modified",
     "名前",
     "種類",
     "サイズ",
@@ -1677,33 +1693,61 @@ mod tests {
     }
 
     #[test]
-    fn tabs_matching_query_finds_persisted_setting_key_names() {
+    fn persisted_key_and_value_names_are_searchable() {
         // V07: the placeholder promises "キー名で検索", and the recovery hints
         // in strings.rs name the exact `settings.json` key. Searching that key
         // must land on the tab that actually renders it — not a zero-hit dead
         // end that forces the user to guess a Japanese label.
+        // AF04: README quotes the persisted serde *values* verbatim too, so the
+        // same promise covers `dark` / `details` / `modified` etc.
         let cases: &[(&str, SettingsTab)] = &[
             ("terminal_command", SettingsTab::Terminal),
             ("theme_choice", SettingsTab::Appearance),
             ("show_hidden", SettingsTab::Files),
+            ("dark", SettingsTab::Appearance),
+            ("light", SettingsTab::Appearance),
+            ("system", SettingsTab::Appearance),
+            ("details", SettingsTab::Appearance),
+            ("icons", SettingsTab::Appearance),
+            ("name", SettingsTab::Files),
+            ("kind", SettingsTab::Files),
+            ("size", SettingsTab::Files),
+            ("modified", SettingsTab::Files),
         ];
         for (key, expected) in cases {
             assert_eq!(
                 tabs_matching_query(key),
                 vec![*expected],
-                "persisted key {key} must surface {expected:?}"
+                "persisted key or value {key} must surface {expected:?}"
             );
             // `matches_query` lowercases both sides, so uppercase input works.
             assert_eq!(
                 tabs_matching_query(&key.to_uppercase()),
                 vec![*expected],
-                "uppercase key {key} must surface {expected:?}"
+                "uppercase key or value {key} must surface {expected:?}"
             );
         }
         // Guard the arrays themselves as well, so a future keyword rewrite
-        // cannot drop the key names while the tests above still pass via some
-        // unrelated substring match.
-        assert!(APPEARANCE_THEME_KEYWORDS.contains(&"theme_choice"));
+        // cannot drop the key/value names while the tests above still pass via
+        // some unrelated substring match.
+        for value in ["theme_choice", "dark", "light", "system"] {
+            assert!(
+                APPEARANCE_THEME_KEYWORDS.contains(&value),
+                "theme keywords must contain {value}"
+            );
+        }
+        for value in ["view", "details", "icons"] {
+            assert!(
+                APPEARANCE_VIEW_KEYWORDS.contains(&value),
+                "view keywords must contain {value}"
+            );
+        }
+        for value in ["sort", "name", "kind", "size", "modified"] {
+            assert!(
+                FILES_SORT_KEYWORDS.contains(&value),
+                "sort keywords must contain {value}"
+            );
+        }
         assert!(FILES_HIDDEN_KEYWORDS.contains(&"show_hidden"));
         assert!(TERMINAL_COMMAND_KEYWORDS.contains(&"terminal_command"));
     }
@@ -1765,7 +1809,7 @@ mod tests {
         let legend = settings_footer_legend();
         for token in [
             "Enter 保存",
-            "Esc 閉じる",
+            crate::strings::settings_escape_hint!(),
             "Tab/Shift+Tab 移動",
             "Ctrl+Tab",
             "Ctrl+Shift+Tab",

@@ -410,11 +410,11 @@ fn kind_color(kind: FileKind) -> u32 {
 /// Sentinels rendered in amber: stale search, cancellation, the read-only
 /// settings notice and the `STATUS_*NO_*` "not available here" notices.
 /// `STATUS_NO_SELECTION` is an operation refusal, not a success, so it belongs
-/// here too (K03). Checked **before** the error markers because several
-/// `STATUS_*FAILED` strings (e.g. "変更できません") are substrings of a longer
-/// `STATUS_*NO_*` notice; the specific notice wins. An explicit
-/// `STATUS_ERROR_PREFIX` still takes priority in [`status_color`], so wrapped
-/// errors that happen to contain a refusal suffix stay red.
+/// here too (K03). Several `STATUS_*FAILED` strings (e.g. "変更できません")
+/// are substrings of a longer `STATUS_*NO_*` notice, so [`status_color`]
+/// lets the more specific notice win when it subsumes the error fragment.
+/// An explicit `STATUS_ERROR_PREFIX` still takes priority in [`status_color`],
+/// so wrapped errors that happen to contain a refusal suffix stay red.
 const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_SEARCH_STALE,
     STATUS_CANCELLED,
@@ -528,22 +528,37 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
 /// `STATUS_ERROR_PREFIX` is always red, stale/cancelled/`NO_*` warnings are
 /// amber, other errors are red, and everything else stays success green.
 /// `contains` also covers composed messages such as "…しました（一部失敗: …）".
+///
+/// AF01: 起動時の結合通知「設定を保存できませんでした / 設定を読み取り専用で
+/// 開きました」では、`STATUS_PRIORITY` の「エラー > 操作通知」に従い赤が勝た
+/// なければならない。エラー配列を警告配列より先に判定するだけでは、
+/// 「ゴミ箱ビューではコピーできません」等の警告通知が汎用失敗接尾
+/// `STATUS_OP_FAILED_SUFFIX`（「できません」）に一致して赤に化ける。そこで
+/// エラーを先に判定しつつ、そのエラー断片がより具体的な警告通知に包含される
+/// 場合だけ警告を優先する。具体的なエラーは警告より先に赤へ解決され、
+/// 具体的な拒否通知は warning(amber) のまま維持される。
 fn status_color(status: &str) -> u32 {
-    // Warning markers are normally checked first so a specific refusal beats a
-    // generic `*_FAILED` phrase. 「開けません」(N02), however, also occurs in the
-    // wrapped startup error "エラー: 起動ディレクトリを開けませんでした"; the
-    // explicit prefix must win there or that error would turn amber.
-    // X09 / Y01: STATUS_INVALID_CLI_DIR は「開けません」を含むため warning
-    // マーカーに一致するが、起動ディレクトリの拒否は concrete error なので
-    // 明示的なエラー接頭辞と同じく最優先で赤にする（呼び出し側は常に接頭辞を
-    // 付けるが、単体で classification を問うテストも正しく通す）。
+    // 「開けません」(N02) は warning マーカーだが、起動エラー
+    // "エラー: 起動ディレクトリを開けませんでした" にも現れるため、明示的な
+    // 接頭辞は常に最優先で赤にする。X09 / Y01: STATUS_INVALID_CLI_DIR 自体も
+    // 「開けません」を含む concrete error なので同様に早期 return する。
     if status.contains(STATUS_ERROR_PREFIX) || status.contains(STATUS_INVALID_CLI_DIR) {
         return C_RED;
     }
-    if STATUS_WARNING_MARKERS.iter().any(|m| status.contains(m)) {
-        C_YELLOW
-    } else if STATUS_ERROR_MARKERS.iter().any(|m| status.contains(m)) {
+    // エラーを警告より先に判定する。ただし「できません」等の汎用失敗断片は
+    // 「コピーできません」等の具体的な拒否通知の部分文字列なので、そのエラー
+    // 断片を包含する警告が一致したときだけ警告側を優先する（包含関係が無い
+    // 保存失敗 + 読み取り専用の結合通知は素通りして赤になる）。
+    if STATUS_ERROR_MARKERS.iter().copied().any(|error| {
+        status.contains(error)
+            && !STATUS_WARNING_MARKERS
+                .iter()
+                .copied()
+                .any(|warning| status.contains(warning) && warning.contains(error))
+    }) {
         C_RED
+    } else if STATUS_WARNING_MARKERS.iter().any(|m| status.contains(m)) {
+        C_YELLOW
     } else {
         C_GREEN
     }
@@ -2024,9 +2039,9 @@ fn empty_state_message(
 }
 
 use crate::strings::{
-    DIALOG_FOOTER_HINT, EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH,
-    ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT,
-    LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH,
+    DIALOG_FOOTER_DELETE_SUFFIX, DIALOG_FOOTER_HINT, EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH,
+    EMPTY_TRASH, ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_FORMAT_HINT,
+    KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH,
     LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
     PARENT_FOLDER_LABEL, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
     STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
@@ -7979,18 +7994,15 @@ impl Explorer {
                     .gap_2()
                     .child(
                         Button::new("label-cancel")
-                            .label("キャンセル")
+                            .label(LABEL_CANCEL)
                             .on_click(cancel),
                     )
                     .child(Button::new("label-remove").label("削除").on_click(remove))
                     .child(Button::new("label-confirm").label("設定").on_click(confirm)),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(p.muted))
-                    .child("Enter で確定 / 空にして確定すると削除 / Esc でキャンセル"),
-            );
+            .child(div().text_xs().text_color(rgb(p.muted)).child(format!(
+                "{DIALOG_FOOTER_HINT} / {DIALOG_FOOTER_DELETE_SUFFIX}"
+            )));
         Some(
             div()
                 .absolute()
@@ -10530,7 +10542,9 @@ impl Explorer {
             self.debug.progress_once = false;
             self.op_progress = Some((35_000_000, 100_000_000));
             self.suppress_for(Duration::from_secs(30));
-            self.status = "コピー中… 35.0 MB / 100.0 MB（Esc でキャンセル）".to_string();
+            // AF06: share the canonical progress wording with the real
+            // transfer path instead of inlining the cancel hint.
+            self.status = transfer_progress_status("コピー", 35_000_000, 100_000_000);
         }
         if self.debug.restore_trash_once
             && self.view == ViewSource::Trash
@@ -11825,6 +11839,51 @@ mod tests {
         // amber に落ちないこと（接頭辞優先）も同時に検証する。
         let cli_error = format!("{STATUS_ERROR_PREFIX}{STATUS_INVALID_CLI_DIR}");
         assert_eq!(status_color(&cli_error), C_RED, "{cli_error}");
+    }
+
+    #[test]
+    fn af01_joined_save_failure_and_read_only_notice_is_red() {
+        // AF01: 起動時に保存失敗と読み取り専用通知が連結されたとき、
+        // strings.rs STATUS_PRIORITY の「エラー > 操作通知」に従い赤が勝つ。
+        let joined = join_status_notices(&[
+            STATUS_SETTINGS_SAVE_FAILED.to_string(),
+            STATUS_SETTINGS_READ_ONLY.to_string(),
+        ]);
+        assert!(joined.contains(STATUS_SETTINGS_SAVE_FAILED), "{joined}");
+        assert!(joined.contains(STATUS_SETTINGS_READ_ONLY), "{joined}");
+        assert_eq!(status_color(&joined), C_RED, "{joined}");
+
+        // W08 の理由・回復導線が付いた実際の起動文でも同じ結果になること。
+        let read_only = settings_read_only_status(&Settings {
+            read_only: true,
+            load_error: Some("設定ファイルが壊れています".to_string()),
+            ..Settings::default()
+        });
+        let with_reason =
+            join_status_notices(&[STATUS_SETTINGS_SAVE_FAILED.to_string(), read_only]);
+        assert_eq!(status_color(&with_reason), C_RED, "{with_reason}");
+
+        // 包含ルールの確認: 一部失敗のような短いエラー断片でも、警告通知に
+        // 包含されなければ（＝より具体的な拒否通知ではないので）赤が勝つ。
+        let partial_with_warning = join_status_notices(&[
+            format!("3 件をコピー{STATUS_PARTIAL_FAILURE_SUFFIX}権限がありません）"),
+            STATUS_SETTINGS_READ_ONLY.to_string(),
+        ]);
+        assert_eq!(
+            status_color(&partial_with_warning),
+            C_RED,
+            "{partial_with_warning}"
+        );
+
+        // 回帰防止: エラー配列を単純に先に判定すると「できません」を含む
+        // これらの具体的な拒否通知が赤に化ける。warning(amber) を維持する。
+        for warning in [
+            STATUS_TRASH_NO_COPY,
+            STATUS_TRASH_NO_RENAME,
+            STATUS_BOOKMARK_NOT_PERSISTABLE,
+        ] {
+            assert_eq!(status_color(warning), C_YELLOW, "{warning}");
+        }
     }
 
     #[test]

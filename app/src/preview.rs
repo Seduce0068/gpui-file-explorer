@@ -112,6 +112,18 @@ fn bytes_exceed_limit(len: u64, max_bytes: u64) -> bool {
     len > max_bytes
 }
 
+/// Compose the user-visible error for an image over the byte limit.
+///
+/// Shared by the pre-read and post-read guards so both speak with one voice,
+/// and kept pure so the wording can be asserted without a pseudo-filesystem
+/// that lies about its reported size (the normal pre-read guard fires first).
+fn image_too_large_error(max_bytes: u64) -> String {
+    format!(
+        "画像が大きすぎます（上限 {}）",
+        crate::model::human_size(max_bytes)
+    )
+}
+
 /// Read an image file for preview, at most `max_bytes`.
 ///
 /// Safety: symlinks and non-files are refused, and the file size is checked
@@ -130,10 +142,7 @@ pub fn read_image_preview(
         return Err("ファイルではありません".to_string());
     }
     if bytes_exceed_limit(link_metadata.len(), max_bytes) {
-        return Err(format!(
-            "画像が大きすぎます（上限 {}）",
-            crate::model::human_size(max_bytes)
-        ));
+        return Err(image_too_large_error(max_bytes));
     }
     // `metadata.len()` can lie on pseudo filesystems; cap the actual read too.
     let file = std::fs::File::open(path).map_err(|error| format!("開けません: {error}"))?;
@@ -142,10 +151,7 @@ pub fn read_image_preview(
         .read_to_end(&mut bytes)
         .map_err(|error| format!("読み取りに失敗しました: {error}"))?;
     if bytes_exceed_limit(bytes.len() as u64, max_bytes) {
-        return Err(format!(
-            "画像が大きすぎます（上限 {}）",
-            crate::model::human_size(max_bytes)
-        ));
+        return Err(image_too_large_error(max_bytes));
     }
     match sniff_image_format(&bytes) {
         Some(format) => {
@@ -294,8 +300,8 @@ pub fn preview_key_action(key: &str, control: bool) -> PreviewKeyAction {
 #[cfg(test)]
 mod image_tests {
     use super::{
-        bytes_exceed_limit, image_format_for_name, png_dimensions, read_image_preview,
-        sniff_image_format, MAX_IMAGE_BYTES,
+        bytes_exceed_limit, image_format_for_name, image_too_large_error, png_dimensions,
+        read_image_preview, sniff_image_format, MAX_IMAGE_BYTES,
     };
     use gpui_kit::ImageFormat;
     use std::fs;
@@ -494,6 +500,23 @@ mod image_tests {
         assert!(!bytes_exceed_limit(7, 8));
         assert!(!bytes_exceed_limit(8, 8));
         assert!(bytes_exceed_limit(9, 8));
+    }
+
+    #[test]
+    fn image_too_large_error_uses_human_size_in_the_wording() {
+        // The message composer is shared by the pre-read and post-read guards.
+        // A real file cannot reach the post-read branch (metadata.len() would
+        // trip first), so assert the exact user-visible wording directly,
+        // including its `human_size` rendering.
+        assert_eq!(
+            image_too_large_error(MAX_IMAGE_BYTES),
+            "画像が大きすぎます（上限 8.0 M）"
+        );
+        assert_eq!(
+            image_too_large_error(1024),
+            "画像が大きすぎます（上限 1.0 K）"
+        );
+        assert_eq!(image_too_large_error(0), "画像が大きすぎます（上限 0 B）");
     }
 
     #[test]

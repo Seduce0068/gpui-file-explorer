@@ -97,6 +97,22 @@ pub const SETTINGS_INPUT_GUARD_NOTE: &str = settings_input_guard_note!();
 /// テスト以外のビルドでも定数を参照させ、`-D warnings` の dead_code を防ぐ。
 const _: () = assert!(SETTINGS_INPUT_GUARD_NOTE.len() == settings_input_guard_note!().len());
 
+/// 再読込操作の正規表記（AF05）。
+///
+/// README・F1 ヘルプ・読み込み失敗ヒントで同じ語を使うための唯一の定義。
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// `reload_word!()` を使う（入力ガード注記と同じ方式）。
+macro_rules! reload_word {
+    () => {
+        "再読込"
+    };
+}
+
+/// 再読込語の正規表記（AF05）。F1 / 読み込み失敗ヒント / README の同期判定に使う。
+pub const RELOAD_WORD: &str = reload_word!();
+
+const _: () = assert!(RELOAD_WORD.len() == reload_word!().len());
+
 // ---------------------------------------------------------------------------
 // AC07 / AC08 / AC09: 追加の正規文言
 //
@@ -161,9 +177,11 @@ macro_rules! trash_exit_hint {
 /// ゴミ箱ビューでは `Ctrl+L` が拒否され、Esc は操作キャンセル（未操作なら
 /// no-op）のため一覧へ戻らない。実際に `exit_trash` を呼ぶ Alt+← / Backspace
 /// （main.rs）を案内する（AE05 で Backspace を追加）。
-pub const LOAD_ERROR_HINT_TRASH: &str = concat!("F5 で再読込 / ", trash_exit_hint!());
+pub const LOAD_ERROR_HINT_TRASH: &str = concat!("F5 で", reload_word!(), " / ", trash_exit_hint!());
 /// 検索ビューでは `Ctrl+L` がキー許可リストになく、Esc で閉じるのが復帰導線。
-pub const LOAD_ERROR_HINT_SEARCH: &str = "F5 で再読込 / Esc で閉じる";
+/// F5 は一覧の再読込ではなくクエリの再実行なので「再検索」と案内する（AF02、
+/// `STATUS_SEARCH_STALE` と同じ語）。
+pub const LOAD_ERROR_HINT_SEARCH: &str = "F5 で再検索 / Esc で閉じる";
 
 /// ゴミ箱の復帰案内の正規表記（AE05）。F1 / README / 空状態の同期判定に使う。
 pub const TRASH_EXIT_HINT: &str = trash_exit_hint!();
@@ -174,8 +192,10 @@ const _: () = assert!(!LOAD_ERROR_HINT_DIRECTORY.is_empty());
 const _: () = assert!(!LOAD_ERROR_HINT_TRASH.is_empty());
 const _: () = assert!(!LOAD_ERROR_HINT_SEARCH.is_empty());
 const _: () = assert!(TRASH_EXIT_HINT.len() == trash_exit_hint!().len());
-const _: () =
-    assert!(LOAD_ERROR_HINT_TRASH.len() == "F5 で再読込 / ".len() + TRASH_EXIT_HINT.len());
+const _: () = assert!(
+    LOAD_ERROR_HINT_TRASH.len()
+        == concat!("F5 で", reload_word!(), " / ").len() + TRASH_EXIT_HINT.len()
+);
 
 /// AC07 / AC08 の定数は既存の `mod tests`（280 行目以降）からは触らない。
 /// 所有範囲内に小さなテストモジュールを置き、各案内が宣伝するキーを固定する。
@@ -187,7 +207,7 @@ mod view_hint_and_keymap_format_tests {
     fn load_error_hints_advertise_only_keys_available_in_each_view() {
         // ディレクトリ表示: Ctrl+L (OpenLocation) は有効。
         assert_eq!(LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT);
-        for token in ["F5", "Ctrl+L"] {
+        for token in [concat!("F5 で", reload_word!()), "Ctrl+L"] {
             assert!(
                 LOAD_ERROR_HINT_DIRECTORY.contains(token),
                 "directory load-error hint: {LOAD_ERROR_HINT_DIRECTORY}"
@@ -195,7 +215,10 @@ mod view_hint_and_keymap_format_tests {
         }
         // ゴミ箱: Ctrl+L は拒否され、Esc は exit_trash を呼ばない（操作
         // キャンセル専用）。Alt+← / Backspace で戻る経路を示す。
-        for token in ["F5", "Alt+← または Backspace で一覧へ戻る"] {
+        for token in [
+            concat!("F5 で", reload_word!()),
+            "Alt+← または Backspace で一覧へ戻る",
+        ] {
             assert!(
                 LOAD_ERROR_HINT_TRASH.contains(token),
                 "trash load-error hint: {LOAD_ERROR_HINT_TRASH}"
@@ -203,8 +226,8 @@ mod view_hint_and_keymap_format_tests {
         }
         assert!(!LOAD_ERROR_HINT_TRASH.contains("Ctrl+L"));
         assert!(!LOAD_ERROR_HINT_TRASH.contains("Esc"));
-        // 検索: 同様に Ctrl+L は許可外。Esc で閉じる経路を示す。
-        for token in ["F5", "Esc で閉じる"] {
+        // 検索: 同様に Ctrl+L は許可外。F5 はクエリ再実行、Esc で閉じる経路を示す。
+        for token in ["F5 で再検索", "Esc で閉じる"] {
             assert!(
                 LOAD_ERROR_HINT_SEARCH.contains(token),
                 "search load-error hint: {LOAD_ERROR_HINT_SEARCH}"
@@ -326,10 +349,15 @@ mod view_hint_and_keymap_format_tests {
 
     #[test]
     fn search_stale_status_and_f1_row_offer_f5_rerun() {
-        // AE08: AC10 で F5 が検索を再実行するため、通知と F1 ヘルプも合わせる。
+        // AE08/AF02: AC10 で F5 が検索を再実行するため、通知・F1 ヘルプ・
+        // 検索ビューの読み込み失敗ヒントも同じ語で案内する。
         assert!(
             STATUS_SEARCH_STALE.contains("F5 で再検索"),
             "stale search status must advertise F5: {STATUS_SEARCH_STALE}"
+        );
+        assert_eq!(
+            LOAD_ERROR_HINT_SEARCH, "F5 で再検索 / Esc で閉じる",
+            "search load-error hint must advertise re-run, not reload"
         );
         let reload = HELP_SECTIONS
             .iter()
@@ -337,9 +365,92 @@ mod view_hint_and_keymap_format_tests {
             .find(|(key, _)| *key == "Ctrl+R / F5")
             .map(|(_, text)| *text)
             .expect("reload help row must exist");
+        assert_eq!(
+            reload,
+            concat!(reload_word!(), " / 検索の再実行"),
+            "F1 reload row must use the canonical reload word and mention search re-run: {reload}"
+        );
+    }
+
+    #[test]
+    fn reload_wording_is_canonical_in_f1_and_readme() {
+        // AF05: 「再読込」を唯一の表記とし、README の旧表記を検出する。
+        assert_eq!(RELOAD_WORD, reload_word!());
+        let reload = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "Ctrl+R / F5")
+            .map(|(_, text)| *text)
+            .expect("reload help row must exist");
+        assert_eq!(reload, concat!(reload_word!(), " / 検索の再実行"));
+        let readme = include_str!("../README.md");
+        let f5_row = readme
+            .lines()
+            .find(|line| line.contains("`Ctrl+R` / `F5`"))
+            .expect("README must have the F5 row");
+        let design_row = readme
+            .lines()
+            .find(|line| line.contains("隠しファイル切替・ソート切替"))
+            .expect("README must describe in-memory rebuilds");
+        for (name, line) in [("F5", f5_row), ("design", design_row)] {
+            assert!(
+                line.contains(RELOAD_WORD),
+                "{name} row must use {RELOAD_WORD}: {line}"
+            );
+            assert!(
+                !line.contains("再読み込み"),
+                "{name} row has stale wording: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_dialog_escape_hint_is_shared_by_f1_footer_and_readme() {
+        // AF10: 設定ダイアログの Esc 案内は F1・フッター凡例・README で
+        // 同じ正規文言を使う。他ダイアログの DIALOG_FOOTER_HINT とは意図的に分ける。
+        assert_eq!(SETTINGS_ESCAPE_HINT, settings_escape_hint!());
+        let dialog = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "設定ダイアログ")
+            .map(|(_, text)| *text)
+            .expect("settings dialog help row must exist");
         assert!(
-            reload.contains("再検索") || reload.contains("検索の再実行"),
-            "F1 reload row must mention search re-run: {reload}"
+            dialog.contains(SETTINGS_ESCAPE_HINT),
+            "F1 settings row must use the canonical hint: {dialog}"
+        );
+        assert!(
+            !dialog.contains("Esc でキャンセル"),
+            "stale F1 wording: {dialog}"
+        );
+        let settings_ui = include_str!("settings_ui.rs");
+        assert!(
+            settings_ui.contains("crate::strings::settings_escape_hint!()"),
+            "settings footer legend must embed the canonical macro"
+        );
+        assert!(
+            !settings_ui.contains("Enter 保存 / Esc 閉じる"),
+            "stale footer legend wording"
+        );
+        let readme = include_str!("../README.md");
+        let key_row = readme
+            .lines()
+            .find(|line| line.contains("| 設定ダイアログのキー |"))
+            .expect("README must have the settings key row");
+        let legend_row = readme
+            .lines()
+            .find(|line| line.contains("`Enter` 保存 /"))
+            .expect("README must document the settings footer legend");
+        for (name, line) in [("settings key", key_row), ("footer legend", legend_row)] {
+            let normalized = line.replace('`', "");
+            assert!(
+                normalized.contains(SETTINGS_ESCAPE_HINT),
+                "README {name} row must use the canonical hint: {line}"
+            );
+        }
+        assert_ne!(
+            SETTINGS_ESCAPE_HINT, DIALOG_FOOTER_HINT,
+            "other dialogs keep the cancel wording"
         );
     }
 
@@ -431,6 +542,26 @@ pub const UNSAVED_CHANGES_DISCARD_NOTE: &str = unsaved_changes_discard_note!();
 /// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
 const _: () = assert!(UNSAVED_CHANGES_DISCARD_NOTE.len() == unsaved_changes_discard_note!().len());
 
+/// 設定ダイアログの Esc キーの正規案内（AF10）。
+///
+/// 実際の挙動は「保存せず閉じる」で、未保存変更は破棄される。F1 ヘルプ・
+/// 設定ダイアログのフッター凡例・app/README の3箇所で同じ文言を使うための
+/// 唯一の定義。`concat!` は定数識別子を受け付けないので、静的文字列へ
+/// 埋め込む場合は `settings_escape_hint!()` を使う。
+/// 他のダイアログの `DIALOG_FOOTER_HINT`（280 行目以降、core 所有）は
+/// 「Esc でキャンセル」のまま扱いを分ける。
+macro_rules! settings_escape_hint {
+    () => {
+        "Esc で閉じる（未保存変更は破棄）"
+    };
+}
+pub(crate) use settings_escape_hint;
+
+/// 設定ダイアログの Esc 案内の正規表記（AF10）。F1 / フッター / README の同期判定に使う。
+pub const SETTINGS_ESCAPE_HINT: &str = settings_escape_hint!();
+
+const _: () = assert!(SETTINGS_ESCAPE_HINT.len() == settings_escape_hint!().len());
+
 /// 予約キーを列挙した正規の案内文（Z07）。
 ///
 /// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
@@ -518,7 +649,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+1 / Ctrl+2", "詳細リスト / アイコングリッド"),
             ("Ctrl+H", "隠しファイルの表示切替"),
-            ("Ctrl+R / F5", "再読込 / 検索の再実行"),
+            (
+                "Ctrl+R / F5",
+                concat!(reload_word!(), " / 検索の再実行"),
+            ),
             ("Ctrl+F", "検索（名前 / 内容）"),
             ("Ctrl+Shift+F", "検索結果を名前で絞り込み"),
             ("Ctrl+I", "プロパティ"),
@@ -548,7 +682,9 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             (
                 "設定ダイアログ",
                 concat!(
-                    "Enter で保存 / Esc でキャンセル / 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。",
+                    "Enter で保存 / ",
+                    settings_escape_hint!(),
+                    " / 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。",
                     "一致がゼロなら検索欄を空にするか Esc で閉じる",
                     // AD05: 破棄警告は `unsaved_changes_discard_note!()` の
                     // 一文だけに統一する（旧文言を重複させない）。
@@ -674,7 +810,7 @@ pub const EMPTY_FILTERED: (&str, &str) = (
 );
 pub const LOADING: &str = "読み込み中…";
 /// Recovery hint shown under a load error in the empty-state overlay (U-20).
-pub const LOAD_ERROR_HINT: &str = "F5 で再読込 / Ctrl+L で別のパスへ移動";
+pub const LOAD_ERROR_HINT: &str = concat!("F5 で", reload_word!(), " / Ctrl+L で別のパスへ移動");
 /// Hidden-files-only empty state (T13): `{count}` is replaced by
 /// [`empty_hidden_only`]. The recovery key `Ctrl+H` lives here, next to the
 /// other empty-state hints, so it can be checked by the same regression test.
@@ -1070,6 +1206,13 @@ macro_rules! dialog_footer_hint {
 
 pub const DIALOG_FOOTER_HINT: &str = dialog_footer_hint!();
 
+/// ブックマークラベル編集ダイアログ専用の追記案内（AF03）。
+/// 空文字で確定するとラベル削除になることを示すため、共通フッター
+/// [`DIALOG_FOOTER_HINT`] に続けて表示する。参照側は
+/// `format!("{DIALOG_FOOTER_HINT} / {DIALOG_FOOTER_DELETE_SUFFIX}")` と組み立て、
+/// 共通文言を二重定義しない。
+pub const DIALOG_FOOTER_DELETE_SUFFIX: &str = "空にして確定すると削除";
+
 /// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
 const _: () = assert!(DIALOG_FOOTER_HINT.len() == dialog_footer_hint!().len());
 
@@ -1215,8 +1358,10 @@ mod tests {
             dialog.contains("Enter") && dialog.contains("保存"),
             "{dialog}"
         );
+        // AF10: Esc の説明は設定ダイアログ専用の正規文言へ統一されたため、
+        // 「キャンセル」という固定語ではなく SETTINGS_ESCAPE_HINT で検証する。
         assert!(
-            dialog.contains("Esc") && dialog.contains("キャンセル"),
+            dialog.contains("Esc") && dialog.contains(SETTINGS_ESCAPE_HINT),
             "{dialog}"
         );
         assert!(dialog.contains("検索"), "{dialog}");
@@ -2196,8 +2341,18 @@ mod tests {
             "dialog footer must go through DIALOG_FOOTER_HINT"
         );
         assert!(
-            main_source.matches("DIALOG_FOOTER_HINT").count() >= 3,
-            "all three dialogs must share the canonical footer"
+            main_source.matches("DIALOG_FOOTER_HINT").count() >= 4,
+            "all four dialogs must share the canonical footer"
+        );
+        // AF03: ラベル編集ダイアログは共通フッター + 削除案内を組み立てる。
+        assert_eq!(DIALOG_FOOTER_DELETE_SUFFIX, "空にして確定すると削除");
+        assert!(
+            main_source.contains("DIALOG_FOOTER_DELETE_SUFFIX"),
+            "label dialog must compose the shared delete hint"
+        );
+        assert!(
+            !main_source.contains("Enter で確定 / 空にして確定すると削除 / Esc でキャンセル"),
+            "label dialog must not inline the composed footer"
         );
     }
 

@@ -2629,6 +2629,99 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn require_directory_follows_a_dest_symlink_and_reports_a_dangling_one() {
+        use std::error::Error as _;
+        use std::os::unix::fs::symlink;
+
+        let dir = scratch("dest-symlink");
+        let real = dir.join("real-dest");
+        fs::create_dir(&real).unwrap();
+        let link = dir.join("link-dest");
+        symlink(&real, &link).unwrap();
+
+        // `require_directory` sees a symlink via `symlink_metadata`, then calls
+        // `fs::metadata` to resolve it. A link to a real directory is a valid
+        // destination for both operations.
+        let copy_src = dir.join("copy.txt");
+        write(&copy_src, b"copied");
+        let copied = copy_entry(
+            &copy_src,
+            &link,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .expect("copy into a symlinked directory must succeed");
+        assert_eq!(copied.files, 1);
+        assert_eq!(fs::read(real.join("copy.txt")).unwrap(), b"copied");
+
+        let move_src = dir.join("move.txt");
+        write(&move_src, b"moved");
+        let moved = move_entry(
+            &move_src,
+            &link,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .expect("move into a symlinked directory must succeed");
+        assert_eq!(moved.created, vec![link.join("move.txt")]);
+        assert!(!move_src.exists());
+        assert_eq!(fs::read(real.join("move.txt")).unwrap(), b"moved");
+
+        // A dangling link's own inode is stat-able, but the following
+        // `fs::metadata` fails with ENOENT. That failure must go through
+        // `io_error` and keep its `io::Error` cause instead of collapsing into
+        // a plain InvalidTarget (the status bar relies on the category).
+        let dangling = dir.join("dangling-dest");
+        symlink(dir.join("no-such-dir"), &dangling).unwrap();
+        let copy_src = dir.join("copy-dangling.txt");
+        write(&copy_src, b"copy");
+        let err = copy_entry(
+            &copy_src,
+            &dangling,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .expect_err("a dangling dest_dir symlink must be rejected");
+        assert!(
+            matches!(err, OpError::NotFoundCause(_, _)),
+            "expected an io_error-derived NotFound, got {err:?}"
+        );
+        let io = err
+            .source()
+            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+            .expect("io_error() must preserve the io::Error cause");
+        assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+        assert!(copy_src.exists(), "a failed copy must keep the source");
+
+        let move_src = dir.join("move-dangling.txt");
+        write(&move_src, b"move");
+        let err = move_entry(
+            &move_src,
+            &dangling,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .expect_err("a dangling dest_dir symlink must be rejected by move too");
+        assert!(
+            matches!(err, OpError::NotFoundCause(_, _)),
+            "expected an io_error-derived NotFound, got {err:?}"
+        );
+        let io = err
+            .source()
+            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+            .expect("io_error() must preserve the io::Error cause");
+        assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+        assert!(move_src.exists(), "a failed move must keep the source");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

@@ -1203,23 +1203,23 @@ status: current
 
 ### 優先度: 中（ループ R27・confirmed）
 
-- [ ] **AF01** status_color が警告をエラーより優先し結合通知が琥珀色に
+- [x] **AF01** status_color が警告をエラーより優先し結合通知が琥珀色に — 対応: loop29-core（実バグ修正）
   — main.rs:540
-- [ ] **AF02** LOAD_ERROR_HINT_SEARCH が「再読込」（実動作は再検索）
+- [x] **AF02** LOAD_ERROR_HINT_SEARCH が「再読込」（実動作は再検索） — 対応: loop29-ux
   — strings.rs:166
-- [ ] **AF03** ラベル編集ダイアログの脚文が DIALOG_FOOTER_HINT 迂回
+- [x] **AF03** ラベル編集ダイアログの脚文が DIALOG_FOOTER_HINT 迂回 — 対応: loop29-core
   — main.rs:7992
-- [ ] **AF04** 設定カード検索が settings.json の選択値にヒットしない
+- [x] **AF04** 設定カード検索が settings.json の選択値にヒットしない — 対応: loop29-ux
   — settings_ui.rs:413
-- [ ] **AF05** 「再読込/再読み込み」の表記ゆれ未集約 — app/README.md:136
+- [x] **AF05** 「再読込/再読み込み」の表記ゆれ未集約 — app/README.md:136 — 対応: loop29-ux
 
 ### 優先度: 低（ループ R27）
 
-- [ ] **AF06** デバッグ進捗フックが STATUS_CANCEL_HINT 迂回 — main.rs:10529
-- [ ] **AF07** ops.rs require_directory の symlink 追跡分岐が無テスト
-- [ ] **AF08** preview.rs の post-read サイズガード分岐が無テスト
-- [ ] **AF09** watcher.rs DirWatcher::new の初期化失敗分岐が無テスト
-- [ ] **AF10** 設定ダイアログの Esc 表記が凡例と F1/README で不一致
+- [x] **AF06** デバッグ進捗フックが STATUS_CANCEL_HINT 迂回 — 対応: 親（transfer_progress_status を共用）
+- [x] **AF07** ops.rs require_directory の symlink 追跡分岐が無テスト — 対応: loop29-tests
+- [x] **AF08** preview.rs の post-read サイズガード分岐が無テスト — 対応: loop29-tests
+- [x] **AF09** watcher.rs DirWatcher::new の初期化失敗分岐が無テスト — 対応: loop29-tests
+- [x] **AF10** 設定ダイアログの Esc 表記が凡例と F1/README で不一致 — 対応: loop29-ux
   — settings_ui.rs:398
 
 ### 優先度: 低（調査タスク）
