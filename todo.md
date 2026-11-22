@@ -1161,8 +1161,8 @@ status: current
 
 ### 優先度: 中（ループ R24 フォローアップ・confirmed）
 
-- [ ] **AC10** Search で F5 が keymap に到達しても reload() が early-return し実質デッド
-  — main.rs:3057（AC03 の残課題、次ラウンド）
+- [x] **AC10** Search で F5 が keymap に到達しても reload() が early-return し実質デッド
+  — 対応: 親（reload_reruns_search で run_search へ振り分け）
 
 ### 優先度: 低（調査タスク）
 

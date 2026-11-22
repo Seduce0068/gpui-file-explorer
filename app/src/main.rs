@@ -249,6 +249,14 @@ fn search_filter_status(current: &str, summary: String) -> String {
 
 /// Status for directory watch events that would report `STATUS_CHANGED` (Z02).
 ///
+/// F5 (`Reload`) reaches the keymap even in the Search view, where `reload()`
+/// intentionally does nothing to preserve the search listing. In that view we
+/// re-run the current query instead, so the advertised recovery key works
+/// (AC10). Every other view uses the normal directory reload.
+fn reload_reruns_search(view: ViewSource) -> bool {
+    matches!(view, ViewSource::Search)
+}
+
 /// A failed reconciliation sets `STATUS_RESCAN_FAILED` with its F5 recovery
 /// hint and must stay visible until the next *successful* read (strings.rs
 /// F6-36). The watch sites all route their "changed" notice through this helper
@@ -5114,7 +5122,18 @@ impl Explorer {
             SelectLast => self.select_last(shift, cx),
             OpenSelected => self.open_selected(cx),
             GoParent => self.go_parent(cx),
-            Reload => self.reload(cx),
+            // AC10: F5 is reachable in the Search view (see
+            // `search_view_action_allowed`), but `reload()` deliberately
+            // early-returns there to keep the search listing intact. Re-run
+            // the current query instead, so the advertised "F5 で再読込"
+            // recovery hint actually works while searching.
+            Reload => {
+                if reload_reruns_search(self.view) {
+                    self.run_search(cx);
+                } else {
+                    self.reload(cx);
+                }
+            }
             OpenPreview => self.open_preview_selected(cx),
             StartRename => {
                 if self.view == ViewSource::Trash {
@@ -13851,6 +13870,11 @@ mod tests {
         assert!(search_view_key_reaches_keymap(
             &default, "f5", false, false, false
         ));
+        // AC10: reaching the keymap must have an effect — Search re-runs the
+        // query instead of calling reload(), which early-returns in that view.
+        assert!(super::reload_reruns_search(super::ViewSource::Search));
+        assert!(!super::reload_reruns_search(super::ViewSource::Directory));
+        assert!(!super::reload_reruns_search(super::ViewSource::Trash));
     }
 
     #[test]
