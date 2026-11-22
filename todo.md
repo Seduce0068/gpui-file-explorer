@@ -1256,6 +1256,29 @@ status: current
 - [x] **AH05** DESIGN クローム高と実装定数 140px の基準差 — 対応: loop31-docs
   — DESIGN.md:140 / main.rs:206（speculative）
 
+### 優先度: 中（ループ R30・confirmed）
+
+- [ ] **AI01** マウス操作の双方向同期テストが F1 の3行を漏らす
+  — settings_ui.rs:3075
+- [ ] **AI02** TRASH_EXIT_HINT が F1 ヘルプで共用されていない
+  — strings.rs:186,655
+- [ ] **AI03** DESIGN のボリューム行に sysinfo 根拠が残存
+  — DESIGN.md:103,863
+
+### 優先度: 低（ループ R30）
+
+- [ ] **AI04** マウス操作の説明文が F1 と README で漂移 — strings.rs:640
+- [ ] **AI05** サイドバー空セクションの文言が未表示 — strings.rs:843
+- [ ] **AI06** 設定カードに一括リセット非配線の案内なし
+  — settings_ui.rs:678
+- [ ] **AI07** ターミナル設定タブが F4 関連を案内せず
+  — settings_ui.rs:1391
+- [ ] **AI08** キーマップ unbind 未ヒット通知に復帰導線なし
+  — strings.rs:1060
+- [ ] **AI09** やり直し空通知に記録対象ヒントなし — strings.rs:1139
+- [ ] **AI10** キーマップ一括リセット UI が未配線（F1 が既に明記）
+  — strings.rs:769
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
