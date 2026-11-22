@@ -154,6 +154,18 @@ bash packaging/linux/build-deb.sh --skip-build
 - 配布パッケージは Linux amd64 の DEB のみ（署名・AppImage/Flatpak・Windows/macOS は未対応）
 - 詳細は [app/README.md](app/README.md) の「既知の制限」
 
+## 新要件（2026-11-22）
+
+- Windows Explorer / Double Commander 並みの**見やすさ・使いやすさ**
+  （二画面・列表示・コンテキストメニュー・サムネイル）を目標とする。
+  Windows は第一級ターゲット（Phase1/MVP）へ昇格。ただし権限編集・
+  拡張メニュー・アーカイブ・クラウド・ネットワークブラウズの
+  完全互換は非目的のまま（[DESIGN.md](DESIGN.md) §1.2）。
+- Android / iOS は**要件化**したが**未実装**。実現可能性は
+  「モバイル対応 ADR（作成中）」で評価中で、決定はまだ無い。
+- 配布は実装されるまで従来どおり **Linux amd64 の DEB のみ**。
+  Windows / macOS / モバイル向けパッケージは未対応。
+
 ## OS ファイルクリップボード
 
 - アプリ内クリップボード（`Ctrl+C/X/V`）と D&D は対応済みですが、OS のファイルクリップボード
