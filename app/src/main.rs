@@ -906,6 +906,18 @@ fn settings_read_only_status(settings: &Settings) -> String {
     }
 }
 
+/// AT01: Alt+T / Alt+K のダイアログ脚文をセッションに応じて選ぶ。
+/// 読み取り専用では `save_settings()` がディスクへ書き込まないため、
+/// 「Enter で保存」を含まない専用文言を表示する。ダイアログ自体は
+/// 従来どおり開ける（確定操作は入力内容の確認に使える）。
+fn dialog_footer_hint_for_session(read_only: bool) -> &'static str {
+    if read_only {
+        DIALOG_FOOTER_HINT_READ_ONLY
+    } else {
+        DIALOG_FOOTER_HINT
+    }
+}
+
 /// Status shown after a settings write, accounting for skipped writes (F04).
 /// `save()` returns `true` for read-only / ephemeral sessions even though no
 /// file was written, so those sessions must get the dedicated read-only notice
@@ -1087,6 +1099,16 @@ fn load_error_display_text(error: &str) -> String {
 fn undo_missing_status(path: &std::path::Path) -> String {
     format!(
         "{STATUS_UNDO_FAILED}: {}{STATUS_UNDO_MISSING_SUFFIX}",
+        display_path(path)
+    )
+}
+
+/// Compose the existing-target undo refusal. Symmetric to
+/// [`undo_missing_status`]: the wording and red colour are regression-tested
+/// without a live GPUI `Context`, and the rename undo site shares this helper.
+fn undo_exists_status(path: &std::path::Path) -> String {
+    format!(
+        "{STATUS_UNDO_FAILED}: {}{STATUS_UNDO_EXISTS_SUFFIX}",
         display_path(path)
     )
 }
@@ -2194,13 +2216,13 @@ fn empty_state_message(
 }
 
 use crate::strings::{
-    DIALOG_FOOTER_DELETE_SUFFIX, DIALOG_FOOTER_HINT, EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH,
-    EMPTY_TRASH, ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, FUZZY_JUMP_OVERLAY_FOOTER_HINT,
-    HELP_SECTIONS, KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING,
-    LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH, LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX,
-    OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
-    PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD, SEARCH_IN_PROGRESS_LABEL, STATUS_ACCESS_DENIED,
-    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
+    DIALOG_FOOTER_DELETE_SUFFIX, DIALOG_FOOTER_HINT, DIALOG_FOOTER_HINT_READ_ONLY, EMPTY_DIRECTORY,
+    EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL,
+    FUZZY_JUMP_OVERLAY_FOOTER_HINT, HELP_SECTIONS, KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT,
+    LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH,
+    LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
+    PARENT_FOLDER_LABEL, PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD, SEARCH_IN_PROGRESS_LABEL,
+    STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
     STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
     STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
     STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
@@ -5154,7 +5176,7 @@ impl Explorer {
                 div()
                     .text_xs()
                     .text_color(rgb(p.muted))
-                    .child(DIALOG_FOOTER_HINT),
+                    .child(dialog_footer_hint_for_session(self.settings.read_only)),
             );
 
         Some(
@@ -5348,7 +5370,7 @@ impl Explorer {
                 div()
                     .text_xs()
                     .text_color(rgb(p.muted))
-                    .child(DIALOG_FOOTER_HINT),
+                    .child(dialog_footer_hint_for_session(self.settings.read_only)),
             );
 
         Some(
@@ -6719,10 +6741,7 @@ impl Explorer {
                     return;
                 }
                 if path_present(&target) {
-                    self.status = format!(
-                        "{STATUS_UNDO_FAILED}: {}{STATUS_UNDO_EXISTS_SUFFIX}",
-                        display_path(&target)
-                    );
+                    self.status = undo_exists_status(&target);
                     self.undo.push_undo(retry.clone());
                     cx.notify();
                     return;
@@ -12286,39 +12305,40 @@ mod tests {
         bookmark_label_set_rejection, bookmark_toggle_rejection, build_places, canonical_chord,
         chord_for_action, chords_collide, classify_cli, clear_dialog_error, clear_op_token,
         clear_rescan_failure_after_successful_read, clear_rescan_failure_status,
-        context_menu_anchor, effective_dialog_width, effective_sidebar_width, format_chord,
-        format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_viewport,
-        grid_columns_for_width, help_overrides_line, icon_button_text_color, install_op_token,
-        internal_drop_paths, join_status_notices, keymap_action_name, keymap_bind_caption,
-        keymap_chord_reserved, keymap_limit_status, keymap_unbind_caption, kind_color,
-        labeled_display_name, load_error_display_text, middle_click_tab_dir,
-        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
-        pending_rename_index, rank_fuzzy, read_properties_snapshot, reconcile_aware_status,
-        remove_keymap_override, resolved_sidebar_width, saved_search_caption,
-        saved_search_save_status, search_filter_status, set_view_status, settings_discard_status,
-        settings_read_only_status, settings_row_key_is_bare, settings_save_error_status,
-        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
-        settings_validation_status, settings_write_needs_rollback, settings_write_status,
-        startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
-        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
+        context_menu_anchor, dialog_footer_hint_for_session, effective_dialog_width,
+        effective_sidebar_width, format_chord, format_selected, fuzzy_candidates, fuzzy_score,
+        grid_columns_for_viewport, grid_columns_for_width, help_overrides_line,
+        icon_button_text_color, install_op_token, internal_drop_paths, join_status_notices,
+        keymap_action_name, keymap_bind_caption, keymap_chord_reserved, keymap_limit_status,
+        keymap_unbind_caption, kind_color, labeled_display_name, load_error_display_text,
+        middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
+        parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
+        reconcile_aware_status, remove_keymap_override, resolved_sidebar_width,
+        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
+        settings_discard_status, settings_read_only_status, settings_row_key_is_bare,
+        settings_save_error_status, settings_save_status, settings_sort_next,
+        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
+        settings_write_needs_rollback, settings_write_status, startup_dir_from,
+        startup_save_failure_status, status_color, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, theme_choice_label, thumbnail_eligible,
         transfer_log_level, transfer_progress_status, transfer_skip_notice, trash_batch,
         trash_delete_status, trash_key_action, trash_load_error_status,
         trash_redo_cancelled_status, trash_undo_status, trashed_ids_from_snapshot,
-        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
-        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
-        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers,
-        PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction, UndoAction,
-        ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX,
-        GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT, SECONDARY_SLOT_PRIORITY,
-        SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
-        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-        STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
-        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-        STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
-        STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
-        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
+        undo_exists_status, undo_missing_status, upsert_keymap_override, validate_cli_dir,
+        version_label, visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides,
+        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
+        Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction,
+        UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW,
+        GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT,
+        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
+        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
+        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
+        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
         STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
         STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
         STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
@@ -12342,12 +12362,12 @@ mod tests {
     use crate::ops::{OpError, OpStats};
     use crate::settings::{Settings, SettingsSaveError, ThemeChoice, MAX_KEYMAP_OVERRIDES};
     use crate::strings::{
-        SEARCH_IN_PROGRESS_LABEL, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
-        STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_DROP_NO_DESTINATION,
-        STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_LIMIT_PREFIX,
-        STATUS_MAX_TABS_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_RENAME_EXISTS_PREFIX,
-        STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR, STATUS_RENAME_INVALID_DOT,
-        STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL,
+        DIALOG_FOOTER_HINT, DIALOG_FOOTER_HINT_READ_ONLY, SEARCH_IN_PROGRESS_LABEL,
+        STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+        STATUS_DROP_NO_DESTINATION, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID,
+        STATUS_KEYMAP_LIMIT_PREFIX, STATUS_MAX_TABS_SUFFIX, STATUS_NO_CLIPBOARD,
+        STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR,
+        STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL,
         STATUS_RENAME_INVALID_RESERVED_PREFIX, STATUS_RENAME_INVALID_SEPARATOR,
         STATUS_RENAME_NO_PARENT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
         STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
@@ -12552,6 +12572,34 @@ mod tests {
         // amber に落ちないこと（接頭辞優先）も同時に検証する。
         let cli_error = format!("{STATUS_ERROR_PREFIX}{STATUS_INVALID_CLI_DIR}");
         assert_eq!(status_color(&cli_error), C_RED, "{cli_error}");
+    }
+
+    #[test]
+    fn dialog_footer_hint_switches_on_read_only() {
+        // AT01: 通常は共通フッター、読み取り専用は保存を含まない専用文言。
+        assert_eq!(dialog_footer_hint_for_session(false), DIALOG_FOOTER_HINT);
+        assert_eq!(
+            dialog_footer_hint_for_session(true),
+            DIALOG_FOOTER_HINT_READ_ONLY
+        );
+        assert!(!dialog_footer_hint_for_session(true).contains("Enter"));
+    }
+
+    #[test]
+    fn alt_t_and_alt_k_dialogs_choose_the_read_only_footer() {
+        // AT01: 2 つの設定ダイアログが self.settings.read_only から脚文を
+        // 選ぶことを source-guard で固定する（ダイアログ自体は無効化しない）。
+        let source = include_str!("main.rs");
+        for (start, end) in [
+            ("    fn terminal_command_dialog(", "    fn confirm_keymap("),
+            ("    fn keymap_dialog(", "    fn on_key_down("),
+        ] {
+            let region = source_region(source, start, end);
+            assert!(
+                region.contains("dialog_footer_hint_for_session(self.settings.read_only)"),
+                "dialog footer must follow read_only: {region}"
+            );
+        }
     }
 
     #[test]
@@ -16251,6 +16299,30 @@ mod tests {
         );
         assert!(status.contains(STATUS_UNDO_FAILED), "{status}");
         assert_eq!(status_color(&status), C_RED, "{status}");
+    }
+
+    #[test]
+    fn undo_exists_status_keeps_wording_and_is_red() {
+        // AT03: EXISTS の場合も MISSING と同じく共有定数経由で組み立てられ、
+        // 赤に分類される。インライン format! に戻っていないことを固定する。
+        assert!(STATUS_UNDO_EXISTS_SUFFIX.contains("既に存在します"));
+        let status = undo_exists_status(std::path::Path::new("/tmp/target"));
+        assert_eq!(
+            status,
+            format!("{STATUS_UNDO_FAILED}: /tmp/target{STATUS_UNDO_EXISTS_SUFFIX}")
+        );
+        assert!(status.contains(STATUS_UNDO_FAILED), "{status}");
+        assert_eq!(status_color(&status), C_RED, "{status}");
+        let source = include_str!("main.rs");
+        let undo = source_region(
+            source,
+            "    fn undo_last(&mut self, cx: &mut Context<Self>) {",
+            "    fn redo_last(&mut self, cx: &mut Context<Self>) {",
+        );
+        assert!(
+            undo.contains("undo_exists_status(&target)"),
+            "rename undo must call the shared EXISTS helper"
+        );
     }
 
     #[test]

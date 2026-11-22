@@ -1522,20 +1522,20 @@ status: current
 
 ### 優先度: 中（ループ R47・confirmed）
 
-- [ ] **AT01** read-only で Alt+K/Alt+T ダイアログが「Enter で保存」案内
+- [x] **AT01** read-only で Alt+K/Alt+T ダイアログが「Enter で保存」案内 — 対応: impl-r47-core
   — main.rs:5157,5351
-- [ ] **AT02** DESIGN §7 clipboard「Wayland ✅」が ADR 実読結果と矛盾
+- [x] **AT02** DESIGN §7 clipboard「Wayland ✅」が ADR 実読結果と矛盾 — 対応: impl-r47-docs
   — DESIGN.md:890
 
 ### 優先度: 低（ループ R47）
 
-- [ ] **AT03** undo EXISTS 側が純粋ヘルパ化されていない — main.rs:6721
-- [ ] **AT04** 設定検索「グリッド」が零命中 — settings_ui.rs:646
-- [ ] **AT05** DESIGN §8.1 dirs「未確認」が §11「確認済み」と矛盾
+- [x] **AT03** undo EXISTS 側が純粋ヘルパ化されていない — main.rs:6721 — 対応: impl-r47-core
+- [x] **AT04** 設定検索「グリッド」が零命中 — settings_ui.rs:646 — 対応: impl-r47-core
+- [x] **AT05** DESIGN §8.1 dirs「未確認」が §11「確認済み」と矛盾 — 対応: impl-r47-docs
   — DESIGN.md:933
-- [ ] **AT06** Tabs::close_active の非末尾分岐が無テスト — tabs.rs:103
-- [ ] **AT07** F1 行ショートカット要約が b を省略 — strings.rs:1337
-- [ ] **AT08** Shift+Home/End の範囲選択がヘルプに未案内
+- [x] **AT06** Tabs::close_active の非末尾分岐が無テスト — tabs.rs:103 — 対応: impl-r47-docs
+- [x] **AT07** F1 行ショートカット要約が b を省略 — strings.rs:1337 — 対応: impl-r47-core
+- [x] **AT08** Shift+Home/End の範囲選択がヘルプに未案内 — 対応: impl-r47-core
   — strings.rs:1204
 
 ### 優先度: 低（調査タスク）

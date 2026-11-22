@@ -1201,7 +1201,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+A", "全選択"),
             ("Ctrl+Space", "フォーカス行の選択を切替（非連続選択）"),
-            ("Shift+↑↓", "範囲選択"),
+            ("Shift+↑↓/Home/End", "範囲選択"),
             (
                 "Ctrl+クリック / Shift+クリック",
                 mouse_selection_click_description!(),
@@ -1336,7 +1336,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             (
                 "設定ダイアログの行ショートカット",
                 concat!(
-                    "外観タブで t=配色 / v=既定のビュー、ファイルタブで h=隠しファイルを切替（修飾キーなし）",
+                    "外観タブで t=配色 / v=既定のビュー、ファイルタブで h=隠しファイルを切替、ファイルタブで b=画像サムネイルを切替（修飾キーなし）",
                     settings_input_guard_note!()
                 ),
             ),
@@ -1868,6 +1868,14 @@ pub const LABEL_CANCEL: &str = "キャンセル";
 /// 上の `dialog_footer_hint!()` を使う（AG03 で定義を F1 より前に移動）。
 pub const DIALOG_FOOTER_HINT: &str = dialog_footer_hint!();
 
+/// AT01: 読み取り専用セッション向けのダイアログ脚文。
+/// Alt+T（ターミナル起動コマンド）と Alt+K（キーマップ）のダイアログは
+/// ダイアログ自体を開いたまま、確定しても `save_settings()` が何も書き込まない
+/// ため、「Enter で保存」を含まない案内を表示する。共通フッター
+/// [`DIALOG_FOOTER_HINT`] と区別するため、専用の定数として定義する。
+pub const DIALOG_FOOTER_HINT_READ_ONLY: &str =
+    "Esc でキャンセル（読み取り専用のため保存は行われません）";
+
 /// ブックマークラベル編集ダイアログ専用の追記案内（AF03）。
 /// 空文字で確定するとラベル削除になることを示すため、共通フッター
 /// [`DIALOG_FOOTER_HINT`] に続けて表示する。参照側は
@@ -1877,6 +1885,7 @@ pub const DIALOG_FOOTER_DELETE_SUFFIX: &str = "空にして確定すると削除
 
 /// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
 const _: () = assert!(DIALOG_FOOTER_HINT.len() == dialog_footer_hint!().len());
+const _: () = assert!(!DIALOG_FOOTER_HINT_READ_ONLY.is_empty());
 
 /// `種類` 列のラベル（`model::kind_label` で使用）。
 pub const KIND_FOLDER: &str = "フォルダ";
@@ -2112,7 +2121,12 @@ mod tests {
             .find(|(key, _)| *key == "設定ダイアログの行ショートカット")
             .map(|(_, text)| *text)
             .expect("row shortcut help entry exists");
-        for token in ["t=配色", "v=既定のビュー", "h=隠しファイル"] {
+        for token in [
+            "t=配色",
+            "v=既定のビュー",
+            "h=隠しファイル",
+            "b=画像サムネイル",
+        ] {
             assert!(row_hint.contains(token), "row hint must mention {token}");
         }
     }
@@ -3354,6 +3368,21 @@ mod tests {
             !main_source.contains("Enter で確定 / 空にして確定すると削除 / Esc でキャンセル"),
             "label dialog must not inline the composed footer"
         );
+    }
+
+    #[test]
+    fn read_only_dialog_footer_wording_is_canonical() {
+        // AT01: 読み取り専用セッションでは保存がないため、共通フッターから
+        // 「Enter で保存」を落とした専用文言を正規文言として固定する。
+        assert_eq!(
+            DIALOG_FOOTER_HINT_READ_ONLY,
+            "Esc でキャンセル（読み取り専用のため保存は行われません）"
+        );
+        assert_ne!(DIALOG_FOOTER_HINT_READ_ONLY, DIALOG_FOOTER_HINT);
+        assert!(!DIALOG_FOOTER_HINT_READ_ONLY.contains("Enter"));
+        assert!(DIALOG_FOOTER_HINT_READ_ONLY.contains("Esc でキャンセル"));
+        assert!(DIALOG_FOOTER_HINT_READ_ONLY.contains("読み取り専用"));
+        assert!(DIALOG_FOOTER_HINT_READ_ONLY.contains("保存は行われません"));
     }
 
     #[test]

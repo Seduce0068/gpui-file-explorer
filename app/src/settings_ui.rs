@@ -655,6 +655,8 @@ const FILES_THUMBNAILS_KEYWORDS: &[&str] = &[
     "一覧",
     "表示",
     "ファイルの表示",
+    // AT04: DESCRIPTION / F1 の「アイコングリッド」に出る語も検索可能にする。
+    "グリッド",
     "8 MiB",
     "symlink",
     // AK02: the bare-key hint rendered in FILES_THUMBNAILS_DESCRIPTION must be
@@ -760,6 +762,8 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "Ctrl+A",
     "Ctrl+Space",
     "Shift+↑↓",
+    // AT08: F1 のキー列を Home/End まで拡張したので、その完全形も検索可能にする。
+    "Shift+↑↓/Home/End",
     // Chords from the F1 help "ファイル操作" section.
     "Ctrl+C",
     "Ctrl+X",
@@ -942,7 +946,7 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     // 選択
     "Ctrl+A … 全選択",
     "Ctrl+Space … フォーカス行の選択を切替（非連続選択）",
-    "Shift+↑↓ … 範囲選択",
+    "Shift+↑↓/Home/End … 範囲選択",
     // ファイル操作
     "Ctrl+C / Ctrl+X / Ctrl+V … コピー / 切り取り / 貼り付け",
     "Ctrl+Shift+C … フォーカス行のパスをコピー",
@@ -2306,6 +2310,7 @@ mod tests {
             "一覧に画像サムネイルを表示",
             "thumbnail",
             "show_thumbnails",
+            "グリッド",
             "8 MiB",
             "symlink",
         ] {
@@ -2319,7 +2324,7 @@ mod tests {
                 "query {keyword} must surface only the Files tab"
             );
         }
-        for word in ["サムネイル", "実画像", "8 MiB", "symlink"] {
+        for word in ["サムネイル", "実画像", "グリッド", "8 MiB", "symlink"] {
             assert!(
                 FILES_THUMBNAILS_DESCRIPTION.contains(word),
                 "description must render the searchable word {word}"
@@ -3020,6 +3025,9 @@ mod tests {
             ("ファイルの表示", SettingsTab::Files),
             ("並び替え", SettingsTab::Files),
             ("既定の並び順", SettingsTab::Files),
+            // AT04: サムネイル行の説明に出る「グリッド」はファイルタブの
+            // キーワードとして登録され、他タブを巻き込まないこと。
+            ("グリッド", SettingsTab::Files),
             ("ドット", SettingsTab::Files),
             // Y04: the sort radio labels come from `SortKey::label()` in the
             // host's `sort_options`; searching what is visible must not dead-end.
@@ -3323,6 +3331,18 @@ mod tests {
             .map(|(_, text)| *text)
             .expect("row-shortcut help row exists");
         assert!(row_shortcut_help.contains("（修飾キーなし）"));
+        // AT07: 行ショートカットの要約は b（サムネイル）も漏らさず案内する。
+        for token in [
+            "t=配色",
+            "v=既定のビュー",
+            "h=隠しファイル",
+            "b=画像サムネイル",
+        ] {
+            assert!(
+                row_shortcut_help.contains(token),
+                "F1 row-shortcut summary must mention {token}: {row_shortcut_help}"
+            );
+        }
 
         let app_readme = include_str!("../README.md");
         let sort_line = app_readme
@@ -3909,7 +3929,8 @@ mod tests {
         ("Alt+←", "Alt+Left"),
         ("Alt+→", "Alt+Right"),
         ("Alt+↑", "Alt+Up"),
-        ("Shift+↑↓", "Shift+Up/Down/Home/End"),
+        // AT08: F1 キー列に Home/End を含めたため、README の完全形へ写像する。
+        ("Shift+↑↓/Home/End", "Shift+Up/Down/Home/End"),
     ];
 
     /// Key column of the README "キーバインド" table, one normalized cell per

@@ -887,7 +887,7 @@ pub fn confirm_and_trash(
 | ファイル種別アイコン | Breeze + Lucide ✅ | SHGetFileInfoW | NSWorkspace | ✅ | | | §8.3 |
 | 画像サムネイル | `image` + `img(PathBuf)`（P2） | IShellItemImageFactory（P2） | QuickLook（P3） |  | | ✅ | api-notes §7.2 |
 | パス文字列コピー | `ClipboardItem::new_string` ✅ | 同左 | 同左 | ✅ | | | api-notes §4.4 |
-| ファイルリスト clipboard | GPUI `ClipboardEntry::ExternalPaths`（Wayland ✅ / X11 ⚠） / arboard 3.7（P2） | CF_HDROP | .fileURL |  |  | ✅ | api-notes §4.4 / fs-notes §7 |
+| ファイルリスト clipboard | GPUI `ClipboardEntry::ExternalPaths`（Wayland/X11 ⚠（0.3.12 はテキスト/画像のみ、URI list 未対応 — ADR 参照）） / arboard 3.7（P2） | CF_HDROP | .fileURL |  |  | ✅ | api-notes §4.4 / fs-notes §7 |
 | ネイティブフォルダ選択 | `prompt_for_paths`（XDG ポータル、⚠ ポータル必須） | IFileDialog | NSOpenPanel |  | ✅ | | api-notes §4.5 |
 | アプリメニュー | `set_menus`（⚠ KDE 未検証） | 同左 | 同左 |  |  | △ | api-notes §8.2 |
 | 通知 | gpui-component `push_notification` ✅ source / ⚠ Wayland 実機 | 同左 | 同左 | ✅ | | | component `src/window_ext.rs:118` |
@@ -897,6 +897,10 @@ pub fn confirm_and_trash(
 | D&D IN | `on_drop::<ExternalPaths>`（Wayland ✅/他 ⚠） | 同左 | 同左 |  |  | △ | api-notes §4.2 |
 | D&D OUT | `external_drag_payload`（Wayland ✅） | ⚠ | ⚠ |  |  |  | api-notes §4.3 |
 
+- ファイルリスト clipboard の Wayland/X11 は gpui-pre 0.3.12 で
+  テキスト/画像のみ。**URI list は D&D 専用**でクリップボード未対応。
+  Windows / macOS は `ExternalPaths` 読み取りのみ（書き込みは無視）。
+  根拠: [OS ファイルクリップボード ADR](docs/adr/adr-20261123-os-file-clipboard.md)
 - ファイル種別アイコンの Windows（`SHGetFileInfoW`） / macOS（`NSWorkspace`）列の
   P2 は設計時の予定。**as-built**: Linux は Breeze の freedesktop アイコンを解決し、
   欠落時は Lucide へフォールバック（§8.3、`system_icons.rs`）。
@@ -930,7 +934,7 @@ pub fn confirm_and_trash(
     場合は読み取り専用で起動し、元ファイルを上書きしない。
   - `last_dir` が存在しない/ディレクトリでない場合は `$HOME`（`dirs::home_dir()`）へフォールバック。
   - 保存は**原子的**（`settings.json.tmp` へ書いて `fs::rename`）。保存タイミング: ナビゲーション・ソート/隠しトグル・ウィンドウ終了時。頻度が低く 1KB 未満のため同期保存を許容（§4.4 の明示的例外）。
-  - `dirs` は 7.0.0 推奨（fs-notes §12）。試作が 6 系でも `config_dir()/home_dir()` は同一 API のため許容（⚠ 版差の詳細未確認）。
+  - `dirs` は 7.0.0 推奨（fs-notes §12）。試作が 6 系でも許容（確認済み: `config_dir()/home_dir()` API 同一、§11 項目14 / [app/README.md](app/README.md) 設計差分表を参照）。
 
 ### 8.2 テーマ方針
 

@@ -239,6 +239,22 @@ mod tests {
     }
 
     #[test]
+    fn close_active_keeps_index_when_closing_a_non_last_tab() {
+        let mut tabs = Tabs::new(p("/a"));
+        tabs.new_tab(p("/b"));
+        tabs.new_tab(p("/c"));
+        // active = /a (index 0); closing a non-last tab keeps the index,
+        // so the tab that shifts into index 0 (/b) becomes active.
+        assert!(tabs.activate(0).is_some(), "make /a active");
+        let next = tabs.close_active().expect("closed");
+        assert_eq!(next.cwd, p("/b"));
+        assert_eq!(tabs.active_index(), 0);
+        assert_eq!(tabs.len(), 2);
+        let order: Vec<_> = tabs.tabs().iter().map(|tab| tab.cwd.clone()).collect();
+        assert_eq!(order, vec![p("/b"), p("/c")]);
+    }
+
+    #[test]
     fn restore_last_closed_reopens_most_recent_tab() {
         let mut tabs = Tabs::new(p("/a"));
         tabs.new_tab(p("/b"));
