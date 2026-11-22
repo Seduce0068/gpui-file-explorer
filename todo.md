@@ -1510,6 +1510,16 @@ status: current
 - [x] **AR07** Shortcuts タブの Esc 行に破棄警告が無い — settings_ui.rs:954
   — 対応: impl-r45-tests + impl-r45-ux
 
+### 優先度: 中（ループ R46・confirmed）
+
+- [ ] **AS01** 設定検索「破棄」「未保存」が零命中 — settings_ui.rs:666
+
+### 優先度: 低（ループ R46）
+
+- [ ] **AS02** 設定検索「アクション」が零命中 — settings_ui.rs:666
+- [ ] **AS03** STATUS_UNDO_EXISTS_SUFFIX がマーカー表に未登録
+  — main.rs:614
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
