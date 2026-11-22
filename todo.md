@@ -1357,6 +1357,37 @@ status: current
 - [x] **NF04** icons.rs::kind_for_name に PNM 拡張子（pbm/ppm/pgm/pnm）を追加 — 対応: fix-icons-pnm
   — NW09 で発見したギャップ
 
+### 優先度: 中（ループ R37・confirmed）
+
+- [ ] **AK01** 狭い幅で折りたたんだサイドバーを再表示する手段がない
+  — main.rs:10275
+- [ ] **AK02** サムネイル/列 Switch にキーボード操作経路がない（t/v/h のみ）
+  — settings_ui.rs:1040
+- [ ] **AK03** モバイル ADR「作成中」表記が実態と乖離（作成済み・draft）
+  — README.md:165 / DESIGN.md:58
+- [ ] **AK04** デュアルペイン ADR の main.rs 行アンカーが drift
+  — docs/adr/adr-20261122-dual-pane-ui.md:33
+- [ ] **AK05** サムネイル表示条件が一覧/グリッドで重複し無テスト
+  — main.rs:9847,10136
+- [ ] **AK06** icon_path_for_entry の分類分岐が無テスト — system_icons.rs:233
+- [ ] **AK07** アイコンパス探索優先順位のフィクスチャテストなし
+  — system_icons.rs:259
+
+### 優先度: 低（ループ R37）
+
+- [ ] **AK08** 操作履歴ダイアログのキーヒントが未集約 — main.rs:6520
+- [ ] **AK09** パス入力バーのキーヒントが未集約 — main.rs:7399
+- [ ] **AK10** F1 ヘルプのフッターヒントが未集約 — main.rs:7766
+- [ ] **AK11** プロパティダイアログのキーヒントが未集約 — main.rs:8070
+- [ ] **AK12** 検索バーの待機/検索中ヒントが未集約 — main.rs:9009
+- [ ] **AK13** クリップボード ADR の todo アンカーが 1〜3 行ずれ
+  — docs/adr/adr-20261123-os-file-clipboard.md:22
+- [ ] **AK14** README 構成表に docs/adr/ が未掲載 — README.md:88
+- [ ] **AK15** column_label/column_ids の全バリアントが無テスト
+  — settings_ui.rs:1150
+- [ ] **AK16** 列 visibility/reorder の no-op 分岐が無テスト
+  — settings_ui.rs:1197
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
