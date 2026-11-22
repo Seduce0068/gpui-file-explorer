@@ -1520,6 +1520,24 @@ status: current
 - [x] **AS03** STATUS_UNDO_EXISTS_SUFFIX がマーカー表に未登録 — 対応: impl-r46
   — main.rs:614
 
+### 優先度: 中（ループ R47・confirmed）
+
+- [ ] **AT01** read-only で Alt+K/Alt+T ダイアログが「Enter で保存」案内
+  — main.rs:5157,5351
+- [ ] **AT02** DESIGN §7 clipboard「Wayland ✅」が ADR 実読結果と矛盾
+  — DESIGN.md:890
+
+### 優先度: 低（ループ R47）
+
+- [ ] **AT03** undo EXISTS 側が純粋ヘルパ化されていない — main.rs:6721
+- [ ] **AT04** 設定検索「グリッド」が零命中 — settings_ui.rs:646
+- [ ] **AT05** DESIGN §8.1 dirs「未確認」が §11「確認済み」と矛盾
+  — DESIGN.md:933
+- [ ] **AT06** Tabs::close_active の非末尾分岐が無テスト — tabs.rs:103
+- [ ] **AT07** F1 行ショートカット要約が b を省略 — strings.rs:1337
+- [ ] **AT08** Shift+Home/End の範囲選択がヘルプに未案内
+  — strings.rs:1204
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
