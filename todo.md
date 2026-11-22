@@ -1448,6 +1448,21 @@ status: current
 - [x] **AN09** 列幅の settings.json キー文書化 — 対応: 親
   — column_prefs.widths のキーと手編集手順を追記
 
+### 優先度: 中（ループ R42・confirmed）
+
+- [ ] **AO01** AN08 の配線ガードがオーバーレイ3種のみ（残り5ヒント無防備）
+  — strings.rs:333
+
+### 優先度: 低（ループ R42）
+
+- [ ] **AO02** SettingsUiPalette の green/red 等が回帰検出外
+  — settings_ui.rs:2065
+- [ ] **AO03** DESIGN 変更履歴の「190px 固定」が現行仕様と矛盾
+  — DESIGN.md:1297
+- [ ] **AO04** column_width の下限棄却分岐が無テスト — main.rs:3237
+- [ ] **AO05** AppError::from_io の NotADirectory/Io 分岐が無テスト
+  — error.rs:132
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
