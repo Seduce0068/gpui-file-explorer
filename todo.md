@@ -1278,6 +1278,29 @@ status: current
 - [x] **AI09** やり直し空通知に記録対象ヒントなし — strings.rs:1139 — 対応: loop32-core
   — strings.rs:769
 
+### 優先度: 中（ループ R31・confirmed）
+
+- [ ] **AJ01** Alt+T ダイアログが TERMINAL_COMMAND_DESCRIPTION を迂回
+  — main.rs:4640
+- [ ] **AJ02** F2 リネームの入力検証拒否が未定数化（P08 残件）
+  — ops.rs:193
+- [ ] **AJ03** ダイアログ拒否が self.status にミラーされず色分類対象外
+  — main.rs:4736,4567
+- [ ] **AJ04** ADR-011「モジュール分割」に as-built 注記なし
+  — DESIGN.md:1170
+- [ ] **AJ05** ui/* 分割を「残課題」と記載するドキュメントが決定と矛盾
+  — DESIGN.md:376 / app/README.md:701
+- [ ] **AJ06** WindowBoundsState::is_valid の上限分岐が無テスト
+  — settings.rs:611
+- [ ] **AJ07** 設定ダイアログ内に read-only 表示なし — settings_ui.rs:383
+
+### 優先度: 低（ループ R31）
+
+- [ ] **AJ08** fuzzy_score の min(40) キャップ分岐が無テスト — main.rs:1831
+- [ ] **AJ09** 個人化タブが read-only でも保存されると表示
+  — settings_ui.rs:1218
+- [ ] **AJ10** F1 に検索履歴/保存検索の導線なし — strings.rs:878
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
