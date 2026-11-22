@@ -1388,6 +1388,22 @@ status: current
 - [x] **AK16** 列 visibility/reorder の no-op 分岐が無テスト — 対応: impl-r37-ux
   — settings_ui.rs:1197
 
+### 優先度: 中（ループ R38・confirmed）
+
+- [ ] **AL01** 検索中ステータスが SEARCH_IN_PROGRESS_LABEL を迂回
+  — main.rs:8849
+- [ ] **AL02** OS クリップボード「GPUI側未実装」表記が ADR と矛盾
+  — README.md:151 / app/README.md:415
+- [ ] **AL03** DESIGN 変更履歴/参照に draft ADR 3件が未反映 — DESIGN.md:1252
+- [ ] **AL04** 設定検索から Shift+F10 / Menu に到達できない
+  — settings_ui.rs:680
+- [ ] **AL05** エラー→対処の対応表が README/F1 に存在しない
+  — app/README.md:532
+
+### 優先度: 低（ループ R38）
+
+- [ ] **AL06** DESIGN の dirs バージョン差「要確認」が解消済み — DESIGN.md:1245
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
