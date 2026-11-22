@@ -147,8 +147,10 @@ const _: () = assert!(KEYMAP_FORMAT_HINT.len() == keymap_format_hint!().len());
 /// ディレクトリ表示では `Ctrl+L`（OpenLocation）が有効なので、既存の
 /// [`LOAD_ERROR_HINT`] をそのまま共用する（355 行目の定義は変更しない）。
 pub const LOAD_ERROR_HINT_DIRECTORY: &str = LOAD_ERROR_HINT;
-/// ゴミ箱ビューでは `Ctrl+L` が拒否されるため、一覧へ戻る導線を案内する。
-pub const LOAD_ERROR_HINT_TRASH: &str = "F5 で再読込 / Esc で一覧へ戻る";
+/// ゴミ箱ビューでは `Ctrl+L` が拒否され、Esc は操作キャンセル（未操作なら
+/// no-op）のため一覧へ戻らない。実際に `exit_trash` を呼ぶ Alt+← / Backspace
+/// （main.rs）を案内する。
+pub const LOAD_ERROR_HINT_TRASH: &str = "F5 で再読込 / Alt+← または Backspace で一覧へ戻る";
 /// 検索ビューでは `Ctrl+L` がキー許可リストになく、Esc で閉じるのが復帰導線。
 pub const LOAD_ERROR_HINT_SEARCH: &str = "F5 で再読込 / Esc で閉じる";
 
@@ -174,14 +176,16 @@ mod view_hint_and_keymap_format_tests {
                 "directory load-error hint: {LOAD_ERROR_HINT_DIRECTORY}"
             );
         }
-        // ゴミ箱: Ctrl+L は拒否されるので案内せず、Esc で戻る経路を示す。
-        for token in ["F5", "Esc で一覧へ戻る"] {
+        // ゴミ箱: Ctrl+L は拒否され、Esc は exit_trash を呼ばない（操作
+        // キャンセル専用）。Alt+← / Backspace で戻る経路を示す。
+        for token in ["F5", "Alt+← または Backspace で一覧へ戻る"] {
             assert!(
                 LOAD_ERROR_HINT_TRASH.contains(token),
                 "trash load-error hint: {LOAD_ERROR_HINT_TRASH}"
             );
         }
         assert!(!LOAD_ERROR_HINT_TRASH.contains("Ctrl+L"));
+        assert!(!LOAD_ERROR_HINT_TRASH.contains("Esc"));
         // 検索: 同様に Ctrl+L は許可外。Esc で閉じる経路を示す。
         for token in ["F5", "Esc で閉じる"] {
             assert!(
@@ -208,6 +212,69 @@ mod view_hint_and_keymap_format_tests {
             );
         }
         assert_eq!(KEYMAP_FORMAT_HINT, keymap_format_hint!());
+    }
+
+    #[test]
+    fn keymap_input_hint_is_built_from_the_canonical_format_hint() {
+        // AD03: Alt+K の入力ヒントは正規の形式ヒントをそのまま埋め込む。
+        // 別々に書いた説明が drift しないことを、前方一致で固定する。
+        assert!(
+            KEYMAP_INPUT_HINT.starts_with(KEYMAP_FORMAT_HINT),
+            "KEYMAP_INPUT_HINT must embed KEYMAP_FORMAT_HINT verbatim: {KEYMAP_INPUT_HINT}"
+        );
+        // 正規ヒントだけが持つ設定カード形式も、入力ヒントから読めること。
+        for token in ["操作=キー", "open_preview=ctrl+shift+p"] {
+            assert!(
+                KEYMAP_INPUT_HINT.contains(token),
+                "input hint must expose canonical token {token}: {KEYMAP_INPUT_HINT}"
+            );
+        }
+        assert!(KEYMAP_INPUT_HINT.contains("unbind アクション名で設定を解除できます"));
+    }
+
+    #[test]
+    fn settings_dialog_help_names_the_discard_warning_only_once() {
+        // AD05: 旧文言「破棄され通知されます」と正規文言の二重掲載を防ぐ。
+        let dialog = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "設定ダイアログ")
+            .map(|(_, text)| *text)
+            .expect("settings dialog row must exist");
+        assert_eq!(
+            dialog.matches(UNSAVED_CHANGES_DISCARD_NOTE).count(),
+            1,
+            "discard warning must appear exactly once: {dialog}"
+        );
+        assert!(!dialog.contains("破棄され通知されます"), "{dialog}");
+    }
+
+    #[test]
+    fn tab_move_help_key_spells_out_both_full_chords() {
+        // AD04: 省略形の PageDown は選択移動行と誤一致するため、F1 側も
+        // 完全な chord を2つ並べる。
+        let key = HELP_SECTIONS
+            .iter()
+            .find(|(title, _)| *title == "タブ・ブックマーク")
+            .and_then(|(_, rows)| rows.iter().find(|(key, _)| key.contains("PageUp")))
+            .map(|(key, _)| *key)
+            .expect("tab-move help row must exist");
+        assert_eq!(key, "Ctrl+Shift+PageUp / Ctrl+Shift+PageDown");
+    }
+
+    #[test]
+    fn directory_view_only_note_has_one_canonical_wording() {
+        assert_eq!(
+            DIRECTORY_VIEW_ONLY_NOTE,
+            "一部のキーはディレクトリ表示でのみ有効です"
+        );
+        let note = HELP_SECTIONS
+            .iter()
+            .find(|(title, _)| *title == "その他")
+            .and_then(|(_, rows)| rows.iter().find(|(key, _)| *key == "ディレクトリ表示"))
+            .map(|(_, text)| *text)
+            .expect("directory-view note row must exist");
+        assert_eq!(note, DIRECTORY_VIEW_ONLY_NOTE);
     }
 }
 
@@ -260,6 +327,21 @@ macro_rules! reserved_keys_note {
     };
 }
 pub(crate) use reserved_keys_note;
+
+/// F1 ヘルプの共通注記と設定行の説明で共用する、ディレクトリ表示限定の文言
+/// （AD06）。`concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む
+/// 場合は `directory_view_only_note!()` を使う。
+macro_rules! directory_view_only_note {
+    () => {
+        "一部のキーはディレクトリ表示でのみ有効です"
+    };
+}
+pub(crate) use directory_view_only_note;
+
+/// ディレクトリ表示限定注記の正規表記。F1 / 設定行の同期判定に使う。
+pub const DIRECTORY_VIEW_ONLY_NOTE: &str = directory_view_only_note!();
+
+const _: () = assert!(DIRECTORY_VIEW_ONLY_NOTE.len() == directory_view_only_note!().len());
 
 /// Keyboard shortcuts shown by the F1 help overlay: (section, [(key, description)]).
 pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
@@ -335,7 +417,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+T / Ctrl+W", "タブを開く / 閉じる"),
             ("Ctrl+Shift+T", "閉じたタブを復元"),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "次のタブ / 前のタブ"),
-            ("Ctrl+Shift+PageUp / PageDown", "タブを左 / 右へ移動"),
+            (
+                "Ctrl+Shift+PageUp / Ctrl+Shift+PageDown",
+                "タブを左 / 右へ移動",
+            ),
             ("ミドルクリック", "行のフォルダを新しいタブで開く"),
             ("Ctrl+D", "現在のディレクトリをブックマーク"),
         ],
@@ -348,8 +433,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             (
                 "設定ダイアログ",
                 concat!(
-                    "Enter で保存 / Esc でキャンセル（未保存変更時は破棄され通知されます）/ 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。",
+                    "Enter で保存 / Esc でキャンセル / 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。",
                     "一致がゼロなら検索欄を空にするか Esc で閉じる",
+                    // AD05: 破棄警告は `unsaved_changes_discard_note!()` の
+                    // 一文だけに統一する（旧文言を重複させない）。
                     unsaved_changes_discard_note!(),
                     "。",
                     "他タブに一致すると Alt+数字で移動（",
@@ -401,10 +488,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ),
             ("Esc", "キャンセル / ダイアログを閉じる"),
             ("Ctrl+Q", "終了"),
-            (
-                "ディレクトリ表示",
-                "一部のキーはディレクトリ表示でのみ有効です",
-            ),
+            ("ディレクトリ表示", directory_view_only_note!()),
         ],
     ),
     (
@@ -440,8 +524,11 @@ const _: () = assert!(RESERVED_KEYS_NOTE.len() == reserved_keys_note!().len());
 /// comma key is reserved too, so the hint names all three keys from
 /// [`RESERVED_CHORD_KEYS`] via [`RESERVED_KEYS_NOTE`]. Z12: the 64-entry cap from
 /// `settings::MAX_KEYMAP_OVERRIDES` is spelled out here too.
+/// AD03: 形式の説明は `keymap_format_hint!()` に一本化する。ここで書式を
+/// 再定義すると Alt+K ダイアログと設定カード／不正入力通知が drift する。
 pub const KEYMAP_INPUT_HINT: &str = concat!(
-    "形式: アクション名 コード（例: open_preview ctrl+shift+p）。unbind アクション名で設定を解除。",
+    keymap_format_hint!(),
+    "。unbind アクション名で設定を解除できます。",
     reserved_keys_note!(),
     "。open_settings は Ctrl+, 固定で変更できません（unbind も不可）。最大 64 件まで。"
 );
@@ -667,8 +754,9 @@ pub const STATUS_REVEALED_PREFIX: &str = "ファイルマネージャで表示: 
 pub const STATUS_KEYMAP_NO_UNBIND_PREFIX: &str = "解除する設定はありません: ";
 /// キーマップ入力の形式が不正なときの通知（V04）。
 /// Alt+K ダイアログ専用。設定カードは `STATUS_KEYMAP_INVALID_PREFIX + KEYMAP_FORMAT_HINT`。
-pub const STATUS_KEYMAP_FORMAT_INVALID: &str =
-    "形式は「アクション名 コード」または「unbind アクション名」です（例: open_preview ctrl+shift+p）";
+/// AD03: 書式の説明は `keymap_format_hint!()` に一本化する。個別に書いた
+/// 文言を残すとダイアログ／設定カード／不正入力通知が drift する。
+pub const STATUS_KEYMAP_FORMAT_INVALID: &str = concat!(keymap_format_hint!(), "。");
 /// キーマップの上書き件数が上限に達したときの拒否通知の接頭辞（V04）。
 /// 動的な件数を連結するため、接頭辞自体をマーカーとして扱う。
 pub const STATUS_KEYMAP_LIMIT_PREFIX: &str = "上書きは最大 ";
@@ -1015,11 +1103,15 @@ mod tests {
         assert!(dialog.contains("検索"), "{dialog}");
         // R07: the dialog search covers key names too, not just setting labels.
         assert!(dialog.contains("キー名でも検索可"), "{dialog}");
-        // R11: Esc cancellation warns when unsaved changes would be discarded.
-        assert!(
-            dialog.contains("未保存変更時は破棄され通知されます"),
+        // R11 / AD05: Esc cancellation warns when unsaved changes would be
+        // discarded. The warning is now spelled out by the canonical macro in
+        // exactly one place; the old double-published wording must be gone.
+        assert_eq!(
+            dialog.matches(UNSAVED_CHANGES_DISCARD_NOTE).count(),
+            1,
             "{dialog}"
         );
+        assert!(!dialog.contains("破棄され通知されます"), "{dialog}");
         let tabs = find("設定ダイアログのタブ").expect("settings tab keys must be in F1 help");
         assert!(tabs.contains("Ctrl+Tab"), "{tabs}");
         assert!(tabs.contains("Ctrl+Shift+Tab"), "{tabs}");
@@ -2197,8 +2289,12 @@ mod tests {
         // V04: 形式エラー・上限・無効指定の文言がダイアログと設定カードに
         // 重複していた。各リテラルは定数定義の 1 回だけに保つ。
         let strings_source = include_str!("strings.rs");
+        // AD03: STATUS_KEYMAP_FORMAT_INVALID is composed from the canonical
+        // macro, so its full text no longer appears as a standalone literal in
+        // the source; assert the shared wording instead of a one-off copy.
+        assert!(STATUS_KEYMAP_FORMAT_INVALID.starts_with(KEYMAP_FORMAT_HINT));
+        assert!(STATUS_KEYMAP_FORMAT_INVALID.contains("open_preview=ctrl+shift+p"));
         for (name, literal) in [
-            ("STATUS_KEYMAP_FORMAT_INVALID", STATUS_KEYMAP_FORMAT_INVALID),
             ("STATUS_KEYMAP_LIMIT_PREFIX", STATUS_KEYMAP_LIMIT_PREFIX),
             ("STATUS_KEYMAP_LIMIT_SUFFIX", STATUS_KEYMAP_LIMIT_SUFFIX),
             ("STATUS_KEYMAP_INVALID_PREFIX", STATUS_KEYMAP_INVALID_PREFIX),

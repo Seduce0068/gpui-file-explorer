@@ -601,6 +601,7 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "Ctrl+Tab",
     "Ctrl+Shift+Tab",
     "Ctrl+Shift+PageUp",
+    "Ctrl+Shift+PageDown",
     "Ctrl+D",
     // Chords from the F1 help "その他" section, plus the settings-dialog
     // chords rendered on this tab (they live in dialog descriptions in F1).
@@ -661,16 +662,23 @@ const APPEARANCE_VIEW_DESCRIPTION: &str = concat!(
     "詳細一覧またはアイコン一覧を選択します（v でキーボードから切替）",
     crate::strings::settings_input_guard_note!()
 );
+// AD06: 隠し表示と並び順はディレクトリ表示だけが対象（ゴミ箱ビューでは
+// main.rs が Ctrl+H / 並び替えを拒否する）。F1 の共通注記と同じ文言を
+// マクロから埋め込み、設定行とヘルプが drift しないようにする。
 const FILES_HIDDEN_DESCRIPTION: &str = concat!(
     "名前が . で始まるファイルとフォルダを一覧に含めます（h でキーボードから切替）",
-    crate::strings::settings_input_guard_note!()
+    crate::strings::settings_input_guard_note!(),
+    "。",
+    crate::strings::directory_view_only_note!()
 );
 const FILES_SORT_DESCRIPTION: &str = concat!(
     "ファイル一覧を開いたときの基準となる項目（Alt+S でキーボードから切替）",
     crate::strings::settings_input_guard_note!(),
     // AB14: 「昇順 / 降順」はダイアログ内の切替ではなく一覧ヘッダのクリック
     // で切り替わる。検索語がこの行に一致したとき、見た目にも根拠を示す。
-    "。昇順/降順は一覧のヘッダクリックで切替"
+    "。昇順/降順は一覧のヘッダクリックで切替",
+    "。",
+    crate::strings::directory_view_only_note!()
 );
 
 /// 表示専用のカラーパレット行に添える、編集可能なテーマ行への案内（AB13）。
@@ -734,7 +742,7 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "Ctrl+T / Ctrl+W … タブを開く / 閉じる",
     "Ctrl+Shift+T … 閉じたタブを復元",
     "Ctrl+Tab / Ctrl+Shift+Tab … 次のタブ / 前のタブ",
-    "Ctrl+Shift+PageUp / PageDown … タブを左 / 右へ移動",
+    "Ctrl+Shift+PageUp / Ctrl+Shift+PageDown … タブを左 / 右へ移動",
     "Ctrl+D … 現在のディレクトリをブックマーク",
     // その他 / 設定ダイアログ（F1 はダイアログ内で無効なのでここに掲載）
     "F4 … ターミナルを開く",
@@ -2426,7 +2434,8 @@ mod tests {
         // W09: F1 help lists directory-only chords without repeating the
         // constraint on each row, so the その他 section carries one short
         // common note. It is a prose row (no chord), hence HELP_KEY_EXCEPTIONS.
-        const NOTE: &str = "一部のキーはディレクトリ表示でのみ有効です";
+        // AD06: 同じ正規文言を隠しファイル / 並び順の設定行にも添える。
+        let note = crate::strings::DIRECTORY_VIEW_ONLY_NOTE;
         const KEY: &str = "ディレクトリ表示";
         let other = crate::strings::HELP_SECTIONS
             .iter()
@@ -2436,13 +2445,19 @@ mod tests {
             other
                 .1
                 .iter()
-                .any(|(key, text)| *key == KEY && text.contains(NOTE)),
+                .any(|(key, text)| *key == KEY && *text == note),
             "その他 must explain the directory-view constraint"
         );
         assert!(
             HELP_KEY_EXCEPTIONS.contains(&KEY),
             "the prose note must be exempt from the chord mirror"
         );
+        for description in [FILES_HIDDEN_DESCRIPTION, FILES_SORT_DESCRIPTION] {
+            assert!(
+                description.ends_with(note),
+                "Files row must use the canonical directory-only note: {description}"
+            );
+        }
     }
 
     #[test]
@@ -2801,6 +2816,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tab_move_help_and_readme_share_the_same_full_chords() {
+        // AD04: 旧 F1 行 "Ctrl+Shift+PageUp / PageDown" では裸の PageDown が
+        // README の選択移動行に誤一致し、タブ移動行の右半分が欠けても
+        // `every_f1_help_key_has_a_readme_keybinding_row` が通っていた。
+        // ヘルプ行自身の完全な chord を固定し、同じ README 行に揃うことを確認する。
+        let help_key = crate::strings::HELP_SECTIONS
+            .iter()
+            .find(|(title, _)| *title == "タブ・ブックマーク")
+            .and_then(|(_, rows)| rows.iter().find(|(key, _)| key.contains("PageUp")))
+            .map(|(key, _)| *key)
+            .expect("tab-move F1 row must exist");
+        assert_eq!(help_key, "Ctrl+Shift+PageUp / Ctrl+Shift+PageDown");
+
+        let keys = readme_key_column();
+        let tab_row = keys
+            .lines()
+            .find(|cell| cell_has_chord(cell, "Ctrl+Shift+PageUp"))
+            .expect("README must document Ctrl+Shift+PageUp");
+        assert!(
+            cell_has_chord(tab_row, "Ctrl+Shift+PageDown"),
+            "README tab-move row must carry the same right chord: {tab_row}"
+        );
+        // 選択移動行の裸の PageDown は別用途なので、タブ移動 chord と誤認しない。
+        let selection_row = keys
+            .lines()
+            .find(|cell| {
+                cell_has_chord(cell, "PageDown") && !cell_has_chord(cell, "Ctrl+Shift+PageDown")
+            })
+            .expect("README must keep the selection-movement PageDown row");
+        assert!(!cell_has_chord(selection_row, "Ctrl+Shift+PageDown"));
     }
 
     #[test]

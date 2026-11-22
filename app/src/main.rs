@@ -1970,10 +1970,10 @@ fn empty_state_message(
             ViewSource::Trash => LOAD_ERROR_HINT_TRASH,
             ViewSource::Search => LOAD_ERROR_HINT_SEARCH,
         };
-        return Some((
-            format!("{STATUS_ERROR_PREFIX}{error}"),
-            Some(hint.to_string()),
-        ));
+        // U06: some load errors (notably the trash path) already carry
+        // STATUS_ERROR_PREFIX at their source. Route through the shared
+        // helper so the overlay never prints "エラー: エラー: …".
+        return Some((load_error_display_text(error), Some(hint.to_string())));
     }
     if loading {
         return Some((LOADING.to_string(), None));
@@ -12854,7 +12854,8 @@ mod tests {
         assert_eq!(title, "読み込み中…");
 
         // AC07: the load-error recovery hint is view-specific. Ctrl+L only
-        // applies to the Directory view; Trash/Search advertise Esc instead.
+        // applies to the Directory view; Trash advertises the working exit
+        // chords (Alt+← / Backspace) and Search advertises Esc.
         let (title, hint) =
             empty_state_message(ViewSource::Directory, false, Some("読めません"), 0, 0).unwrap();
         assert_eq!(title, "エラー: 読めません");
@@ -12869,7 +12870,11 @@ mod tests {
         assert_eq!(hint.as_deref(), Some(crate::strings::LOAD_ERROR_HINT_TRASH));
         let trash_hint = hint.unwrap();
         assert!(trash_hint.contains("F5"));
-        assert!(trash_hint.contains("Esc"));
+        // AD02: Esc does not leave Trash, so the hint must advertise the
+        // actual exit chords instead of promising a key that only cancels ops.
+        assert!(trash_hint.contains("Alt+←"), "{trash_hint}");
+        assert!(trash_hint.contains("Backspace"), "{trash_hint}");
+        assert!(!trash_hint.contains("Esc"), "{trash_hint}");
         assert!(!trash_hint.contains("Ctrl+L"));
 
         let (_, hint) =
@@ -12884,6 +12889,33 @@ mod tests {
         assert!(!search_hint.contains("Ctrl+L"));
 
         assert!(empty_state_message(ViewSource::Directory, false, None, 3, 2).is_none());
+    }
+
+    #[test]
+    fn empty_state_error_overlay_prefixed_exactly_once() {
+        use super::{empty_state_message, ViewSource};
+
+        // AD01: `reload_trash` stores a status that already carries
+        // STATUS_ERROR_PREFIX, so the overlay must not add a second one.
+        let error = trash_load_error_status("permission denied");
+        let (title, hint) =
+            empty_state_message(ViewSource::Trash, false, Some(&error), 0, 0).unwrap();
+
+        assert_eq!(title, error);
+        assert_eq!(
+            title.matches(STATUS_ERROR_PREFIX).count(),
+            1,
+            "overlay must show the error prefix exactly once: {title}"
+        );
+        let doubled = format!("{STATUS_ERROR_PREFIX}{STATUS_ERROR_PREFIX}");
+        assert!(!title.contains(&doubled), "doubled prefix in: {title}");
+        assert_eq!(hint.as_deref(), Some(crate::strings::LOAD_ERROR_HINT_TRASH));
+
+        // A plain (unprefixed) error still gets exactly one prefix.
+        let (plain_title, _) =
+            empty_state_message(ViewSource::Trash, false, Some("読めません"), 0, 0).unwrap();
+        assert_eq!(plain_title, format!("{STATUS_ERROR_PREFIX}読めません"));
+        assert_eq!(plain_title.matches(STATUS_ERROR_PREFIX).count(), 1);
     }
 
     #[test]
