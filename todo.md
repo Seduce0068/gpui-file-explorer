@@ -1311,13 +1311,12 @@ status: current
 
 ### 優先度: 高（新要件・設計判断が必要）
 
-- [ ] **NW01** DESIGN の対象OS/非目的を改訂: Windows を第一級、Android/iOS を要件化
+- [x] **NW01** DESIGN の対象OS/非目的を改訂: Windows を第一級、Android/iOS を要件化 — 対応: docs-target-os
   — DESIGN.md:26,37-54 / R1-DOC01
 - [ ] **NW02** デュアルペイン（左右2画面）の設計 ADR を作成
   — PaneState 抽出 / ADR-002 改訂 / R1-UX01,R1-ARCH01,R1-PRD01
-- [ ] **NW03** Android/iOS の実現可能性 ADR（gpui-pre 直依存 / Platform trait / FS 権限）
-  — gpui-kit がモバイル明示除外 / Android backend 不在 / iOS ファイルAPI スタブ
-  — R1-MOB01 の実確認に基づく設計判断必须先
+- [x] **NW03** Android/iOS の実現可能性 ADR — 対応: adr-mobile（draft・ユーザー承認待ち）
+  — docs/adr/adr-20261122-mobile-android-ios-support.md
 - [ ] **NW04** レスポンシブレイアウト（固定190pxサイドバー・固定pxダイアログを画面幅適応へ）
   — main.rs:205-215,4634 / R1-ARCH01
 
