@@ -1450,17 +1450,17 @@ status: current
 
 ### 優先度: 中（ループ R42・confirmed）
 
-- [ ] **AO01** AN08 の配線ガードがオーバーレイ3種のみ（残り5ヒント無防備）
+- [x] **AO01** AN08 の配線ガードがオーバーレイ3種のみ（残り5ヒント無防備） — 対応: impl-r42-core
   — strings.rs:333
 
 ### 優先度: 低（ループ R42）
 
-- [ ] **AO02** SettingsUiPalette の green/red 等が回帰検出外
+- [x] **AO02** SettingsUiPalette の green/red 等が回帰検出外 — 対応: impl-r42-core
   — settings_ui.rs:2065
-- [ ] **AO03** DESIGN 変更履歴の「190px 固定」が現行仕様と矛盾
+- [x] **AO03** DESIGN 変更履歴の「190px 固定」が現行仕様と矛盾 — 対応: 親
   — DESIGN.md:1297
-- [ ] **AO04** column_width の下限棄却分岐が無テスト — main.rs:3237
-- [ ] **AO05** AppError::from_io の NotADirectory/Io 分岐が無テスト
+- [x] **AO04** column_width の下限棄却分岐が無テスト — main.rs:3237 — 対応: impl-r42-tests
+- [x] **AO05** AppError::from_io の NotADirectory/Io 分岐が無テスト — 対応: impl-r42-tests
   — error.rs:132
 
 ### 優先度: 低（調査タスク）

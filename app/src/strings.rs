@@ -367,6 +367,52 @@ mod dialog_and_bar_hint_tests {
             );
         }
     }
+
+    #[test]
+    fn dialog_and_bar_hints_are_wired_as_constants_in_main_rs() {
+        // AK08-AK12: 履歴ダイアログ / 場所バー / プロパティ / 検索バーの
+        // 固定ヒントも strings.rs の定数を参照して描画する。文言テストだけでは
+        // main.rs へリテラルを再インライン化できてしまう（定数は他箇所で
+        // 使われるため dead_code にもならない）ため、参照とリテラル未埋め込み
+        // の両方を source-guard で固定する。
+        let main_source = include_str!("main.rs");
+        for (reference, constant, literal) in [
+            (
+                "crate::strings::HISTORY_DIALOG_FOOTER_HINT",
+                "HISTORY_DIALOG_FOOTER_HINT",
+                HISTORY_DIALOG_FOOTER_HINT,
+            ),
+            (
+                "crate::strings::LOCATION_BAR_HINT",
+                "LOCATION_BAR_HINT",
+                LOCATION_BAR_HINT,
+            ),
+            (
+                "crate::strings::PROPERTIES_READ_ONLY_HINT",
+                "PROPERTIES_READ_ONLY_HINT",
+                PROPERTIES_READ_ONLY_HINT,
+            ),
+            (
+                "crate::strings::SEARCH_BAR_HINT",
+                "SEARCH_BAR_HINT",
+                SEARCH_BAR_HINT,
+            ),
+            (
+                "crate::strings::SEARCH_IN_PROGRESS_LABEL",
+                "SEARCH_IN_PROGRESS_LABEL",
+                SEARCH_IN_PROGRESS_LABEL,
+            ),
+        ] {
+            assert!(
+                main_source.contains(reference),
+                "main.rs must render the {constant} hint via `{reference}`"
+            );
+            assert!(
+                !main_source.contains(literal),
+                "hint must not be inlined into main.rs: {literal}"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1294,7 +1294,8 @@ F5 / 変更なし reconcile 成功時にクリアされない問題（AA01）を
 
 2026-11-21 の as-built 差分の内訳（OS アイコンは §2/§7/§8.3/ADR-009 を参照）。
 内容検索（`search::search_contents`）とタブ（`tabs.rs`）の実装済み化
-（§1.2/§4.1）、サイドバー幅は 190px 固定（§3.1）、テーマは Catppuccin
+（§1.2/§4.1）、サイドバー幅は当時 190px 固定（現行は §3.1 の as-built
+注記を参照、NW04 でレスポンシブ化）、テーマは Catppuccin
 Mocha / Latte の `AppPalette` / `SettingsUiPalette` に集約（§8.2）、
 単体テストは全件 passed / 0 failed（件数は実行結果を参照、
 §10.1 の as-built スナップショット = README の 2026-11-21 更新値と同期）。

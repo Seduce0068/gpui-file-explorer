@@ -445,4 +445,20 @@ mod tests {
         };
         assert_eq!(no_message.message_ja(), "/tmp/no-os: エラーが発生しました");
     }
+
+    #[test]
+    fn from_io_maps_not_a_directory_to_its_own_category_and_message() {
+        let io = std::io::Error::new(ErrorKind::NotADirectory, "x");
+        let error = AppError::from_io(PathBuf::from("/tmp/not-a-dir"), &io);
+        assert_eq!(error.fs_kind(), Some(FsErrorKind::NotADirectory));
+        assert!(error.message_ja().contains("ディレクトリではありません"));
+    }
+
+    #[test]
+    fn from_io_maps_other_kinds_to_io_and_message() {
+        let io = std::io::Error::new(ErrorKind::InvalidInput, "x");
+        let error = AppError::from_io(PathBuf::from("/tmp/invalid-input"), &io);
+        assert_eq!(error.fs_kind(), Some(FsErrorKind::Io));
+        assert!(error.message_ja().contains("読み取れませんでした"));
+    }
 }

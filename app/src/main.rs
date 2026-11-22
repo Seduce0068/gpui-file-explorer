@@ -3150,7 +3150,7 @@ mod column_prefs_helpers_tests {
         row_column_texts, visible_columns, Entry, ViewSource,
     };
     use crate::model::{human_datetime, human_size, kind_label, SortKey};
-    use crate::settings::ColumnPrefs;
+    use crate::settings::{ColumnPrefs, COLUMN_MIN_WIDTH};
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -3246,6 +3246,10 @@ mod column_prefs_helpers_tests {
         assert_eq!(column_width(&prefs, "kind", 90.0), 90.0);
         assert_eq!(column_width(&prefs, "modified", 150.0), 150.0);
         assert_eq!(column_width(&prefs, "unrelated", 123.0), 123.0);
+
+        // A below-minimum override must fall back just like NaN / above-max.
+        prefs.widths.insert("kind".into(), COLUMN_MIN_WIDTH - 0.1);
+        assert_eq!(column_width(&prefs, "kind", 90.0), 90.0);
     }
 
     #[test]

@@ -2068,13 +2068,19 @@ mod tests {
         assert_eq!(dark.surface, 0x313244);
         assert_eq!(dark.overlay, 0x45475a);
         assert_eq!(dark.text, 0xcdd6f4);
+        assert_eq!(dark.subtext, 0xa6adc8);
+        assert_eq!(dark.muted, 0x6c7086);
         assert_eq!(dark.accent, 0x89b4fa);
+        assert_eq!(dark.green, 0xa6e3a1);
+        assert_eq!(dark.red, 0xf38ba8);
 
         let light = SettingsUiPalette::light();
         assert_eq!(light.surface, 0xccd0da);
         assert_eq!(light.overlay, 0xbcc0cc);
         assert_eq!(light.text, 0x4c4f69);
+        assert_eq!(light.subtext, 0x5c5f77);
         assert_eq!(light.muted, 0x6c6f85);
+        assert_eq!(light.accent, 0x1e66f5);
         assert_eq!(light.green, 0x40a02b);
         assert_eq!(light.red, 0xd20f39);
     }
