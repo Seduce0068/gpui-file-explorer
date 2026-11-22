@@ -187,9 +187,9 @@ symlink 拒否・ゴミ箱ビュー除外。カスタム LRU / ローダ側バ�
   クロームのみ（toolbar 36 + breadcrumb 28 + 列ヘッダ 24 + status bar 24 =
   **112px**）で、2 行目の KDE ネイティブ枠（タイトルバー）は含まない。一方、実装の
   `LIST_CHROME_HEIGHT_PX = 140.0`（`app/src/main.rs` の `LIST_CHROME_HEIGHT_PX` 定数、
-  207 行目。review-report.md 794-795 行目）は PageUp/PageDown のステップ算出で
-  `viewport_size().height - 140` をリスト行領域として使う
-  （同ファイルの `page_step` 算出。行番号は並行変更で変わるためシンボル名で参照）。
+  [`review-report.md`](review-report.md) §「追加リファクタ（2026-11-17T13:35+09:00）」）は
+  PageUp/PageDown のステップ算出で `viewport_size().height - 140` をリスト行領域として使う
+  （同ファイルの `page_step` 算出。行番号は並行変更で変わるためシンボル名・章節名で参照）。
   この 140px はタイトルバー約 28px を含む **112 + 28 = 140px** の基盤であり、
   図の 112px と矛盾する数値ではない。ネイティブ枠の実高は OS/テーマで変動し得るため、
   28px は as-built 定数が見込む枠高として読む。
@@ -312,7 +312,7 @@ main()
 - **フォーカス規約**: ルート要素が `track_focus`。一覧のクリック/空クリックでフォーカスを奪い、ショートカットを常に有効化（RESEARCH §3.3 の「フォーカス喪失でショートカット死」対策）。ダイアログ表示中はダイアログがフォーカスを持ち、閉じたらリストへ戻す。
 - **IME**: P0 はテキスト入力 UI を持たない。新規フォルダ名は as-built の
   `新しいフォルダ`・`新しいフォルダ (2)` の自動採番
-  （`app/src/model.rs:805` の `create_unique_folder` がこの日本語リテラルを
+  （`app/src/model.rs` の `model::create_unique_folder` がこの日本語リテラルを
   使用）。P1 のリネーム/パス入力で gpui-component `Input` を使う
   （自前 IME 実装は禁止、RESEARCH §4.5）。
 
@@ -863,8 +863,8 @@ pub fn confirm_and_trash(
 3. 新規フォルダ: `create_dir` を background 実行 → 成功したら再読込
    （または upsert）→ 新フォルダを選択状態に。名前は as-built の
    `新しいフォルダ`、衝突時 `新しいフォルダ (2)`…（`exists` チェックは
-   `create_dir` の `AlreadyExists` で検出）。`app/src/model.rs:805` の
-   `create_unique_folder` がこの日本語リテラルを使用。
+   `create_dir` の `AlreadyExists` で検出）。`app/src/model.rs` の
+   `model::create_unique_folder` がこの日本語リテラルを使用。
 4. 監視の自己操作抑制（§4.6）とセットで、ちらつきを防ぐ。
 
 ### 6.7 完全削除（将来の扱い）

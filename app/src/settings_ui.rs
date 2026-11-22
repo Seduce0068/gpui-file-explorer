@@ -26,7 +26,9 @@ use gpui_kit::component::Disableable;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::settings::{is_known_column_key, ColumnPrefs, COLUMN_KEYS};
+use crate::settings::{
+    is_known_column_key, ColumnPrefs, COLUMN_KEYS, COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH,
+};
 
 // ---------------------------------------------------------------------------
 // Tabs
@@ -601,6 +603,10 @@ const FILES_COLUMN_KEYWORDS: &[&str] = &[
     "column",
     "columns",
     "column_prefs",
+    // AQ04: the canonical width note rendered in this row names the exact
+    // settings.json path. Searching that visible word must surface this tab
+    // instead of routing only to Personalize.
+    "settings.json",
     "幅",
     "width",
     "順番",
@@ -681,6 +687,10 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     "リセット",
     // ヒントの原文は「一括リセット」なので、そのままコピーした検索も届ける。
     "一括リセット",
+    // AQ03: the same guidance prints the English word `reset` inside
+    // `KeyMap::reset`. The katakana aliases above do not contain the ASCII
+    // substring, so copying the visible word would otherwise dead-end.
+    "reset",
     "予約キー",
 ];
 /// Searchable keywords of the "既定のショートカット" row group.
@@ -1295,13 +1305,24 @@ pub fn column_reordered(visible: &[String], key: &str, delta: isize) -> Option<V
     Some(next)
 }
 
+/// Acceptance predicate for a persisted column width (AQ05). This mirrors the
+/// filter in `main.rs::column_width` and the check in
+/// `settings.rs::ColumnPrefs::validate`: only finite values inside the supported
+/// pixel range are usable; NaN, infinities and out-of-range values fall back to
+/// the built-in default instead of being rendered verbatim.
+fn is_valid_column_width(width: f32) -> bool {
+    width.is_finite() && (COLUMN_MIN_WIDTH..=COLUMN_MAX_WIDTH).contains(&width)
+}
+
 /// Compact width caption shown next to a column row: the effective px width,
 /// or 自動 for the Name column's stretch cell when no override is stored.
+/// Invalid stored overrides are ignored just like the header renderer does.
 pub fn column_width_label(prefs: &ColumnPrefs, key: &str) -> String {
     let width = prefs
         .widths
         .get(key)
         .copied()
+        .filter(|width| is_valid_column_width(*width))
         .unwrap_or_else(|| crate::settings::default_column_width(key));
     if width <= 0.0 {
         "自動".to_string()
@@ -2684,6 +2705,7 @@ mod tests {
         assert!(SHORTCUTS_KEYMAP_KEYWORDS.contains(&"リセット"));
         assert!(SHORTCUTS_KEYMAP_KEYWORDS.contains(&"一括リセット"));
         assert!(SHORTCUTS_KEYMAP_KEYWORDS.contains(&"予約キー"));
+        assert!(SHORTCUTS_KEYMAP_KEYWORDS.contains(&"reset"));
         for token in ["一括リセット", "予約キー"] {
             assert!(
                 SETTINGS_KEYMAP_INPUT_HINT.contains(token),
@@ -2695,6 +2717,16 @@ mod tests {
                 "visible word {token} must surface exactly the Shortcuts tab"
             );
         }
+        // AQ03: the English word printed in `KeyMap::reset` must not dead-end.
+        assert!(
+            SETTINGS_KEYMAP_INPUT_HINT.contains("reset"),
+            "keymap hint must still show the KeyMap::reset word: {SETTINGS_KEYMAP_INPUT_HINT}"
+        );
+        assert_eq!(
+            tabs_matching_query("reset"),
+            vec![SettingsTab::Shortcuts],
+            "visible word reset must surface exactly the Shortcuts tab"
+        );
     }
 
     #[test]
@@ -2721,6 +2753,22 @@ mod tests {
                 words: &["ディレクトリ"],
                 rendered_in: &[FILES_HIDDEN_DESCRIPTION, FILES_SORT_DESCRIPTION],
                 keyword_arrays: &[FILES_HIDDEN_KEYWORDS, FILES_SORT_KEYWORDS],
+            },
+            // AQ03: the reset guidance embedded in the keymap hint prints the
+            // English `KeyMap::reset`; searching that word must reach the row.
+            CanonicalNoteCase {
+                note: crate::strings::KEYMAP_RESET_GUIDANCE,
+                words: &["reset"],
+                rendered_in: &[SETTINGS_KEYMAP_INPUT_HINT],
+                keyword_arrays: &[SHORTCUTS_KEYMAP_KEYWORDS],
+            },
+            // AQ04: the column-width note embedded in the Files row prints the
+            // exact settings.json path; searching it must reach that row too.
+            CanonicalNoteCase {
+                note: crate::strings::COLUMN_WIDTH_SETTINGS_NOTE,
+                words: &["settings.json"],
+                rendered_in: &[FILES_COLUMN_DESCRIPTION],
+                keyword_arrays: &[FILES_COLUMN_KEYWORDS],
             },
         ];
         for case in cases {
@@ -2879,7 +2927,6 @@ mod tests {
             ("unbind", SettingsTab::Shortcuts),
             ("直接移動", SettingsTab::Shortcuts),
             ("カラーパレット", SettingsTab::Personalize),
-            ("settings.json", SettingsTab::Personalize),
         ];
         for (query, expected) in cases {
             assert_eq!(
@@ -2893,6 +2940,14 @@ mod tests {
                 "lowercase wording {query} must surface {expected:?}"
             );
         }
+        // AQ04: the canonical width note on the Files row also prints
+        // `settings.json`, so the query now reaches both that row and the
+        // Personalize info row, in tab display order. The single-tab cases
+        // above keep their exact-match guarantee.
+        assert_eq!(
+            tabs_matching_query("settings.json"),
+            vec![SettingsTab::Files, SettingsTab::Personalize]
+        );
         // AC06: guard the keyword arrays themselves, so a future rewrite cannot
         // drop the rendered headings while the substring tests still pass via
         // some shorter keyword such as "表示" or "並び".
@@ -4156,7 +4211,7 @@ mod column_prefs_ui_tests {
         column_ids, column_label, column_reordered, column_visibility, column_width_label,
         matches_query, tabs_matching_query, FILES_COLUMN_DESCRIPTION, FILES_COLUMN_KEYWORDS,
     };
-    use crate::settings::{ColumnPrefs, COLUMN_KEYS};
+    use crate::settings::{ColumnPrefs, COLUMN_KEYS, COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH};
     use crate::settings_ui::SettingsTab;
 
     #[test]
@@ -4297,5 +4352,42 @@ mod column_prefs_ui_tests {
         assert_eq!(column_width_label(&prefs, "modified"), "150px");
         prefs.widths.insert("name".into(), 240.0);
         assert_eq!(column_width_label(&prefs, "name"), "240px");
+    }
+
+    #[test]
+    fn column_width_label_ignores_invalid_stored_widths() {
+        // AQ05: the caption applies the same acceptance predicate as the header
+        // (`main.rs::column_width`) and persisted validation. NaN, infinities,
+        // out-of-range and non-positive widths must fall back to the built-in
+        // default instead of being displayed verbatim.
+        let mut prefs = ColumnPrefs::default();
+        for invalid in [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.1,
+            COLUMN_MIN_WIDTH - 0.1,
+            COLUMN_MAX_WIDTH + 0.1,
+        ] {
+            prefs.widths.insert("kind".into(), invalid);
+            assert_eq!(
+                column_width_label(&prefs, "kind"),
+                "90px",
+                "invalid width {invalid} must fall back to the default width"
+            );
+        }
+        // The Name column's default is 0.0 (stretch), rendered as 自動.
+        prefs.widths.insert("name".into(), f32::NAN);
+        assert_eq!(column_width_label(&prefs, "name"), "自動");
+    }
+
+    #[test]
+    fn column_width_label_accepts_inclusive_range_boundaries() {
+        // AQ05: both edges of the supported width range are valid overrides.
+        let mut prefs = ColumnPrefs::default();
+        prefs.widths.insert("kind".into(), COLUMN_MIN_WIDTH);
+        assert_eq!(column_width_label(&prefs, "kind"), "60px");
+        prefs.widths.insert("kind".into(), COLUMN_MAX_WIDTH);
+        assert_eq!(column_width_label(&prefs, "kind"), "600px");
     }
 }

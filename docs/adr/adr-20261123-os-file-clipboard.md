@@ -163,10 +163,10 @@ iOS は `open_with_system` が `ios/platform.rs:346-348` でコメントのみ�
 
 ### 既存調査との食い違い
 
-[RESEARCH.md:371](../../RESEARCH.md#L371) は「Wayland は `text/uri-list` と独自 MIME を
-実装済み」と記載するが、確認した限りその MIME はドラッグ＆ドロップの送受信で使われ、
-クリップボードの読み書きには使われていない。
-[RESEARCH.md:370](../../RESEARCH.md#L370) の D&D の記述と混同した可能性がある。
+[RESEARCH.md](../../RESEARCH.md) §4.7（ドラッグ&ドロップ／クリップボード）は
+「Wayland は `text/uri-list` と独自 MIME を実装済み」と記載するが、確認した限りその MIME は
+ドラッグ＆ドロップの送受信で使われ、クリップボードの読み書きには使われていない。
+[RESEARCH.md](../../RESEARCH.md) §4.7（ドラッグ&ドロップ／クリップボード）の D&D の記述と混同した可能性がある。
 本 ADR では実読したソースコードを根拠にする。
 
 ## 選択肢
@@ -279,7 +279,7 @@ Android / iOS の共有 Intent は本 ADR の範囲外とし、別の ADR で設
 - [notes/os-file-clipboard-notes.md](../../notes/os-file-clipboard-notes.md)
 - [todo.md](../../todo.md) の ID `NW10`（OS クリップボード調査と ADR）、
   ID `NF02`（Windows 実ドライブ列挙の FFI 実装）
-- [RESEARCH.md:364-377](../../RESEARCH.md#L364-L377)（D&D とクリップボードの混同に注意）
+- [RESEARCH.md](../../RESEARCH.md) §4.7（ドラッグ&ドロップ／クリップボード）（D&D とクリップボードの混同に注意）
 - ローカル取得源码: `gpui-pre-0.3.12`、`gpui-pre-linux-0.3.12`、
   `gpui-pre-windows-0.3.12`、`gpui-pre-macos-0.3.12`、`gpui-pre-ios-0.3.12`
   （`~/.cargo/registry/src/index.crates.io-*/`）

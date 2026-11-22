@@ -58,9 +58,9 @@ crates.io / docs.rs / GitHub の一次情報だけを根拠に、
 
 ### 既存の調査メモとライセンス許可
 
-- `notes/fs-cross-platform-notes.md:36` は候補を
+- `notes/fs-cross-platform-notes.md` §1（推奨表）は候補を
   「`icu_collator` / OS API、2.4.0」と記載する。
-- 同ファイル `:57-62` は Linux で `icu_collator` 2.4.0（Unicode-3.0）を挙げつつ、
+- 同ファイル §1.4（ロケール対応照合）は Linux で `icu_collator` 2.4.0（Unicode-3.0）を挙げつつ、
   「MVP ではロケール照合しない」と結論する。
 - `deny.toml` の `[licenses].allow` には既に `Unicode-3.0` が含まれる。
 - `NOTICE.md` は本リポジトリを `AGPL-3.0-or-later` とし、
@@ -151,7 +151,7 @@ assert_eq!(collator.compare("あ", "い"), std::cmp::Ordering::Less);
   表だけでは要件を満たさない。
 - 却下理由 2: Unicode / CLDR の更新追従と回帰テストの維持コストが高く、
   車輪の再発明になる（`AGENTS.md` §2 の事前調査方針にも反する）。
-- 却下理由 3: 既存の `notes/fs-cross-platform-notes.md:61` が
+- 却下理由 3: 既存の `notes/fs-cross-platform-notes.md` §1.4（ロケール対応照合）が
   既製候補として `icu_collator` を特定済みで、採用障害が見当たらない。
 
 ### 案 C: std のみで現状維持（既定値としては採用、単独の解決策としては却下）

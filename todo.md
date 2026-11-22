@@ -1477,19 +1477,19 @@ status: current
 
 ### 優先度: 中（ループ R44・confirmed）
 
-- [ ] **AQ01** DESIGN の create_unique_folder 参照が 805（実 803）
+- [x] **AQ01** DESIGN の create_unique_folder 参照が 805（実 803） — 対応: impl-r44-docs
   — DESIGN.md:315,866
-- [ ] **AQ02** app/README「ソートはヘッダクリックのみ」が Alt+S と矛盾
+- [x] **AQ02** app/README「ソートはヘッダクリックのみ」が Alt+S と矛盾 — 対応: impl-r44-docs
   — app/README.md:660
 
 ### 優先度: 低（ループ R44）
 
-- [ ] **AQ03** 設定検索 `reset` がゼロヒット — settings_ui.rs:641
-- [ ] **AQ04** `settings.json` がファイル列タブから検索できない
+- [x] **AQ03** 設定検索 `reset` がゼロヒット — settings_ui.rs:641 — 対応: impl-r44-ux
+- [x] **AQ04** `settings.json` がファイル列タブから検索できない — 対応: impl-r44-ux
   — settings_ui.rs:598
-- [ ] **AQ05** column_width_label の不正保存値分岐が無テスト
+- [x] **AQ05** column_width_label の不正保存値分岐が無テスト — 対応: impl-r44-ux（実バグ修正）
   — settings_ui.rs:1300
-- [ ] **AQ06** ADR/DESIGN の行アンカー方形針自己矛盾（4箇所）
+- [x] **AQ06** ADR/DESIGN の行アンカー方形針自己矛盾（4箇所） — 対応: impl-r44-docs
   — docs/adr/*.md / DESIGN.md:190
 
 ### 優先度: 低（調査タスク）
