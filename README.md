@@ -28,7 +28,10 @@ cargo test           # 全テスト（データ層・監視・P1 機能を含む
 ```
 
 前提: Rust 1.92+、Vulkan 対応 GPU ドライバ、Wayland または X11。
-必要パッケージは [app/README.md](app/README.md) の「ビルド」を参照してください
+Rust の 1.92 は [`app/Cargo.toml`](app/Cargo.toml) の `rust-version` に宣言した
+**MSRV（下限）** で、1.92 自体でのビルドは未検証です。実機で検証済みの
+ツールチェーンは rustc / cargo 1.99.1（[app/README.md](app/README.md) の
+「検証環境」を参照）。必要パッケージは [app/README.md](app/README.md) の「ビルド」を参照してください
 （`libxkbcommon-x11-dev` が無い環境向けの回避スクリプトを同梱）。
 
 ## キーマップの上書き

@@ -365,6 +365,26 @@ fn search_view_key_reaches_keymap(
         || search_view_action_allowed(keymap.resolve(key, ctrl, shift, alt))
 }
 
+/// Final Search-view routing decision, including the text-input focus guard
+/// (AE01). `action` is the keystroke's resolved keymap action and
+/// `reaches_keymap` is [`search_view_key_reaches_keymap`] for the same
+/// keystroke; keeping the whole decision in a pure helper makes the input-
+/// focused branch directly testable without a GPUI `Window`.
+///
+/// While a query text field owns focus every key stays with the input —
+/// F4 / Ctrl+Q included, per the documented contract — except `Reload`:
+/// F5 (and its Ctrl+R alias, or any rebind) must still re-run the current
+/// query, because that is the recovery key advertised by
+/// `STATUS_RESCAN_FAILED` and `LOAD_ERROR_HINT_SEARCH` (AC10). Checking the
+/// resolved action rather than a hardcoded F5 keeps rebinds working.
+fn search_view_key_reaches_dispatch(
+    input_focused: bool,
+    action: KeyAction,
+    reaches_keymap: bool,
+) -> bool {
+    reaches_keymap && (!input_focused || matches!(action, KeyAction::Reload))
+}
+
 /// Icon colour per file kind (folders are blue, everything else is tinted).
 ///
 /// Rendering now uses [`AppPalette::kind_color`]; this Mocha-only reference
@@ -5054,7 +5074,8 @@ impl Explorer {
             // Ctrl+Shift+F (FocusSearchName) must reach the name filter even
             // while a search text input owns the keyboard. Handle it before
             // the input-focus guard below, which swallows every other key
-            // typed into the query field. Using the keymap keeps rebindings.
+            // typed into the query field except Reload. Using the keymap keeps
+            // rebindings.
             if self
                 .keymap
                 .resolve(key, modifiers.control, modifiers.shift, modifiers.alt)
@@ -5063,19 +5084,26 @@ impl Explorer {
                 self.focus_search_name(window, cx);
                 return;
             }
-            // The query field keeps every key (including F4 / Ctrl+Q) while
-            // typing. With focus on a result row / the root, let the allowlist
-            // and any keymap rebind of an allowed action fall through to the
-            // normal keymap.
-            if self.search_input_focused(window, cx)
-                || !search_view_key_reaches_keymap(
-                    &self.keymap,
-                    key,
-                    modifiers.control,
-                    modifiers.shift,
-                    modifiers.alt,
-                )
-            {
+            // AE01: the query field still keeps every key while typing
+            // (including F4 / Ctrl+Q), except Reload — F5 / Ctrl+R (or a rebind)
+            // must reach dispatch so the advertised recovery key re-runs the
+            // query. With focus on a result row / the root, the allowlist and
+            // any keymap rebind of an allowed action fall through as before.
+            let action =
+                self.keymap
+                    .resolve(key, modifiers.control, modifiers.shift, modifiers.alt);
+            let reaches_keymap = search_view_key_reaches_keymap(
+                &self.keymap,
+                key,
+                modifiers.control,
+                modifiers.shift,
+                modifiers.alt,
+            );
+            if !search_view_key_reaches_dispatch(
+                self.search_input_focused(window, cx),
+                action,
+                reaches_keymap,
+            ) {
                 return;
             }
         }
@@ -12416,6 +12444,11 @@ mod tests {
         assert_eq!(tab_label(Path::new("/")), "ルート");
         assert_eq!(tab_label(Path::new("/home/koppe")), "koppe");
         assert_eq!(tab_label(Path::new("relative/dir")), "dir");
+        // AE06: `.` / `..` have no `file_name()`, so the previously untested
+        // fallback must keep the literal path via `display_path` instead of
+        // yielding an empty tab label.
+        assert_eq!(tab_label(Path::new(".")), ".");
+        assert_eq!(tab_label(Path::new("..")), "..");
     }
 
     #[test]
@@ -13909,6 +13942,73 @@ mod tests {
         assert!(!super::reload_reruns_search(super::ViewSource::Trash));
     }
 
+    // AE01: the previous input-focus guard swallowed every key while the query
+    // field owned focus, so F5 never reached `Reload` → `run_search` even
+    // though STATUS_RESCAN_FAILED / LOAD_ERROR_HINT_SEARCH advertise it. The
+    // pure helper is exercised with input_focused = true to lock the fix.
+    #[test]
+    fn search_input_focused_forwards_reload_but_keeps_other_keys() {
+        use super::search_view_key_reaches_dispatch;
+
+        let dispatch =
+            |keymap: &KeyMap, key: &str, ctrl: bool, shift: bool, input_focused: bool| {
+                let action = keymap.resolve(key, ctrl, shift, false);
+                let reaches =
+                    super::search_view_key_reaches_keymap(keymap, key, ctrl, shift, false);
+                search_view_key_reaches_dispatch(input_focused, action, reaches)
+            };
+
+        let default = KeyMap::default_keymap();
+        // Both shipped Reload chords pass the input-focus guard.
+        assert_eq!(
+            default.resolve("f5", false, false, false),
+            KeyAction::Reload
+        );
+        assert_eq!(default.resolve("r", true, false, false), KeyAction::Reload);
+        assert!(
+            dispatch(&default, "f5", false, false, true),
+            "F5 must re-run the query while typing"
+        );
+        assert!(
+            dispatch(&default, "r", true, false, true),
+            "Ctrl+R must re-run the query while typing"
+        );
+
+        // A rebind of Reload keeps working while typing.
+        let mut rebound = KeyMap::default_keymap();
+        assert!(rebound.rebind(KeyAction::Reload, "b", false, false, false));
+        assert!(
+            dispatch(&rebound, "b", false, false, true),
+            "rebound Reload must pass the input-focus guard too"
+        );
+
+        // The documented contract still holds for every other key: the input
+        // keeps F4 / Ctrl+Q (and navigation / Ctrl+,) while typing, even though
+        // those actions are allowed when a result row owns focus.
+        assert!(
+            !dispatch(&default, "f4", false, false, true),
+            "F4 stays in input"
+        );
+        assert!(
+            !dispatch(&default, "q", true, false, true),
+            "Ctrl+Q stays in input"
+        );
+        assert!(
+            !dispatch(&default, "up", false, false, true),
+            "arrows stay in input"
+        );
+        assert!(
+            !dispatch(&default, ",", true, false, true),
+            "Ctrl+, stays in input"
+        );
+        assert!(!dispatch(&default, "escape", false, false, true));
+
+        // Without input focus the allowlist still forwards them all.
+        assert!(dispatch(&default, "f4", false, false, false));
+        assert!(dispatch(&default, "q", true, false, false));
+        assert!(dispatch(&default, "up", false, false, false));
+    }
+
     #[test]
     fn search_view_forwards_ctrl_comma_to_open_settings() {
         use super::{search_view_key_allowed, search_view_key_reaches_keymap};
@@ -13939,12 +14039,15 @@ mod tests {
         let summary = "検索: 「rs」 3 件".to_string();
 
         // A freshness warning must survive a filter tweak and stay first.
-        let stale = search_filter_status("変更を検出しました（再検索が必要です）", summary.clone());
-        assert!(stale.starts_with("変更を検出しました（再検索が必要です）"));
+        // AE08: build on the shared constant so its F5 recovery hint cannot
+        // drift from the assertion.
+        let stale = search_filter_status(STATUS_SEARCH_STALE, summary.clone());
+        assert!(stale.starts_with(STATUS_SEARCH_STALE));
         assert!(stale.contains("3 件"));
         // Repeated tweaks must not duplicate the warning.
         let twice = search_filter_status(&stale, summary.clone());
-        assert_eq!(twice.matches("再検索が必要です").count(), 1);
+        assert_eq!(twice.matches(STATUS_SEARCH_STALE).count(), 1);
+        assert_eq!(twice.matches("F5 で再検索").count(), 1);
 
         // Ordinary statuses still get replaced by the fresh result count.
         assert_eq!(

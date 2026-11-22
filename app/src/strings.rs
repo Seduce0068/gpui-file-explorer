@@ -147,18 +147,35 @@ const _: () = assert!(KEYMAP_FORMAT_HINT.len() == keymap_format_hint!().len());
 /// ディレクトリ表示では `Ctrl+L`（OpenLocation）が有効なので、既存の
 /// [`LOAD_ERROR_HINT`] をそのまま共用する（355 行目の定義は変更しない）。
 pub const LOAD_ERROR_HINT_DIRECTORY: &str = LOAD_ERROR_HINT;
+/// ゴミ箱ビューから一覧へ戻るための復帰案内（AE05）。
+///
+/// 読み込み失敗時（`LOAD_ERROR_HINT_TRASH`）と空状態（`EMPTY_TRASH`、
+/// 280 行目以降は core 所有）が同じ導線を案内するための唯一の定義。
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// `trash_exit_hint!()` を使う。
+macro_rules! trash_exit_hint {
+    () => {
+        "Alt+← または Backspace で一覧へ戻る"
+    };
+}
 /// ゴミ箱ビューでは `Ctrl+L` が拒否され、Esc は操作キャンセル（未操作なら
 /// no-op）のため一覧へ戻らない。実際に `exit_trash` を呼ぶ Alt+← / Backspace
-/// （main.rs）を案内する。
-pub const LOAD_ERROR_HINT_TRASH: &str = "F5 で再読込 / Alt+← または Backspace で一覧へ戻る";
+/// （main.rs）を案内する（AE05 で Backspace を追加）。
+pub const LOAD_ERROR_HINT_TRASH: &str = concat!("F5 で再読込 / ", trash_exit_hint!());
 /// 検索ビューでは `Ctrl+L` がキー許可リストになく、Esc で閉じるのが復帰導線。
 pub const LOAD_ERROR_HINT_SEARCH: &str = "F5 で再読込 / Esc で閉じる";
+
+/// ゴミ箱の復帰案内の正規表記（AE05）。F1 / README / 空状態の同期判定に使う。
+pub const TRASH_EXIT_HINT: &str = trash_exit_hint!();
 
 /// `main.rs` の rewiring が未適用でも `-D warnings` の dead_code を出さない。
 /// 呼び出し側が3定数を使い始めた後も、この参照は無害に残る。
 const _: () = assert!(!LOAD_ERROR_HINT_DIRECTORY.is_empty());
 const _: () = assert!(!LOAD_ERROR_HINT_TRASH.is_empty());
 const _: () = assert!(!LOAD_ERROR_HINT_SEARCH.is_empty());
+const _: () = assert!(TRASH_EXIT_HINT.len() == trash_exit_hint!().len());
+const _: () =
+    assert!(LOAD_ERROR_HINT_TRASH.len() == "F5 で再読込 / ".len() + TRASH_EXIT_HINT.len());
 
 /// AC07 / AC08 の定数は既存の `mod tests`（280 行目以降）からは触らない。
 /// 所有範囲内に小さなテストモジュールを置き、各案内が宣伝するキーを固定する。
@@ -275,6 +292,104 @@ mod view_hint_and_keymap_format_tests {
             .map(|(_, text)| *text)
             .expect("directory-view note row must exist");
         assert_eq!(note, DIRECTORY_VIEW_ONLY_NOTE);
+    }
+
+    #[test]
+    fn trash_exit_hint_is_shared_by_load_error_and_empty_state() {
+        // AE05: ゴミ箱ビューの読み込み失敗ヒントと空状態ヒントは、同じ
+        // 「一覧へ戻る」導線（Alt+← / Backspace）を共通マクロから組み立てる。
+        assert_eq!(TRASH_EXIT_HINT, trash_exit_hint!());
+        assert!(LOAD_ERROR_HINT_TRASH.ends_with(TRASH_EXIT_HINT));
+        for token in ["Alt+←", "Backspace", "一覧へ戻る"] {
+            assert!(
+                TRASH_EXIT_HINT.contains(token),
+                "canonical trash exit hint: {TRASH_EXIT_HINT}"
+            );
+        }
+        let (_, empty) = EMPTY_TRASH;
+        assert!(
+            empty.contains(TRASH_EXIT_HINT),
+            "EMPTY_TRASH must reuse the canonical exit hint: {empty}"
+        );
+        assert!(!empty.contains("前の場所へ"), "stale exit wording: {empty}");
+    }
+
+    #[test]
+    fn trash_sort_refusal_carries_the_exit_route() {
+        // AE07: ゴミ箱の他通知と同じ「ゴミ箱を出て」導線を並び替え拒否にも載せる。
+        assert!(
+            STATUS_TRASH_NO_SORT.contains("ゴミ箱を出て"),
+            "trash sort refusal must show the exit route: {STATUS_TRASH_NO_SORT}"
+        );
+        assert!(STATUS_TRASH_NO_HIDDEN.contains("ゴミ箱を出て"));
+    }
+
+    #[test]
+    fn search_stale_status_and_f1_row_offer_f5_rerun() {
+        // AE08: AC10 で F5 が検索を再実行するため、通知と F1 ヘルプも合わせる。
+        assert!(
+            STATUS_SEARCH_STALE.contains("F5 で再検索"),
+            "stale search status must advertise F5: {STATUS_SEARCH_STALE}"
+        );
+        let reload = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "Ctrl+R / F5")
+            .map(|(_, text)| *text)
+            .expect("reload help row must exist");
+        assert!(
+            reload.contains("再検索") || reload.contains("検索の再実行"),
+            "F1 reload row must mention search re-run: {reload}"
+        );
+    }
+
+    #[test]
+    fn readme_documents_each_view_recovery_hint_verbatim() {
+        // AE02: app/README.md のビュー別ヒントが定数と漂移しないことを固定する。
+        // README はキーをバッククォートで囲むため、外してから照合する。
+        let readme = include_str!("../README.md");
+        for (name, constant) in [
+            ("LOAD_ERROR_HINT_DIRECTORY", LOAD_ERROR_HINT_DIRECTORY),
+            ("LOAD_ERROR_HINT_TRASH", LOAD_ERROR_HINT_TRASH),
+            ("LOAD_ERROR_HINT_SEARCH", LOAD_ERROR_HINT_SEARCH),
+        ] {
+            let line = readme
+                .lines()
+                .find(|line| line.contains(name))
+                .unwrap_or_else(|| panic!("README must document {name}"));
+            let normalized = line.replace('`', "");
+            assert!(
+                normalized.contains(constant),
+                "README {name} must match the constant ({constant}): {line}"
+            );
+        }
+        // ゴミ箱では Ctrl+L が拒否されるので、旧来の案内が残っていないこと。
+        let trash_line = readme
+            .lines()
+            .find(|line| line.contains("LOAD_ERROR_HINT_TRASH"))
+            .expect("trash load-error hint is documented");
+        assert!(
+            !trash_line.contains("Ctrl+L"),
+            "stale trash hint: {trash_line}"
+        );
+        assert!(
+            !trash_line.contains("`Esc` 一覧へ戻る"),
+            "stale trash hint: {trash_line}"
+        );
+    }
+
+    #[test]
+    fn readme_f5_row_mentions_search_rerun() {
+        // AE08: README の F5 行も再検索の再実行を案内する。
+        let readme = include_str!("../README.md");
+        let row = readme
+            .lines()
+            .find(|line| line.contains("`Ctrl+R` / `F5`"))
+            .expect("README must have the F5 row");
+        assert!(
+            row.contains("再検索"),
+            "F5 row must mention search re-run: {row}"
+        );
     }
 }
 
@@ -403,7 +518,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+1 / Ctrl+2", "詳細リスト / アイコングリッド"),
             ("Ctrl+H", "隠しファイルの表示切替"),
-            ("Ctrl+R / F5", "再読込"),
+            ("Ctrl+R / F5", "再読込 / 検索の再実行"),
             ("Ctrl+F", "検索（名前 / 内容）"),
             ("Ctrl+Shift+F", "検索結果を名前で絞り込み"),
             ("Ctrl+I", "プロパティ"),
@@ -540,7 +655,10 @@ pub const KEYMAP_INPUT_HINT: &str = concat!(
 /// Empty-state title + optional hint per listing source.
 pub const EMPTY_TRASH: (&str, &str) = (
     "ゴミ箱は空です",
-    "削除した項目はここに表示されます（完全削除は未対応）。Alt+← で前の場所へ",
+    concat!(
+        "削除した項目はここに表示されます（完全削除は未対応）。",
+        trash_exit_hint!()
+    ),
 );
 pub const EMPTY_SEARCH: (&str, &str) = (
     "一致する項目がありません",
@@ -587,7 +705,7 @@ pub fn empty_hidden_only_trash(count: usize) -> String {
 /// Frequently used fixed status-bar messages.
 pub const STATUS_CHANGED: &str = "変更を検出しました";
 /// Shown when a search snapshot cannot be refreshed automatically.
-pub const STATUS_SEARCH_STALE: &str = "変更を検出しました（再検索が必要です）";
+pub const STATUS_SEARCH_STALE: &str = "変更を検出しました（再検索が必要です / F5 で再検索）";
 pub const STATUS_TABS_ONLY_DIRECTORY: &str = "タブはディレクトリ表示でのみ操作できます";
 pub const STATUS_BOOKMARKS_ONLY_DIRECTORY: &str =
     "ブックマークはディレクトリ表示でのみ操作できます";
@@ -609,7 +727,8 @@ pub const STATUS_TRASH_NO_RENAME: &str = "ゴミ箱ビューでは名前を変�
 pub const STATUS_TRASH_NO_PURGE: &str = "ゴミ箱内の完全削除は未対応です";
 pub const STATUS_TRASH_NO_HIDDEN: &str =
     "ゴミ箱ビューでは隠しファイルの切替はできません（ゴミ箱を出てから Ctrl+H）";
-pub const STATUS_TRASH_NO_SORT: &str = "ゴミ箱ビューでは並び替えはできません";
+pub const STATUS_TRASH_NO_SORT: &str =
+    "ゴミ箱ビューでは並び替えはできません（ゴミ箱を出てから並び替え）";
 pub const STATUS_CANCELLING: &str = "キャンセルしています…";
 /// コピー / 切り取り / ゴミ箱移動で選択項目がないときの共通通知。
 pub const STATUS_NO_SELECTION: &str = "選択項目がありません";
@@ -1195,9 +1314,12 @@ mod tests {
         // Q07: every empty state must also say how to get back. The trash and
         // load-error overlays are no exception — name their recovery keys.
         let (_, trash) = EMPTY_TRASH;
-        for token in ["Alt+←", "前の場所へ"] {
+        // AE05: 空状態の復帰導線は正規の TRASH_EXIT_HINT を埋め込む。
+        for token in ["Alt+←", "Backspace", "一覧へ戻る"] {
             assert!(trash.contains(token), "trash hint: {trash}");
         }
+        assert!(trash.ends_with(TRASH_EXIT_HINT), "trash hint: {trash}");
+        assert!(!trash.contains("前の場所へ"), "stale trash hint: {trash}");
         for token in ["F5", "Ctrl+L"] {
             assert!(
                 LOAD_ERROR_HINT.contains(token),
@@ -1485,6 +1607,22 @@ mod tests {
     }
 
     #[test]
+    fn trash_no_sort_shares_the_exit_trash_recovery_wording() {
+        // AE07: ゴミ箱ビューの他の拒否通知と同じ「ゴミ箱を出て」導線を
+        // 並び替え拒否にも載せる。片方だけ drift すると回帰を検知する。
+        for message in [
+            STATUS_TRASH_NO_SORT,
+            STATUS_TRASH_NO_HIDDEN,
+            EMPTY_HIDDEN_ONLY_TRASH,
+        ] {
+            assert!(
+                message.contains("ゴミ箱を出て"),
+                "trash refusal must show the exit route: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn refusal_statuses_have_a_documented_colour_class() {
         // L06: 「操作を行わなかった / できなかった」を表す STATUS_* は成功 green
         // ではなく warning(amber) / error(red) に分類する。表示側の
@@ -1509,6 +1647,17 @@ mod tests {
             ("STATUS_TRASH_NO_PURGE", STATUS_TRASH_NO_PURGE, "warning"),
             ("STATUS_TRASH_NO_HIDDEN", STATUS_TRASH_NO_HIDDEN, "warning"),
             ("STATUS_TRASH_NO_SORT", STATUS_TRASH_NO_SORT, "warning"),
+            // AE04: これら3つは main.rs の warning マーカーに登録済みだったが
+            // 分類表に欠けていた（Y01 の逆方向チェックが無かったため）。
+            // 鮮度警告 / キャンセル完了 / 読み取り専用通知で拒否語の形を取ら
+            // ないため、拒否語チェックは AMBER_STATUS_NOTICES で明示除外する。
+            ("STATUS_SEARCH_STALE", STATUS_SEARCH_STALE, "warning"),
+            ("STATUS_CANCELLED", STATUS_CANCELLED, "warning"),
+            (
+                "STATUS_SETTINGS_READ_ONLY",
+                STATUS_SETTINGS_READ_ONLY,
+                "warning",
+            ),
             (
                 "STATUS_KEYMAP_NO_UNBIND_PREFIX",
                 STATUS_KEYMAP_NO_UNBIND_PREFIX,
@@ -1715,6 +1864,14 @@ mod tests {
         // 一時進行通知と同じく一般ルールの対象外とし、破棄の事実と復帰導線を
         // 個別に検証する（分類は warning 固定）。
         const DATA_LOSS_NOTICES: &[&str] = &["STATUS_SETTINGS_DISCARDED"];
+        // AE04: 鮮度警告 / キャンセル完了 / 読み取り専用通知は意図的に amber
+        // （warning マーカー登録済み）だが、「〜ません」等の拒否語を含まない。
+        // 分類表への登録は必須としつつ、拒否語チェックだけを明示的に除外する。
+        const AMBER_STATUS_NOTICES: &[&str] = &[
+            "STATUS_SEARCH_STALE",
+            "STATUS_CANCELLED",
+            "STATUS_SETTINGS_READ_ONLY",
+        ];
         // L06 / N02 / N03 / N08 / N09 の指摘で main.rs 側への登録が必要な定数名
         // （重複・脱落を防止）。全て warning として分類されなければならない。
         const PENDING_WARNING_MARKERS: &[&str] = &[
@@ -1764,6 +1921,11 @@ mod tests {
                     message.contains("破棄しました") && message.contains("開き直せます"),
                     "{name} must describe the loss and its recovery: {message}"
                 );
+            } else if AMBER_STATUS_NOTICES.contains(name) {
+                // AE04: 鮮度 / キャンセル / 読み取り専用は warning として分類表に
+                // 登録済みであること（下の逆方向チェック）だけを固定する。
+                // 拒否語を含まないのは意図的なので一般ルールから除外する。
+                assert!(*class == "warning", "{name} must be warning");
             } else {
                 assert!(
                     message.contains("ません")
@@ -1837,6 +1999,44 @@ mod tests {
                 // 意図的にどちらのマーカーにも登録しない。
                 "success" => assert!(TRANSIENT_IN_PROGRESS.contains(name)),
                 other => panic!("{name} has unknown class: {other}"),
+            }
+        }
+        // AE04: reverse direction. The Y01 loop above only walked
+        // documented → markers, so a marker added to main.rs without a class
+        // (STATUS_SEARCH_STALE / STATUS_CANCELLED / STATUS_SETTINGS_READ_ONLY)
+        // went unnoticed. Require every registered marker to be documented as
+        // well. Generic dynamic fragments are the sole documented exemption:
+        // STATUS_ERROR_PREFIX is handled by an early return in status_color,
+        // and the *_SUFFIX / partial-failure fragments are shared building
+        // blocks, not per-message refusals, so they need no colour class.
+        const GENERIC_ERROR_FRAGMENTS: &[&str] = &[
+            "STATUS_ERROR_PREFIX",
+            "STATUS_OP_FAILED_SUFFIX",
+            "STATUS_PARTIAL_FAILURE_SUFFIX",
+            "STATUS_TRASH_PARTIAL_FAILED",
+        ];
+        fn marker_names(array: &str) -> Vec<&str> {
+            array
+                .lines()
+                .map(|line| line.split("//").next().unwrap_or(""))
+                .map(|line| line.trim().trim_end_matches(',').trim())
+                .filter(|token| token.starts_with("STATUS_"))
+                .collect()
+        }
+        for (array_name, array, expected_class) in [
+            ("STATUS_WARNING_MARKERS", warning_markers, "warning"),
+            ("STATUS_ERROR_MARKERS", error_markers, "error"),
+        ] {
+            for name in marker_names(array) {
+                if expected_class == "error" && GENERIC_ERROR_FRAGMENTS.contains(&name) {
+                    continue;
+                }
+                assert!(
+                    documented
+                        .iter()
+                        .any(|(n, _, class)| { *n == name && *class == expected_class }),
+                    "{name} is in {array_name} but not documented as {expected_class}"
+                );
             }
         }
     }

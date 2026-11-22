@@ -732,7 +732,7 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     // 表示
     "Ctrl+1 / Ctrl+2 … 詳細リスト / アイコングリッド",
     "Ctrl+H … 隠しファイルの表示切替",
-    "Ctrl+R / F5 … 再読込",
+    "Ctrl+R / F5 … 再読込 / 検索の再実行",
     "Ctrl+F … ファイルを検索",
     "Ctrl+Shift+F … 検索結果を名前で絞り込み",
     "Ctrl+I … プロパティ",
@@ -2427,6 +2427,37 @@ mod tests {
             root_paragraph.contains(note),
             "root README must use the canonical note: {root_paragraph}"
         );
+    }
+
+    #[test]
+    fn reload_legend_mentions_search_rerun_in_f1_settings_and_readme() {
+        // AE08: F5 は検索の再実行にも使うため、F1 ヘルプ・設定ダイアログの
+        // 凡例・README の3箇所で同じ復帰/再実行導線を案内する。
+        let f1 = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "Ctrl+R / F5")
+            .map(|(_, text)| text)
+            .expect("F1 reload row exists");
+        let legend = SHORTCUTS_DEFAULT_LINES
+            .iter()
+            .find(|line| line.contains("Ctrl+R / F5"))
+            .expect("settings legend must show the reload row");
+        let app_readme = include_str!("../README.md");
+        let readme_row = app_readme
+            .lines()
+            .find(|line| line.contains("`Ctrl+R` / `F5`"))
+            .expect("README must show the reload row");
+        for (name, text) in [
+            ("F1 help", f1),
+            ("settings legend", *legend),
+            ("README", readme_row),
+        ] {
+            assert!(
+                text.contains("再読") && text.contains("検索の再実行"),
+                "{name} must explain reload and search re-run: {text}"
+            );
+        }
     }
 
     #[test]

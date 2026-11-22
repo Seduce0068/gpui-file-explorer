@@ -14,7 +14,9 @@ Rust + [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) 系�
 ## 検証環境
 
 - Kubuntu 2026.04 / KDE Plasma 6 / Wayland（ネイティブ Wayland ウィンドウ）
-- NVIDIA GTX 1660 SUPER / rustc 1.99.1 / cargo 1.99.1
+- NVIDIA GTX 1660 SUPER / rustc 1.99.1 / cargo 1.99.1（**検証済みツールチェーン**）
+- Rust バージョン: `app/Cargo.toml` の `rust-version = "1.92"` が宣言 MSRV（下限）。
+  1.92 でのビルドは未検証で、上位の 1.99.1 で検証済みです（両者は矛盾しません）
 - `gpui-kit 0.9.1` → `gpui-pre 0.3.12` + `gpui-pre-platform 0.3.12`（lib 名 `gpui`）
 
 ## ビルド
@@ -131,7 +133,7 @@ cd app
 | `PageUp` / `PageDown` | 可視行数分の選択移動 |
 | `Delete` | 選択項目をゴミ箱へ移動（確認ダイアログあり） |
 | `R` / `Ctrl+Enter` | 選択項目を元の場所へ復元（ゴミ箱ビュー） |
-| `Ctrl+R` / `F5` / ⟳ボタン | 再読み込み |
+| `Ctrl+R` / `F5` / ⟳ボタン | 再読み込み / 検索の再実行（`F5` で再検索） |
 | `F2` | 選択項目の名前を変更（ダイアログ） |
 | `Ctrl+Shift+N` | 新規フォルダ作成 |
 | `Ctrl+C` / `Ctrl+X` | 選択項目をコピー / 切り取り（アプリ内クリップボード） |
@@ -369,9 +371,10 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 - [x] **空状態・ローディング表示**: 読み込み中 / 空ディレクトリ / ゴミ箱が空 / 検索0件 /
   絞り込みで全件除外 / 隠しファイル全件、を中央にメッセージ + 補足ヒントで表示
   （空フォルダの文言は `strings::EMPTY_DIRECTORY` を参照）
-  読み込み失敗時はビュー別の復帰キーを表示します（`strings::LOAD_ERROR_HINT_DIRECTORY` は
-  `F5` 再読込 / `Ctrl+L` 別パス移動、`strings::LOAD_ERROR_HINT_TRASH` は
-  `F5` / `Esc` 一覧へ戻る、`strings::LOAD_ERROR_HINT_SEARCH` は `F5` / `Esc` で閉じる）
+  読み込み失敗時はビュー別の復帰キーを表示します。
+  `strings::LOAD_ERROR_HINT_DIRECTORY`: `F5` で再読込 / `Ctrl+L` で別のパスへ移動、
+  `strings::LOAD_ERROR_HINT_TRASH`: `F5` で再読込 / `Alt+←` または `Backspace` で一覧へ戻る、
+  `strings::LOAD_ERROR_HINT_SEARCH`: `F5` で再読込 / `Esc` で閉じる
 - [x] **プロパティ表示**: `Ctrl+I` / 右クリック「プロパティ」。名前・パス・種類・サイズ・更新日時・
   パーミッション（Unix）・symlink リンク先を**読み取り専用**で表示。`Esc` / 背景クリック / 閉じるで終了
   - ディレクトリは「サイズを計算」で**再帰サイズをバックグラウンド計算**（ファイル数・フォルダ数付き、
