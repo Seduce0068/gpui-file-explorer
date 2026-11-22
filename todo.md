@@ -1538,6 +1538,14 @@ status: current
 - [x] **AT08** Shift+Home/End の範囲選択がヘルプに未案内 — 対応: impl-r47-core
   — strings.rs:1204
 
+### 優先度: 低（ループ R48・confirmed）
+
+- [ ] **AU01** 非空在庫に4つの STATUS_* 定数が未登録 — strings.rs:2413
+- [ ] **AU02** DESIGN D&D 行に P1 実装済みの as-built 注記なし
+  — DESIGN.md:128,897
+- [ ] **AU03** review-report chrono 参照が 1 行ずれ — review-report.md:326
+- [ ] **AU04** DESIGN PoC 行アンカーが 6 行ずれ — DESIGN.md:1086
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
