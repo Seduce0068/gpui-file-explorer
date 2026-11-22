@@ -1313,12 +1313,12 @@ status: current
 
 - [x] **NW01** DESIGN の対象OS/非目的を改訂: Windows を第一級、Android/iOS を要件化 — 対応: docs-target-os
   — DESIGN.md:26,37-54 / R1-DOC01
-- [ ] **NW02** デュアルペイン（左右2画面）の設計 ADR を作成
-  — PaneState 抽出 / ADR-002 改訂 / R1-UX01,R1-ARCH01,R1-PRD01
+- [x] **NW02** デュアルペイン設計 ADR（draft・承認待ち） — 対応: adr-dualpane
+  — docs/adr/adr-20261122-dual-pane-ui.md
 - [x] **NW03** Android/iOS の実現可能性 ADR — 対応: adr-mobile（draft・ユーザー承認待ち）
   — docs/adr/adr-20261122-mobile-android-ios-support.md
-- [ ] **NW04** レスポンシブレイアウト（固定190pxサイドバー・固定pxダイアログを画面幅適応へ）
-  — main.rs:205-215,4634 / R1-ARCH01
+- [x] **NW04** レスポンシブレイアウト — 対応: impl-responsive
+  — サイドバー幅/ダイアログ幅/グリッド列を viewport 適応化
 
 ### 優先度: 中（新要件・実装）
 
@@ -1328,8 +1328,8 @@ status: current
   — system_icons.rs:160 / R1-ARCH01
 - [ ] **NW07** 列のカスタマイズ（表示/非表示・幅・並び）を Settings に永続化
   — main.rs:9246 / R1-UX01
-- [ ] **NW08** コンテキストメニューをキーボードから開く（Shift+F10 / Menu キー）
-  — main.rs:1176 / R1-UX01
+- [x] **NW08** コンテキストメニューをキーボードから開く — 対応: impl-ctxkey
+  — Shift+F10 / Menu をバインド（E2E 実機確認は未実施）
 - [ ] **NW09** 一覧の画像サムネイル（preview.rs の安全則を流用、非同期 + LRU）
   — preview.rs:1 / R1-PRD01
 - [ ] **NW10** OS ファイルクリップボード相互運用（CF_HDROP / text-uri-list / 共有 Intent）

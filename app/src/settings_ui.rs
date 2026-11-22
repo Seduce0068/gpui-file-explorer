@@ -1276,14 +1276,19 @@ fn personalize_info_lines(read_only: bool) -> Vec<String> {
 /// `theme_options`, `view_options` and `sort_options` are `(value, label)`
 /// pairs; the host owns the concrete lists so it can localize them and map
 /// values back to its own enums.
+///
+/// `viewport_width` comes from the host's `Window`; the card width is clamped
+/// through `crate::effective_dialog_width` so narrow viewports never overflow.
 pub fn render_settings_content<V: SettingsUiHost>(
     palette: &SettingsUiPalette,
     state: &SettingsUiState,
     theme_options: &[(&str, &str)],
     view_options: &[(&str, &str)],
     sort_options: &[(&str, &str)],
+    viewport_width: f32,
     cx: &mut Context<V>,
 ) -> impl IntoElement {
+    let card_width = crate::effective_dialog_width(760.0, viewport_width);
     let query_value = state.search_input.read(cx).value();
     let query = query_value.trim();
 
@@ -1637,7 +1642,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
 
     div()
         .id("settings-card-scroll")
-        .w(px(760.0))
+        .w(px(card_width))
         .max_h(relative(0.82))
         .overflow_y_scroll()
         .bg(rgb(palette.surface))

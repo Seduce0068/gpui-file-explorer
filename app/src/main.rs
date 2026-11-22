@@ -214,6 +214,52 @@ const GRID_CELL_WIDTH_PX: f32 = 108.0;
 const GRID_ROW_PADDING_PX: f32 = 24.0;
 const GRID_GAP_PX: f32 = 8.0;
 
+// --- Responsive layout thresholds -----------------------------------------
+// Above `SIDEBAR_FULL_VIEWPORT_PX` nothing changes: the sidebar keeps its
+// original 190px and dialogs keep their requested widths. Below
+// `SIDEBAR_COLLAPSE_VIEWPORT_PX` the sidebar is removed entirely so a phone
+// viewport can use the full width for the file list.
+const SIDEBAR_FULL_VIEWPORT_PX: f32 = 900.0;
+const SIDEBAR_COLLAPSE_VIEWPORT_PX: f32 = 520.0;
+/// Horizontal breathing room kept on each side of a responsive dialog.
+const DIALOG_VIEWPORT_MARGIN_PX: f32 = 32.0;
+/// Floor that keeps a dialog usable even on a very narrow viewport.
+const DIALOG_MIN_WIDTH_PX: f32 = 280.0;
+
+/// Sidebar width for a given viewport width.
+///
+/// Pure and deterministic so it can be tested without a GPUI window. Wide
+/// (>= 900px) viewports get the unchanged `SIDEBAR_WIDTH_PX`; narrow
+/// (<= 520px) viewports collapse it to zero; the in-between range interpolates
+/// linearly so resizing never snaps the layout.
+fn effective_sidebar_width(viewport: f32) -> f32 {
+    if viewport >= SIDEBAR_FULL_VIEWPORT_PX {
+        SIDEBAR_WIDTH_PX
+    } else if viewport <= SIDEBAR_COLLAPSE_VIEWPORT_PX {
+        0.0
+    } else {
+        let span = SIDEBAR_FULL_VIEWPORT_PX - SIDEBAR_COLLAPSE_VIEWPORT_PX;
+        SIDEBAR_WIDTH_PX * ((viewport - SIDEBAR_COLLAPSE_VIEWPORT_PX) / span)
+    }
+}
+
+/// Dialog width for a requested size and viewport width.
+///
+/// `pub(crate)` so `settings_ui` can drive its card through the same clamp.
+/// The result never exceeds `viewport - 32px` and never drops below 280px.
+pub(crate) fn effective_dialog_width(requested: f32, viewport: f32) -> f32 {
+    requested
+        .min(viewport - DIALOG_VIEWPORT_MARGIN_PX)
+        .max(DIALOG_MIN_WIDTH_PX)
+}
+
+/// Icon-grid column count for a viewport, subtracting the effective sidebar
+/// width first. Wide viewports therefore produce exactly the same count as the
+/// previous `viewport - SIDEBAR_WIDTH_PX` calculation.
+fn grid_columns_for_viewport(viewport: f32, sidebar_width: f32) -> usize {
+    grid_columns_for_width(viewport - sidebar_width)
+}
+
 /// Icon-grid column count for the width left after the sidebar, folding the
 /// row padding and inter-cell gaps into `grid_columns`.
 fn grid_columns_for_width(content_width: f32) -> usize {
@@ -338,6 +384,7 @@ fn search_view_action_allowed(action: KeyAction) -> bool {
             | KeyAction::OpenSelected
             | KeyAction::OpenTerminal
             | KeyAction::OpenSettings
+            | KeyAction::OpenContextMenu
             | KeyAction::Copy
             | KeyAction::Quit
             | KeyAction::Reload
@@ -383,6 +430,38 @@ fn search_view_key_reaches_dispatch(
     reaches_keymap: bool,
 ) -> bool {
     reaches_keymap && (!input_focused || matches!(action, KeyAction::Reload))
+}
+
+/// Pick the point at which a keyboard-opened context menu is anchored.
+///
+/// `UniformListScrollHandle` does not publish per-item bounds, so the selected
+/// row's centre is derived from the list viewport, the current scroll offset
+/// and the measured row height (`contents.height / item_count`) instead. The
+/// result is clamped into the viewport so the synthetic right-click always
+/// lands inside a painted row. In grid mode `column` carries
+/// `(column index, column count)` so the point lands on the selected cell
+/// rather than the gap between two cells. Pure so it is unit-testable without
+/// a GPUI window (NW08).
+fn context_menu_anchor(
+    viewport: Bounds<Pixels>,
+    scroll_y: Pixels,
+    row_height: f64,
+    row: usize,
+    column: Option<(usize, usize)>,
+) -> Point<Pixels> {
+    let top = viewport.top().to_f64();
+    let bottom = viewport.bottom().to_f64();
+    let y = (top + scroll_y.to_f64() + row_height * (row as f64 + 0.5)).clamp(top, bottom);
+    let x = match column {
+        Some((index, count)) if count > 0 && index < count => {
+            // The viewport width includes padding and gaps; dividing by the
+            // column count keeps the point well inside the selected cell.
+            viewport.origin.x.to_f64()
+                + (viewport.size.width.to_f64() / count as f64) * (index as f64 + 0.5)
+        }
+        _ => viewport.center().x.to_f64(),
+    };
+    point(px(x as f32), px(y as f32))
 }
 
 /// Icon colour per file kind (folders are blue, everything else is tinted).
@@ -1235,6 +1314,10 @@ enum KeyAction {
     /// Ctrl+Shift+C: copy the focused row's path, reusing the context-menu
     /// handler. Reveal-in-manager and set-label stay context-menu-only.
     CopyPath,
+    /// Shift+F10 / Menu (Apps): open the selected row's context menu without a
+    /// mouse. Dispatches the same synthetic right-click the row's
+    /// `ContextMenu` element already listens for (NW08).
+    OpenContextMenu,
     /// No binding (either unmapped by default or unbound by the user).
     None,
 }
@@ -1500,11 +1583,11 @@ impl KeyMap {
         use KeyAction::{
             CloseTab, Copy, Cut, DetailsView, EditKeymap, EditTerminalCommand, FocusSearchName,
             FuzzyJump, GoBack, GoForward, GoParent, IconsView, MoveDown, MoveTabLeft, MoveTabRight,
-            MoveUp, NewFolder, NewTab, NextTab, OpenLocation, OpenPreview, OpenProperties,
-            OpenSearch, OpenSelected, OpenSettings, OpenTerminal, PageDown, PageUp, Paste, PrevTab,
-            Quit, Redo, Reload, RestoreClosedTab, RestoreSelected, SelectAll, SelectFirst,
-            SelectLast, StartRename, ToggleBookmark, ToggleHidden, ToggleTheme, ToggleUndoHistory,
-            TrashSelected, Undo,
+            MoveUp, NewFolder, NewTab, NextTab, OpenContextMenu, OpenLocation, OpenPreview,
+            OpenProperties, OpenSearch, OpenSelected, OpenSettings, OpenTerminal, PageDown, PageUp,
+            Paste, PrevTab, Quit, Redo, Reload, RestoreClosedTab, RestoreSelected, SelectAll,
+            SelectFirst, SelectLast, StartRename, ToggleBookmark, ToggleHidden, ToggleTheme,
+            ToggleUndoHistory, TrashSelected, Undo,
         };
         let binding = |key: &str, ctrl, alt, shift, action| KeyBinding {
             key: key.to_string(),
@@ -1532,6 +1615,13 @@ impl KeyMap {
                 // (notably Ctrl+P fuzzy jump) changes (F6-50).
                 binding("f4", false, false, None, OpenTerminal),
                 binding("f2", false, false, None, StartRename),
+                // NW08: Windows-Explorer-style keyboard access to the row
+                // context menu. gpui-pre names the Menu/Apps key `menu` on both
+                // Linux (xkb keysym "Menu") and Windows (VK_APPS). `shift` is
+                // explicit so unmodified F10 stays unbound and Shift+F10 keeps
+                // its own chord; only this action opens the menu.
+                binding("f10", false, false, Some(true), OpenContextMenu),
+                binding("menu", false, false, Some(false), OpenContextMenu),
                 binding("delete", false, false, None, TrashSelected),
                 binding("r", false, false, None, RestoreSelected),
                 // Ctrl keys.
@@ -4609,7 +4699,7 @@ impl Explorer {
     }
 
     /// Modal overlay for the terminal-command settings dialog (Alt+T).
-    fn terminal_command_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn terminal_command_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         let editor = self.terminal_command_editor.as_ref()?;
         let p = self.palette;
         let backdrop = div()
@@ -4631,7 +4721,7 @@ impl Explorer {
             this.confirm_terminal_command(cx);
         });
         let mut form = div()
-            .w(px(480.0))
+            .w(px(effective_dialog_width(480.0, viewport_width)))
             .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
@@ -4803,7 +4893,7 @@ impl Explorer {
     }
 
     /// Modal overlay for the keymap settings dialog (Alt+K).
-    fn keymap_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn keymap_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         let editor = self.keymap_editor.as_ref()?;
         let p = self.palette;
         let backdrop = div()
@@ -4825,7 +4915,7 @@ impl Explorer {
             this.confirm_keymap(cx);
         });
         let mut form = div()
-            .w(px(480.0))
+            .w(px(effective_dialog_width(480.0, viewport_width)))
             .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
@@ -5229,6 +5319,7 @@ impl Explorer {
             FocusSidebar => self.focus_sidebar(cx),
             ToggleSelection => self.toggle_selection(cx),
             CopyPath => self.copy_path_for_selection(cx),
+            OpenContextMenu => self.open_context_menu_for_selection(window, cx),
             SelectAll => self.select_all(cx),
             ToggleBookmark => self.toggle_current_bookmark(cx),
             OpenSearch => self.open_search(window, cx),
@@ -5986,7 +6077,7 @@ impl Explorer {
     // ------------------------------------------------------------------ undo
 
     /// Overlay listing what can still be undone/redone (read-only).
-    fn undo_history_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn undo_history_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         if !self.undo_history_open {
             return None;
         }
@@ -6010,7 +6101,7 @@ impl Explorer {
             );
         let mut body = div()
             .id("undo-history")
-            .w(px(720.0))
+            .w(px(effective_dialog_width(720.0, viewport_width)))
             .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
@@ -6726,7 +6817,7 @@ impl Explorer {
     }
 
     /// Read-only preview overlay with a scrollable text area.
-    fn preview_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn preview_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         let preview = self.preview.as_ref()?;
         let p = self.palette;
         let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
@@ -6769,7 +6860,7 @@ impl Explorer {
         let body_text = preview.text.clone().unwrap_or_default();
         let mut panel = div()
             .id("preview-dialog")
-            .w(px(820.0))
+            .w(px(effective_dialog_width(820.0, viewport_width)))
             .max_h(px(620.0))
             .bg(rgb(p.surface))
             .rounded_lg()
@@ -7129,7 +7220,7 @@ impl Explorer {
     /// Ctrl+P overlay: input, ranked list and source badges. Clicking a row
     /// confirms that exact path (not the current index), so a stale click
     /// cannot select a different result after the query changed.
-    fn fuzzy_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn fuzzy_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         let fuzzy = self.fuzzy.as_ref()?;
         let p = self.palette;
         let close = cx.listener(|this, _: &ClickEvent, _window, cx| this.close_fuzzy(cx));
@@ -7219,7 +7310,7 @@ impl Explorer {
         }
         let body = div()
             .id("fuzzy-dialog")
-            .w(px(760.0))
+            .w(px(effective_dialog_width(760.0, viewport_width)))
             .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
@@ -7267,7 +7358,7 @@ impl Explorer {
     // -------------------------------------------------------------------- help
 
     /// F1 keyboard-help overlay (read-only).
-    fn help_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn help_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         if !self.help_open {
             return None;
         }
@@ -7323,7 +7414,7 @@ impl Explorer {
         }
         let overrides_line = help_overrides_line(&self.keymap);
         let mut body = div()
-            .w(px(720.0))
+            .w(px(effective_dialog_width(720.0, viewport_width)))
             .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
@@ -7543,7 +7634,7 @@ impl Explorer {
     }
 
     /// Read-only properties dialog.
-    fn properties_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn properties_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         let props = self.properties.as_ref()?;
         let p = self.palette;
         let close = cx.listener(|this, _: &ClickEvent, _window, cx| {
@@ -7583,7 +7674,7 @@ impl Explorer {
                 )
         };
         let mut form = div()
-            .w(px(560.0))
+            .w(px(effective_dialog_width(560.0, viewport_width)))
             .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
@@ -7864,7 +7955,7 @@ impl Explorer {
     }
 
     /// Modal overlay for the rename dialog (backdrop + centered form).
-    fn rename_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn rename_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         let rename = self.renaming.as_ref()?;
         let p = self.palette;
         let backdrop = div()
@@ -7887,7 +7978,7 @@ impl Explorer {
         });
 
         let mut form = div()
-            .w(px(480.0))
+            .w(px(effective_dialog_width(480.0, viewport_width)))
             .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
@@ -7952,7 +8043,7 @@ impl Explorer {
     }
 
     /// Modal overlay for the bookmark-label editor (F6-49).
-    fn label_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn label_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         let editor = self.label_editor.as_ref()?;
         let p = self.palette;
         let backdrop = div()
@@ -7981,7 +8072,7 @@ impl Explorer {
             })
         };
         let form = div()
-            .w(px(480.0))
+            .w(px(effective_dialog_width(480.0, viewport_width)))
             .bg(rgb(p.surface))
             .rounded_lg()
             .border_1()
@@ -8958,6 +9049,62 @@ impl Explorer {
 
     // ------------------------------------------------------------- context menu
 
+    /// Shift+F10 / Menu: open the selected row's context menu without a mouse.
+    ///
+    /// GPUI Component's `ContextMenu` element keeps its open state private and
+    /// only exposes right-click / long-press triggers; there is no public
+    /// "open menu" method to call. Re-dispatching a right mouse-down on the
+    /// selected row therefore reuses the *exact* menu, focus handling and
+    /// dismiss behaviour of a real right-click, with no duplicated builder.
+    /// The event is deferred by one frame so it is matched against the
+    /// hitboxes of an already painted frame instead of re-entering key
+    /// handling. The anchor is derived from the list viewport and scroll
+    /// offset (see [`context_menu_anchor`]); when the list has not been laid
+    /// out yet the viewport centre is used as a sensible default.
+    fn open_context_menu_for_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.entries.is_empty() || self.selected >= self.entries.len() {
+            return;
+        }
+        let grid = self.settings.view == ViewLayout::Icons;
+        let columns = self.grid_column_count.max(1);
+        let row = if grid {
+            self.selected / columns
+        } else {
+            self.selected
+        };
+        let item_count = if grid {
+            grid_row_count(self.entries.len(), columns)
+        } else {
+            self.entries.len()
+        };
+        let anchor = {
+            let handle = self.scroll_handle.0.borrow();
+            let row_height = handle
+                .last_item_size
+                .map(|size| size.contents.height.to_f64() / item_count.max(1) as f64)
+                .unwrap_or(ROW_HEIGHT_PX);
+            context_menu_anchor(
+                handle.base_handle.bounds(),
+                handle.base_handle.offset().y,
+                row_height,
+                row,
+                grid.then(|| (self.selected % columns, columns)),
+            )
+        };
+        window.defer(cx, move |window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Right,
+                    position: anchor,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+        });
+    }
+
     /// Build the per-row context menu.
     ///
     /// The row **path** is captured when the menu is opened and every action is
@@ -9760,10 +9907,18 @@ impl Explorer {
         )
     }
 
-    fn sidebar(&self, cx: &mut Context<Self>) -> Div {
+    fn sidebar(&self, viewport_width: f32, cx: &mut Context<Self>) -> Div {
+        let width = effective_sidebar_width(viewport_width);
+        // On a phone-sized viewport collapse the sidebar entirely instead of
+        // squeezing its rows into an unreadable strip. Re-opening it from a
+        // narrow viewport needs a dedicated toggle action; that is a follow-up
+        // (the existing FocusSidebar action only focuses the element).
+        if width <= 0.0 {
+            return div().w(px(0.0)).h_full();
+        }
         let p = self.palette;
         let sidebar = div()
-            .w(px(SIDEBAR_WIDTH_PX))
+            .w(px(width))
             .h_full()
             .flex()
             .flex_col()
@@ -10767,16 +10922,17 @@ impl Render for Explorer {
         let saved_search_bar = self.saved_search_bar(cx);
         let location_bar = self.location_bar();
         self.apply_overlay_hooks(window, cx);
-        let rename_dialog = self.rename_dialog(cx);
-        let properties_dialog = self.properties_dialog(cx);
-        let help_dialog = self.help_dialog(cx);
-        let preview_dialog = self.preview_dialog(cx);
-        let undo_history_dialog = self.undo_history_dialog(cx);
-        let label_dialog = self.label_dialog(cx);
-        let fuzzy_dialog = self.fuzzy_dialog(cx);
-        let terminal_command_dialog = self.terminal_command_dialog(cx);
-        let keymap_dialog = self.keymap_dialog(cx);
-        let settings_dialog = self.settings_dialog(cx);
+        let viewport_width = window.viewport_size().width.to_f64() as f32;
+        let rename_dialog = self.rename_dialog(viewport_width, cx);
+        let properties_dialog = self.properties_dialog(viewport_width, cx);
+        let help_dialog = self.help_dialog(viewport_width, cx);
+        let preview_dialog = self.preview_dialog(viewport_width, cx);
+        let undo_history_dialog = self.undo_history_dialog(viewport_width, cx);
+        let label_dialog = self.label_dialog(viewport_width, cx);
+        let fuzzy_dialog = self.fuzzy_dialog(viewport_width, cx);
+        let terminal_command_dialog = self.terminal_command_dialog(viewport_width, cx);
+        let keymap_dialog = self.keymap_dialog(viewport_width, cx);
+        let settings_dialog = self.settings_dialog(viewport_width, cx);
 
         let grid_mode = self.settings.view == ViewLayout::Icons;
         // Column headers only make sense in the details list.
@@ -10786,7 +10942,7 @@ impl Render for Explorer {
             Some(self.sort_header(cx))
         };
         let columns =
-            grid_columns_for_width(window.viewport_size().width.to_f64() as f32 - SIDEBAR_WIDTH_PX);
+            grid_columns_for_viewport(viewport_width, effective_sidebar_width(viewport_width));
         self.grid_column_count = columns;
         let item_count = if grid_mode {
             grid_row_count(self.entries.len(), columns)
@@ -10842,7 +10998,7 @@ impl Render for Explorer {
             .flex_1()
             .min_h_0()
             .flex()
-            .child(self.sidebar(cx))
+            .child(self.sidebar(viewport_width, cx))
             .child(
                 div()
                     .flex_1()
@@ -10995,7 +11151,7 @@ impl Explorer {
     }
 
     /// Full-screen dimming layer with the centered preferences card.
-    fn settings_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn settings_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {
         let state = self.settings_ui.as_ref()?;
         // The effective (resolved) theme decides which palette the card uses.
         let palette = if self.settings.theme.is_dark() {
@@ -11021,6 +11177,7 @@ impl Explorer {
             &theme_options,
             &view_options,
             &sort_options,
+            viewport_width,
             cx,
         );
         let backdrop = div()
@@ -11625,21 +11782,22 @@ mod tests {
         bookmark_label_not_set_status, bookmark_label_rejection_reason,
         bookmark_label_set_rejection, bookmark_toggle_rejection, build_places, canonical_chord,
         chord_for_action, chords_collide, classify_cli, clear_dialog_error, clear_op_token,
-        clear_rescan_failure_after_successful_read, clear_rescan_failure_status, format_chord,
-        format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_width,
-        help_overrides_line, icon_button_text_color, install_op_token, internal_drop_paths,
-        join_status_notices, keymap_action_name, keymap_bind_caption, keymap_chord_reserved,
-        keymap_limit_status, keymap_unbind_caption, kind_color, labeled_display_name,
-        load_error_display_text, middle_click_tab_dir, normalize_terminal_command, op_is_active,
-        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
-        read_properties_snapshot, reconcile_aware_status, remove_keymap_override,
-        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
-        settings_discard_status, settings_read_only_status, settings_row_key_is_bare,
-        settings_save_error_status, settings_save_status, settings_sort_next,
-        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
-        settings_write_needs_rollback, settings_write_status, startup_dir_from,
-        startup_save_failure_status, status_color, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
+        clear_rescan_failure_after_successful_read, clear_rescan_failure_status,
+        context_menu_anchor, effective_dialog_width, effective_sidebar_width, format_chord,
+        format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_viewport,
+        grid_columns_for_width, help_overrides_line, icon_button_text_color, install_op_token,
+        internal_drop_paths, join_status_notices, keymap_action_name, keymap_bind_caption,
+        keymap_chord_reserved, keymap_limit_status, keymap_unbind_caption, kind_color,
+        labeled_display_name, load_error_display_text, middle_click_tab_dir,
+        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
+        pending_rename_index, rank_fuzzy, read_properties_snapshot, reconcile_aware_status,
+        remove_keymap_override, saved_search_caption, saved_search_save_status,
+        search_filter_status, set_view_status, settings_discard_status, settings_read_only_status,
+        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
+        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        settings_validation_status, settings_write_needs_rollback, settings_write_status,
+        startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
+        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, theme_choice_label, transfer_log_level,
         transfer_progress_status, transfer_skip_notice, trash_batch, trash_delete_status,
         trash_key_action, trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
@@ -12523,6 +12681,97 @@ mod tests {
         let content_width = viewport_width - SIDEBAR_WIDTH_PX;
         assert_eq!(content_width, 810.0);
         assert_eq!(grid_columns_for_width(content_width), 6);
+    }
+
+    #[test]
+    fn effective_sidebar_width_is_unchanged_on_wide_viewports() {
+        // NW04: >= 900px must stay byte-identical to the old fixed sidebar.
+        for viewport in [900.0, 1000.0, 1280.0, 1920.0] {
+            assert_eq!(
+                effective_sidebar_width(viewport),
+                SIDEBAR_WIDTH_PX,
+                "viewport {viewport} must keep the full sidebar"
+            );
+        }
+    }
+
+    #[test]
+    fn effective_sidebar_width_collapses_on_narrow_viewports() {
+        // NW04: phone-sized viewports hide the sidebar entirely.
+        for viewport in [0.0, 320.0, 390.0, 519.0, 520.0] {
+            assert_eq!(
+                effective_sidebar_width(viewport),
+                0.0,
+                "viewport {viewport} must collapse the sidebar"
+            );
+        }
+    }
+
+    #[test]
+    fn effective_sidebar_width_interpolates_on_medium_viewports() {
+        // The 520..900 range ramps smoothly from 0 to 190 without snapping.
+        assert!((effective_sidebar_width(800.0) - 140.0).abs() < 0.001);
+        assert!((effective_sidebar_width(710.0) - 95.0).abs() < 0.001);
+        let mut previous = 0.0;
+        for viewport in [520.0, 600.0, 700.0, 800.0, 900.0] {
+            let width = effective_sidebar_width(viewport);
+            assert!(
+                width >= previous,
+                "sidebar width must not shrink as viewport grows"
+            );
+            previous = width;
+        }
+        assert_eq!(previous, SIDEBAR_WIDTH_PX);
+    }
+
+    #[test]
+    fn effective_dialog_width_stays_within_viewport_and_above_minimum() {
+        // NW04: every dialog width must fit its viewport with margin and never
+        // fall below the 280px usability floor.
+        for viewport in [390.0, 800.0, 1280.0] {
+            for requested in [480.0, 560.0, 720.0, 760.0, 820.0] {
+                let width = effective_dialog_width(requested, viewport);
+                assert!(
+                    width <= viewport,
+                    "requested {requested} @ {viewport} overflows"
+                );
+                assert!(
+                    width >= 280.0,
+                    "requested {requested} @ {viewport} is too small"
+                );
+            }
+        }
+        // Wide viewports keep the requested width exactly (old behaviour).
+        assert_eq!(effective_dialog_width(820.0, 1280.0), 820.0);
+        // Narrow viewports clamp to viewport - 32px and respect the floor.
+        assert_eq!(effective_dialog_width(820.0, 390.0), 358.0);
+        assert_eq!(effective_dialog_width(480.0, 300.0), 280.0);
+    }
+
+    #[test]
+    fn grid_columns_for_viewport_subtracts_the_effective_sidebar() {
+        // Wide: identical to the previous `viewport - SIDEBAR_WIDTH_PX` path.
+        for viewport in [900.0, 1280.0] {
+            let sidebar = effective_sidebar_width(viewport);
+            assert_eq!(
+                grid_columns_for_viewport(viewport, sidebar),
+                grid_columns_for_width(viewport - SIDEBAR_WIDTH_PX)
+            );
+        }
+        // Medium: the interpolated sidebar is the one actually subtracted.
+        assert_eq!(
+            grid_columns_for_viewport(800.0, effective_sidebar_width(800.0)),
+            grid_columns_for_width(800.0 - 140.0)
+        );
+        // Narrow: with the sidebar collapsed the full viewport feeds the grid.
+        assert_eq!(
+            grid_columns_for_viewport(390.0, effective_sidebar_width(390.0)),
+            grid_columns_for_width(390.0)
+        );
+        assert!(
+            grid_columns_for_viewport(1280.0, effective_sidebar_width(1280.0))
+                >= grid_columns_for_viewport(390.0, effective_sidebar_width(390.0))
+        );
     }
 
     #[test]
@@ -15510,6 +15759,100 @@ mod tests {
         // no-op so ordinary text input is not hijacked.
         assert_eq!(keymap.resolve(",", true, true, false), KeyAction::None);
         assert_eq!(keymap.resolve(",", false, false, false), KeyAction::None);
+    }
+
+    #[test]
+    fn shift_f10_and_menu_resolve_to_open_context_menu() {
+        // NW08: the Windows-Explorer keyboard path must be bound by default.
+        let keymap = KeyMap::default_keymap();
+        assert_eq!(
+            keymap.resolve("f10", false, true, false),
+            KeyAction::OpenContextMenu
+        );
+        assert_eq!(
+            keymap.resolve("menu", false, false, false),
+            KeyAction::OpenContextMenu
+        );
+        // Unmodified F10 and the `apps` spelling gpui-pre does not emit stay
+        // unbound; the feature is documented as Shift+F10 / Menu only.
+        assert_eq!(keymap.resolve("f10", false, false, false), KeyAction::None);
+        assert_eq!(keymap.resolve("apps", false, false, false), KeyAction::None);
+        // `parse_chord` handles a shifted function key, and the chord is not a
+        // reserved dialog/settings key.
+        assert_eq!(
+            parse_chord("shift+f10"),
+            Some(("f10".to_string(), false, Some(true), false))
+        );
+        assert!(!keymap_chord_reserved("shift+f10"));
+        assert_eq!(
+            chord_for_action(&keymap, KeyAction::OpenContextMenu).as_deref(),
+            Some("shift+f10")
+        );
+        // Search-result rows use the same keyboard path (the query input keeps
+        // its own keys via the input-focus guard).
+        assert!(super::search_view_key_reaches_keymap(
+            &keymap, "f10", false, true, false
+        ));
+        assert!(super::search_view_key_reaches_keymap(
+            &keymap, "menu", false, false, false
+        ));
+    }
+
+    #[test]
+    fn context_menu_binding_leaves_reserved_and_other_keys_untouched() {
+        // F1 / Escape stay literal dialog keys and Ctrl+, keeps OpenSettings.
+        let keymap = KeyMap::default_keymap();
+        assert_eq!(keymap.resolve("f1", false, false, false), KeyAction::None);
+        assert_eq!(
+            keymap.resolve("escape", false, false, false),
+            KeyAction::None
+        );
+        assert_eq!(
+            keymap.resolve(",", true, false, false),
+            KeyAction::OpenSettings
+        );
+        // The new action is rebindable and moving it evicts only its own chords.
+        let mut keymap = keymap;
+        assert!(keymap.rebind(KeyAction::OpenContextMenu, "m", false, false, false));
+        assert_eq!(
+            keymap.resolve("m", false, false, false),
+            KeyAction::OpenContextMenu
+        );
+        assert_eq!(keymap.resolve("f10", false, true, false), KeyAction::None);
+        assert_eq!(keymap.resolve("menu", false, false, false), KeyAction::None);
+        assert_eq!(
+            keymap.resolve(",", true, false, false),
+            KeyAction::OpenSettings
+        );
+    }
+
+    #[test]
+    fn context_menu_anchor_tracks_selected_row_and_clamps_to_viewport() {
+        use gpui_kit::{point, px, size, Bounds};
+
+        let viewport = Bounds {
+            origin: point(px(200.0), px(100.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+
+        // Details view: centre of row 3 at 28px per row, no scrolling.
+        assert_eq!(
+            context_menu_anchor(viewport, px(0.0), 28.0, 3, None),
+            point(px(600.0), px(198.0))
+        );
+        // A scrolled list subtracts the scroll-top from the row position.
+        assert_eq!(
+            context_menu_anchor(viewport, px(-50.0), 28.0, 3, None),
+            point(px(600.0), px(148.0))
+        );
+        // An out-of-view row is clamped into the painted viewport.
+        assert_eq!(
+            context_menu_anchor(viewport, px(0.0), 28.0, 1000, None),
+            point(px(600.0), px(700.0))
+        );
+        // Grid view: the selected column's slot, not the gap between cells.
+        let grid = context_menu_anchor(viewport, px(0.0), 112.0, 1, Some((2, 4)));
+        assert_eq!(grid, point(px(700.0), px(268.0)));
     }
 
     #[test]
