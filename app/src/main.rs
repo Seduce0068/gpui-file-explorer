@@ -2179,20 +2179,20 @@ use crate::strings::{
     EMPTY_TRASH, ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_FORMAT_HINT,
     KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH,
     LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
-    PARENT_FOLDER_LABEL, RELOAD_WORD, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
-    STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
-    STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
-    STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-    STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
-    STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION,
-    STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX,
-    STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATING,
-    STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
-    STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX,
-    STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX,
-    STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
-    STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
-    STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
+    PARENT_FOLDER_LABEL, RELOAD_WORD, SEARCH_IN_PROGRESS_LABEL, STATUS_ACCESS_DENIED,
+    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
+    STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
+    STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+    STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
+    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+    STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED,
+    STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
+    STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX,
+    STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_HINT,
+    STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY,
+    STATUS_MAX_TABS_PREFIX, STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX,
+    STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
     STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
     STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
     STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
@@ -8847,13 +8847,16 @@ impl Explorer {
         self.search.fell_back_to_cwd = resolved.fell_back_to_cwd;
         if resolved.fell_back_to_cwd {
             self.status = format!(
-                "検索中…「{query}」（{}に有効な場所がないため現在のフォルダ）",
+                "{SEARCH_IN_PROGRESS_LABEL}「{query}」（{}に有効な場所がないため現在のフォルダ）",
                 scope.label()
             );
         } else if scope == SearchScope::Current {
-            self.status = format!("検索中…「{query}」");
+            self.status = format!("{SEARCH_IN_PROGRESS_LABEL}「{query}」");
         } else {
-            self.status = format!("検索中…「{query}」（{} 箇所）", roots.len());
+            self.status = format!(
+                "{SEARCH_IN_PROGRESS_LABEL}「{query}」（{} 箇所）",
+                roots.len()
+            );
         }
         cx.notify();
         let cancel_for_task = cancel.clone();
@@ -12307,15 +12310,16 @@ mod tests {
     use crate::ops::{OpError, OpStats};
     use crate::settings::{Settings, SettingsSaveError, ThemeChoice, MAX_KEYMAP_OVERRIDES};
     use crate::strings::{
-        STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
-        STATUS_DROP_NO_DESTINATION, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID,
-        STATUS_MAX_TABS_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_RENAME_FAILED,
-        STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, STATUS_SKIP_REASON_MISSING,
-        STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL, STATUS_TRASH_ALL_FAILED,
-        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
-        STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-        STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED,
-        STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
+        SEARCH_IN_PROGRESS_LABEL, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
+        STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_DROP_NO_DESTINATION,
+        STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_MAX_TABS_SUFFIX,
+        STATUS_NO_CLIPBOARD, STATUS_RENAME_FAILED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
+        STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
+        STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
+        STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
+        STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
+        STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
+        STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
     use std::ffi::OsString;
@@ -14985,9 +14989,39 @@ mod tests {
         assert_eq!(twice.matches("F5 で再検索").count(), 1);
 
         // Ordinary statuses still get replaced by the fresh result count.
+        // AL01: build the in-progress status from the shared label.
         assert_eq!(
-            search_filter_status("検索中…「rs」", summary.clone()),
+            search_filter_status(
+                &format!("{SEARCH_IN_PROGRESS_LABEL}「rs」"),
+                summary.clone()
+            ),
             summary
+        );
+    }
+
+    // AL01: the search bar and the status-bar messages must share the one
+    // in-progress label defined in strings.rs; re-spelling the Japanese text
+    // would silently drift the next time that label changes. The needle is
+    // assembled from fragments so this test's own source never matches.
+    #[test]
+    fn in_progress_label_is_not_inlined_in_main_source() {
+        let source = include_str!("main.rs");
+        let needle = concat!("検索", "中…");
+        assert_eq!(
+            source.matches(needle).count(),
+            0,
+            "the in-progress label must come from crate::strings::SEARCH_IN_PROGRESS_LABEL"
+        );
+
+        let run_search = source_region(
+            source,
+            "    fn run_search(&mut self, cx: &mut Context<Self>) {",
+            "    fn clear_search(&mut self) {",
+        );
+        assert_eq!(
+            run_search.matches("{SEARCH_IN_PROGRESS_LABEL}").count(),
+            3,
+            "all three status-bar branches must interpolate the shared label"
         );
     }
 
@@ -15010,7 +15044,10 @@ mod tests {
         assert!(stale.contains(STATUS_CHANGED));
         assert_eq!(stale.matches(STATUS_SEARCH_STALE).count(), 1);
 
-        assert_eq!(compose("検索中…「rs」"), STATUS_CHANGED);
+        assert_eq!(
+            compose(&format!("{SEARCH_IN_PROGRESS_LABEL}「rs」")),
+            STATUS_CHANGED
+        );
 
         // AC01: the Rescan/Renamed branch uses the same composition with the
         // Search-view stale notice as `next`. A held RESCAN_FAILED must survive
@@ -15025,7 +15062,10 @@ mod tests {
         assert_eq!(compose_rescan(&failed_with_reason), failed_with_reason);
         assert_eq!(compose_rescan(STATUS_RESCAN_FAILED), STATUS_RESCAN_FAILED);
         assert_eq!(compose_rescan(STATUS_SEARCH_STALE), STATUS_SEARCH_STALE);
-        assert_eq!(compose_rescan("検索中…「rs」"), STATUS_SEARCH_STALE);
+        assert_eq!(
+            compose_rescan(&format!("{SEARCH_IN_PROGRESS_LABEL}「rs」")),
+            STATUS_SEARCH_STALE
+        );
     }
 
     #[test]

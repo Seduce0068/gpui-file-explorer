@@ -1242,7 +1242,9 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 11. **gpui-kit `open_window` が返す Root のプラグイン（ダイアログ/通知）が component 機能付きで有効か**（✅ ソース: `gpui_kit::open_window` は `base::Root::new` で包み、`gpui_kit::init` が `gpui_component::init` を呼ぶ。⚠ 実行時は未検証）。
 12. **`ClipboardItem::new_string` でコピーしたパスが KDE の他アプリ（Dolphin 等）に期待通り貼り付くか**（テキストとしては動く想定 ⚠）。
 13. **日本語ファイル名（CJK）の描画・フォント**（POC は ASCII のみ確認。Noto Sans CJK JP 等の明示指定要否 ⚠）。
-14. **`dirs` クレートのバージョン差**（設計は 7.0.0 推奨、試作は 6 系。API 差は要確認 ⚠）。
+14. **`dirs` クレートのバージョン差**（設計は 7.0.0 推奨、試作は 6.0.0。
+    確認済み（`config_dir()` API 同一、[app/README.md](app/README.md) の
+    設計差分表を参照））。
 15. **AGPL 配布チャネルの実務**（.deb / tar.gz / Flathub の NOTICE 同梱とソース提供 URL）。リリース時に確認。
 16. **gpui-fast の採用可否**（P0 では無効。性能問題が出た場合のみ A/B、RESEARCH §2.4）。
 17. **`notify-debouncer-full` の `DebounceEventResult` の型**（`Result<Vec<DebouncedEvent>, Vec<Error>>` を ✅ ソース確認。`DebouncedEvent` のフィールドは実装時に確認）。
@@ -1258,6 +1260,9 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 - POC: [`notes/poc-report.md`](notes/poc-report.md) / [`poc/src/main.rs`](poc/src/main.rs) / [`poc/README.md`](poc/README.md) / [`poc/screenshot/`](poc/screenshot/)
 - 試作実装: [`app/`](app/) / [`app/README.md`](app/README.md)（実装・既知の制限・設計からの差分）
 - ライセンス原本: 本リポジトリの [LICENSE](LICENSE) / [app/NOTICE.md](app/NOTICE.md)（AGPL 全文・第三者表示）
+- 新要件の個別 ADR: [docs/adr/](docs/adr/)（モバイル / デュアルペイン / 日本語照合 /
+  OS ファイルクリップボードの 4 件。いずれも **draft・未承認**で、DESIGN.md の
+  確定済み ADR-001〜012 とは別系列）
 - crate ソース（ローカル・✅ 確認に使用）:
   - `~/.cargo/registry/src/index.crates.io-*/gpui-kit-0.9.1/src/lib.rs`（facade / open_window / init）
   - `~/.cargo/registry/src/index.crates.io-*/gpui-component-0.9.1/src/`（`menu/context_menu.rs`, `menu/popup_menu.rs`, `window_ext.rs`, `breadcrumb.rs`, `status_bar.rs`, `input/`）
@@ -1273,6 +1278,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | 0.1-as-built | 2026-11-21 | OS アイコン（Breeze）と as-built 差分を反映 |
 | 0.1-as-built | 2026-11-22 | 保存検索 / ブックマークラベルの as-built 反映、Z14 / AA01 修正、日付統一 |
 | 0.1-要件 | 2026-11-22 | 新要件を反映: Windows を第一級ターゲットへ昇格、Explorer / Double Commander 並みの UX を明示要件化、Android / iOS を要件化（[モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md) を作成済み（draft・未承認）・未実装） |
+| 0.1-要件 | 2026-11-23 | 新要件の個別 ADR を 3 件追加: [デュアルペイン UI](docs/adr/adr-20261122-dual-pane-ui.md)（2026-11-22）/ [日本語照合](docs/adr/adr-20261123-japanese-collation.md)（2026-11-23）/ [OS ファイルクリップボード](docs/adr/adr-20261123-os-file-clipboard.md)（2026-11-23）。いずれも **draft・未承認**で、DESIGN.md の確定済み ADR-001〜012 とは別系列 |
 
 2026-11-22 の as-built 差分の内訳。保存検索 / ブックマークラベルは §4.1
 の差分表と [app/README.md](app/README.md) の「再帰検索」を参照。

@@ -724,6 +724,11 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "Ctrl+Z",
     "Ctrl+Shift+Z",
     "Ctrl+Shift+U",
+    // NW08: the keyboard paths to the context menu live in the F1 row's
+    // description (its key column stays "右クリック"), so make both searchable
+    // from this dialog where F1 itself is disabled.
+    "Shift+F10",
+    "Menu",
     // Chords from the F1 help "表示" section.
     "Ctrl+1",
     "Ctrl+2",
@@ -888,6 +893,10 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "Ctrl+Shift+N … 新規フォルダ",
     "Ctrl+Z / Ctrl+Shift+Z … 元に戻す / やり直す（名前変更・ゴミ箱のみ）",
     "Ctrl+Shift+U … 操作の履歴を表示",
+    // NW08: 右クリックと同じコンテキストメニューをキーボードで開く導線。
+    // F1 行のキー列は「右クリック」のままで、説明にだけ載っているため、
+    // ダイアログ内で探せるようここにキー列として掲載する（説明は F1 と同一）。
+    "Shift+F10 / Menu … コンテキストメニュー（右クリック / Shift+F10 / Menu。開く / パスコピー / ゴミ箱 / ブックマーク他）",
     // 表示
     "Ctrl+1 / Ctrl+2 … 詳細リスト / アイコングリッド",
     "Ctrl+H … 隠しファイルの表示切替",
@@ -3505,7 +3514,10 @@ mod tests {
 
     /// Rows shown on the Shortcuts tab whose chord appears in an F1 help
     /// *description* (the dialog guidance) rather than as a help key (T06).
-    const SETTINGS_ONLY_KEYS: &[&str] = &["Alt+1〜5", "Alt+S"];
+    /// `Shift+F10 / Menu` is the NW08 context-menu row: F1 keeps the mouse
+    /// gesture key ("右クリック", exempt from the chord mirror) and documents
+    /// the two keyboard keys in that row's description only.
+    const SETTINGS_ONLY_KEYS: &[&str] = &["Alt+1〜5", "Alt+S", "Shift+F10 / Menu"];
 
     /// Search-only synonyms that are not literal chord rows. `default` is the
     /// English alias of "既定"; `Alt+数字` is the generic wording of the
@@ -3861,6 +3873,47 @@ mod tests {
                 "keyword {keyword} must appear in a rendered shortcut row"
             );
         }
+    }
+
+    #[test]
+    fn context_menu_keys_are_documented_in_readme_f1_and_settings() {
+        // NW08: F1 is swallowed by the settings dialog, so the Shortcuts row
+        // is the only in-app discovery path apart from the F1 overlay. Pin the
+        // keyboard keys across README, F1 help and the settings search list.
+        const KEYS: &str = "Shift+F10 / Menu";
+        for key in ["Shift+F10", "Menu"] {
+            assert!(
+                SHORTCUTS_DEFAULTS_KEYWORDS.contains(&key),
+                "settings search must find context-menu key {key}"
+            );
+        }
+        assert!(
+            readme_key_column().lines().any(|cell| cell == KEYS),
+            "README キーバインド表に {KEYS} 行が必要です"
+        );
+        let f1_text = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "右クリック")
+            .map(|(_, text)| text)
+            .expect("F1 の右クリック行が必要です");
+        assert!(
+            f1_text.contains(KEYS),
+            "F1 context-menu row must name {KEYS}: {f1_text}"
+        );
+        let row = SHORTCUTS_DEFAULT_LINES
+            .iter()
+            .find(|line| line.starts_with(KEYS))
+            .copied()
+            .expect("Shortcuts tab must render the context-menu keyboard row");
+        assert!(
+            row.contains(f1_text),
+            "Shortcuts row must reuse the canonical F1 wording: {row}"
+        );
+        assert!(
+            SETTINGS_ONLY_KEYS.contains(&KEYS),
+            "the keyboard-only row needs a documented bidirectional-test exception"
+        );
     }
 
     #[test]

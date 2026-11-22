@@ -1390,19 +1390,19 @@ status: current
 
 ### 優先度: 中（ループ R38・confirmed）
 
-- [ ] **AL01** 検索中ステータスが SEARCH_IN_PROGRESS_LABEL を迂回
+- [x] **AL01** 検索中ステータスが SEARCH_IN_PROGRESS_LABEL を迂回 — 対応: impl-r38-core
   — main.rs:8849
-- [ ] **AL02** OS クリップボード「GPUI側未実装」表記が ADR と矛盾
+- [x] **AL02** OS クリップボード「GPUI側未実装」表記が ADR と矛盾 — 対応: impl-r38-docs
   — README.md:151 / app/README.md:415
-- [ ] **AL03** DESIGN 変更履歴/参照に draft ADR 3件が未反映 — DESIGN.md:1252
-- [ ] **AL04** 設定検索から Shift+F10 / Menu に到達できない
+- [x] **AL03** DESIGN 変更履歴/参照に draft ADR 3件が未反映 — DESIGN.md:1252 — 対応: impl-r38-docs
+- [x] **AL04** 設定検索から Shift+F10 / Menu に到達できない — 対応: impl-r38-core
   — settings_ui.rs:680
 - [ ] **AL05** エラー→対処の対応表が README/F1 に存在しない
   — app/README.md:532
 
 ### 優先度: 低（ループ R38）
 
-- [ ] **AL06** DESIGN の dirs バージョン差「要確認」が解消済み — DESIGN.md:1245
+- [x] **AL06** DESIGN の dirs バージョン差「要確認」が解消済み — DESIGN.md:1245 — 対応: impl-r38-docs
 
 ### 優先度: 低（調査タスク）
 
