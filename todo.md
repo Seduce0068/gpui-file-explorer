@@ -1463,6 +1463,18 @@ status: current
 - [x] **AO05** AppError::from_io の NotADirectory/Io 分岐が無テスト — 対応: impl-r42-tests
   — error.rs:132
 
+### 優先度: 低（ループ R43・confirmed）
+
+- [ ] **AP01** 6検証拒否定数が色分類表/マーカー配列から漏れている
+  — strings.rs:1650,1653,1658,1760,1781,1784
+- [ ] **AP02** クリップボード ADR の #L アンカーが +4 行再ドリフト
+  — docs/adr/adr-20261123-os-file-clipboard.md:44
+- [ ] **AP03** 列幅の手編集手順が F1/設定行に案内されず
+  — settings_ui.rs:837
+- [ ] **AP04** 設定検索「ヘッダ」がキーワードに欠落 — settings_ui.rs:594
+- [ ] **AP05** 設定検索「一括リセット」「予約キー」が欠落
+  — settings_ui.rs:633
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
