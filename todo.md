@@ -1494,20 +1494,21 @@ status: current
 
 ### 優先度: 中（ループ R45・confirmed）
 
-- [ ] **AR01** 設定検索欄にクリア手段が無い（零命中案内と矛盾）
+- [x] **AR01** 設定検索欄にクリア手段が無い（零命中案内と矛盾） — 対応: impl-r45-ux + 親（strings.rs）
   — settings_ui.rs:243
-- [ ] **AR02** read-only 時に「Enter 保存」案内と無効 Save が残る
+- [x] **AR02** read-only 時に「Enter 保存」案内と無効 Save が残る — 対応: impl-r45-ux
   — settings_ui.rs:461,1363
 
 ### 優先度: 低（ループ R45）
 
-- [ ] **AR03** strings.rs モジュール doc の DESIGN 行アンカーが陳腐化
+- [x] **AR03** strings.rs モジュール doc の DESIGN 行アンカーが陳腐化 — 対応: impl-r45-tests
   — strings.rs:26
-- [ ] **AR04** 設定検索 `column_prefs.widths` / `widths` が零命中
+- [x] **AR04** 設定検索 `column_prefs.widths` / `widths` が零命中 — 対応: impl-r45-ux
   — settings_ui.rs:600
-- [ ] **AR05** default_column_width の未知キー分岐が無テスト — settings.rs:744
-- [ ] **AR06** image_format_for_name の "tif" 別名が無テスト — preview.rs:50
-- [ ] **AR07** Shortcuts タブの Esc 行に破棄警告が無い — settings_ui.rs:954
+- [x] **AR05** default_column_width の未知キー分岐が無テスト — settings.rs:744 — 対応: impl-r45-tests
+- [x] **AR06** image_format_for_name の "tif" 別名が無テスト — preview.rs:50 — 対応: impl-r45-tests
+- [x] **AR07** Shortcuts タブの Esc 行に破棄警告が無い — settings_ui.rs:954
+  — 対応: impl-r45-tests + impl-r45-ux
 
 ### 優先度: 低（調査タスク）
 

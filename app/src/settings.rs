@@ -4811,7 +4811,10 @@ mod keymap_settings_tests {
 #[cfg(test)]
 mod column_prefs_tests {
     // Explicit imports: the crate root glob would shadow the built-in `#[test]`.
-    use super::{ColumnPrefs, Settings, COLUMN_KEYS, COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH};
+    use super::{
+        default_column_width, ColumnPrefs, Settings, COLUMN_KEYS, COLUMN_MAX_WIDTH,
+        COLUMN_MIN_WIDTH,
+    };
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -4911,5 +4914,14 @@ mod column_prefs_tests {
         };
         empty.validate();
         assert_eq!(empty.visible, COLUMN_KEYS);
+    }
+
+    #[test]
+    fn default_column_width_covers_all_builtin_keys_and_unknown() {
+        assert_eq!(default_column_width("name"), 0.0);
+        assert_eq!(default_column_width("kind"), 90.0);
+        assert_eq!(default_column_width("size"), 90.0);
+        assert_eq!(default_column_width("modified"), 150.0);
+        assert_eq!(default_column_width("unknown"), 0.0);
     }
 }

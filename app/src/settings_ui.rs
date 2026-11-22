@@ -344,7 +344,7 @@ impl SettingsUiState {
         // Copy the filter first: the read guard borrows `cx` immutably while
         // `focus()` below needs it mutably.
         let query = self.search_input.read(cx).value().to_string();
-        let order = settings_focus_order(self.tab, &query);
+        let order = settings_focus_order(self.tab, &query, self.read_only);
         let current = order.iter().copied().find(|target| match target {
             SettingsFocusTarget::Search => self
                 .search_input
@@ -458,14 +458,27 @@ fn footer_status_text(dirty: bool, read_only: bool) -> &'static str {
 /// F1 is deliberately blocked inside the dialog, so the keys users would look
 /// up in the help overlay have to be shown here. Kept to one compact line to
 /// fit the 760px card next to the save/cancel buttons.
-fn settings_footer_legend() -> &'static str {
-    concat!(
-        "Tab/Shift+Tab 移動 / Ctrl+Tab・Ctrl+Shift+Tab タブ / Enter 保存 / ",
-        crate::strings::settings_escape_hint!(),
-        " / ",
-        crate::strings::settings_tab_jump_keys!(),
-        " 直接移動"
-    )
+///
+/// AR02: a read-only session disables the Save button, so the legend must not
+/// advertise `Enter 保存`. The remaining keys stay identical in both variants.
+fn settings_footer_legend(read_only: bool) -> &'static str {
+    if read_only {
+        concat!(
+            "Tab/Shift+Tab 移動 / Ctrl+Tab・Ctrl+Shift+Tab タブ / ",
+            crate::strings::settings_escape_hint!(),
+            " / ",
+            crate::strings::settings_tab_jump_keys!(),
+            " 直接移動"
+        )
+    } else {
+        concat!(
+            "Tab/Shift+Tab 移動 / Ctrl+Tab・Ctrl+Shift+Tab タブ / Enter 保存 / ",
+            crate::strings::settings_escape_hint!(),
+            " / ",
+            crate::strings::settings_tab_jump_keys!(),
+            " 直接移動"
+        )
+    }
 }
 
 /// AG08: F1 help and README both point to the footer legend because F1 is
@@ -607,6 +620,12 @@ const FILES_COLUMN_KEYWORDS: &[&str] = &[
     // settings.json path. Searching that visible word must surface this tab
     // instead of routing only to Personalize.
     "settings.json",
+    // AR04: the note spells the full key `column_prefs.widths` (and README
+    // quotes it too), so searching the whole visible key must also match —
+    // `matches_query` uses `candidate.contains(needle)` and would otherwise
+    // reject the longer query.
+    "column_prefs.widths",
+    "widths",
     "幅",
     "width",
     "順番",
@@ -951,7 +970,9 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "F4 … ターミナルを開く",
     "Alt+T … ターミナル起動コマンドの設定",
     "Alt+K … キーボードショートカットを設定",
-    "Esc … キャンセル / ダイアログを閉じる",
+    // AR07: the Shortcuts tab must render the same canonical Esc wording as
+    // the F1 help row and the footer legend (未保存変更は破棄).
+    concat!("Esc … ", crate::strings::settings_escape_hint!()),
     "Ctrl+Q … 終了",
     "Ctrl+, … 設定を開く",
     "Alt+1〜5 … 設定ダイアログのタブへ直接移動",
@@ -1061,14 +1082,11 @@ pub fn tabs_matching_query(query: &str) -> Vec<SettingsTab> {
 /// to the reported page instead of a generic "Alt+数字" (K07/L05).
 pub fn no_match_hint(matching_tabs: &[SettingsTab]) -> String {
     if matching_tabs.is_empty() {
-        // M14/AB12: a dead end must still offer a way out. With zero hits there
-        // is no tab to jump to, so name the two recovery routes that always
-        // work — and warn that Esc discards unsaved edits.
-        concat!(
-            "該当する設定がありません。検索欄を空にするか Esc で閉じてください",
-            crate::strings::unsaved_changes_discard_note!()
-        )
-        .to_string()
+        // M14: a dead end must still offer a way out. With zero hits there is
+        // no tab to jump to, so point at the header × clear button (AR01).
+        // Esc is deliberately NOT offered here: it closes the dialog and
+        // discards unsaved edits, which is unsafe as a zero-hit recovery.
+        "該当する設定がありません。検索欄右端の × で検索をクリアしてください".to_string()
     } else {
         let labels: Vec<String> = matching_tabs
             .iter()
@@ -1360,7 +1378,14 @@ pub enum SettingsFocusTarget {
 /// Pure so the cycle can be tested without a GPUI window. The active tab's
 /// text editor is included only when its row survives the header search
 /// filter; an empty query matches every row, mirroring [`matches_query`].
-pub fn settings_focus_order(tab: SettingsTab, query: &str) -> Vec<SettingsFocusTarget> {
+///
+/// AR02: in a read-only session the Save button is disabled, so it is left out
+/// of the cycle entirely — keyboard users must not Tab onto a dead control.
+pub fn settings_focus_order(
+    tab: SettingsTab,
+    query: &str,
+    read_only: bool,
+) -> Vec<SettingsFocusTarget> {
     let mut order = vec![SettingsFocusTarget::Search];
     let query = query.trim();
     match tab {
@@ -1373,7 +1398,9 @@ pub fn settings_focus_order(tab: SettingsTab, query: &str) -> Vec<SettingsFocusT
         _ => {}
     }
     order.push(SettingsFocusTarget::Cancel);
-    order.push(SettingsFocusTarget::Save);
+    if !read_only {
+        order.push(SettingsFocusTarget::Save);
+    }
     order
 }
 
@@ -1946,7 +1973,10 @@ pub fn render_settings_content<V: SettingsUiHost>(
         .child(
             div()
                 .w(px(240.0))
-                .child(Input::new(&state.search_input).w_full()),
+                // AR01: gpui-kit 0.9.1 の組み込み × クリアボタン。入力がある
+                // ときだけ右端に出て、InputState::clean で検索欄だけを空にする。
+                // 検索は設定ではないので `state.dirty` は一切書き換えない。
+                .child(Input::new(&state.search_input).w_full().cleanable(true)),
         );
 
     let tab_bar = TabBar::new("settings-tab-bar")
@@ -2017,7 +2047,7 @@ pub fn render_settings_content<V: SettingsUiHost>(
                 .w_full()
                 .text_xs()
                 .text_color(rgb(palette.muted))
-                .child(settings_footer_legend()),
+                .child(settings_footer_legend(state.read_only)),
         )
         .child(actions);
 
@@ -2329,16 +2359,15 @@ mod tests {
             assert!(!hint.contains("Alt+数字"), "generic hint: {hint}");
         }
         // With no hits at all there is no page to jump to, so M14 requires a
-        // recovery route instead: clear the query or close the dialog. AB12:
-        // the Esc route also discards unsaved edits, so the hint says so.
+        // recovery route instead. AR01: point at the header × clear button;
+        // Esc is deliberately absent because it discards unsaved edits.
         let none = no_match_hint(&[]);
         assert_eq!(
             none,
-            "該当する設定がありません。検索欄を空にするか Esc で閉じてください（未保存変更があると破棄されます）"
+            "該当する設定がありません。検索欄右端の × で検索をクリアしてください"
         );
-        assert!(none.contains("検索欄を空にする"));
-        assert!(none.contains("Esc で閉じてください"));
-        assert!(none.contains("（未保存変更があると破棄されます）"));
+        assert!(none.contains("× で検索をクリア"));
+        assert!(!none.contains("Esc"));
         assert!(!none.contains("Alt+"));
     }
 
@@ -2380,7 +2409,7 @@ mod tests {
         // P10: F1 is blocked while the dialog owns the keyboard. The footer
         // legend must therefore name the keys that would otherwise be looked
         // up in the F1 overlay, and stay short enough for the card width.
-        let legend = settings_footer_legend();
+        let legend = settings_footer_legend(false);
         for token in [
             "Enter 保存",
             crate::strings::settings_escape_hint!(),
@@ -2391,6 +2420,27 @@ mod tests {
         ] {
             assert!(legend.contains(token), "legend: {legend}");
         }
+        // AR02: a read-only session disables Save, so the legend must stop
+        // advertising Enter 保存 while keeping every other key unchanged.
+        let read_only = settings_footer_legend(true);
+        assert!(
+            !read_only.contains("Enter 保存"),
+            "read-only legend must not advertise Save: {read_only}"
+        );
+        for token in [
+            crate::strings::settings_escape_hint!(),
+            "Tab/Shift+Tab 移動",
+            "Ctrl+Tab",
+            "Ctrl+Shift+Tab",
+            concat!(crate::strings::settings_tab_jump_keys!(), " 直接移動"),
+        ] {
+            assert!(read_only.contains(token), "read-only legend: {read_only}");
+        }
+        assert_eq!(
+            legend.replace("Enter 保存 / ", ""),
+            read_only,
+            "only the Save entry may differ between writable and read-only"
+        );
         // AG08: F1 help and README point at this legend, so the dialog must
         // explain the omission. The explanation is a separate note, not an F1
         // key entry in the legend itself.
@@ -2422,10 +2472,15 @@ mod tests {
         // must spell the settings-tab jump keys with one canonical wording.
         let keys = crate::strings::SETTINGS_TAB_JUMP_KEYS;
         assert_eq!(keys, "Alt+1〜5");
-        let legend = settings_footer_legend();
+        let legend = settings_footer_legend(false);
         assert!(
             legend.contains(&format!("{keys} 直接移動")),
             "footer legend must use the canonical keys: {legend}"
+        );
+        let read_only = settings_footer_legend(true);
+        assert!(
+            read_only.contains(&format!("{keys} 直接移動")),
+            "read-only footer legend must keep the canonical keys: {read_only}"
         );
         let direct = crate::strings::HELP_SECTIONS
             .iter()
@@ -2452,6 +2507,37 @@ mod tests {
     }
 
     #[test]
+    fn shortcuts_escape_row_uses_the_canonical_settings_hint() {
+        // AR07: the Shortcuts tab, the F1 help row and the footer legend must
+        // all render the same Esc wording, including the discard warning.
+        let expected = concat!("Esc … ", crate::strings::settings_escape_hint!());
+        assert_eq!(expected, "Esc … Esc で閉じる（未保存変更は破棄）");
+        assert!(
+            SHORTCUTS_DEFAULT_LINES.contains(&expected),
+            "Shortcuts tab must render the canonical Esc row: {expected}"
+        );
+        assert!(
+            !SHORTCUTS_DEFAULT_LINES
+                .iter()
+                .any(|line| line.contains("キャンセル / ダイアログを閉じる")),
+            "stale generic Esc wording in Shortcuts tab"
+        );
+        let f1 = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "Esc")
+            .map(|(_, text)| text)
+            .expect("F1 help must have an Esc row");
+        assert_eq!(f1, crate::strings::settings_escape_hint!(), "{f1}");
+        for read_only in [false, true] {
+            assert!(
+                settings_footer_legend(read_only).contains(crate::strings::settings_escape_hint!()),
+                "footer legend must use the canonical Esc hint"
+            );
+        }
+    }
+
+    #[test]
     fn f1_dialog_help_names_cross_tab_search_navigation() {
         // Y11: README documents that a no-match hint points at the matching
         // tab and its direct-jump key; the F1 dialog row must say the same.
@@ -2469,34 +2555,28 @@ mod tests {
             dialog.contains(crate::strings::SETTINGS_TAB_JUMP_KEYS),
             "F1 dialog help must name the concrete jump keys: {dialog}"
         );
-        // Z08: a zero-hit search is a dead end unless the help also names the
-        // two recovery routes already used by `no_match_hint` and app/README.
+        // Z08/AR01: a zero-hit search is a dead end unless the help also names
+        // the recovery route used by `no_match_hint` and app/README. That route
+        // is now the header × clear button — Esc closes the dialog and would
+        // discard unsaved edits, so it is no longer advertised as a recovery.
+        const CLEAR_HINT: &str = "検索欄右端の × で検索をクリア";
+        let zero_hit = no_match_hint(&[]);
         assert!(
-            dialog.contains("検索欄を空にするか Esc で閉じる"),
+            zero_hit.contains(CLEAR_HINT),
+            "zero-hit hint must point at the × button: {zero_hit}"
+        );
+        assert!(
+            !zero_hit.contains("Esc"),
+            "unsafe route in hint: {zero_hit}"
+        );
+        assert!(
+            dialog.contains(CLEAR_HINT),
             "F1 dialog help must explain zero-hit recovery: {dialog}"
         );
         let app_readme = include_str!("../README.md");
         assert!(
-            app_readme.contains("検索欄を空にするか `Esc` で閉じるよう案内します"),
+            app_readme.contains(CLEAR_HINT),
             "app README must document the same zero-hit recovery"
-        );
-        // AB12/R11: Esc discards unsaved edits, so a zero-hit search that
-        // follows the hint can lose work. The very same warning must appear in
-        // the live hint, the F1 dialog row and the app README; pin the exact
-        // wording in all three places so none can drift away silently.
-        const DISCARD_NOTE: &str = "（未保存変更があると破棄されます）";
-        let zero_hit = no_match_hint(&[]);
-        assert!(
-            zero_hit.contains(DISCARD_NOTE),
-            "zero-hit hint must warn about discarding unsaved edits: {zero_hit}"
-        );
-        assert!(
-            dialog.contains(DISCARD_NOTE),
-            "F1 dialog help must warn about discarding unsaved edits: {dialog}"
-        );
-        assert!(
-            app_readme.contains(DISCARD_NOTE),
-            "app README must warn about discarding unsaved edits"
         );
 
         // AC09: the Tab-cycle row must not promise an input field on every tab.
@@ -4114,59 +4194,125 @@ mod tests {
     }
 
     #[test]
+    fn clearing_search_restores_all_tabs_without_touching_dirty() {
+        // AR01: the header × button uses gpui-kit 0.9.1's cleanable input, whose
+        // clear path only rewrites the InputState text (a view-only filter).
+        // `dirty` belongs to the terminal/keymap Change subscriptions, so the
+        // search subscription may only notify — never mark dirty. This codebase
+        // already pins cross-file contracts with `include_str!` assertions.
+        let source = include_str!("settings_ui.rs");
+        let search_row = source
+            .lines()
+            .find(|line| line.contains("Input::new(&state.search_input)"))
+            .expect("search input must be rendered");
+        assert!(
+            search_row.contains(".cleanable(true)"),
+            "search input must expose the × clear button: {search_row}"
+        );
+        let observe = source
+            .split("pub fn observe_inputs")
+            .nth(1)
+            .expect("observe_inputs must exist")
+            .split("/// Move keyboard focus")
+            .next()
+            .expect("observe_inputs body")
+            .to_string();
+        assert!(
+            !observe.contains("dirty"),
+            "search subscription must only notify, never mark dirty: {observe}"
+        );
+
+        // Clearing installs the empty query, which makes every tab match again.
+        let filtered = tabs_matching_query("ターミナル");
+        assert_eq!(filtered, vec![SettingsTab::Terminal]);
+        assert!(filtered.len() < SettingsTab::ALL.len());
+        assert_eq!(tabs_matching_query(""), SettingsTab::ALL.to_vec());
+    }
+
+    #[test]
     fn focus_order_tracks_the_active_tab_and_search_filter() {
         use SettingsFocusTarget::{Cancel, Keymap, Save, Search, Terminal};
 
         // Tabs without a text editor expose only the header and footer.
         assert_eq!(
-            settings_focus_order(SettingsTab::Appearance, ""),
+            settings_focus_order(SettingsTab::Appearance, "", false),
             vec![Search, Cancel, Save]
         );
         assert_eq!(
-            settings_focus_order(SettingsTab::Files, ""),
+            settings_focus_order(SettingsTab::Files, "", false),
             vec![Search, Cancel, Save]
         );
         // Personalize has only radio/switch rows, never a text editor.
         assert_eq!(
-            settings_focus_order(SettingsTab::Personalize, ""),
+            settings_focus_order(SettingsTab::Personalize, "", false),
             vec![Search, Cancel, Save]
         );
         // The Shortcuts/Terminal editor joins the cycle only when its row is
         // actually rendered (empty or matching query).
         assert_eq!(
-            settings_focus_order(SettingsTab::Shortcuts, ""),
+            settings_focus_order(SettingsTab::Shortcuts, "", false),
             vec![Search, Keymap, Cancel, Save]
         );
         assert_eq!(
-            settings_focus_order(SettingsTab::Terminal, "  "),
+            settings_focus_order(SettingsTab::Terminal, "  ", false),
             vec![Search, Terminal, Cancel, Save]
         );
         assert_eq!(
-            settings_focus_order(SettingsTab::Shortcuts, "Alt+K"),
+            settings_focus_order(SettingsTab::Shortcuts, "Alt+K", false),
             vec![Search, Keymap, Cancel, Save]
         );
         assert_eq!(
-            settings_focus_order(SettingsTab::Terminal, "ターミナル"),
+            settings_focus_order(SettingsTab::Terminal, "ターミナル", false),
             vec![Search, Terminal, Cancel, Save]
         );
         // A filter that hides the editor must remove it from the cycle.
         assert_eq!(
-            settings_focus_order(SettingsTab::Shortcuts, "存在しない設定"),
+            settings_focus_order(SettingsTab::Shortcuts, "存在しない設定", false),
             vec![Search, Cancel, Save]
         );
         assert_eq!(
-            settings_focus_order(SettingsTab::Terminal, "zzz"),
+            settings_focus_order(SettingsTab::Terminal, "zzz", false),
             vec![Search, Cancel, Save]
         );
         // "Alt+T" / "既定" only match the default-list row, not the keymap
         // editor row, so the editor must stay out of the focus cycle.
         assert_eq!(
-            settings_focus_order(SettingsTab::Shortcuts, "Alt+T"),
+            settings_focus_order(SettingsTab::Shortcuts, "Alt+T", false),
             vec![Search, Cancel, Save]
         );
         assert_eq!(
-            settings_focus_order(SettingsTab::Shortcuts, "既定"),
+            settings_focus_order(SettingsTab::Shortcuts, "既定", false),
             vec![Search, Cancel, Save]
+        );
+    }
+
+    #[test]
+    fn read_only_focus_order_omits_the_disabled_save_button() {
+        use SettingsFocusTarget::{Cancel, Keymap, Save, Search, Terminal};
+
+        // AR02: Save is disabled in a read-only session. Keyboard users must
+        // never Tab onto it, on any tab or under any search filter.
+        for tab in SettingsTab::ALL {
+            let writable = settings_focus_order(tab, "", false);
+            let read_only = settings_focus_order(tab, "", true);
+            assert_eq!(
+                read_only,
+                writable
+                    .into_iter()
+                    .filter(|t| *t != Save)
+                    .collect::<Vec<_>>(),
+                "read-only cycle for {tab:?} must drop Save"
+            );
+            assert!(read_only.contains(&Search), "{tab:?} still needs Search");
+            assert!(read_only.contains(&Cancel), "{tab:?} still needs Cancel");
+        }
+        assert_eq!(
+            settings_focus_order(SettingsTab::Shortcuts, "", true),
+            vec![Search, Keymap, Cancel]
+        );
+        assert_eq!(
+            settings_focus_order(SettingsTab::Terminal, "ターミナル", true),
+            vec![Search, Terminal, Cancel]
         );
     }
 
@@ -4216,13 +4362,26 @@ mod column_prefs_ui_tests {
 
     #[test]
     fn column_editor_keywords_are_searchable_on_the_files_tab() {
-        for keyword in ["列", "column", "column_prefs", "幅", "width"] {
+        for keyword in [
+            "列",
+            "column",
+            "column_prefs",
+            // AR04: the full key shown in the width note / README must match.
+            "column_prefs.widths",
+            "widths",
+            "幅",
+            "width",
+        ] {
             assert!(
                 matches_query(keyword, FILES_COLUMN_KEYWORDS),
                 "{keyword} must match the column editor row"
             );
             assert_eq!(tabs_matching_query(keyword), vec![SettingsTab::Files]);
         }
+        assert_eq!(
+            tabs_matching_query("column_prefs.widths"),
+            vec![SettingsTab::Files]
+        );
         assert!(FILES_COLUMN_DESCRIPTION.contains("列"));
         assert_eq!(column_label("name"), "名前");
         assert_eq!(column_label("modified"), "更新日時");

@@ -23,8 +23,8 @@
 //!   `str::to_lowercase()` の事前計算値で、大小文字を無視する自然順
 //!   （"file2" < "file10"）。同値は大小文字を区別する比較で安定化する。
 //! - 日本語の名前は Unicode スカラ値順になり **五十音順にはならない**。
-//!   ICU4X によるロケール照合は P3 の未実装項目（DESIGN.md:103, 1075、
-//!   `notes/fs-cross-platform-notes.md` §1.4）。
+//!   ICU4X によるロケール照合は P3 の未実装項目（DESIGN.md §2（機能マトリクス）/
+//!   §10.8（ロードマップ）、`notes/fs-cross-platform-notes.md` §1.4）。
 //! - 大小文字比較は `to_lowercase()` であり、完全な Unicode case folding でも
 //!   ロケール固有の照合（トルコ語 `İ` など）でもない。NFC 正規化も行わない。
 //!   そのため `ß` / `ẞ` や NFD ファイル名の一致漏れは既知の制限である。
@@ -740,10 +740,11 @@ mod view_hint_and_keymap_format_tests {
             .find(|(key, _)| *key == "設定ダイアログ")
             .map(|(_, text)| *text)
             .expect("settings dialog row must exist");
-        assert_eq!(
-            dialog.matches(UNSAVED_CHANGES_DISCARD_NOTE).count(),
-            1,
-            "discard warning must appear exactly once: {dialog}"
+        // AR01: the discard warning moved to the search-clear guidance in the
+        // settings card and the canonical Esc hint; F1 no longer repeats it.
+        assert!(
+            !dialog.contains(UNSAVED_CHANGES_DISCARD_NOTE),
+            "F1 must not repeat the discard warning: {dialog}"
         );
         assert!(!dialog.contains("破棄され通知されます"), "{dialog}");
     }
@@ -927,6 +928,21 @@ mod view_hint_and_keymap_format_tests {
     }
 
     #[test]
+    fn help_escape_row_uses_canonical_settings_hint() {
+        // AR07: F1 の Esc 行も設定ダイアログの正規案内と同じ文言に統一する。
+        // 旧来の汎用表現（「キャンセル / ダイアログを閉じる」）は残さない。
+        let esc = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| *rows)
+            .find(|(key, _)| *key == "Esc")
+            .map(|(_, text)| *text)
+            .expect("F1 help must have an Esc row");
+        assert_eq!(esc, settings_escape_hint!(), "{esc}");
+        assert_eq!(esc, SETTINGS_ESCAPE_HINT, "{esc}");
+        assert!(!esc.contains("キャンセル / ダイアログを閉じる"), "{esc}");
+    }
+
+    #[test]
     fn readme_documents_each_view_recovery_hint_verbatim() {
         // AE02: app/README.md のビュー別ヒントが定数と漂移しないことを固定する。
         // README はキーをバッククォートで囲むため、外してから照合する。
@@ -1078,21 +1094,18 @@ pub const SETTINGS_TAB_JUMP_KEYS: &str = settings_tab_jump_keys!();
 /// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
 const _: () = assert!(SETTINGS_TAB_JUMP_KEYS.len() == settings_tab_jump_keys!().len());
 
-/// 零命中ヒントの「Esc で閉じる」案内に添える未保存変更の破棄警告（AB12）。
+/// 未保存変更の破棄警告の唯一の定義（AB12 / AR01）。
 ///
-/// 設定を編集してから検索して零命中になった場合、案内どおり Esc を押すと
-/// 未保存変更が失われる。F1 ヘルプ・零命中ヒント・app/README の3箇所で
-/// 同じ文言を使うための唯一の定義。`concat!` は定数識別子を受け付けない
-/// ので、静的文字列へ埋め込む場合は `unsaved_changes_discard_note!()` を使う
-/// （入力ガード注記と同じ方式）。
+/// 設定ダイアログの Esc 案内には既に `settings_escape_hint!()` に破棄警告が
+/// 含まれる。AR01 で零命中ヒントが × クリア案内へ変わったため、このマクロは
+/// 定数定義のみで使用し、他モジュールへの再エクスポートは不要になった。
 macro_rules! unsaved_changes_discard_note {
     () => {
         "（未保存変更があると破棄されます）"
     };
 }
-pub(crate) use unsaved_changes_discard_note;
 
-/// 未保存変更の破棄警告の正規表記（AB12）。F1 / 零命中ヒント / README の同期判定に使う。
+/// 未保存変更の破棄警告の正規表記（AB12）。同期判定に使う。
 pub const UNSAVED_CHANGES_DISCARD_NOTE: &str = unsaved_changes_discard_note!();
 
 /// 定数と `concat!` 用リテラルが同じ長さであることをコンパイル時に確認する。
@@ -1296,11 +1309,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                     "Enter で保存 / ",
                     settings_escape_hint!(),
                     " / 上部の検索欄で設定項目を絞り込み（キー名でも検索可）。",
-                    "一致がゼロなら検索欄を空にするか Esc で閉じる",
-                    // AD05: 破棄警告は `unsaved_changes_discard_note!()` の
-                    // 一文だけに統一する（旧文言を重複させない）。
-                    unsaved_changes_discard_note!(),
-                    "。",
+                    "一致がゼロなら検索欄右端の × で検索をクリア。",
                     "他タブに一致すると Alt+数字で移動（",
                     settings_tab_jump_keys!(),
                     "）。F1 はダイアログ内で無効なので、下部のキー凡例に必要なキーを表示"
@@ -1360,7 +1369,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                     keymap_reset_guidance!()
                 ),
             ),
-            ("Esc", "キャンセル / ダイアログを閉じる"),
+            ("Esc", settings_escape_hint!()),
             ("Ctrl+Q", "終了"),
             ("ディレクトリ表示", directory_view_only_note!()),
         ],
@@ -2138,10 +2147,9 @@ mod tests {
         // R11 / AD05: Esc cancellation warns when unsaved changes would be
         // discarded. The warning is now spelled out by the canonical macro in
         // exactly one place; the old double-published wording must be gone.
-        assert_eq!(
-            dialog.matches(UNSAVED_CHANGES_DISCARD_NOTE).count(),
-            1,
-            "{dialog}"
+        assert!(
+            !dialog.contains(UNSAVED_CHANGES_DISCARD_NOTE),
+            "F1 no longer carries the discard note: {dialog}"
         );
         assert!(!dialog.contains("破棄され通知されます"), "{dialog}");
         let tabs = find("設定ダイアログのタブ").expect("settings tab keys must be in F1 help");

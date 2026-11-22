@@ -346,6 +346,7 @@ mod image_tests {
         assert_eq!(image_format_for_name("a.jpeg"), Some(ImageFormat::Jpeg));
         assert_eq!(image_format_for_name("a.JpG"), Some(ImageFormat::Jpeg));
         assert_eq!(image_format_for_name("a.svg"), Some(ImageFormat::Svg));
+        assert_eq!(image_format_for_name("a.tif"), Some(ImageFormat::Tiff));
         assert_eq!(image_format_for_name("a.tiff"), Some(ImageFormat::Tiff));
         assert_eq!(image_format_for_name("a.webp"), Some(ImageFormat::Webp));
         assert_eq!(image_format_for_name("a.WEBP"), Some(ImageFormat::Webp));
