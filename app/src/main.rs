@@ -628,6 +628,16 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     // set_rename_error がミラーしたステータスが green に落ちないようにする。
     STATUS_RENAME_NO_PARENT,
     STATUS_RENAME_EXISTS_PREFIX,
+    // AP01: 入力検証／拒否の定数 6 種はこれまで STATUS_ERROR_PREFIX を付けた
+    // ミラー文言だけで赤くしていたため、prefix が外れると成功 green に落ちた。
+    // 分類表（strings.rs::refusal_statuses_have_a_documented_colour_class）と
+    // 同期させ、単体でも concrete error として赤く判定できるようにする。
+    STATUS_KEYMAP_FORMAT_INVALID,
+    STATUS_KEYMAP_LIMIT_PREFIX,
+    STATUS_KEYMAP_INVALID_PREFIX,
+    STATUS_TERMINAL_COMMAND_INVALID,
+    STATUS_SAVED_SEARCH_NAME_REQUIRED,
+    STATUS_SAVED_SEARCH_QUERY_REQUIRED,
 ];
 
 /// Pure colour decision for the primary status text (U-01). An explicit
@@ -12329,17 +12339,19 @@ mod tests {
     use crate::strings::{
         SEARCH_IN_PROGRESS_LABEL, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
         STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_DROP_NO_DESTINATION,
-        STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_MAX_TABS_SUFFIX,
-        STATUS_NO_CLIPBOARD, STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED,
-        STATUS_RENAME_INVALID_CHAR, STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY,
-        STATUS_RENAME_INVALID_NUL, STATUS_RENAME_INVALID_RESERVED_PREFIX,
-        STATUS_RENAME_INVALID_SEPARATOR, STATUS_RENAME_NO_PARENT,
-        STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, STATUS_SKIP_REASON_MISSING,
-        STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL, STATUS_TRASH_ALL_FAILED,
-        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
-        STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-        STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED,
-        STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
+        STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_LIMIT_PREFIX,
+        STATUS_MAX_TABS_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_RENAME_EXISTS_PREFIX,
+        STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR, STATUS_RENAME_INVALID_DOT,
+        STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL,
+        STATUS_RENAME_INVALID_RESERVED_PREFIX, STATUS_RENAME_INVALID_SEPARATOR,
+        STATUS_RENAME_NO_PARENT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
+        STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
+        STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
+        STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
+        STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
+        STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
+        STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
+        STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
     use std::ffi::OsString;
@@ -12374,6 +12386,14 @@ mod tests {
             // AM01: 同期検証の拒否文言自身も concrete error（ミラー前でも赤）。
             (STATUS_RENAME_NO_PARENT, C_RED),
             (STATUS_RENAME_EXISTS_PREFIX, C_RED),
+            // AP01: キーマップ／ターミナル／保存検索の入力検証・拒否も
+            // STATUS_ERROR_PREFIX に依存せず concrete error として赤を固定する。
+            (STATUS_KEYMAP_FORMAT_INVALID, C_RED),
+            (STATUS_KEYMAP_LIMIT_PREFIX, C_RED),
+            (STATUS_KEYMAP_INVALID_PREFIX, C_RED),
+            (STATUS_TERMINAL_COMMAND_INVALID, C_RED),
+            (STATUS_SAVED_SEARCH_NAME_REQUIRED, C_RED),
+            (STATUS_SAVED_SEARCH_QUERY_REQUIRED, C_RED),
             (STATUS_TRASH_PARTIAL_FAILED, C_RED),
             (STATUS_OP_FAILED_SUFFIX, C_RED),
             (STATUS_PARTIAL_FAILURE_SUFFIX, C_RED),
@@ -12764,10 +12784,11 @@ mod tests {
     #[test]
     fn settings_validation_error_status_is_red() {
         // The settings Save path mirrors validation errors from the card footer
-        // into `self.status`. Without the prefix the pure classifier reads those
-        // messages as success green even though the footer paints them red.
-        // Use the same helper the Save handler calls, so a future refactor that
-        // drops the prefix fails here instead of silently turning errors green.
+        // into `self.status`. AP01: those messages are now registered in
+        // STATUS_ERROR_MARKERS, so they classify as concrete errors(red) even
+        // without the prefix. Keep pinning the handler's prefix composition so
+        // a future refactor cannot silently drop the explicit error signal.
+        // Use the same helper the Save handler calls.
         // AC08: the settings-card invalid-keymap error must carry the same
         // canonical format hint as the Alt+K dialog. The Save handler needs a
         // live GPUI context, so pin its wiring in source and check that the
@@ -12789,7 +12810,8 @@ mod tests {
             STATUS_TERMINAL_COMMAND_INVALID.to_string(),
         ];
         for message in messages {
-            assert_eq!(status_color(&message), C_GREEN, "unprefixed: {message}");
+            // AP01: 赤が STATUS_ERROR_PREFIX だけに依存しないことを固定する。
+            assert_eq!(status_color(&message), C_RED, "unprefixed: {message}");
             let mirrored = settings_validation_status(&message);
             assert!(
                 mirrored.starts_with(STATUS_ERROR_PREFIX),

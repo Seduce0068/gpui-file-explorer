@@ -528,6 +528,19 @@ macro_rules! search_history_chips_description {
 pub(crate) use search_history_chips_description;
 pub const SEARCH_HISTORY_CHIPS_DESCRIPTION: &str = search_history_chips_description!();
 
+/// 列幅の変更先案内（AP03）。
+///
+/// 設定 UI の列幅は保存済みの値を表示するだけなので、変更先を明示する。
+/// F1 の「一覧の列」行と設定ダイアログのファイルタブ行で共用する。
+/// F1 は設定ダイアログ内で無効なので、後者の行説明が唯一の手掛かりになる。
+macro_rules! column_width_settings_note {
+    () => {
+        "幅は設定UIでは表示のみ。変更は settings.json の column_prefs.widths を編集"
+    };
+}
+pub(crate) use column_width_settings_note;
+pub const COLUMN_WIDTH_SETTINGS_NOTE: &str = column_width_settings_note!();
+
 const _: () =
     assert!(MOUSE_SELECTION_CLICK_DESCRIPTION.len() == mouse_selection_click_description!().len());
 const _: () = assert!(MOUSE_DRAG_DROP_DESCRIPTION.len() == mouse_drag_drop_description!().len());
@@ -541,6 +554,7 @@ const _: () =
     assert!(SETTINGS_READ_ONLY_PALETTE_NOTE.len() == settings_read_only_palette_note!().len());
 const _: () =
     assert!(SEARCH_HISTORY_CHIPS_DESCRIPTION.len() == search_history_chips_description!().len());
+const _: () = assert!(COLUMN_WIDTH_SETTINGS_NOTE.len() == column_width_settings_note!().len());
 
 /// AC07 / AC08 の定数は既存の `mod tests`（280 行目以降）からは触らない。
 /// 所有範囲内に小さなテストモジュールを置き、各案内が宣伝するキーを固定する。
@@ -1229,12 +1243,14 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             // R41/AN03: ファイルタブの列カスタマイズを F1 にも掲載。キー列を
             // 持たない散文行なので settings_ui.rs の HELP_KEY_EXCEPTIONS に
             // `"一覧の列"` の登録が必要（親担当）。
+            // AP03: 列幅は表示のみなので、変更先を正規文言で追記する。
             (
                 "一覧の列",
                 concat!(
                     "設定（Ctrl+,）のファイルタブ「一覧の列」で表示列と順番を変更。",
                     "Switch で表示 / 非表示、↑↓で並べ替え（最後の 1 列は非表示にできません）。",
-                    "行ショートカットはこれらの Switch にはありません"
+                    "行ショートカットはこれらの Switch にはありません。",
+                    column_width_settings_note!()
                 ),
             ),
             (
@@ -2603,6 +2619,39 @@ mod tests {
                 STATUS_RENAME_INVALID_CHAR,
                 "error",
             ),
+            // AP01: 入力検証／拒否の定数 6 種は呼び出し側が STATUS_ERROR_PREFIX を
+            // 付けていたため分類表から漏れていた。prefix に依存しないよう
+            // concrete failure(error) として明示的に登録する。
+            (
+                "STATUS_KEYMAP_FORMAT_INVALID",
+                STATUS_KEYMAP_FORMAT_INVALID,
+                "error",
+            ),
+            (
+                "STATUS_KEYMAP_LIMIT_PREFIX",
+                STATUS_KEYMAP_LIMIT_PREFIX,
+                "error",
+            ),
+            (
+                "STATUS_KEYMAP_INVALID_PREFIX",
+                STATUS_KEYMAP_INVALID_PREFIX,
+                "error",
+            ),
+            (
+                "STATUS_TERMINAL_COMMAND_INVALID",
+                STATUS_TERMINAL_COMMAND_INVALID,
+                "error",
+            ),
+            (
+                "STATUS_SAVED_SEARCH_NAME_REQUIRED",
+                STATUS_SAVED_SEARCH_NAME_REQUIRED,
+                "error",
+            ),
+            (
+                "STATUS_SAVED_SEARCH_QUERY_REQUIRED",
+                STATUS_SAVED_SEARCH_QUERY_REQUIRED,
+                "error",
+            ),
             // 既に error markers に登録済みの concrete failure。
             ("STATUS_UNDO_FAILED", STATUS_UNDO_FAILED, "error"),
             ("STATUS_REDO_FAILED", STATUS_REDO_FAILED, "error"),
@@ -2829,6 +2878,14 @@ mod tests {
         // 含まないが、concrete error として分類する。一般ルールから外して
         // 接頭辞としての形も専用に検証する。
         const DYNAMIC_EXISTS_ERROR_PREFIX: &[&str] = &["STATUS_RENAME_EXISTS_PREFIX"];
+        // AP01: キーマップ形式ヒントとターミナルコマンド検証は拒否語
+        // （〜ません / 無効 / 最大 / ください 等）を含まないが、concrete error として
+        // 分類する。DYNAMIC_EXISTS_ERROR_PREFIX と同じく一般ルールから外し、
+        // それぞれの文言形状を専用に検証する。
+        const VALIDATION_ERROR_NOTICES: &[&str] = &[
+            "STATUS_KEYMAP_FORMAT_INVALID",
+            "STATUS_TERMINAL_COMMAND_INVALID",
+        ];
         // L06 / N02 / N03 / N08 / N09 の指摘で main.rs 側への登録が必要な定数名
         // （重複・脱落を防止）。全て warning として分類されなければならない。
         const PENDING_WARNING_MARKERS: &[&str] = &[
@@ -2898,6 +2955,21 @@ mod tests {
                     message.contains("存在します") && message.ends_with(": "),
                     "{name} must be the dynamic exists-refusal prefix: {message}"
                 );
+            } else if VALIDATION_ERROR_NOTICES.contains(name) {
+                // AP01: 拒否語を持たない入力検証エラーは concrete error。
+                // 形式ヒント／長さと制御文字の拒否という意味を個別に固定する。
+                assert!(*class == "error", "{name} must be error");
+                match *name {
+                    "STATUS_KEYMAP_FORMAT_INVALID" => assert!(
+                        message.starts_with(KEYMAP_FORMAT_HINT) && message.ends_with('。'),
+                        "{name} must be the canonical keymap format hint: {message}"
+                    ),
+                    "STATUS_TERMINAL_COMMAND_INVALID" => assert!(
+                        message.contains("長すぎる") && message.contains("制御文字"),
+                        "{name} must describe the command validation failure: {message}"
+                    ),
+                    other => panic!("unexpected validation error notice: {other}"),
+                }
             } else {
                 assert!(
                     message.contains("ません")
@@ -3854,6 +3926,22 @@ mod tests {
             assert!(
                 column_note.contains(token),
                 "README files-column note must mention {token}"
+            );
+        }
+        // AP03: 列幅は設定 UI では表示のみ。変更先を F1 と README で共有する。
+        let width_note = COLUMN_WIDTH_SETTINGS_NOTE;
+        assert!(
+            description.contains(width_note),
+            "F1 files-column row must embed the canonical width note: {description}"
+        );
+        let readme_flat: String = readme
+            .lines()
+            .map(|line| line.trim().replace('`', ""))
+            .collect();
+        for token in ["表示のみ", "settings.json", "column_prefs.widths"] {
+            assert!(
+                width_note.contains(token) && readme_flat.contains(token),
+                "F1 and README must share the column-width token {token}"
             );
         }
         let settings_ui = include_str!("settings_ui.rs");

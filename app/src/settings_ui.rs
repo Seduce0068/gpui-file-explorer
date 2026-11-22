@@ -586,6 +586,10 @@ const FILES_SORT_KEYWORDS: &[&str] = &[
     "更新日時",
     "昇順",
     "降順",
+    // AP04: 「昇順/降順は一覧のヘッダクリックで切替」と行説明にある言葉。
+    // 見えている語で検索したときに dead-end しないよう両ファイルタブ行に載せる。
+    "ヘッダ",
+    "チェックボックス",
     // AH04: the canonical directory-view-only note embedded in this row prints
     // ディレクトリ; searching that visible word must surface this row.
     "ディレクトリ",
@@ -606,6 +610,10 @@ const FILES_COLUMN_KEYWORDS: &[&str] = &[
     "種類",
     "サイズ",
     "更新日時",
+    // AP04: 「一覧ヘッダに出す列」「チェックボックスで表示/非表示」は
+    // 行の説明にそのまま出る語なので、検索語としても解決させる。
+    "ヘッダ",
+    "チェックボックス",
 ];
 /// NW09: keywords of the thumbnail toggle row on the Files page. The persisted
 /// `settings.json` key is included for the "キー名で検索" promise, alongside the
@@ -667,6 +675,13 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     // `Esc` in SHORTCUTS_DEFAULTS_KEYWORDS does not contain it, so without this
     // alias copying the visible word into the search box dead-ends.
     "escape",
+    // AP05: the input hint embeds `keymap_reset_guidance!()` and
+    // `reserved_keys_note!()` ("一括リセットのボタンはありません" / "予約キーです").
+    // Those visible words must resolve to this tab rather than dead-ending.
+    "リセット",
+    // ヒントの原文は「一括リセット」なので、そのままコピーした検索も届ける。
+    "一括リセット",
+    "予約キー",
 ];
 /// Searchable keywords of the "既定のショートカット" row group.
 ///
@@ -834,7 +849,12 @@ const FILES_SORT_DESCRIPTION: &str = concat!(
     "。",
     crate::strings::directory_view_only_note!()
 );
-const FILES_COLUMN_DESCRIPTION: &str = "一覧ヘッダに出す列と順番を選びます（チェックボックスで表示/非表示、↑↓で並べ替え。幅は保存済みの値を表示）";
+/// AP03: 列幅は表示のみなので、変更先を正規文言で追記する（F1 はダイアログ内で
+/// 無効のため、この行がアプリ内で唯一の手掛かりになる）。
+const FILES_COLUMN_DESCRIPTION: &str = concat!(
+    "一覧ヘッダに出す列と順番を選びます（チェックボックスで表示/非表示、↑↓で並べ替え。幅は保存済みの値を表示）。",
+    crate::strings::column_width_settings_note!()
+);
 /// NW09: description of the thumbnail toggle. Kept as a constant so the search
 /// keywords and the rendered wording cannot drift apart. AK02 adds the same
 /// bare-key hint and canonical typing-guard note as the other row shortcuts.
@@ -2019,12 +2039,13 @@ mod tests {
         settings_thumbnails_next, settings_view_next, tabs_matching_query, SettingsFocusTarget,
         SettingsRowValues, SettingsTab, SettingsUiAction, SettingsUiPalette,
         APPEARANCE_THEME_DESCRIPTION, APPEARANCE_THEME_KEYWORDS, APPEARANCE_VIEW_DESCRIPTION,
-        APPEARANCE_VIEW_KEYWORDS, FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS,
-        FILES_SORT_DESCRIPTION, FILES_SORT_KEYWORDS, FILES_THUMBNAILS_DESCRIPTION,
-        FILES_THUMBNAILS_KEYWORDS, PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT,
-        PERSONALIZE_PALETTE_KEYWORDS, SEARCH_HISTORY_CHIPS_HELP, SETTINGS_KEYMAP_INPUT_HINT,
-        SETTINGS_SEARCH_PLACEHOLDER, SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES,
-        SHORTCUTS_KEYMAP_KEYWORDS, TERMINAL_COMMAND_KEYWORDS, TERMINAL_COMMAND_SETTINGS_HINT,
+        APPEARANCE_VIEW_KEYWORDS, FILES_COLUMN_DESCRIPTION, FILES_COLUMN_KEYWORDS,
+        FILES_HIDDEN_DESCRIPTION, FILES_HIDDEN_KEYWORDS, FILES_SORT_DESCRIPTION,
+        FILES_SORT_KEYWORDS, FILES_THUMBNAILS_DESCRIPTION, FILES_THUMBNAILS_KEYWORDS,
+        PERSONALIZE_INFO_KEYWORDS, PERSONALIZE_PALETTE_CHANGE_HINT, PERSONALIZE_PALETTE_KEYWORDS,
+        SEARCH_HISTORY_CHIPS_HELP, SETTINGS_KEYMAP_INPUT_HINT, SETTINGS_SEARCH_PLACEHOLDER,
+        SHORTCUTS_DEFAULTS_KEYWORDS, SHORTCUTS_DEFAULT_LINES, SHORTCUTS_KEYMAP_KEYWORDS,
+        TERMINAL_COMMAND_KEYWORDS, TERMINAL_COMMAND_SETTINGS_HINT,
     };
     use crate::strings::SETTINGS_INPUT_GUARD_NOTE;
 
@@ -2635,6 +2656,45 @@ mod tests {
             vec![SettingsTab::Shortcuts],
             "AH03: the visible reserved word must resolve to exactly the Shortcuts tab"
         );
+    }
+
+    #[test]
+    fn visible_header_and_checkbox_words_are_searchable_on_the_files_tab() {
+        // AP04: 「一覧のヘッダクリックで切替」/「一覧ヘッダに出す列」/
+        // 「チェックボックスで表示/非表示」は画面に出ている語。それで検索して
+        // dead-end しないよう、両ファイルタブ行のキーワードに登録する。
+        assert!(FILES_SORT_DESCRIPTION.contains("一覧のヘッダクリックで切替"));
+        assert!(FILES_COLUMN_DESCRIPTION.contains("一覧ヘッダ"));
+        assert!(FILES_COLUMN_DESCRIPTION.contains("チェックボックス"));
+        for keywords in [FILES_SORT_KEYWORDS, FILES_COLUMN_KEYWORDS] {
+            assert!(keywords.contains(&"ヘッダ"));
+            assert!(keywords.contains(&"チェックボックス"));
+        }
+        assert_eq!(tabs_matching_query("ヘッダ"), vec![SettingsTab::Files]);
+        assert_eq!(
+            tabs_matching_query("チェックボックス"),
+            vec![SettingsTab::Files]
+        );
+    }
+
+    #[test]
+    fn keymap_hint_reset_and_reserved_words_are_searchable() {
+        // AP05: 入力ヒントが表示する「一括リセット」と「予約キー」は、
+        // 検索ボックスにそのまま入れてもショートカットタブへ届く必要がある。
+        assert!(SHORTCUTS_KEYMAP_KEYWORDS.contains(&"リセット"));
+        assert!(SHORTCUTS_KEYMAP_KEYWORDS.contains(&"一括リセット"));
+        assert!(SHORTCUTS_KEYMAP_KEYWORDS.contains(&"予約キー"));
+        for token in ["一括リセット", "予約キー"] {
+            assert!(
+                SETTINGS_KEYMAP_INPUT_HINT.contains(token),
+                "keymap hint must still show {token}: {SETTINGS_KEYMAP_INPUT_HINT}"
+            );
+            assert_eq!(
+                tabs_matching_query(token),
+                vec![SettingsTab::Shortcuts],
+                "visible word {token} must surface exactly the Shortcuts tab"
+            );
+        }
     }
 
     #[test]
@@ -4111,6 +4171,31 @@ mod column_prefs_ui_tests {
         assert!(FILES_COLUMN_DESCRIPTION.contains("列"));
         assert_eq!(column_label("name"), "名前");
         assert_eq!(column_label("modified"), "更新日時");
+    }
+
+    #[test]
+    fn column_width_note_is_shared_by_row_and_f1_help() {
+        // AP03: 列幅の変更先を正規文言で共有する。F1 は設定ダイアログ内で
+        // 無効なので、設定行の説明にも同じ案内が必要。
+        let note = crate::strings::COLUMN_WIDTH_SETTINGS_NOTE;
+        assert!(
+            note.contains("column_prefs.widths") && note.contains("settings.json"),
+            "canonical width note must name the settings.json key: {note}"
+        );
+        assert!(
+            FILES_COLUMN_DESCRIPTION.contains(note),
+            "column row must embed the canonical width note: {FILES_COLUMN_DESCRIPTION}"
+        );
+        let f1 = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "一覧の列")
+            .map(|(_, text)| text)
+            .expect("F1 must have the 一覧の列 row");
+        assert!(
+            f1.contains(note),
+            "F1 column row must embed the canonical width note: {f1}"
+        );
     }
 
     #[test]

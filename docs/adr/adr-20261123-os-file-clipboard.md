@@ -35,30 +35,27 @@ Android / iOS の共有 Intent である。
 
 ### クリップボードはアプリ内部専用
 
-- [`ClipboardSlot`（main.rs:2444-2447）](../../app/src/main.rs#L2444-L2447) は
-  `paths: Vec<PathBuf>` と `cut: bool` だけを持つ。直上のコメントは、
-  OS クリップボードの cut / copy 意味がプラットフォーム依存であることと、
-  ユーザーがコピーした内容を上書きしないことを理由に、意図的に使わないと述べる。
-- 保持フィールドは [`clipboard` フィールド（main.rs:2925）](../../app/src/main.rs#L2925) の
-  `clipboard: Option<ClipboardSlot>` である。
-- `copy_selected` は [main.rs:5988-6007](../../app/src/main.rs#L5988-L6007) で
-  `ClipboardSlot { paths, cut: false }` を、`cut_selected` は
-  [`cut_selected`（main.rs:6010-6029）](../../app/src/main.rs#L6010-L6029) で
-  `ClipboardSlot { paths, cut: true }` を設定する。どちらも OS へは書き出さない。
-- `paste` は [`paste`（main.rs:6081-6347）](../../app/src/main.rs#L6081-L6347) で内部スロットを
-  複製して開始する。競合時は常に `ConflictPolicy::Rename` を使い、既存ファイルを上書きしない。
-  存在しなくなった元パスは除外し、カットで同一ディレクトリの項目も除外する。
-- 転送後のスロット破棄は [main.rs:6322-6331](../../app/src/main.rs#L6322-L6331) の
-  `cut && fully_succeeded` の場合だけである。キャンセルや部分失敗ではスロットを残し、
-  再試行できるようにする。
+- `app/src/main.rs::ClipboardSlot` は `paths: Vec<PathBuf>` と `cut: bool` だけを持つ。
+  直上のコメントは、OS クリップボードの cut / copy 意味がプラットフォーム依存である
+  ことと、ユーザーがコピーした内容を上書きしないことを理由に、意図的に使わないと述べる。
+- 保持フィールドは `app/src/main.rs::Explorer::clipboard`
+  （`clipboard: Option<ClipboardSlot>`）である。
+- `app/src/main.rs::Explorer::copy_selected` は `ClipboardSlot { paths, cut: false }` を、
+  `app/src/main.rs::Explorer::cut_selected` は `ClipboardSlot { paths, cut: true }` を設定する。
+  どちらも OS へは書き出さない。
+- `app/src/main.rs::Explorer::paste` は内部スロットを複製して開始する。競合時は常に
+  `ConflictPolicy::Rename` を使い、既存ファイルを上書きしない。存在しなくなった元パスは
+  除外し、カットで同一ディレクトリの項目も除外する。
+- 転送後のスロット破棄は `app/src/main.rs::Explorer::paste` 内の `cut && fully_succeeded`
+  の場合だけである。キャンセルや部分失敗ではスロットを残し、再試行できるようにする。
 - 調査依頼に記載された行番号（5785 など）は現行ファイルと約 200 行ずれている。
-  本 ADR は実読した現行の行番号を用いる。行番号は as-built スナップショットであり、
-  並行変更でずれ得るため、リンク先のシンボル名を優先して参照すること。
+  本 ADR は [app/src/main.rs](../../app/src/main.rs) のシンボル名を優先して参照する。
+  行番号は as-built スナップショットで並行変更によりずれ得るため、`#L` アンカーは使わず、
+  シンボル名で参照する（R43/AP02）。
 
 ### OS クリップボードへの書き込みはパス文字列 1 本だけ
 
-- `copy_path` は [main.rs:5981-5985](../../app/src/main.rs#L5981-L5985) で次を呼ぶ。
-  複数パスや `ExternalPaths` は渡さない。
+- `app/src/main.rs::Explorer::copy_path` は次を呼ぶ。複数パスや `ExternalPaths` は渡さない。
 
   ```rust
   cx.write_to_clipboard(ClipboardItem::new_string(display_path(&path)));
@@ -69,13 +66,12 @@ Android / iOS の共有 Intent である。
 
 ### 外部パスはドロップ経路でのみ扱う
 
-- `ExternalPaths` の出現は [main.rs:10021](../../app/src/main.rs#L10021)、
-  [main.rs:10293](../../app/src/main.rs#L10293)、
-  [main.rs:11413](../../app/src/main.rs#L11413) の 3 か所で、
-  いずれも `on_drop::<ExternalPaths>` のハンドラである。
+- `ExternalPaths` の `on_drop::<ExternalPaths>` ハンドラは 3 か所にある
+  （行番号は並行変更でずれ得るため、`app/src/main.rs` 内の
+  `on_drop::<ExternalPaths>` を検索して特定する）。
 - ハンドラは `drop_external_into(cwd, paths)` または `drop_external(paths)` を呼ぶ。
-  `drop_external_into` は [main.rs:6374](../../app/src/main.rs#L6374) にあり、
-  常にコピーかつ `ConflictPolicy::Rename` で、特殊ファイルや同一パスはスキップする。
+  `app/src/main.rs::Explorer::drop_external_into` は常にコピーかつ
+  `ConflictPolicy::Rename` で、特殊ファイルや同一パスはスキップする。
 - 調査依頼に記載された行番号（9807 / 10099 / 11214）も現行ファイルではずれている。
 
 ### GPUI 0.3.12 のクリップボード実装
