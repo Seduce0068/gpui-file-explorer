@@ -316,6 +316,51 @@ mod tests {
     }
 
     #[test]
+    fn remaining_cause_variants_expose_their_held_message() {
+        // `source()` has seven cause-carrying arms. The tests above pin
+        // FsCause / NotFoundCause / AlreadyExistsCause; this one covers the
+        // other four so no arm can silently stop returning its cause.
+        let cases: Vec<(AppError, &str)> = vec![
+            (
+                AppError::PermissionDeniedCause(
+                    PathBuf::from("/tmp/locked"),
+                    BoxedCause::text("permission detail"),
+                ),
+                "permission detail",
+            ),
+            (
+                AppError::InvalidTargetCause(
+                    "target is a symlink".to_string(),
+                    BoxedCause::text("invalid target detail"),
+                ),
+                "invalid target detail",
+            ),
+            (
+                AppError::UnsupportedCause(
+                    "reflink".to_string(),
+                    BoxedCause::text("unsupported detail"),
+                ),
+                "unsupported detail",
+            ),
+            (
+                AppError::IoCause {
+                    path: PathBuf::from("/tmp/io"),
+                    message: "read failed".to_string(),
+                    cause: BoxedCause::text("io detail"),
+                },
+                "io detail",
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(
+                error.source().map(ToString::to_string),
+                Some(expected.to_string()),
+                "cause of {error}"
+            );
+        }
+    }
+
+    #[test]
     fn cloning_a_caused_error_preserves_source_and_message_ja() {
         // FsCause: `from_io` attaches the OS error as a `BoxedCause`; cloning a
         // boxed trait object falls back to its rendered text, so source() text

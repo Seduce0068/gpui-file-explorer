@@ -65,17 +65,8 @@ mod platform {
     /// conversion.
     pub fn restore_by_id(entries: &[(PathBuf, OsString)]) -> Result<(usize, usize), String> {
         let items = list()?;
-        let mut to_restore: Vec<TrashItem> = Vec::new();
-        let mut missing = 0usize;
-        for (_path, id) in entries {
-            match items
-                .iter()
-                .find(|item| item.id.as_os_str() == id.as_os_str())
-            {
-                Some(item) => to_restore.push(item.clone()),
-                None => missing += 1,
-            }
-        }
+        let ids: Vec<OsString> = entries.iter().map(|(_path, id)| id.clone()).collect();
+        let (to_restore, missing) = super::partition_restore_ids(&items, &ids);
         let restored = to_restore.len();
         if restored > 0 {
             restore(to_restore)?;
@@ -134,6 +125,31 @@ mod platform {
 }
 
 pub use platform::{delete, list, restore, restore_by_id, TrashItem};
+
+/// Split a trash listing into the items addressed by `ids` and a count of ids
+/// with no match. This is the pure core of [`restore_by_id`]: no filesystem
+/// access, so the id match / missing accounting can be tested deterministically
+/// instead of depending on a usable system trash directory.
+///
+/// IDs are compared as `OsString` (not `String`) so non-UTF-8 bytes in a trash
+/// id match exactly; a lossy conversion here would break undo bookkeeping.
+/// Each requested id is resolved independently: the returned items follow the
+/// order of `ids`, and a repeated id yields a repeated item (and a missing id
+/// is counted once per occurrence), mirroring the previous inline behaviour.
+pub fn partition_restore_ids(items: &[TrashItem], ids: &[OsString]) -> (Vec<TrashItem>, usize) {
+    let mut to_restore = Vec::new();
+    let mut missing = 0usize;
+    for id in ids {
+        match items
+            .iter()
+            .find(|item| item.id.as_os_str() == id.as_os_str())
+        {
+            Some(item) => to_restore.push(item.clone()),
+            None => missing += 1,
+        }
+    }
+    (to_restore, missing)
+}
 
 /// Map trash items to list rows (newest first). The `path` is the trash id, so
 /// selection works without touching real files.
@@ -324,6 +340,76 @@ mod tests {
         assert!(record_ids(&items, &[]).is_empty());
     }
 
+    #[test]
+    fn partition_restore_ids_matches_requested_ids_in_request_order() {
+        let items = vec![
+            item("/trash/info/a.trashinfo", "a.txt", "/home/u", 100),
+            item("/trash/info/b.trashinfo", "b.txt", "/home/u", 300),
+        ];
+        let ids = vec![
+            OsString::from("/trash/info/b.trashinfo"),
+            OsString::from("/trash/info/a.trashinfo"),
+        ];
+        let (to_restore, missing) = partition_restore_ids(&items, &ids);
+        assert_eq!(missing, 0);
+        assert_eq!(
+            to_restore
+                .iter()
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>(),
+            ids,
+            "resolved items follow the requested id order"
+        );
+    }
+
+    #[test]
+    fn partition_restore_ids_reports_unmatched_ids_without_restoring() {
+        let items = vec![item("/trash/info/a.trashinfo", "a.txt", "/home/u", 100)];
+        let ids = vec![
+            OsString::from("/trash/info/a.trashinfo"),
+            OsString::from("not-in-listing"),
+        ];
+        let (to_restore, missing) = partition_restore_ids(&items, &ids);
+        assert_eq!(to_restore.len(), 1);
+        assert_eq!(to_restore[0].id, ids[0]);
+        assert_eq!(missing, 1);
+    }
+
+    #[test]
+    fn partition_restore_ids_handles_empty_inputs() {
+        let items = vec![item("/trash/info/a.trashinfo", "a.txt", "/home/u", 100)];
+        let (to_restore, missing) = partition_restore_ids(&items, &[]);
+        assert!(to_restore.is_empty());
+        assert_eq!(missing, 0);
+
+        let id = OsString::from("unmatched");
+        let (to_restore, missing) = partition_restore_ids(&[], &[id]);
+        assert!(to_restore.is_empty());
+        assert_eq!(missing, 1);
+
+        let (to_restore, missing) = partition_restore_ids(&[], &[]);
+        assert!(to_restore.is_empty());
+        assert_eq!(missing, 0);
+    }
+
+    #[test]
+    fn partition_restore_ids_counts_duplicate_ids_per_occurrence() {
+        let items = vec![item("/trash/info/a.trashinfo", "a.txt", "/home/u", 100)];
+        let id = OsString::from("/trash/info/a.trashinfo");
+        let missing_id = OsString::from("gone");
+        let (to_restore, missing) = partition_restore_ids(
+            &items,
+            &[id.clone(), id.clone(), missing_id.clone(), missing_id],
+        );
+        assert_eq!(
+            to_restore.len(),
+            2,
+            "each occurrence of a matching id is resolved"
+        );
+        assert!(to_restore.iter().all(|item| item.id == id));
+        assert_eq!(missing, 2, "each occurrence of a missing id is counted");
+    }
+
     #[cfg(unix)]
     #[test]
     fn non_utf8_id_round_trips_through_trash_structs() {
@@ -363,6 +449,14 @@ mod tests {
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].id, id);
         assert_eq!(resolved[0].id.as_os_str().as_bytes(), id_bytes.as_slice());
+
+        // restore-by-id's pure core compares the same raw bytes: a lossy
+        // `String` would turn 0xff into U+FFFD and fail to match the item.
+        let (to_restore, missing) =
+            partition_restore_ids(std::slice::from_ref(&item), std::slice::from_ref(&id));
+        assert_eq!(to_restore.len(), 1);
+        assert_eq!(to_restore[0].id.as_os_str().as_bytes(), id_bytes.as_slice());
+        assert_eq!(missing, 0);
     }
 }
 

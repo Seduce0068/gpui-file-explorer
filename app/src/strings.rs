@@ -232,6 +232,11 @@ pub const PROPERTIES_READ_ONLY_HINT: &str = "Esc で閉じる（読み取り専�
 pub const SEARCH_BAR_HINT: &str = "Enter で検索 / Esc で閉じる";
 /// 検索実行中に検索バーへ表示するラベル（AK12）。
 pub const SEARCH_IN_PROGRESS_LABEL: &str = "検索中…";
+/// プレビューオーバーレイのフッター案内（AM02）。
+pub const PREVIEW_OVERLAY_FOOTER_HINT: &str =
+    "↑/↓ で前後のファイル、Ctrl+Enter で新タブ、Space / F3 / Esc で閉じる（読み取り専用）";
+/// あいまいジャンプオーバーレイのフッター案内（AM02）。
+pub const FUZZY_JUMP_OVERLAY_FOOTER_HINT: &str = "↑/↓ で選択 / Enter で移動 / Esc で閉じる";
 
 const _: () = assert!(!HISTORY_DIALOG_FOOTER_HINT.is_empty());
 const _: () = assert!(!LOCATION_BAR_HINT.is_empty());
@@ -239,6 +244,8 @@ const _: () = assert!(!HELP_OVERLAY_FOOTER_HINT.is_empty());
 const _: () = assert!(!PROPERTIES_READ_ONLY_HINT.is_empty());
 const _: () = assert!(!SEARCH_BAR_HINT.is_empty());
 const _: () = assert!(!SEARCH_IN_PROGRESS_LABEL.is_empty());
+const _: () = assert!(!PREVIEW_OVERLAY_FOOTER_HINT.is_empty());
+const _: () = assert!(!FUZZY_JUMP_OVERLAY_FOOTER_HINT.is_empty());
 
 #[cfg(test)]
 mod dialog_and_bar_hint_tests {
@@ -253,6 +260,8 @@ mod dialog_and_bar_hint_tests {
             PROPERTIES_READ_ONLY_HINT,
             SEARCH_BAR_HINT,
             SEARCH_IN_PROGRESS_LABEL,
+            PREVIEW_OVERLAY_FOOTER_HINT,
+            FUZZY_JUMP_OVERLAY_FOOTER_HINT,
         ] {
             assert!(!hint.is_empty(), "hint must not be empty");
             assert_eq!(hint, hint.trim(), "hint must not carry stray whitespace");
@@ -275,6 +284,14 @@ mod dialog_and_bar_hint_tests {
         assert_eq!(PROPERTIES_READ_ONLY_HINT, "Esc で閉じる（読み取り専用）");
         assert_eq!(SEARCH_BAR_HINT, "Enter で検索 / Esc で閉じる");
         assert_eq!(SEARCH_IN_PROGRESS_LABEL, "検索中…");
+        assert_eq!(
+            PREVIEW_OVERLAY_FOOTER_HINT,
+            "↑/↓ で前後のファイル、Ctrl+Enter で新タブ、Space / F3 / Esc で閉じる（読み取り専用）"
+        );
+        assert_eq!(
+            FUZZY_JUMP_OVERLAY_FOOTER_HINT,
+            "↑/↓ で選択 / Enter で移動 / Esc で閉じる"
+        );
     }
 
     #[test]
@@ -286,12 +303,27 @@ mod dialog_and_bar_hint_tests {
         assert!(PROPERTIES_READ_ONLY_HINT.contains("読み取り専用"));
         assert!(SEARCH_BAR_HINT.contains("Enter で検索"));
         assert!(SEARCH_IN_PROGRESS_LABEL.ends_with('…'));
+        // AM02: オーバーレイのフッターは操作キーと読み取り専用の案内を落とさない。
+        for token in ["↑/↓", "Ctrl+Enter", "Space", "F3", "読み取り専用"] {
+            assert!(
+                PREVIEW_OVERLAY_FOOTER_HINT.contains(token),
+                "preview footer must explain {token}"
+            );
+        }
+        for token in ["↑/↓", "Enter で移動"] {
+            assert!(
+                FUZZY_JUMP_OVERLAY_FOOTER_HINT.contains(token),
+                "fuzzy-jump footer must explain {token}"
+            );
+        }
         for hint in [
             HISTORY_DIALOG_FOOTER_HINT,
             LOCATION_BAR_HINT,
             HELP_OVERLAY_FOOTER_HINT,
             PROPERTIES_READ_ONLY_HINT,
             SEARCH_BAR_HINT,
+            PREVIEW_OVERLAY_FOOTER_HINT,
+            FUZZY_JUMP_OVERLAY_FOOTER_HINT,
         ] {
             assert!(hint.contains("Esc"), "hint must explain Esc: {hint}");
         }
@@ -1105,7 +1137,10 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+1 / Ctrl+2", "詳細リスト / アイコングリッド"),
             ("Ctrl+H", "隠しファイルの表示切替"),
             // AG05: ヘッダクリックによるソートも README のキー列に合わせる。
-            ("ヘッダクリック", "名前 / サイズ / 更新日時でソート"),
+            (
+                "ヘッダクリック",
+                "名前 / 種類 / サイズ / 更新日時でソート（同一列で昇順⇔降順）",
+            ),
             (
                 "Ctrl+R / F5",
                 concat!(reload_word!(), " / 検索の再実行"),
@@ -1173,7 +1208,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             (
                 "設定ダイアログの並び順",
                 concat!(
-                    "ファイルタブで Alt+S により「既定の並び順」を切替",
+                    "ファイルタブで Alt+S により「既定の並び順」を名前 → 種類 → サイズ → 更新日時の順に切替",
                     settings_input_guard_note!()
                 ),
             ),
@@ -1870,6 +1905,26 @@ mod tests {
                 "README error table must carry the displayed message {token}"
             );
         }
+        // AM03: 「次の操作」列のキー導線も回帰対象にする。文言全体の一致は
+        // 要求せず、キートークン（F5 / 親フォルダ / F2 / Ctrl+,）の存在を
+        // エラー回復テーブル内で固定する。
+        let recovery_table = readme
+            .split("## エラーが出たら")
+            .nth(1)
+            .expect("README must have the error-recovery section")
+            .split("\n## ")
+            .next()
+            .expect("error-recovery section must terminate")
+            .lines()
+            .filter(|line| line.trim_start().starts_with('|'))
+            .map(|line| line.replace('`', ""))
+            .collect::<String>();
+        for token in ["F5", "親フォルダ", "F2", "Ctrl+,"] {
+            assert!(
+                recovery_table.contains(token),
+                "README error table must carry the recovery key {token}"
+            );
+        }
     }
 
     #[test]
@@ -2416,6 +2471,14 @@ mod tests {
             ("STATUS_UNDO_FAILED", STATUS_UNDO_FAILED, "error"),
             ("STATUS_REDO_FAILED", STATUS_REDO_FAILED, "error"),
             ("STATUS_RENAME_FAILED", STATUS_RENAME_FAILED, "error"),
+            // AM01: set_rename_error がステータスへミラーする同期検証エラーも
+            // concrete failure(red)。登録漏れだと前回の成功 green が残る。
+            ("STATUS_RENAME_NO_PARENT", STATUS_RENAME_NO_PARENT, "error"),
+            (
+                "STATUS_RENAME_EXISTS_PREFIX",
+                STATUS_RENAME_EXISTS_PREFIX,
+                "error",
+            ),
             ("STATUS_TARGET_GONE", STATUS_TARGET_GONE, "error"),
             // T10: 汎用の「対象が存在しません」も main.rs の error マーカーに
             // 登録済み（C_RED）なので、色分類表にも明示的に載せる。
@@ -2626,6 +2689,10 @@ mod tests {
             "STATUS_CANCELLED",
             "STATUS_SETTINGS_READ_ONLY",
         ];
+        // AM01: 動的なパスを連結する既存排斥の接頭辞は拒否語（「〜ません」等）を
+        // 含まないが、concrete error として分類する。一般ルールから外して
+        // 接頭辞としての形も専用に検証する。
+        const DYNAMIC_EXISTS_ERROR_PREFIX: &[&str] = &["STATUS_RENAME_EXISTS_PREFIX"];
         // L06 / N02 / N03 / N08 / N09 の指摘で main.rs 側への登録が必要な定数名
         // （重複・脱落を防止）。全て warning として分類されなければならない。
         const PENDING_WARNING_MARKERS: &[&str] = &[
@@ -2688,6 +2755,13 @@ mod tests {
                 // 登録済みであること（下の逆方向チェック）だけを固定する。
                 // 拒否語を含まないのは意図的なので一般ルールから除外する。
                 assert!(*class == "warning", "{name} must be warning");
+            } else if DYNAMIC_EXISTS_ERROR_PREFIX.contains(name) {
+                // AM01: 「既に存在します: 」は動的なパスを受け取る失敗接頭辞。
+                assert!(*class == "error", "{name} must be error");
+                assert!(
+                    message.contains("存在します") && message.ends_with(": "),
+                    "{name} must be the dynamic exists-refusal prefix: {message}"
+                );
             } else {
                 assert!(
                     message.contains("ません")

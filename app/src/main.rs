@@ -624,6 +624,10 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     STATUS_RENAME_INVALID_NUL,
     STATUS_RENAME_INVALID_RESERVED_PREFIX,
     STATUS_RENAME_INVALID_CHAR,
+    // AM01: F2 の同期検証拒否（親なし / 同名あり）も concrete failure として red。
+    // set_rename_error がミラーしたステータスが green に落ちないようにする。
+    STATUS_RENAME_NO_PARENT,
+    STATUS_RENAME_EXISTS_PREFIX,
 ];
 
 /// Pure colour decision for the primary status text (U-01). An explicit
@@ -2176,10 +2180,11 @@ fn empty_state_message(
 
 use crate::strings::{
     DIALOG_FOOTER_DELETE_SUFFIX, DIALOG_FOOTER_HINT, EMPTY_DIRECTORY, EMPTY_FILTERED, EMPTY_SEARCH,
-    EMPTY_TRASH, ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, HELP_SECTIONS, KEYMAP_FORMAT_HINT,
-    KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH,
-    LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
-    PARENT_FOLDER_LABEL, RELOAD_WORD, SEARCH_IN_PROGRESS_LABEL, STATUS_ACCESS_DENIED,
+    EMPTY_TRASH, ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, FUZZY_JUMP_OVERLAY_FOOTER_HINT,
+    HELP_SECTIONS, KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING,
+    LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH, LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX,
+    OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
+    PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD, SEARCH_IN_PROGRESS_LABEL, STATUS_ACCESS_DENIED,
     STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
     STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
     STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
@@ -7332,9 +7337,12 @@ impl Explorer {
                         .child(Button::new("preview-close").label("閉じる").on_click(close)),
                 ),
         );
-        panel = panel.child(div().text_xs().text_color(rgb(p.muted)).child(
-            "↑/↓ で前後のファイル、Ctrl+Enter で新タブ、Space / F3 / Esc で閉じる（読み取り専用）",
-        ));
+        panel = panel.child(
+            div()
+                .text_xs()
+                .text_color(rgb(p.muted))
+                .child(PREVIEW_OVERLAY_FOOTER_HINT),
+        );
         Some(
             div()
                 .absolute()
@@ -7704,7 +7712,7 @@ impl Explorer {
                         div()
                             .text_xs()
                             .text_color(rgb(p.muted))
-                            .child("↑/↓ で選択 / Enter で移動 / Esc で閉じる"),
+                            .child(FUZZY_JUMP_OVERLAY_FOOTER_HINT),
                     )
                     .child(Button::new("fuzzy-close").label("閉じる").on_click(close)),
             );
@@ -8267,7 +8275,7 @@ impl Explorer {
                     }
                     Some(Err(error)) => {
                         this.set_rename_error(&format!("{STATUS_RENAME_FAILED}: {error}"), cx);
-                        this.status = format!("{STATUS_RENAME_FAILED}: {error}");
+                        // AM01: ステータスのミラーは set_rename_error に一本化する。
                     }
                 }
                 cx.notify();
@@ -8310,6 +8318,11 @@ impl Explorer {
         if let Some(rename) = &mut self.renaming {
             rename.error = Some(message.to_string());
         }
+        // AM01: 同期的な入力検証エラーも設定カードと同じくステータスバーへ
+        // ミラーする。ミラーしないとダイアログが赤いまま前回の成功 green が
+        // 残り、表示が矛盾する（非同期失敗は既に STATUS_RENAME_FAILED を
+        // 設定していたが、同期側が欠けていた）。
+        self.status = settings_validation_status(message);
         cx.notify();
     }
 
@@ -12313,7 +12326,8 @@ mod tests {
         SEARCH_IN_PROGRESS_LABEL, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
         STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_DROP_NO_DESTINATION,
         STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID, STATUS_MAX_TABS_SUFFIX,
-        STATUS_NO_CLIPBOARD, STATUS_RENAME_FAILED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
+        STATUS_NO_CLIPBOARD, STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED,
+        STATUS_RENAME_NO_PARENT, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
         STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
         STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
         STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
@@ -12343,6 +12357,9 @@ mod tests {
             // Y01: 回帰表に欠けていた concrete error マーカーを全て固定する。
             (STATUS_TRASH_ALL_FAILED, C_RED),
             (STATUS_RENAME_FAILED, C_RED),
+            // AM01: 同期検証の拒否文言自身も concrete error（ミラー前でも赤）。
+            (STATUS_RENAME_NO_PARENT, C_RED),
+            (STATUS_RENAME_EXISTS_PREFIX, C_RED),
             (STATUS_TRASH_PARTIAL_FAILED, C_RED),
             (STATUS_OP_FAILED_SUFFIX, C_RED),
             (STATUS_PARTIAL_FAILURE_SUFFIX, C_RED),
@@ -12769,25 +12786,33 @@ mod tests {
 
     #[test]
     fn dialog_validation_errors_are_mirrored_to_a_red_status() {
-        // AJ03: Alt+K / Alt+T のダイアログ内エラーも設定カードと同じく
-        // `settings_validation_status` を通してステータスバーへミラーする。
+        // AJ03 / AM01: Alt+K / Alt+T と F2 のダイアログ内エラーも設定カードと
+        // 同じく `settings_validation_status` を通してステータスバーへミラーする。
         // ヘルパーは GPUI Context を要するため、ここではソース配線を固定し、
         // 実際のミラー文言が赤に分類されることを確認する。
         let source = include_str!("main.rs");
-        for helper in ["fn set_keymap_error(", "fn set_terminal_command_error("] {
+        for (helper, param) in [
+            ("fn set_keymap_error(", "error"),
+            ("fn set_terminal_command_error(", "error"),
+            ("fn set_rename_error(", "message"),
+        ] {
             let body = source_region(source, helper, "\n    }\n");
+            let mirror = format!("settings_validation_status({param})");
             assert!(
-                body.contains("settings_validation_status(error)"),
+                body.contains(&mirror),
                 "{helper} must mirror the dialog error into self.status"
             );
+            let assignment = format!("self.status = {mirror}");
             assert!(
-                body.contains("self.status = settings_validation_status(error)"),
+                body.contains(&assignment),
                 "{helper} must assign the mirrored status"
             );
         }
         for message in [
             STATUS_KEYMAP_FORMAT_INVALID,
             STATUS_TERMINAL_COMMAND_INVALID,
+            STATUS_RENAME_NO_PARENT,
+            STATUS_RENAME_EXISTS_PREFIX,
         ] {
             let mirrored = settings_validation_status(message);
             assert_eq!(status_color(&mirrored), C_RED, "dialog error: {mirrored}");

@@ -434,6 +434,20 @@ mod image_tests {
         webp.extend_from_slice(&[0, 0, 0, 0]);
         webp.extend_from_slice(b"WEBP");
         assert_eq!(sniff_image_format(&webp), Some(ImageFormat::Webp));
+        // A RIFF container is not automatically WebP: only the bytes at 8..12
+        // decide that, so a WAVE container must not be guessed as an image.
+        let mut wave = b"RIFF".to_vec();
+        wave.extend_from_slice(&[0, 0, 0, 0]);
+        wave.extend_from_slice(b"WAVEfmt ");
+        assert!(wave.len() >= 12);
+        assert_eq!(sniff_image_format(&wave), None);
+        // An 11-byte buffer has no complete 8..12 form tag: the `len() >= 12`
+        // guard must reject it instead of slicing out of bounds.
+        let mut short_riff = b"RIFF".to_vec();
+        short_riff.extend_from_slice(&[0, 0, 0, 0]);
+        short_riff.extend_from_slice(b"WAV");
+        assert_eq!(short_riff.len(), 11);
+        assert_eq!(sniff_image_format(&short_riff), None);
         assert_eq!(sniff_image_format(b"BM....."), Some(ImageFormat::Bmp));
         assert_eq!(
             sniff_image_format(&[b'I', b'I', 0x2a, 0x00]),

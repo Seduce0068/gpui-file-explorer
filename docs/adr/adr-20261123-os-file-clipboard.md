@@ -35,28 +35,29 @@ Android / iOS の共有 Intent である。
 
 ### クリップボードはアプリ内部専用
 
-- [main.rs:2395-2404](../../app/src/main.rs#L2395-L2404) の `ClipboardSlot` は
+- [`ClipboardSlot`（main.rs:2444-2447）](../../app/src/main.rs#L2444-L2447) は
   `paths: Vec<PathBuf>` と `cut: bool` だけを持つ。直上のコメントは、
   OS クリップボードの cut / copy 意味がプラットフォーム依存であることと、
   ユーザーがコピーした内容を上書きしないことを理由に、意図的に使わないと述べる。
-- 保持フィールドは [app/src/main.rs:2882](../../app/src/main.rs#L2882) の
+- 保持フィールドは [`clipboard` フィールド（main.rs:2925）](../../app/src/main.rs#L2925) の
   `clipboard: Option<ClipboardSlot>` である。
-- `copy_selected` は [main.rs:5935-5954](../../app/src/main.rs#L5935-L5954) で
+- `copy_selected` は [main.rs:5988-6007](../../app/src/main.rs#L5988-L6007) で
   `ClipboardSlot { paths, cut: false }` を、`cut_selected` は
-  [app/src/main.rs:5957-5976](../../app/src/main.rs#L5957-L5976) で
+  [`cut_selected`（main.rs:6010-6029）](../../app/src/main.rs#L6010-L6029) で
   `ClipboardSlot { paths, cut: true }` を設定する。どちらも OS へは書き出さない。
-- `paste` は [app/src/main.rs:6028-6293](../../app/src/main.rs#L6028-L6293) で内部スロットを
+- `paste` は [`paste`（main.rs:6081-6347）](../../app/src/main.rs#L6081-L6347) で内部スロットを
   複製して開始する。競合時は常に `ConflictPolicy::Rename` を使い、既存ファイルを上書きしない。
   存在しなくなった元パスは除外し、カットで同一ディレクトリの項目も除外する。
-- 転送後のスロット破棄は [app/src/main.rs:6269-6277](../../app/src/main.rs#L6269-L6277) の
+- 転送後のスロット破棄は [main.rs:6322-6331](../../app/src/main.rs#L6322-L6331) の
   `cut && fully_succeeded` の場合だけである。キャンセルや部分失敗ではスロットを残し、
   再試行できるようにする。
-- 調査依頼に記載された行番号（5785 など）は現行ファイルと約 150 行ずれている。
-  本 ADR は実読した現行の行番号を用いる。
+- 調査依頼に記載された行番号（5785 など）は現行ファイルと約 200 行ずれている。
+  本 ADR は実読した現行の行番号を用いる。行番号は as-built スナップショットであり、
+  並行変更でずれ得るため、リンク先のシンボル名を優先して参照すること。
 
 ### OS クリップボードへの書き込みはパス文字列 1 本だけ
 
-- `copy_path` は [app/src/main.rs:5928-5932](../../app/src/main.rs#L5928-L5932) で次を呼ぶ。
+- `copy_path` は [main.rs:5981-5985](../../app/src/main.rs#L5981-L5985) で次を呼ぶ。
   複数パスや `ExternalPaths` は渡さない。
 
   ```rust
@@ -68,12 +69,12 @@ Android / iOS の共有 Intent である。
 
 ### 外部パスはドロップ経路でのみ扱う
 
-- `ExternalPaths` の出現は [app/src/main.rs:9961](../../app/src/main.rs#L9961)、
-  [app/src/main.rs:10237](../../app/src/main.rs#L10237)、
-  [app/src/main.rs:11352](../../app/src/main.rs#L11352) の 3 か所で、
+- `ExternalPaths` の出現は [main.rs:10021](../../app/src/main.rs#L10021)、
+  [main.rs:10293](../../app/src/main.rs#L10293)、
+  [main.rs:11413](../../app/src/main.rs#L11413) の 3 か所で、
   いずれも `on_drop::<ExternalPaths>` のハンドラである。
 - ハンドラは `drop_external_into(cwd, paths)` または `drop_external(paths)` を呼ぶ。
-  `drop_external_into` は [app/src/main.rs:6321](../../app/src/main.rs#L6321) にあり、
+  `drop_external_into` は [main.rs:6374](../../app/src/main.rs#L6374) にあり、
   常にコピーかつ `ConflictPolicy::Rename` で、特殊ファイルや同一パスはスキップする。
 - 調査依頼に記載された行番号（9807 / 10099 / 11214）も現行ファイルではずれている。
 

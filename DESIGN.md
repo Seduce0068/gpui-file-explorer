@@ -186,9 +186,10 @@ symlink 拒否・ゴミ箱ビュー除外。カスタム LRU / ローダ側バ�
 - **クローム高さの算定基盤（as-built 注記, 2026-11-22）**: 上図の数値は内容領域の
   クロームのみ（toolbar 36 + breadcrumb 28 + 列ヘッダ 24 + status bar 24 =
   **112px**）で、2 行目の KDE ネイティブ枠（タイトルバー）は含まない。一方、実装の
-  `LIST_CHROME_HEIGHT_PX = 140.0`（`app/src/main.rs` 206 行目、
-  review-report.md 794-795 行目）は PageUp/PageDown のステップ算出で
-  `viewport_size().height - 140` をリスト行領域として使う（同 5134 行目）。
+  `LIST_CHROME_HEIGHT_PX = 140.0`（`app/src/main.rs` の `LIST_CHROME_HEIGHT_PX` 定数、
+  207 行目。review-report.md 794-795 行目）は PageUp/PageDown のステップ算出で
+  `viewport_size().height - 140` をリスト行領域として使う
+  （同ファイルの `page_step` 算出。行番号は並行変更で変わるためシンボル名で参照）。
   この 140px はタイトルバー約 28px を含む **112 + 28 = 140px** の基盤であり、
   図の 112px と矛盾する数値ではない。ネイティブ枠の実高は OS/テーマで変動し得るため、
   28px は as-built 定数が見込む枠高として読む。

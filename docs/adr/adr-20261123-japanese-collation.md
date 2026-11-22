@@ -32,28 +32,28 @@ crates.io / docs.rs / GitHub の一次情報だけを根拠に、
 
 ### 現行の並び順契約
 
-- `app/src/model.rs:30` は `alphanumeric_sort::compare_str` を import する。
-- `app/src/model.rs:43-46` の `Entry` は `name_text` と、
+- `app/src/model.rs` は `alphanumeric_sort::compare_str` を import する。
+- `app/src/model.rs` の `Entry` は `name_text` と、
   その小文字事前計算値 `sort_key` をフィールドとして持つ。
-- `sort_key` は `app/src/model.rs:64`（`from_dir_entry`）と
-  `app/src/model.rs:118`（`entry_for_path`）で `name_text.to_lowercase()` から作られる。
-- `app/src/model.rs:453-463` の `compare_names` / `compare_precomputed` は、
+- `sort_key` は `Entry::from_dir_entry` と `entry_for_path` で
+  `name_text.to_lowercase()` から作られる。
+- `compare_names` / `compare_precomputed` は、
   小文字キーの自然順比較の後に元文字列の比較で同値を解決する。
-- `app/src/model.rs:467-489` の `sort_entries` はディレクトリを先に出し、
+- `sort_entries` はディレクトリを先に出し、
   選択キーの比較の後に自然順を tie-break として使う。
-  コメント（:472）どおり比較中のアロケーションはない。
-- `app/src/strings.rs:21-30` は「日本語の名前は Unicode スカラ値順になり
+  「Use the precomputed lowercase key so sorting never allocates.」の
+  コメントどおり比較中のアロケーションはない。
+- `app/src/strings.rs` のモジュールドキュメントは「日本語の名前は Unicode スカラ値順になり
   **五十音順にはならない**」「ICU4X によるロケール照合は P3 の未実装項目」と明記する。
-- `app/src/strings.rs:1954-1969` の契約テストは
+- `app/src/strings.rs` の `sort_and_case_contract_is_explicit` は
   `compare_names("あ", "ア") == Less`、`compare_names("ア", "一") == Less` を固定する。
-- `app/src/model.rs:538-549` の `SortSpec` が永続化対象で、
-  フィールドは `key` / `dir` / `dirs_first` のみ。`Entry` 自体は
-  `app/src/model.rs:39` で `Clone, Debug` のみを derive し、永続化されない。
+- `SortSpec` が永続化対象で、フィールドは `key` / `dir` / `dirs_first` のみ。`Entry` 自体は
+  `#[derive(Clone, Debug)]` のみで serde 対象外であり、永続化されない。
 
-注: 依頼文の「DESIGN.md:112」および `strings.rs:26` が参照する
+注: 依頼文の「DESIGN.md:112」および `strings.rs` のモジュールドキュメントが参照する
 「DESIGN.md:103, 1075」は、現在のファイルの行番号と乖離している。
-実在する該当行は `DESIGN.md:133`（ロケール照合（五十音順）/ ICU4X）と
-`DESIGN.md:1211`（P3 差別化の列挙）である。
+実在する該当行は `DESIGN.md:135`（ロケール照合（五十音順）/ ICU4X）と
+`DESIGN.md:1213`（P3 差別化の列挙）である。
 
 ### 既存の調査メモとライセンス許可
 
@@ -156,8 +156,8 @@ assert_eq!(collator.compare("あ", "い"), std::cmp::Ordering::Less);
 ### 案 C: std のみで現状維持（既定値としては採用、単独の解決策としては却下）
 
 - `str::cmp` と `to_lowercase()` だけを使う現在の方式。
-- 五十音順要件を満たさず、`strings.rs:25` の「五十音順にはならない」という
-  契約を維持するだけであるため、要件対応策としては却下する。
+- 五十音順要件を満たさず、`strings.rs` のモジュールドキュメントの
+  「五十音順にはならない」という契約を維持するだけであるため、要件対応策としては却下する。
 - ただし**既定の挙動としては維持**する（後方互換要件を参照）。
 
 ## 推奨決定
@@ -220,11 +220,12 @@ assert_eq!(collator.compare("あ", "い"), std::cmp::Ordering::Less);
 ## 後方互換要件
 
 - 既定の並び順（`locale_collation = false`）は現行と完全に同一でなければならない。
-  既存の契約テスト（`app/src/strings.rs:1954-1969`、
-  `app/src/model.rs:1080-1097` など）はすべて green を維持する。
+  既存の契約テスト（`app/src/strings.rs` の `sort_and_case_contract_is_explicit`、
+  `app/src/model.rs` の `sort_dirs_first_then_natural_name_order` など）は
+  すべて green を維持する。
 - `SortSpec` に追加するフィールドは `#[serde(default)]` とし、
   フィールドが無い旧 JSON も読み込めるようにする。
-- 現在 `Entry.sort_key` はメモリ上のみ（`app/src/model.rs:39` を参照）で
+- 現在 `Entry.sort_key` はメモリ上のみ（`Entry` は serde 対象外）で
   ディスクに永続化されていない。したがって今回の設定追加で
   ディスク上のソートキー移行は不要である。
 - 将来ソートキーを永続化する場合は、バージョン番号と
@@ -265,8 +266,8 @@ assert_eq!(ja("alpha", "Zebra"), Ordering::Less);
 assert_eq!(ja("ABC", "abc").is_eq(), false);
 ```
 
-- 回帰テスト: `app/src/strings.rs:1954-1969` の
-  `sort_and_case_contract_is_explicit` を feature 無効時にそのまま通す。
+- 回帰テスト: `app/src/strings.rs` の `sort_and_case_contract_is_explicit`
+  を feature 無効時にそのまま通す。
 - 設定テスト: `locale_collation` が無い旧 JSON、明示 `false`、
   明示 `true` の 3 パターンを `serde_json` で往復させる。
 - プロパティテスト: 10,000 件のランダムな日本語混在名で

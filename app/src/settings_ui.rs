@@ -926,7 +926,7 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     "Ctrl+, … 設定を開く",
     "Alt+1〜5 … 設定ダイアログのタブへ直接移動",
     concat!(
-        "Alt+S … ファイルタブの並び順を切替",
+        "Alt+S … ファイルタブの並び順を名前 → 種類 → サイズ → 更新日時の順に切替",
         crate::strings::settings_input_guard_note!()
     ),
     // AK02: 1:1 mirror of the new F1 "b" row (T06 bidirectional test).
@@ -3123,6 +3123,67 @@ mod tests {
         assert!(
             root_paragraph.contains(note),
             "root README must use the canonical note: {root_paragraph}"
+        );
+    }
+
+    #[test]
+    fn sort_columns_and_cycle_are_synced_across_readme_keywords_and_shortcuts() {
+        // AM05: the header-click help row missed the 種類 column even though the
+        // app exposes four sortable columns (main.rs `sort_header`,
+        // FILES_SORT_KEYWORDS, README:648 and the Alt+S help). Pin the canonical
+        // four-column wording and the cycle order shared by README:122 and the
+        // Shortcuts-tab Alt+S row. The F1 wording is owned by strings.rs.
+        const SORT_COLUMNS: [&str; 4] = ["名前", "種類", "サイズ", "更新日時"];
+        const CYCLE: &str = "名前 → 種類 → サイズ → 更新日時";
+
+        let app_readme = include_str!("../README.md");
+        let header_click_row = app_readme
+            .lines()
+            .find(|line| line.starts_with("| ヘッダクリック |"))
+            .expect("README key table must have a ヘッダクリック row")
+            .trim();
+        assert_eq!(
+            header_click_row,
+            "| ヘッダクリック | 名前 / 種類 / サイズ / 更新日時でソート（同一列で昇順⇔降順） |",
+            "README must name all four header-click sort columns"
+        );
+        let header_labels = header_click_row
+            .split("| ヘッダクリック | ")
+            .nth(1)
+            .and_then(|rest| rest.split("でソート").next())
+            .expect("header-click row must embed the canonical sort labels");
+        assert_eq!(
+            header_labels,
+            SORT_COLUMNS.join(" / ").as_str(),
+            "README header-click columns must match the canonical column order"
+        );
+        for column in SORT_COLUMNS {
+            assert!(
+                FILES_SORT_KEYWORDS.contains(&column),
+                "FILES_SORT_KEYWORDS must expose the sortable column {column}"
+            );
+        }
+
+        let sort_setting_row = app_readme
+            .lines()
+            .find(|line| line.contains("設定ダイアログの並び順"))
+            .expect("README must document the settings sort row");
+        assert!(
+            sort_setting_row.contains(CYCLE),
+            "README Alt+S row must list the cycle: {sort_setting_row}"
+        );
+        let alt_s_row = SHORTCUTS_DEFAULT_LINES
+            .iter()
+            .find(|line| line.contains("Alt+S …"))
+            .expect("Shortcuts tab must render the Alt+S row");
+        assert!(
+            alt_s_row.contains(CYCLE),
+            "Shortcuts Alt+S row must list the same cycle: {alt_s_row}"
+        );
+        assert_eq!(
+            header_labels.split(" / ").collect::<Vec<_>>(),
+            CYCLE.split(" → ").collect::<Vec<_>>(),
+            "header-click labels and Alt+S cycle must enumerate the same columns"
         );
     }
 
