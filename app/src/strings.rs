@@ -226,6 +226,10 @@ pub const HISTORY_DIALOG_FOOTER_HINT: &str = "Ctrl+Shift+U / Esc で閉じる（
 ///
 /// 履歴行自体は読み取り専用だが、最新の操作を取り消す導線をボタンで提供する。
 pub const HISTORY_UNDO_BUTTON_LABEL: &str = "元に戻す";
+/// 操作履歴ダイアログの「やり直す」ボタン（AX07）。
+///
+/// 履歴にやり直せる操作が表示される以上、ポインタでも実行できる導線が必要。
+pub const HISTORY_REDO_BUTTON_LABEL: &str = "やり直す";
 /// 場所入力バーの操作案内（AK09）。
 pub const LOCATION_BAR_HINT: &str = "Enter で移動 / Esc で閉じる";
 /// F1 ヘルプオーバーレイのフッター案内（AK10）。
@@ -244,6 +248,7 @@ pub const FUZZY_JUMP_OVERLAY_FOOTER_HINT: &str = "↑/↓ で選択 / Enter で�
 
 const _: () = assert!(!HISTORY_DIALOG_FOOTER_HINT.is_empty());
 const _: () = assert!(!HISTORY_UNDO_BUTTON_LABEL.is_empty());
+const _: () = assert!(!HISTORY_REDO_BUTTON_LABEL.is_empty());
 const _: () = assert!(!LOCATION_BAR_HINT.is_empty());
 const _: () = assert!(!HELP_OVERLAY_FOOTER_HINT.is_empty());
 const _: () = assert!(!PROPERTIES_READ_ONLY_HINT.is_empty());
@@ -261,6 +266,7 @@ mod dialog_and_bar_hint_tests {
         for hint in [
             HISTORY_DIALOG_FOOTER_HINT,
             HISTORY_UNDO_BUTTON_LABEL,
+            HISTORY_REDO_BUTTON_LABEL,
             LOCATION_BAR_HINT,
             HELP_OVERLAY_FOOTER_HINT,
             PROPERTIES_READ_ONLY_HINT,
@@ -284,6 +290,8 @@ mod dialog_and_bar_hint_tests {
         );
         // AW25: 履歴ダイアログの「元に戻す」ボタンは共有文言を参照する。
         assert_eq!(HISTORY_UNDO_BUTTON_LABEL, "元に戻す");
+        // AX07: 「やり直す」ボタンも同じく共有文言を参照する。
+        assert_eq!(HISTORY_REDO_BUTTON_LABEL, "やり直す");
         assert_eq!(LOCATION_BAR_HINT, "Enter で移動 / Esc で閉じる");
         assert_eq!(
             HELP_OVERLAY_FOOTER_HINT,
@@ -420,6 +428,22 @@ mod dialog_and_bar_hint_tests {
                 "hint must not be inlined into main.rs: {literal}"
             );
         }
+    }
+
+    #[test]
+    fn history_redo_button_label_is_wired_as_a_constant_in_main_rs() {
+        // AX07: 「やり直す」はヘルプ文言にも同じ文字列が現れるため
+        // 「main.rs にリテラルが無い」とは検証できない。ボタンの参照だけを
+        // source-guard で固定し、リテラル再埋め込みを防ぐ。
+        let main_source = include_str!("main.rs");
+        assert!(
+            main_source.contains("crate::strings::HISTORY_REDO_BUTTON_LABEL"),
+            "history redo button must use the shared wording"
+        );
+        assert!(
+            main_source.contains("Button::new(\"undo-history-redo\")"),
+            "history dialog must expose a dedicated redo button"
+        );
     }
 }
 

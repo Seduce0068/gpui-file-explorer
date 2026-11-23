@@ -23,7 +23,8 @@ Android / iOS は要件化のみで未実装です。
 - Kubuntu 2026.04 / KDE Plasma 6 / Wayland（ネイティブ Wayland ウィンドウ）
 - NVIDIA GTX 1660 SUPER / rustc 1.99.1 / cargo 1.99.1（**検証済みツールチェーン**）
 - Rust バージョン: `app/Cargo.toml` の `rust-version = "1.92"` が宣言 MSRV（下限）。
-  1.92 でのビルドは未検証で、上位の 1.99.1 で検証済みです（両者は矛盾しません）
+  1.92 でのビルドは未検証で、上位の 1.99.1 で検証済みです（両者は矛盾しません）。
+  テスト範囲は app クレートのテストのみ（データ層は core。全体は cargo test --workspace）。
 - `gpui-kit 0.9.1` → `gpui-pre 0.3.12` + `gpui-pre-platform 0.3.12`（lib 名 `gpui`）
 
 ## ビルド
@@ -33,7 +34,7 @@ cd gpui-file-explorer   # リポジトリ直下
 bash scripts/dev-setup.sh   # 初回のみ（下記「前提」を参照）
 cd app
 cargo build                 # 初回（依存込み）約 1m30s / 2回目以降 約2s / debug バイナリ 約 165MiB
-cargo test                  # app クレートのテストのみ（データ層・監視・P1 機能を含む。件数は実行結果を参照）
+cargo test                  # app クレートのテストのみ（データ層は core。全体は cargo test --workspace）
 ```
 
 workspace 全体（`core` / `app` / `poc` / `win32`）を対象にする場合は、
@@ -332,14 +333,14 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 
 ## P1（実装済み）
 
-- [x] **安全なファイル操作エンジン**（`src/ops.rs`、UI 接続済み・ユニットテストあり）
+- [x] **安全なファイル操作エンジン**（`core/src/ops.rs`（gfe_core）、UI 接続済み・ユニットテストあり）
   - 上書き禁止が既定（`ConflictPolicy::{Fail, Skip, Rename}`。`Overwrite` は意図的に無し）
   - コピーは `.partial-*` へ書き、完了後に O_EXCL 予約 + rename で配置（部分ファイルを残さない）
   - シンボリックリンクはリンクとしてコピーし、削除時は**絶対に辿らない**（`symlink_metadata`）
   - 移動は同一 FS なら `rename`、`EXDEV` は「コピー成功後にのみ元を削除」
   - キャンセル（`CancelFlag`）で部分ファイルを掃除。ディレクトリを自身の配下へコピー/移動する操作を拒否
   - リネームは上書き拒否 + 大小文字のみ変更を 2 段階 rename で対応
-  - `ops.rs` のユニットテスト（件数は `cargo test` の実行結果を参照）:
+  - `core/src/ops.rs`（gfe_core）のユニットテスト（件数は `cargo test --workspace` の実行結果を参照）:
     上書き拒否 / Skip / Rename / 再帰コピー / symlink / キャンセル /
     /dev/shm による実クロスデバイス移動フォールバック / 安全削除。
 - [x] **UI 接続（コピー/切り取り/貼り付け）**: `Ctrl+C` / `Ctrl+X` / `Ctrl+V` と右クリックメニュー。
@@ -506,9 +507,9 @@ fingerprint の変化検出、パンくず生成、一意な新規フォルダ�
 実 inotify でのファイル作成イベント検知。
 P1 以降のモジュールも対象:
 
-- 安全なファイル操作（`ops.rs`、`dir_stats` を含む。上書き拒否 / Skip /
+- 安全なファイル操作（`core/src/ops.rs`（gfe_core）、`dir_stats` を含む。上書き拒否 / Skip /
   Rename / 再帰コピー / symlink 非追跡 / キャンセル / EXDEV フォールバック）
-- 名前・内容検索（`search.rs`、深さ/結果上限・バイナリ除外・行番号・スコープ）
+- 名前・内容検索（`core/src/search.rs`（gfe_core）、深さ/結果上限・バイナリ除外・行番号・スコープ）
 - テキスト/画像プレビュー（`preview.rs`、magic 判定・サイズ上限・シンボリックリンク拒否）
 - タブ（`tabs.rs`、追加/切替/close/循環/並べ替え）
 - アンドゥ（`undo.rs`、名前変更とゴミ箱復元の LIFO スタック）

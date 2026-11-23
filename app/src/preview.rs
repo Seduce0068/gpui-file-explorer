@@ -682,6 +682,15 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_and_image_byte_limits_match_core() {
+        // core 側の 8 MiB 上限と app 側の画像プレビュー上限は同じ値でなければならない。
+        assert_eq!(
+            gfe_core::wasm_view::MAX_THUMBNAIL_BYTES,
+            crate::preview::MAX_IMAGE_BYTES
+        );
+    }
+
+    #[test]
     fn reads_utf8_text() {
         let dir = scratch("text");
         let path = dir.join("a.txt");

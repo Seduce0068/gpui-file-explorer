@@ -3835,6 +3835,26 @@ mod tests {
     }
 
     #[test]
+    fn settings_next_helpers_follow_the_option_lists() {
+        // AX10: the row shortcuts must advance exactly one element through the
+        // same value lists the radio sets render; a reordered list is a bug.
+        let theme_options = ["dark", "light", "system"];
+        for (index, value) in theme_options.iter().enumerate() {
+            assert_eq!(
+                settings_theme_next(value),
+                theme_options[(index + 1) % theme_options.len()]
+            );
+        }
+        let view_options = ["details", "icons"];
+        for (index, value) in view_options.iter().enumerate() {
+            assert_eq!(
+                settings_view_next(value),
+                view_options[(index + 1) % view_options.len()]
+            );
+        }
+    }
+
+    #[test]
     fn settings_next_value_helpers_cycle_and_wrap() {
         // These helpers keep the value resolution pure so the row shortcut can
         // return the existing SetTheme/SetView/ToggleHidden actions directly.

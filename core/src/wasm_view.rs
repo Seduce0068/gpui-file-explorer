@@ -12,14 +12,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{model, search};
 
-/// 描画側がサムネイルの読み込みを避けるためのサイズ上限（8 MiB）。
+/// サムネイル読み込みを避けるためのサイズ上限（8 MiB）。
 ///
 /// `app/src/preview.rs::MAX_IMAGE_BYTES` と同じ値をコア側にも持つ。wasm の
-/// in-memory API は JS から任意の `size` を受け取れるため、これを超える行は
-/// [`OVERSIZED_KIND`] を返して `img` による `fs::read` を回避する。
+/// in-memory API は JS から任意の `size` を受け取れるため、これを超える行には
+/// [`OVERSIZED_KIND`] を付与する。PWA は現状 `kind` を読まないため、
+/// 実際に読み込みをスキップするのは `size` を見る側の実装に依存する。
 pub const MAX_THUMBNAIL_BYTES: u64 = 8 * 1024 * 1024;
 
-/// `MAX_THUMBNAIL_BYTES` 超過を描画側へ伝える `kind` の値。
+/// `MAX_THUMBNAIL_BYTES` 超過を示す `kind` の値（PWA は現状未使用）。
 pub const OVERSIZED_KIND: &str = "oversized";
 
 /// `EntryView.kind` を決める。通常ファイルが上限を超えた場合だけ
@@ -124,7 +125,7 @@ impl EntryInput {
     ///
     /// `size` は JS から任意に渡せるためここでは丸めずに保持し、
     /// [`entry_kind`] / [`EntryView::from`] が [`MAX_THUMBNAIL_BYTES`] を
-    /// 超える行を `oversized` として描画側へ知らせる。
+    /// 超える行を `oversized` として `EntryView.kind` へ保持する（PWA 側は未使用）。
     pub fn into_entry(self) -> model::Entry {
         let name_text = self.name;
         let sort_key = name_text.to_lowercase();
@@ -279,8 +280,11 @@ mod tests {
     }
 
     #[test]
-    fn pwa_input_size_reaches_the_renderer_kind() {
-        // The full JS JSON path: EntryInput -> Entry -> EntryView.kind.
+    fn oversized_kind_survives_entry_input_round_trip() {
+        // JS JSON 経路全体ではなく、EntryInput -> model::Entry -> EntryView.kind
+        // の DTO 往復だけを検証する。PWA (pwa/main.js) は現状 kind を読まないため、
+        // これは「描画側へ届いた」ことの証明ではない。JS 側の無視は
+        // pwa/main.test.js の回帰テストで固定する。
         let input = EntryInput {
             name: "huge.png".to_string(),
             path: None,

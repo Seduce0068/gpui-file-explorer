@@ -21,8 +21,10 @@
 # app/Cargo.toml, core/src, core/Cargo.toml or the workspace-root Cargo.lock
 # (i.e. files newer than the binary are detected with `find -newer`).
 # --verify only compares an existing staging tree against the current sources
-# (read-only); it never builds, copies or removes anything. It also compares
-# the staged DEBIAN/control with the control metadata inside the existing .deb.
+# (read-only); it never builds, copies or removes anything. It compares the
+# staged DEBIAN/control with the control metadata inside the existing .deb, and
+# checks usr/bin/<pkg>: executable, matching --version, not older than the
+# freshness sources, and byte-identical to the .deb's payload binary.
 # --dry-run only resolves paths and prints the plan; no directory is created,
 # nothing is deleted, copied or built.
 # SOURCE_DATE_EPOCH is exported for dpkg-deb so the .deb is byte-reproducible
@@ -44,7 +46,8 @@ usage() {
                          古い場合は拒否し再ビルドを促す）
       --verify          既存ステージのドキュメント/.desktop/アイコンと
                          DEBIAN/control を現行ソース／既存 .deb の
-                         メタデータと非破壊で照合
+                         メタデータと非破壊で照合し、usr/bin/<pkg> の
+                         実行可否・バージョン・鮮度・.deb との一致も検証
                          （ビルド・コピー・削除なし、出力先も作らない）
       --dry-run         解決済みパスと実行計画のみ表示
                          （削除・コピー・ビルドせず、出力先も作らない）
@@ -180,6 +183,23 @@ for icon in "${repo_root}/packaging/linux/icons/hicolor"/*/apps/*; do
 done
 shopt -u nullglob
 
+# Files whose mtime must not exceed the packaged binary. Shared by the
+# --skip-build freshness gate and the read-only --verify binary check, so the
+# two cannot drift apart (AX15). Only existing paths are passed to `find`.
+freshness_paths=()
+for path in \
+  "${app_dir}/src" \
+  "${app_dir}/build.rs" \
+  "${app_dir}/native-libs" \
+  "${app_dir}/Cargo.toml" \
+  "${repo_root}/Cargo.lock" \
+  "${repo_root}/core/src" \
+  "${repo_root}/core/Cargo.toml"; do
+  if [ -e "${path}" ]; then
+    freshness_paths+=("${path}")
+  fi
+done
+
 verify_staged_docs() {
   [ -d "${stage}" ] ||
     die "ステージがありません: ${stage}（--verify は既存ステージの照合のみ行います）"
@@ -234,6 +254,40 @@ verify_control() {
   fi
 }
 
+# AX15: --verify must also check the packaged binary itself, not only docs and
+# control metadata. Everything here is read-only: the staged file is executed
+# with --version, its mtime is compared with the shared source freshness list,
+# and its bytes are compared with the binary inside the existing .deb through
+# process substitution (no temp file, no extraction to disk).
+verify_staged_binary() {
+  local staged_binary="${stage}/usr/bin/${pkg}"
+  local staged_version stale_source
+  [ -f "${staged_binary}" ] ||
+    die "ステージにバイナリがありません: ${staged_binary}"
+  [ -x "${staged_binary}" ] ||
+    die "ステージのバイナリが実行可能ではありません: ${staged_binary}"
+  if ! staged_version="$("${staged_binary}" --version 2>/dev/null)"; then
+    die "ステージのバイナリの --version が失敗しました: ${staged_binary}"
+  fi
+  case "${staged_version}" in
+    "${pkg} ${version}") ;;
+    *)
+      die "ステージのバイナリのバージョン不一致: ${staged_version}（expected: ${pkg} ${version}）"
+      ;;
+  esac
+  stale_source="$(find "${freshness_paths[@]}" \
+    -newer "${staged_binary}" -print -quit || true)"
+  if [ -n "${stale_source}" ]; then
+    die "ステージのバイナリがソースより古いです: ${stale_source}（再ビルドしてください）"
+  fi
+  if cmp -s -- "${staged_binary}" \
+      <(dpkg-deb --fsys-tarfile "${deb}" | tar -xO "./usr/bin/${pkg}" 2>/dev/null); then
+    echo "照合 OK: ${staged_binary} (${staged_version}) == ${deb} の usr/bin/${pkg}"
+  else
+    die "ステージのバイナリと ${deb} の usr/bin/${pkg} が一致しません"
+  fi
+}
+
 # Dry-run: print the resolved paths and the exact plan, but never create a
 # directory, delete a file, copy anything or invoke cargo/dpkg-deb.
 if [ "${dry_run}" -eq 1 ]; then
@@ -255,7 +309,7 @@ if [ "${dry_run}" -eq 1 ]; then
   echo "  4. バイナリ/.desktop/アイコン/ドキュメントを ${stage} へ配置"
   echo "  5. ステージング済みファイルと現行ソースを照合"
   echo "  6. DEBIAN/control を生成して ${deb} をビルド"
-  echo "  7. --verify でステージと .deb のメタデータを照合"
+  echo "  7. --verify でステージと .deb のメタデータおよびバイナリを照合"
   printf '  照合対象 (%d 件):\n' "${#doc_pairs[@]}"
   for pair in "${doc_pairs[@]}"; do
     echo "    ${pair%%|*} -> ${pair#*|}"
@@ -268,6 +322,7 @@ fi
 if [ "${verify}" -eq 1 ]; then
   verify_staged_docs
   verify_control
+  verify_staged_binary
   exit 0
 fi
 
@@ -309,21 +364,8 @@ if [ "${skip_build}" -eq 1 ]; then
     echo "警告: ${app_dir}/Cargo.lock は workspace では未使用です（正本: ${repo_root}/Cargo.lock）。" >&2
   fi
   # AU06: core/src and core/Cargo.toml are part of the linked binary as well;
-  # omitting them let a core-only change ship with an old binary under
-  # --skip-build. Only pass existing paths so `find` does not abort early.
-  freshness_paths=()
-  for path in \
-    "${app_dir}/src" \
-    "${app_dir}/build.rs" \
-    "${app_dir}/native-libs" \
-    "${app_dir}/Cargo.toml" \
-    "${repo_root}/Cargo.lock" \
-    "${repo_root}/core/src" \
-    "${repo_root}/core/Cargo.toml"; do
-    if [ -e "${path}" ]; then
-      freshness_paths+=("${path}")
-    fi
-  done
+  # the shared `freshness_paths` above includes them so a core-only change
+  # cannot ship with an old binary under --skip-build.
   [ "${#freshness_paths[@]}" -gt 0 ] || die "鮮度チェック対象が見つかりません"
   # `-print -quit` stops at the first match; `|| true` keeps `set -e` from
   # aborting on a transient find error before our own error message is shown.

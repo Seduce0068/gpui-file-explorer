@@ -1827,6 +1827,39 @@ status: current
 - [x] **AW24** PWA FSA ボタンが wasm 非ロード時も有効 — 対応: loop10
 - [x] **AW25** undo ダイアログに「元に戻す」ボタンが無い — 対応: loop10
 
+## 進行中（ループ11 バックログ）
+
+### 優先度: 高（ループ11・confirmed）
+
+- [x] **AX01** redo Trash の空 undo がスタックを永久に詰まらせる（実バグ） — 対応: loop11（実バグ修正）
+- [x] **AX02** PWA スワイプ戻りが moved ゲートで実質発火しない（実バグ） — 対応: loop11（実バグ修正）
+- [x] **AX03** 8 MiB 上限が app/core で独立定義・一致性未検証 — 対応: loop11
+- [x] **AX04** source_region() の終端欠落暗黙許容でガードが沈黙 — 対応: loop11
+- [x] **AX05** redo Trash の全失敗が OS エラー理由を落とす — 対応: loop11
+
+### 優先度: 中（ループ11・confirmed）
+
+- [x] **AX06** redo Rename に事前チェックが無い — 対応: loop11
+- [x] **AX07** 履歴オーバーレイが redo 項目を表示するが実行不能 — 対応: loop11
+- [x] **AX08** テーマ System 切替だけが apply_theme_mode を通らない — 対応: loop11
+- [x] **AX09** 設定 Save 書き込み失敗でフォームが閉じ再試行不可 — 対応: loop11
+- [x] **AX10** era 切替ロジックが3箇所に重複 — 対応: loop11
+- [x] **AX11** app/README の P1/テスト節が core 抽出前の帰属 — 対応: loop11
+- [x] **AX12** source-guard が戻る値を検証していない — 対応: loop11
+- [x] **AX13** PWA FSA ボタン DOM 反映経路が未テスト — 対応: loop11
+- [x] **AX14** oversized kind が PWA で消費されない — 対応: loop11
+- [x] **AX15** --verify がステージ/.deb のバイナリを照合しない — 対応: loop11
+- [x] **AX16** キーボード選択が画面外へ移動し追従しない — 対応: loop11
+- [x] **AX17** 修飾キー併用 Space/i/Enter を横取り — 対応: loop11
+
+### 優先度: 低（ループ11・confirmed）
+
+- [x] **AX18** 履歴オーバーレイ Esc が op をキャンセルしない — 対応: loop11
+- [x] **AX19** theme 変更だけでも Search を再実行し2次 save が黙る — 対応: loop11
+- [x] **AX20** phase1-core-extraction の as-built に未採用セクション — 対応: loop11
+- [x] **AX21** 絵文字アイコンが option のアクセシブル名に混入 — 対応: loop11
+- [x] **AX22** 長押し行に user-select 抑止が無い — 対応: loop11
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

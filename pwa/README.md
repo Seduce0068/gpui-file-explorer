@@ -94,6 +94,20 @@ FileSystem ポートが必要（`notes/wasm-browser-notes.md` §2 を参照）�
 | `Enter` | 選択を確定 |
 | `Space` / `i` | 選択行の詳細（`path` / `size` / `isDir`）をステータスへ表示（長押し・右クリックと同じ） |
 
+`Ctrl` / `Cmd` / `Alt` との同時押しはブラウザ / OS のショートカットへ譲り、
+一覧のハンドラは横取りしない。キーボードで選択を移動したときだけ
+`scrollIntoView({ block: 'nearest' })` で viewport 内へ追従する。ポインタの
+タップでは `preventScroll` のままスクロール位置を動かさない。
+
+一覧の 📁 / 📄 / ↗ は `aria-hidden="true"` の span に分離しているため、
+`role="option"` のアクセシブル名にはファイル名とメタ情報だけが含まれる。
+長押し行では `user-select` / `-webkit-touch-callout` を無効化し、検索 input の
+テキスト選択には影響しない。
+
+右方向へ 80px 超スワイプすると検索をクリアして一覧へ戻る。左端 24px から
+始まるジェスチャは OS の戻る操作へ譲る。`touchmove` の 10px 超過で立つ `moved`
+は長押し / クリック抑止にのみ使い、スワイプ判定は `touchend` の移動量で行う。
+
 エラー文言の色は `--error` トークンに集約し、ライト / ダーク双方の背景で
 WCAG AA（コントラスト比 4.5:1 以上）を満たす値を指定する。
 

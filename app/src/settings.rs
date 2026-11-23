@@ -2326,11 +2326,26 @@ mod tests {
 
     #[test]
     fn next_theme_choice_cycles_through_all_three_options() {
-        assert_eq!(next_theme_choice(ThemeChoice::Dark), ThemeChoice::Light);
-        assert_eq!(next_theme_choice(ThemeChoice::Light), ThemeChoice::System);
-        assert_eq!(next_theme_choice(ThemeChoice::System), ThemeChoice::Dark);
+        // AX10: derive expectations from the option list instead of three
+        // hand-written assertions, so adding/reordering an option cannot leave
+        // this helper silently out of step with the settings UI.
+        let options = [
+            (ThemeChoice::Dark, "dark"),
+            (ThemeChoice::Light, "light"),
+            (ThemeChoice::System, "system"),
+        ];
+        for (index, (choice, persisted)) in options.iter().enumerate() {
+            let next = next_theme_choice(*choice);
+            let (expected_choice, expected_value) = options[(index + 1) % options.len()];
+            assert_eq!(next, expected_choice, "{persisted} must advance one step");
+            assert_eq!(
+                serde_json::to_string(&next).unwrap(),
+                format!("\"{expected_value}\""),
+                "the next choice must serialize to the next UI option value"
+            );
+        }
         let mut choice = ThemeChoice::Dark;
-        for _ in 0..3 {
+        for _ in 0..options.len() {
             choice = next_theme_choice(choice);
         }
         assert_eq!(choice, ThemeChoice::Dark, "cycle must return to the start");

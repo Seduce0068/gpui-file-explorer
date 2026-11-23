@@ -49,9 +49,9 @@ Rust の sysroot に `core` クレートが存在するため、package/lib を�
 ### workspace Cargo.toml（as-built 2026-11-23）
 
 旧本文は「ルート新規追加案」だったが、仮想 workspace は**実装済み**である。
-現行の正本はルート `Cargo.toml`。下記スニペットは旧案の構成に
-win32（`gfe-win32`）の member 追加だけを反映した参考値であり、
-`[workspace.dependencies]` 等の採用状況を含む正確な内容は正本を参照する。
+現行の正本はルート `Cargo.toml`。下記スニペットは現行の正本と同じ構成
+（win32 / `gfe-win32` の member 追加を反映）を抜粋したものであり、
+正確な内容は正本を参照する。未採用の `[workspace.dependencies]` は含めない。
 
 ```toml
 [workspace]
@@ -63,12 +63,6 @@ default-members = ["core", "app"]
 edition = "2021"
 rust-version = "1.92"
 license = "AGPL-3.0-or-later"
-
-[workspace.dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
-gpui-kit = "=0.9.1"
 
 [profile.dev]
 debug = "line-tables-only"

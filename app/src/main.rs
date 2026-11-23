@@ -1005,6 +1005,18 @@ fn settings_write_needs_rollback(saved: bool) -> bool {
     !saved
 }
 
+/// AX19: whether a settings Save changed something that affects the visible
+/// list (its entry set, ordering or columns). Pure so it can be tested without
+/// a GPUI `Context`; a theme / keymap / terminal-command-only change must not
+/// re-run the search query (which would also issue a second, unchecked save).
+fn settings_change_affects_list(before: &Settings, after: &Settings) -> bool {
+    before.sort != after.sort
+        || before.column_prefs != after.column_prefs
+        || before.show_hidden != after.show_hidden
+        || before.show_thumbnails != after.show_thumbnails
+        || before.view != after.view
+}
+
 /// Restore a pre-preview settings snapshot while keeping the failure reason
 /// that the just-failed `save_with_reason()` recorded in the live value (AW02).
 /// Only the `last_save_error` Cell is inherited: every persisted/previewed
@@ -1041,6 +1053,46 @@ fn trash_redo_cancelled_status(trashed: usize) -> String {
     } else {
         format!("{STATUS_CANCELLED}（{trashed} 件をゴミ箱へ移動済み）")
     }
+}
+
+/// Whether a completed trash redo has any recordable item ids. The ids come
+/// from a separate trash listing; when that listing fails `recorded` is empty
+/// even though the paths were moved. Recording `UndoAction::Trash` with no ids
+/// would make every later undo restore nothing and push the empty action back
+/// onto the undo stack forever (F6-15), so the redo entry is kept instead.
+fn redo_trash_should_record_undo(recorded: &[(PathBuf, OsString)]) -> bool {
+    !recorded.is_empty()
+}
+
+/// Status for a trash redo where no path could be moved. The other redo paths
+/// append the concrete OS reason after `STATUS_REDO_FAILED`; this branch used
+/// to drop it and report only the generic prefix. Kept pure for regression
+/// tests.
+fn redo_trash_failed_status(failures: &[(PathBuf, String)]) -> String {
+    match failures.first() {
+        Some((_, reason)) => format!("{STATUS_REDO_FAILED}: {reason}"),
+        None => STATUS_REDO_FAILED.to_string(),
+    }
+}
+
+/// Missing-target refusal for a rename redo, symmetric to
+/// [`undo_missing_status`] but classified as a redo failure. Keeping it pure
+/// lets the pre-flight wording (and its red colour) be regression-tested
+/// without a live GPUI `Context`.
+fn redo_missing_status(path: &std::path::Path) -> String {
+    format!(
+        "{STATUS_REDO_FAILED}: {}{STATUS_UNDO_MISSING_SUFFIX}",
+        display_path(path)
+    )
+}
+
+/// Existing-target refusal for a rename redo, symmetric to
+/// [`redo_missing_status`] and [`undo_exists_status`].
+fn redo_exists_status(path: &std::path::Path) -> String {
+    format!(
+        "{STATUS_REDO_FAILED}: {}{STATUS_UNDO_EXISTS_SUFFIX}",
+        display_path(path)
+    )
 }
 
 /// Row name with a bookmark label prefixed. The original name stays visible so
@@ -5772,21 +5824,35 @@ impl Explorer {
             // API exists for its `.overflow_y_scroll()` body, so scrolling stays
             // mouse-wheel only. Escape dismisses, Ctrl+Z (or its rebind) undoes.
             if key == "escape" {
-                self.undo_history_open = false;
-                cx.notify();
+                // AX18: a running operation owns the first Escape, exactly as in
+                // the Search view. Cancel it first; the next Escape dismisses
+                // the history overlay.
+                if self.op_cancel.is_some() {
+                    self.cancel_op(cx);
+                } else {
+                    self.undo_history_open = false;
+                    cx.notify();
+                }
                 return;
             }
-            // AW25: keep the keyboard path inside the dialog equivalent to the
-            // new undo button. The keymap is consulted so a rebound Undo chord
-            // keeps working here; Escape stays literal and is handled above.
-            if self
+            // AW25/AX07: keep the keyboard path inside the dialog equivalent to
+            // its buttons. The keymap is consulted so rebound Undo/Redo chords
+            // keep working here; Escape stays literal and is handled above.
+            match self
                 .keymap
                 .resolve(key, modifiers.control, modifiers.shift, modifiers.alt)
-                == KeyAction::Undo
             {
-                self.undo_history_open = false;
-                self.undo_last(cx);
-                return;
+                KeyAction::Undo => {
+                    self.undo_history_open = false;
+                    self.undo_last(cx);
+                    return;
+                }
+                KeyAction::Redo => {
+                    self.undo_history_open = false;
+                    self.redo_last(cx);
+                    return;
+                }
+                _ => {}
             }
             return;
         }
@@ -6085,14 +6151,37 @@ impl Explorer {
     /// `settings.theme` field and the hand-drawn palette in one place. Every
     /// theme entry point (startup, toggle, OS appearance change) goes through
     /// here so none of the three can drift out of sync.
-    fn apply_theme_mode(&mut self, mode: ThemeMode, cx: &mut Context<Self>) {
+    ///
+    /// `follow_system` selects how GPUI Component is told about the mode: a
+    /// `System` preference must keep following the OS appearance instead of
+    /// being pinned with `Theme::change`, but it still performs the exact same
+    /// `settings.theme` / palette / icon-resolver updates as Dark and Light.
+    fn apply_theme_mode(&mut self, mode: ThemeMode, follow_system: bool, cx: &mut Context<Self>) {
         self.settings.theme = mode;
         self.palette = AppPalette::for_mode(mode);
         // A dark app theme must resolve Breeze icons from breeze-dark first;
         // this also drops cached paths resolved under the previous mode.
         self.system_icon_resolver.set_prefer_dark(mode.is_dark());
-        Theme::change(mode, None, cx);
+        if follow_system {
+            // `None` makes gpui-component read the same window appearance we
+            // resolved above (documented in `Theme::sync_system_appearance`).
+            Theme::sync_system_appearance(None, cx);
+        } else {
+            Theme::change(mode, None, cx);
+        }
         cx.notify();
+    }
+
+    /// Single entry point for a persisted theme *choice*. Resolving the choice
+    /// against the appearance GPUI observes and applying the result are shared
+    /// by Alt+Shift+T and the settings dialog, so all three choices update
+    /// `settings.theme`, the palette, the icon resolver and the GPUI theme in
+    /// the same order.
+    fn apply_theme_choice(&mut self, choice: ThemeChoice, cx: &mut Context<Self>) {
+        let system: ThemeMode = cx.window_appearance().into();
+        let resolved = resolve_theme(choice, system);
+        self.settings.theme_choice = choice;
+        self.apply_theme_mode(resolved, choice == ThemeChoice::System, cx);
     }
 
     /// Undo an in-memory settings preview after a failed disk write (D13).
@@ -6111,12 +6200,10 @@ impl Explorer {
         let restored = settings_with_live_save_error(snapshot, &self.settings);
         self.settings = restored;
         self.keymap = KeyMap::from_settings(&self.settings);
-        self.apply_theme_mode(previous_mode, cx);
-        if was_system {
-            // The preview may have pinned the component theme with
-            // `Theme::change`; a System preference must keep following the OS.
-            Theme::sync_system_appearance(None, cx);
-        }
+        // The preview may have pinned the component theme with `Theme::change`;
+        // restoring a System preference must keep following the OS. The flag
+        // lets the same entry point handle that without a second sync block.
+        self.apply_theme_mode(previous_mode, was_system, cx);
     }
 
     /// Re-resolve the preference when the OS switches between light and dark.
@@ -6131,7 +6218,8 @@ impl Explorer {
         if self.settings.theme == resolved {
             return;
         }
-        self.apply_theme_mode(resolved, cx);
+        // The choice is System here, so keep the component theme in sync too.
+        self.apply_theme_mode(resolved, true, cx);
     }
 
     /// Cycle the persisted preference (Alt+Shift+T): Dark → Light → System →
@@ -6142,20 +6230,7 @@ impl Explorer {
         // old preference and the live UI must be put back to match it (D13).
         let snapshot = self.settings.clone();
         let choice = next_theme_choice(self.settings.theme_choice);
-        self.settings.theme_choice = choice;
-        let system: ThemeMode = cx.window_appearance().into();
-        let resolved = resolve_theme(choice, system);
-        if choice == ThemeChoice::System {
-            // `None` makes gpui-component read the same window appearance we
-            // resolved above (documented in `Theme::sync_system_appearance`).
-            Theme::sync_system_appearance(None, cx);
-            self.settings.theme = resolved;
-            self.palette = AppPalette::for_mode(resolved);
-            self.system_icon_resolver
-                .set_prefer_dark(resolved.is_dark());
-        } else {
-            self.apply_theme_mode(resolved, cx);
-        }
+        self.apply_theme_choice(choice, cx);
         let saved = self.save_settings();
         if settings_write_needs_rollback(saved) {
             self.rollback_settings(snapshot, cx);
@@ -6853,6 +6928,13 @@ impl Explorer {
             this.undo_history_open = false;
             this.undo_last(cx);
         });
+        // AX07: the overlay also lists redo entries, so give them the same
+        // direct execution path. The button and the configured Redo chord in
+        // `on_key_down` both call `redo_last`.
+        let redo = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.undo_history_open = false;
+            this.redo_last(cx);
+        });
         body = body.child(
             div()
                 .flex()
@@ -6862,6 +6944,11 @@ impl Explorer {
                     Button::new("undo-history-undo")
                         .label(crate::strings::HISTORY_UNDO_BUTTON_LABEL)
                         .on_click(undo),
+                )
+                .child(
+                    Button::new("undo-history-redo")
+                        .label(crate::strings::HISTORY_REDO_BUTTON_LABEL)
+                        .on_click(redo),
                 )
                 .child(
                     Button::new("undo-history-close")
@@ -7144,6 +7231,23 @@ impl Explorer {
                     from: from.clone(),
                     to: to.clone(),
                 };
+                // AX06: mirror the rename undo pre-flight. Redo also needs the
+                // source to exist and the destination to be free; without this
+                // check the background rename would fail for an OS reason the
+                // user could have prevented. Keep the action redoable on either
+                // refusal so a later retry is still possible.
+                if !path_present(&current) {
+                    self.status = redo_missing_status(&current);
+                    self.undo.push_redo(retry);
+                    cx.notify();
+                    return;
+                }
+                if path_present(&to) {
+                    self.status = redo_exists_status(&to);
+                    self.undo.push_redo(retry);
+                    cx.notify();
+                    return;
+                }
                 let Some(token) = self.begin_op(cx) else {
                     self.undo.push_redo(retry);
                     return;
@@ -7281,13 +7385,19 @@ impl Explorer {
                         );
                         if failed {
                             this.undo.push_redo(action_for_undo);
-                            this.status = STATUS_REDO_FAILED.to_string();
+                            this.status = redo_trash_failed_status(&failures);
                         } else {
                             this.suppress_for(SELF_OP_SUPPRESS);
-                            // Always record the redo, even when the trash
-                            // listing fails: otherwise the operation silently
-                            // vanishes from the undo stack (F6-15).
-                            this.undo.push_undo(UndoAction::Trash { items: recorded });
+                            // F6-15: keep the operation in the history, but an
+                            // empty listing has no ids to restore. An undo
+                            // entry with no items would be pushed back on every
+                            // attempt (restored=0), so the redo queue is kept
+                            // until the operation can be recorded properly.
+                            if redo_trash_should_record_undo(&recorded) {
+                                this.undo.push_undo(UndoAction::Trash { items: recorded });
+                            } else {
+                                this.undo.push_redo(action_for_undo);
+                            }
                             this.status = if cancelled {
                                 trash_redo_cancelled_status(trashed.len())
                             } else if failures.is_empty() {
@@ -12160,15 +12270,8 @@ impl SettingsUiHost for Explorer {
                 // Resolve against the appearance GPUI observes for this window,
                 // not the previously persisted mode, then push the result through
                 // the single entry point that keeps `settings.theme`, the palette
-                // and GPUI Component's Theme in sync.
-                let effective_theme = resolve_theme(theme, cx.window_appearance().into());
-                self.apply_theme_mode(effective_theme, cx);
-                if theme == ThemeChoice::System {
-                    // Match the Alt+Shift+T System path: let gpui-component read
-                    // the window appearance instead of pinning `Theme::change`.
-                    Theme::sync_system_appearance(None, cx);
-                }
-                self.settings.theme_choice = theme;
+                // and GPUI Component's Theme in sync for all three choices.
+                self.apply_theme_choice(theme, cx);
                 self.settings.view = if view_choice == "icons" {
                     ViewLayout::Icons
                 } else {
@@ -12201,13 +12304,33 @@ impl SettingsUiHost for Explorer {
                 let saved = self.save_settings();
                 if settings_write_needs_rollback(saved) {
                     self.rollback_settings(snapshot, cx);
-                } else {
-                    let keep = self.selected_entry().map(|entry| entry.path.clone());
-                    if self.view == ViewSource::Search {
-                        self.run_search(cx);
-                    } else {
-                        self.rebuild_view(keep);
+                    // AX09: keep the form open and show the concrete reason in
+                    // the same `state.error` slot validation errors use, so the
+                    // user can correct a value and press Save again. Closing the
+                    // dialog here used to make retry impossible.
+                    let reason = settings_write_status(
+                        &self.settings,
+                        saved,
+                        true,
+                        STATUS_SETTINGS_SAVED.to_string(),
+                    );
+                    if let Some(state) = self.settings_ui.as_mut() {
+                        state.error = Some(reason.clone());
                     }
+                    self.status = reason;
+                    cx.notify();
+                    return;
+                }
+                let keep = self.selected_entry().map(|entry| entry.path.clone());
+                if self.view == ViewSource::Search {
+                    // AX19: a theme-only save does not change the result set or
+                    // its order. Re-running the query would also trigger a
+                    // second settings write whose failure was silently ignored.
+                    if settings_change_affects_list(&snapshot, &self.settings) {
+                        self.run_search(cx);
+                    }
+                } else {
+                    self.rebuild_view(keep);
                 }
                 self.settings_ui = None;
                 self.focus_list_on_next_render = true;
@@ -12604,11 +12727,12 @@ mod tests {
         keymap_unbind_caption, kind_color, labeled_display_name, load_error_display_text,
         middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
         parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
-        reconcile_aware_status, remove_keymap_override, resolved_sidebar_width,
+        reconcile_aware_status, redo_exists_status, redo_missing_status, redo_trash_failed_status,
+        redo_trash_should_record_undo, remove_keymap_override, resolved_sidebar_width,
         saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
-        settings_discard_status, settings_read_only_status, settings_reset_status,
-        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
-        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        settings_change_affects_list, settings_discard_status, settings_read_only_status,
+        settings_reset_status, settings_row_key_is_bare, settings_save_error_status,
+        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
         settings_validation_status, settings_with_live_save_error, settings_write_needs_rollback,
         settings_write_status, startup_dir_from, startup_save_failure_status, status_color,
         summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
@@ -13057,17 +13181,56 @@ mod tests {
         assert_eq!(clear_rescan_failure_status(""), None);
     }
 
-    /// Slice of `include_str!("main.rs")` spanning a unique item marker up to
-    /// the next item marker; keeps source assertions away from the test text.
+    /// Slice of `include_str!("main.rs")` spanning an item marker up to the
+    /// next item marker; keeps source assertions away from the test text.
+    ///
+    /// Both markers must be present and distinct. The end marker is searched
+    /// *after* the whole start marker, so a marker that is a substring of
+    /// `start` cannot produce an empty region. A missing end marker is a bug in
+    /// the guard itself (the old `unwrap_or(source.len())` silently returned
+    /// the rest of the file and could let an assertion pass for the wrong
+    /// code), so it panics instead of being tolerated.
+    ///
+    /// Global uniqueness of the marker strings is intentionally not asserted:
+    /// this test module embeds every marker as a string literal inside
+    /// `include_str!("main.rs")`, and several items also exist in more than one
+    /// impl block. The first in-code occurrence is the intended one.
     fn source_region<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        assert!(!start.is_empty(), "empty start source marker");
+        assert!(!end.is_empty(), "empty end source marker");
+        assert_ne!(start, end, "start and end source markers must differ");
         let from = source
             .find(start)
             .unwrap_or_else(|| panic!("missing source marker: {start}"));
-        let to = source[from..]
+        let after_start = from + start.len();
+        let to = source[after_start..]
             .find(end)
-            .map(|offset| from + offset)
-            .unwrap_or(source.len());
+            .map(|offset| after_start + offset)
+            .unwrap_or_else(|| panic!("missing end source marker: {end} after {start}"));
         &source[from..to]
+    }
+
+    #[test]
+    fn source_region_rejects_a_missing_end_marker() {
+        let source = "    fn first() {\n    }\n    fn second() {\n    }\n";
+        assert_eq!(
+            source_region(source, "    fn first() {", "    fn second() {"),
+            "    fn first() {\n    }\n"
+        );
+        // 終端マーカーが無ければ、ファイル末尾まで黙って返すのではなく panic する。
+        let result = std::panic::catch_unwind(|| {
+            source_region(source, "    fn first() {", "    fn missing() {")
+        });
+        assert!(
+            result.is_err(),
+            "a missing end marker must not be tolerated"
+        );
+    }
+
+    #[test]
+    fn source_region_rejects_identical_markers() {
+        let result = std::panic::catch_unwind(|| source_region("abc", "a", "a"));
+        assert!(result.is_err(), "start and end must be distinct markers");
     }
 
     /// Byte index just past the brace closing the block opened at `open`.
@@ -13352,6 +13515,67 @@ mod tests {
             ),
             "テーマ: ライト"
         );
+    }
+
+    #[test]
+    fn all_theme_choices_share_one_application_path() {
+        // AX08: Dark / Light / System の別ルートを無くし、3 選択子すべてが
+        // settings.theme / palette / icon resolver / GPUI Theme を同じ順で更新する。
+        let source = include_str!("main.rs");
+        let apply = source_region(
+            source,
+            "    fn apply_theme_mode(",
+            "    /// Undo an in-memory settings preview",
+        );
+        for step in [
+            "self.settings.theme = mode;",
+            "self.palette = AppPalette::for_mode(mode);",
+            "self.system_icon_resolver.set_prefer_dark(mode.is_dark());",
+            "Theme::sync_system_appearance(None, cx);",
+            "Theme::change(mode, None, cx);",
+        ] {
+            assert!(apply.contains(step), "apply_theme_mode lost {step:?}");
+        }
+
+        let choice = source_region(
+            source,
+            "    fn apply_theme_choice(",
+            "    /// Undo an in-memory settings preview",
+        );
+        assert!(
+            choice.contains("resolve_theme(choice, system)"),
+            "the choice must be resolved against the observed appearance"
+        );
+        assert!(
+            choice.contains("choice == ThemeChoice::System"),
+            "only the System choice selects the sync path"
+        );
+
+        for (start, end, call) in [
+            (
+                "    fn toggle_theme(&mut self, cx: &mut Context<Self>) {",
+                "    fn set_sort(",
+                "self.apply_theme_choice(choice, cx);",
+            ),
+            (
+                "    fn on_settings_action(",
+                "fn classify_cli(",
+                "self.apply_theme_choice(theme, cx);",
+            ),
+        ] {
+            let body = source_region(source, start, end);
+            assert!(body.contains(call), "{start} must use {call}");
+            for duplicated in [
+                "Theme::sync_system_appearance",
+                "self.palette =",
+                "set_prefer_dark",
+            ] {
+                assert!(
+                    !body.contains(duplicated),
+                    "{start} still duplicates {duplicated}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -16165,6 +16389,82 @@ mod tests {
         assert_eq!(status_color(&settings_save_status(false, success)), C_RED);
     }
 
+    // AX19: only list-affecting fields should force a Search re-run; theme /
+    // keymap / terminal-command changes must be a pure in-memory repaint.
+    #[test]
+    fn settings_change_affects_list_only_for_list_fields() {
+        let before = Settings::default();
+        let mut after = before.clone();
+        after.theme_choice = ThemeChoice::Light;
+        after
+            .keymap
+            .push(("open".to_string(), "ctrl+o".to_string()));
+        after.terminal_command = "konsole".to_string();
+        assert!(!settings_change_affects_list(&before, &after));
+
+        let mut sort = before.clone();
+        sort.sort.key = SortKey::Modified;
+        assert!(settings_change_affects_list(&before, &sort));
+
+        let mut hidden = before.clone();
+        hidden.show_hidden = true;
+        assert!(settings_change_affects_list(&before, &hidden));
+
+        let mut thumbnails = before.clone();
+        thumbnails.show_thumbnails = !thumbnails.show_thumbnails;
+        assert!(settings_change_affects_list(&before, &thumbnails));
+
+        let mut view = before.clone();
+        view.view = ViewLayout::Icons;
+        assert!(settings_change_affects_list(&before, &view));
+
+        let mut columns = before.clone();
+        columns.column_prefs.visible.pop();
+        assert!(settings_change_affects_list(&before, &columns));
+    }
+
+    // AX09 + AX19: the failed-write branch keeps the form open and returns;
+    // `settings_ui = None` only runs on the successful path, where Search is
+    // re-run only if the list-affecting settings actually changed.
+    #[test]
+    fn settings_save_failure_keeps_the_form_open() {
+        let source = include_str!("main.rs");
+        let save = source_region(
+            source,
+            "            SettingsUiAction::Save => {",
+            "fn classify_cli(",
+        );
+        let failure = save
+            .find("if settings_write_needs_rollback(saved) {")
+            .expect("rollback guard missing");
+        let open = failure
+            + save[failure..]
+                .find('{')
+                .expect("rollback guard body missing");
+        let body_end = braced_block_end(save, open);
+        let failed_body = &save[open..body_end];
+        assert!(
+            failed_body.contains("state.error = Some(reason.clone());"),
+            "the dialog must show the write-failure reason"
+        );
+        assert!(
+            failed_body.contains("return;"),
+            "a failed Save must not close"
+        );
+        assert!(
+            !failed_body.contains("self.settings_ui = None"),
+            "a failed Save must leave the form open for a retry"
+        );
+
+        let success_tail = &save[body_end..];
+        assert!(success_tail.contains("self.settings_ui = None;"));
+        assert!(
+            success_tail.contains("settings_change_affects_list(&snapshot, &self.settings)"),
+            "Search must only re-run when the list can actually change"
+        );
+        assert!(success_tail.contains("self.run_search(cx);"));
+    }
+
     // F04: `save()` reports success without writing for read-only / ephemeral
     // sessions. Every write path must then show the read-only notice instead of
     // its success caption, just as the settings overlay already did.
@@ -16438,12 +16738,78 @@ mod tests {
     // advance the sort choice and wrap after the last radio option.
     #[test]
     fn settings_sort_next_cycles_and_wraps() {
-        assert_eq!(settings_sort_next("name"), "kind");
-        assert_eq!(settings_sort_next("kind"), "size");
-        assert_eq!(settings_sort_next("size"), "modified");
-        assert_eq!(settings_sort_next("modified"), "name");
-        assert_eq!(settings_sort_next(""), "name");
-        assert_eq!(settings_sort_next("unknown"), "name");
+        // AX10: expectations come from the option list so a reordered radio set
+        // cannot leave the shortcut helper silently out of step.
+        let options = ["name", "kind", "size", "modified"];
+        for (index, value) in options.iter().enumerate() {
+            assert_eq!(
+                settings_sort_next(value),
+                options[(index + 1) % options.len()],
+                "{value} must advance one step"
+            );
+        }
+        assert_eq!(settings_sort_next(""), options[0]);
+        assert_eq!(settings_sort_next("unknown"), options[0]);
+    }
+
+    // AX10: the pure `next_*` helpers and `next_theme_choice` must all follow
+    // the value lists actually rendered by the settings card. The source guard
+    // fails if the UI arrays are reordered without updating the helpers.
+    #[test]
+    fn settings_next_helpers_match_the_rendered_option_order() {
+        let source = include_str!("main.rs");
+        let card = source_region(
+            source,
+            "        let theme_options = [",
+            "        let content = render_settings_content::<Explorer>(",
+        );
+
+        let theme = ["dark", "light", "system"];
+        let view = ["details", "icons"];
+        let sort = ["name", "kind", "size", "modified"];
+        for options in [theme.as_slice(), view.as_slice(), sort.as_slice()] {
+            let mut previous = None;
+            for value in options {
+                let at = card
+                    .find(&format!("\"{value}\""))
+                    .unwrap_or_else(|| panic!("rendered options lost {value:?}"));
+                assert!(
+                    previous.is_none_or(|before| at > before),
+                    "option {value:?} is out of order"
+                );
+                previous = Some(at);
+            }
+        }
+
+        for (index, value) in theme.iter().enumerate() {
+            assert_eq!(
+                crate::settings_ui::settings_theme_next(value),
+                theme[(index + 1) % theme.len()]
+            );
+        }
+        for (index, value) in view.iter().enumerate() {
+            assert_eq!(
+                crate::settings_ui::settings_view_next(value),
+                view[(index + 1) % view.len()]
+            );
+        }
+        for (index, value) in sort.iter().enumerate() {
+            assert_eq!(settings_sort_next(value), sort[(index + 1) % sort.len()]);
+        }
+        // The enum helper and the UI string helper must agree on the same step.
+        for choice in [
+            crate::settings::ThemeChoice::Dark,
+            crate::settings::ThemeChoice::Light,
+            crate::settings::ThemeChoice::System,
+        ] {
+            let serialized = serde_json::to_string(&choice).unwrap();
+            let current = serialized.trim_matches('"');
+            let next = serde_json::to_string(&crate::settings::next_theme_choice(choice)).unwrap();
+            assert_eq!(
+                crate::settings_ui::settings_theme_next(current),
+                next.trim_matches('"')
+            );
+        }
     }
 
     // N01: `settings_row_shortcut` only inspects the key string, so the host
@@ -16603,10 +16969,95 @@ mod tests {
     fn rollback_is_called_by_all_seven_preview_then_write_paths() {
         let source = include_str!("main.rs");
         let needle = concat!("self", ".rollback_settings(");
+        let rollback_call = concat!("self", ".rollback_settings(snapshot, cx);");
         let call_sites = source.matches(needle).count();
         assert_eq!(
             call_sites, 7,
             "each preview-then-write path must call rollback_settings"
+        );
+        // AX12: a bare call count cannot tell a guarded failure branch from an
+        // unconditional call, nor detect a success branch that no longer
+        // refreshes the view or publishes a status. Inspect each region.
+        let guard = "if settings_write_needs_rollback(saved)";
+        let check = |start: &str, end: &str, success: &str, refresh: Option<&str>| {
+            let region = source_region(source, start, end);
+            let write = region
+                .find("self.save_settings()")
+                .unwrap_or_else(|| panic!("missing save in {start}"));
+            let guard_at = region
+                .find(guard)
+                .unwrap_or_else(|| panic!("missing write guard in {start}"));
+            let rollback = region
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing rollback in {start}"));
+            assert!(
+                write < guard_at && guard_at < rollback,
+                "{start}: save -> guarded rollback order"
+            );
+            let open = guard_at + guard.len();
+            let brace = region[open..]
+                .find('{')
+                .map(|offset| open + offset)
+                .expect("guard opening brace");
+            let block_end = braced_block_end(region, brace);
+            let failure_branch = &region[brace..block_end];
+            assert!(
+                failure_branch.contains(rollback_call),
+                "{start}: failure branch must roll back: {failure_branch}"
+            );
+            let success_branch = &region[block_end..];
+            assert!(
+                success_branch.contains(success),
+                "{start}: success branch must run {success}"
+            );
+            if let Some(refresh) = refresh {
+                assert!(
+                    success_branch.contains(refresh),
+                    "{start}: success branch must refresh {refresh}"
+                );
+            }
+        };
+        check(
+            "    fn set_view(&mut self, mode: ViewLayout, cx: &mut Context<Self>) {",
+            "    fn select_all(&mut self, cx: &mut Context<Self>) {",
+            "self.status = set_view_status(",
+            None,
+        );
+        check(
+            "    fn confirm_terminal_command(&mut self, cx: &mut Context<Self>) {",
+            "    fn set_terminal_command_error(",
+            "self.status = settings_write_status(",
+            None,
+        );
+        check(
+            "    fn confirm_keymap(&mut self, cx: &mut Context<Self>) {",
+            "    fn set_keymap_error(",
+            "self.status = settings_write_status(",
+            None,
+        );
+        check(
+            "    fn toggle_hidden(&mut self, cx: &mut Context<Self>) {",
+            "    /// Apply an already-resolved mode to the component theme, the legacy",
+            "self.status = settings_write_status(",
+            Some("self.rebuild_view(keep)"),
+        );
+        check(
+            "    fn toggle_theme(&mut self, cx: &mut Context<Self>) {",
+            "    fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {",
+            "self.status = settings_write_status(",
+            None,
+        );
+        check(
+            "    fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {",
+            "    fn new_folder(&mut self, cx: &mut Context<Self>) {",
+            "self.status = settings_write_status(",
+            Some("self.apply_search_filter(cx)"),
+        );
+        check(
+            "                // Persist before refreshing the list: on failure the rollback",
+            "/// What the command line asks the process to do before starting GPUI.",
+            "self.status = settings_write_status(&self.settings, saved, true, success);",
+            None,
         );
     }
 
@@ -16718,6 +17169,100 @@ mod tests {
             format!("{STATUS_CANCELLED}（3 件をゴミ箱へ移動済み）")
         );
         assert!(partial.contains("3 件"), "{partial}");
+    }
+
+    #[test]
+    fn redo_trash_empty_recording_stays_in_the_redo_queue() {
+        // AX01: ゴミ箱一覧の失敗で recorded が空になると、空の undo を記録した
+        // 場合に undo しても restored=0 でスタックへ戻り続ける。空のときは
+        // undo へ移さず redo キューへ残す判定を固定する。
+        assert!(!redo_trash_should_record_undo(&[]));
+        let recorded = vec![(PathBuf::from("/tmp/a.txt"), OsString::from("id-a"))];
+        assert!(redo_trash_should_record_undo(&recorded));
+
+        use crate::undo::UndoAction;
+        let stuck = UndoAction::Trash { items: Vec::new() };
+        assert_eq!(stuck.len(), 0, "an empty trash undo can never restore");
+        let real = UndoAction::Trash {
+            items: recorded.clone(),
+        };
+        assert_eq!(real.len(), 1);
+
+        let source = include_str!("main.rs");
+        let redo = source_region(
+            source,
+            "    fn redo_last(&mut self, cx: &mut Context<Self>) {",
+            "    // ----------------------------------------------------------------- preview",
+        );
+        assert!(
+            redo.contains("redo_trash_should_record_undo(&recorded)"),
+            "redo completion must guard the recorded ids before push_undo"
+        );
+        let normal = source_region(
+            source,
+            "    fn trash_paths(",
+            "    fn search_input_focused(",
+        );
+        assert!(
+            normal.contains("if !recorded.is_empty()"),
+            "the normal trash path keeps the same empty-recording guard"
+        );
+    }
+
+    #[test]
+    fn redo_trash_failed_status_keeps_the_os_reason() {
+        // AX05: 全件失敗分岐も他3経路と同じく {STATUS_REDO_FAILED}: {reason} を
+        // 返し、OS 理由を落とさない。
+        assert_eq!(
+            redo_trash_failed_status(&[]),
+            STATUS_REDO_FAILED.to_string()
+        );
+        let failures = vec![(PathBuf::from("/tmp/a.txt"), "permission denied".to_string())];
+        let status = redo_trash_failed_status(&failures);
+        assert_eq!(status, format!("{STATUS_REDO_FAILED}: permission denied"));
+        assert_eq!(status_color(&status), C_RED, "{status}");
+        let source = include_str!("main.rs");
+        let redo = source_region(
+            source,
+            "    fn redo_last(&mut self, cx: &mut Context<Self>) {",
+            "    // ----------------------------------------------------------------- preview",
+        );
+        assert!(
+            redo.contains("this.status = redo_trash_failed_status(&failures);"),
+            "the all-failed redo branch must use the reason-preserving helper"
+        );
+    }
+
+    #[test]
+    fn redo_rename_preflight_refuses_missing_and_occupied_targets() {
+        // AX06: undo と同じく redo も、元が無い／先が既に存在する場合は
+        // 実行前に拒否し、redo エントリをキューへ戻す。
+        let missing = redo_missing_status(std::path::Path::new("/tmp/current"));
+        assert_eq!(
+            missing,
+            format!("{STATUS_REDO_FAILED}: /tmp/current{STATUS_UNDO_MISSING_SUFFIX}")
+        );
+        assert_eq!(status_color(&missing), C_RED, "{missing}");
+        let exists = redo_exists_status(std::path::Path::new("/tmp/target"));
+        assert_eq!(
+            exists,
+            format!("{STATUS_REDO_FAILED}: /tmp/target{STATUS_UNDO_EXISTS_SUFFIX}")
+        );
+        assert_eq!(status_color(&exists), C_RED, "{exists}");
+        let source = include_str!("main.rs");
+        let redo = source_region(
+            source,
+            "    fn redo_last(&mut self, cx: &mut Context<Self>) {",
+            "    // ----------------------------------------------------------------- preview",
+        );
+        for marker in [
+            "if !path_present(&current)",
+            "redo_missing_status(&current)",
+            "if path_present(&to)",
+            "redo_exists_status(&to)",
+        ] {
+            assert!(redo.contains(marker), "rename redo must check {marker}");
+        }
     }
 
     #[test]
@@ -17233,6 +17778,16 @@ mod tests {
             dialog.contains(".on_click(undo)") && dialog.contains("this.undo_last(cx)"),
             "undo button must be wired to the undo application"
         );
+        // AX07: redo entries are listed, so they need a symmetric execution
+        // path through both the button and the configured Redo chord.
+        assert_eq!(crate::strings::HISTORY_REDO_BUTTON_LABEL, "やり直す");
+        assert!(
+            dialog.contains("Button::new(\"undo-history-redo\")")
+                && dialog.contains("crate::strings::HISTORY_REDO_BUTTON_LABEL")
+                && dialog.contains(".on_click(redo)")
+                && dialog.contains("this.redo_last(cx)"),
+            "history dialog must expose a wired redo button"
+        );
         let keys = source_region(
             source,
             "        if self.undo_history_open {",
@@ -17241,6 +17796,32 @@ mod tests {
         assert!(
             keys.contains("KeyAction::Undo") && keys.contains("self.undo_last(cx)"),
             "Ctrl+Z inside the dialog must undo and dismiss it"
+        );
+        assert!(
+            keys.contains("KeyAction::Redo") && keys.contains("self.redo_last(cx)"),
+            "Ctrl+Shift+Z inside the dialog must redo and dismiss it"
+        );
+    }
+
+    #[test]
+    fn undo_history_escape_cancels_the_running_operation_first() {
+        // AX18: 二段階 Esc（Search と同じ）。操作実行中は先にキャンセルし、
+        // 次の Esc で履歴オーバーレイを閉じる。
+        let source = include_str!("main.rs");
+        let keys = source_region(
+            source,
+            "        if self.undo_history_open {",
+            "        if self.preview.is_some() {",
+        );
+        let escape = keys.find("if key == \"escape\"").expect("escape guard");
+        let cancel = keys.find("self.cancel_op(cx)").expect("op cancel");
+        let close = keys
+            .find("self.undo_history_open = false;")
+            .expect("overlay dismiss");
+        assert!(cancel < close, "cancel must be checked before dismissal");
+        assert!(
+            keys[escape..cancel].contains("self.op_cancel.is_some()"),
+            "first Escape must only cancel when an operation is running"
         );
     }
 

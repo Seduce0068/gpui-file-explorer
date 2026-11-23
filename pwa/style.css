@@ -181,6 +181,14 @@ button:disabled {
   /* 縦スクロールは許可しつつ、横スワイプを JS のジェスチャとして扱う。 */
   touch-action: pan-y;
   -webkit-tap-highlight-color: transparent;
+  /* 長押しで行テキストが選択されたり iOS の呼び出しメニューが出たりしないようにする。
+     検索 input は別セレクタなので、選択・コピー・貼り付けは従来どおり。 */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  /* scrollIntoView({block:'nearest'}) が行を viewport 端へぴったり寄せると
+     サブピクセルで 1px はみ出ることがあるため、わずかな余白を取る。 */
+  scroll-margin-block: 4px;
 }
 
 .entry-list li[role="option"]:focus-visible {
@@ -192,6 +200,15 @@ button:disabled {
   flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* aria-hidden の span へ分けた装飾記号の視覚的な間隔を再現する。 */
+.entry-icon {
+  margin-inline-end: 0.35rem;
+}
+
+.entry-link-icon {
+  margin-inline-start: 0.35rem;
 }
 
 .entry-name[data-kind="dir"] {
