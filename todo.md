@@ -2006,6 +2006,38 @@ status: current
 - [x] **BC21** README 既定ループ説明が member/クロスターゲットを省略 — 対応: loop16
 - [x] **BC22** 3レジストリが persisted default JSON を個別再計算 — 対応: loop16
 
+## 進行中（ループ17 バックログ）
+
+### 優先度: 高（ループ17・confirmed）
+
+- [x] **BD01** カット移動完了が実行中に置き換えられたクリップボードを破棄 — 対応: loop17
+- [x] **BD02** paste() が EACCES を「存在しない」と誤分類しクリップボード喪失 — 対応: loop17
+- [x] **BD03** 宣言寸法パーサの未テスト分岐（BMP 負高さ / JPEG SOF / TIFF SHORT） — 対応: loop17
+- [x] **BD04** NESTED_SITES テストがレジストリ自身から期待値を導出 — 対応: loop17
+- [x] **BD05** PWA 非同期検索に世代ガードが無く古い結果が上書き — 対応: loop17
+
+### 優先度: 中（ループ17・confirmed）
+
+- [x] **BD06** BC08 再走査が BC09/10 の不完全検索カウンタを破棄 — 対応: loop17
+- [x] **BD07** UTF-8 厳密判定の cut_at_limit がサイズちょうどで真 — 対応: loop17
+- [x] **BD08** 外部ドロップが重複パスを除去しない — 対応: loop17
+- [x] **BD09** Clipboard ポートが未検証 URI を返す契約 — 対応: loop17
+- [x] **BD10** 不正 UTF-8 テストが先行マッチ破棄・カウンタを固定していない — 対応: loop17
+- [x] **BD11** キーガードの source_region が約2200行の広域を使う — 対応: loop17
+- [x] **BD12** PWA 長押しタイマーが行 index を捕捉し再描画で別行をトグル — 対応: loop17
+- [x] **BD13** check.sh が poc/ に cargo audit（CI は app/ のみ） — 対応: loop17
+- [x] **BD14** Phase1 受入条件の ADR 行アンカーが実際の節を指さない — 対応: loop17
+
+### 優先度: 低（ループ17・confirmed）
+
+- [x] **BD15** limit_reached が完了した検索にも上限通知
+  — 対応: loop17
+  — 件数==上限の完了/未完了判定は walker 側フラグが必要で既知残存
+- [x] **BD16** dev-setup.sh は app/poc 両方に symlink を作るが README は app のみ — 対応: loop17
+- [x] **BD17** README の残骸 Cargo.lock 記述が build-deb.sh の実動作と食い違う — 対応: loop17
+- [x] **BD18** search generation 不一致 early-return が running/task/cancel を不走清扫
+  — 対応: loop17（generation を進めるのは clear_search/run_search のみで実害なし）
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

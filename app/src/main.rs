@@ -299,6 +299,50 @@ fn path_present(path: &Path) -> bool {
     path.exists() || path.is_symlink()
 }
 
+/// `symlink_metadata` の結果を転送元の状態に分類する。
+///
+/// `NotFound` だけが「存在しない」の確認。`PermissionDenied` 等は読み取り不能
+/// として扱い、転送側で本来の IO エラーを報告させる（消えたことにしない）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourcePresence {
+    Present,
+    Missing,
+    Unreadable,
+}
+
+fn source_presence(metadata: &std::io::Result<std::fs::Metadata>) -> SourcePresence {
+    match metadata {
+        Ok(_) => SourcePresence::Present,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SourcePresence::Missing,
+        Err(_) => SourcePresence::Unreadable,
+    }
+}
+
+/// パスを symlink 自身も含めて調べる（壊れた symlink は `Present`）。
+fn classify_source_path(path: &Path) -> SourcePresence {
+    source_presence(&std::fs::symlink_metadata(path))
+}
+
+/// ドロップ先を却下すべきかどうかの純粋判定。
+///
+/// 確認済みの NotFound、または確実にディレクトリでない場合だけ却下する。
+/// 権限不足で stat できなかった場合は転送へ任せ、誤った「見つかりません」を
+/// 表示しない（`Path::is_dir` は全エラーを false に折りたたんでいた）。
+fn reject_drop_destination(metadata: std::io::Result<std::fs::Metadata>) -> bool {
+    match metadata {
+        Ok(metadata) => !metadata.is_dir(),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// クリップボードを破棄してよいのは、全ソースが確認済み NotFound のときだけ。
+///
+/// 読み取り不能なソースや「同じフォルダ」でスキップしたソースが残っている
+/// 場合はスロットを保持し、後から再試行できるようにする。
+fn clipboard_all_sources_missing(missing: usize, transferable: usize, same_dir: usize) -> bool {
+    missing > 0 && transferable == 0 && same_dir == 0
+}
+
 /// Status shown after a search-filter refresh (kind/extension/name/sort).
 ///
 /// The watcher may have flagged the snapshot as stale
@@ -2741,6 +2785,19 @@ struct ClipboardSlot {
     cut: bool,
 }
 
+/// 完了時にカット用クリップボードを消すかどうかの純粋判定。
+///
+/// 操作開始後に Ctrl+C / Ctrl+X で新しいスロットが入った（世代が進んだ）
+/// 場合は、そのスロットを触らずに残す。
+fn should_clear_clipboard(
+    start_generation: u64,
+    current_generation: u64,
+    cut: bool,
+    fully_succeeded: bool,
+) -> bool {
+    cut && fully_succeeded && start_generation == current_generation
+}
+
 /// Global result cap shared by every search root (the per-root fair share and
 /// the summary's 「上限 … 件に達しました」 notice both derive from this).
 const SEARCH_GLOBAL_CAP: usize = 2_000;
@@ -3409,19 +3466,31 @@ fn restore_trash_ids(entries: &[(PathBuf, OsString)]) -> RestoreByIdOutcome {
     restore_outcome_with_occupied_paths(partition_restore_outcome(&missing, &attempts), &occupied)
 }
 
-/// Paths carried by an internal row drag that may be copied into
-/// `destination`. The whole multi-selection is preserved (order-stable), the
-/// destination itself and duplicate paths are dropped. Pure so the multi-drop
-/// rule can be regression-tested without a running GPUI window.
-fn internal_drop_paths(paths: &[PathBuf], destination: &Path) -> Vec<PathBuf> {
+/// Common path filter for internal row drags **and** OS drops.
+///
+/// Order-stable. Drops the destination itself, duplicate paths, and a path
+/// already covered by an ancestor (copying the ancestor covers its children).
+/// A later ancestor also evicts an earlier descendant, so input order cannot
+/// change the result. Pure so the multi-drop rule is regression-testable
+/// without a running GPUI window.
+fn transferable_drop_paths(paths: &[PathBuf], destination: &Path) -> Vec<PathBuf> {
     let mut kept: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for path in paths {
         if path == destination || kept.contains(path) {
             continue;
         }
+        if kept.iter().any(|earlier| path.starts_with(earlier)) {
+            continue;
+        }
+        kept.retain(|earlier| !earlier.starts_with(path));
         kept.push(path.clone());
     }
     kept
+}
+
+/// Internal row drags go through the same filter as OS drops.
+fn internal_drop_paths(paths: &[PathBuf], destination: &Path) -> Vec<PathBuf> {
+    transferable_drop_paths(paths, destination)
 }
 
 /// Decide where a pending post-creation rename may start (F6-34).
@@ -3540,6 +3609,9 @@ struct Explorer {
     bookmarks: Vec<PathBuf>,
     /// Internal cut/copy clipboard (may hold multiple selected paths).
     clipboard: Option<ClipboardSlot>,
+    /// Bumped on every clipboard replacement; an in-flight move may only clear
+    /// a slot that is still the one it started with.
+    clipboard_generation: u64,
     /// Running paste operation; dropping the task cancels it.
     op_task: Option<Task<()>>,
     /// Cancellation flag of the running operation (Esc cancels).
@@ -4143,6 +4215,7 @@ impl Explorer {
             recent: Vec::new(),
             bookmarks: Vec::new(),
             clipboard: None,
+            clipboard_generation: 0,
             op_task: None,
             op_cancel: None,
             op_token: 0,
@@ -6806,6 +6879,13 @@ impl Explorer {
         cx.notify();
     }
 
+    /// Replace the internal clipboard, advancing its generation so a running
+    /// move cannot mistake this new slot for the one it started with.
+    fn replace_clipboard(&mut self, slot: Option<ClipboardSlot>) {
+        self.clipboard = slot;
+        self.clipboard_generation = self.clipboard_generation.wrapping_add(1);
+    }
+
     /// Remember the selected entries for a later paste (Ctrl+C).
     fn copy_selected(&mut self, cx: &mut Context<Self>) {
         let paths = self.action_paths();
@@ -6823,7 +6903,7 @@ impl Explorer {
         } else {
             format!("{count} 件をコピーしました（Ctrl+V で貼り付け）")
         };
-        self.clipboard = Some(ClipboardSlot { paths, cut: false });
+        self.replace_clipboard(Some(ClipboardSlot { paths, cut: false }));
         self.status = status;
         cx.notify();
     }
@@ -6845,7 +6925,7 @@ impl Explorer {
         } else {
             format!("{count} 件を切り取りました（Ctrl+V で移動）")
         };
-        self.clipboard = Some(ClipboardSlot { paths, cut: true });
+        self.replace_clipboard(Some(ClipboardSlot { paths, cut: true }));
         self.status = status;
         cx.notify();
     }
@@ -6929,7 +7009,9 @@ impl Explorer {
         let mut same_dir = 0usize;
         let mut paths: Vec<PathBuf> = Vec::new();
         for path in slot.paths {
-            if !path.exists() && !path.is_symlink() {
+            // Only a confirmed NotFound is "missing"; an unreadable source
+            // stays in `paths` so the transfer reports the real IO error.
+            if classify_source_path(&path) == SourcePresence::Missing {
                 missing.push(path);
                 continue;
             }
@@ -6939,8 +7021,8 @@ impl Explorer {
             }
             paths.push(path);
         }
-        if !missing.is_empty() && paths.is_empty() {
-            self.clipboard = None;
+        if clipboard_all_sources_missing(missing.len(), paths.len(), same_dir) {
+            self.replace_clipboard(None);
             self.status = format!("{}{STATUS_MISSING_COUNT_SUFFIX}", missing.len());
             self.reload(cx);
             return;
@@ -6990,6 +7072,10 @@ impl Explorer {
         let Some(token) = self.begin_op(cx) else {
             return;
         };
+        // BD01: snapshot the clipboard slot identity before the background
+        // task starts. A Ctrl+C/X during the operation installs a new slot; the
+        // completion must not discard it.
+        let start_generation = self.clipboard_generation;
         let verb = if cut { "移動" } else { "コピー" };
         let target_prefix = if destination == self.cwd {
             String::new()
@@ -7157,15 +7243,20 @@ impl Explorer {
                 };
                 let status = format!("{status}{skip_notice}");
                 this.suppress_for(SELF_OP_SUPPRESS);
-                if cut && fully_succeeded {
-                    // Only a fully completed move makes every source stale. On
-                    // cancel or partial failure some sources still exist; keep
-                    // the slot so the user can retry (paste re-checks which
-                    // paths are gone). Reporting the exact remaining paths
-                    // would need per-item results from the background task;
-                    // the conservative full-success rule is the minimal safe
-                    // choice and never loses an unmoved source.
-                    this.clipboard = None;
+                if should_clear_clipboard(
+                    start_generation,
+                    this.clipboard_generation,
+                    cut,
+                    fully_succeeded,
+                ) {
+                    // Only a fully completed move makes every source stale, and
+                    // only when the user has not installed a new slot in the
+                    // meantime. On cancel or partial failure some sources still
+                    // exist; keep the slot so the user can retry. Reporting the
+                    // exact remaining paths would need per-item results from
+                    // the background task; the conservative full-success rule
+                    // is the minimal safe choice.
+                    this.replace_clipboard(None);
                 }
                 if let Some(dest) = first_created {
                     if destination_for_ui == this.cwd
@@ -7225,27 +7316,37 @@ impl Explorer {
             cx.notify();
             return;
         }
-        if !destination.is_dir() {
+        if reject_drop_destination(std::fs::metadata(&destination)) {
             self.status = STATUS_DROP_NO_DESTINATION.to_string();
             cx.notify();
             return;
         }
+        // BD08: OS drops must obey the same multi-selection rule as internal
+        // drags (self / duplicate / ancestor-descendant removal). Calling the
+        // common filter again after `drop_internal_into` is idempotent.
+        let paths = transferable_drop_paths(&paths, &destination);
         let mut existing: Vec<PathBuf> = Vec::new();
         let mut missing = 0usize;
         let mut same = 0usize;
         let mut special = 0usize;
         for path in paths {
             // `symlink_metadata` sees broken links too and never follows them.
-            let Ok(link_metadata) = std::fs::symlink_metadata(&path) else {
+            // An EACCES stat failure is not "missing": keep the path so the
+            // transfer surfaces the real error instead of losing the drop.
+            let metadata = std::fs::symlink_metadata(&path);
+            if source_presence(&metadata) == SourcePresence::Missing {
                 missing += 1;
                 continue;
-            };
-            let file_type = link_metadata.file_type();
-            if !file_type.is_symlink() && !file_type.is_file() && !file_type.is_dir() {
-                // Devices, sockets and FIFOs cannot be copied safely; skip them
-                // here instead of failing the whole transfer in `copy_recursive`.
-                special += 1;
-                continue;
+            }
+            if let Ok(link_metadata) = metadata {
+                let file_type = link_metadata.file_type();
+                if !file_type.is_symlink() && !file_type.is_file() && !file_type.is_dir() {
+                    // Devices, sockets and FIFOs cannot be copied safely; skip
+                    // them here instead of failing the whole transfer in
+                    // `copy_recursive`.
+                    special += 1;
+                    continue;
+                }
             }
             if path == destination {
                 same += 1;
@@ -9863,10 +9964,15 @@ impl Explorer {
             let per_root_cap = Self::per_root_cap(SEARCH_GLOBAL_CAP, roots.len());
             let skipped_large = Arc::new(AtomicUsize::new(0));
             let non_utf8 = Arc::new(AtomicUsize::new(0));
+            // BD06: re-scans also expose oversized / non-UTF-8 files located
+            // after the first walk's cap. Give each re-scan its own counter
+            // (so the shared first-pass counters are not double-incremented)
+            // and fold the totals into the summary afterwards.
+            let rescan_skipped_large = Arc::new(AtomicUsize::new(0));
+            let rescan_non_utf8 = Arc::new(AtomicUsize::new(0));
             // One walker invocation. A non-zero `skip` means "continue a root
             // that already hit its fair share": the re-scan must return *new*
-            // matches, not the ones already in `batches`. Re-scans use fresh
-            // counters so skipped/lossy files are not counted twice.
+            // matches, not the ones already in `batches`.
             let run_root = |root: &PathBuf, cap: usize, skip: usize| match mode {
                 SearchMode::Name => search_by_name(
                     root,
@@ -9889,12 +9995,12 @@ impl Explorer {
                         skipped_large_files: if skip == 0 {
                             skipped_large.clone()
                         } else {
-                            Arc::new(AtomicUsize::new(0))
+                            rescan_skipped_large.clone()
                         },
                         non_utf8_files: if skip == 0 {
                             non_utf8.clone()
                         } else {
-                            Arc::new(AtomicUsize::new(0))
+                            rescan_non_utf8.clone()
                         },
                         ..Default::default()
                     },
@@ -9932,8 +10038,10 @@ impl Explorer {
             let merged = merge_search_results(batches, SEARCH_GLOBAL_CAP);
             let stats = SearchRunStats {
                 limit_reached: merged.len() >= SEARCH_GLOBAL_CAP,
-                skipped_large_files: skipped_large.load(Ordering::SeqCst),
-                non_utf8_files: non_utf8.load(Ordering::SeqCst),
+                skipped_large_files: skipped_large.load(Ordering::SeqCst)
+                    + rescan_skipped_large.load(Ordering::SeqCst),
+                non_utf8_files: non_utf8.load(Ordering::SeqCst)
+                    + rescan_non_utf8.load(Ordering::SeqCst),
             };
             (merged, stats)
         });
@@ -13351,49 +13459,49 @@ mod tests {
         active_keymap_overrides, apply_debug_settings_overrides, bookmark_label_is_settable,
         bookmark_label_not_set_status, bookmark_label_rejection_reason,
         bookmark_label_set_rejection, bookmark_toggle_rejection, build_places, canonical_chord,
-        chord_for_action, chords_collide, classify_cli, clear_dialog_error, clear_op_token,
-        clear_rescan_failure_after_successful_read, clear_rescan_failure_status,
-        context_menu_anchor, core_trash_items, dialog_footer_hint_for_session,
-        effective_dialog_width, effective_sidebar_width, focus_search_name_key_reaches_dispatch,
-        format_chord, format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_viewport,
-        grid_columns_for_width, help_overrides_line, icon_button_text_color, install_op_token,
-        internal_drop_paths, join_status_notices, keymap_action_name, keymap_bind_caption,
-        keymap_chord_reserved, keymap_limit_status, keymap_unbind_caption, kind_color,
-        labeled_display_name, load_error_display_text, middle_click_tab_dir,
-        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
-        pending_rename_index, rank_fuzzy, read_properties_snapshot, reconcile_aware_status,
-        redo_exists_status, redo_missing_status, redo_trash_failed_status,
-        redo_trash_should_record_undo, remove_keymap_override, resolved_sidebar_width,
-        restore_outcome_with_occupied_paths, saved_search_caption, saved_search_save_status,
-        search_close_status, search_filter_status, search_summary_notices, set_view_status,
-        settings_change_affects_list, settings_discard_status,
-        settings_editor_write_failure_reason, settings_read_only_status, settings_reset_status,
-        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
-        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        chord_for_action, chords_collide, classify_cli, classify_source_path, clear_dialog_error,
+        clear_op_token, clear_rescan_failure_after_successful_read, clear_rescan_failure_status,
+        clipboard_all_sources_missing, context_menu_anchor, core_trash_items,
+        dialog_footer_hint_for_session, effective_dialog_width, effective_sidebar_width,
+        focus_search_name_key_reaches_dispatch, format_chord, format_selected, fuzzy_candidates,
+        fuzzy_score, grid_columns_for_viewport, grid_columns_for_width, help_overrides_line,
+        icon_button_text_color, install_op_token, internal_drop_paths, join_status_notices,
+        keymap_action_name, keymap_bind_caption, keymap_chord_reserved, keymap_limit_status,
+        keymap_unbind_caption, kind_color, labeled_display_name, load_error_display_text,
+        middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
+        parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
+        reconcile_aware_status, redo_exists_status, redo_missing_status, redo_trash_failed_status,
+        redo_trash_should_record_undo, reject_drop_destination, remove_keymap_override,
+        resolved_sidebar_width, restore_outcome_with_occupied_paths, saved_search_caption,
+        saved_search_save_status, search_close_status, search_filter_status,
+        search_summary_notices, set_view_status, settings_change_affects_list,
+        settings_discard_status, settings_editor_write_failure_reason, settings_read_only_status,
+        settings_reset_status, settings_row_key_is_bare, settings_save_error_status,
+        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
         settings_validation_status, settings_with_live_save_error, settings_write_needs_rollback,
-        settings_write_status, should_forward_progress, split_undo_trash_items, startup_dir_from,
-        startup_save_failure_status, status_color, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, theme_choice_label, thumbnail_eligible,
-        transfer_log_level, transfer_progress_status, transfer_skip_notice, trash_batch,
-        trash_delete_status, trash_key_action, trash_load_error_status,
-        trash_redo_cancelled_status, trash_undo_outcome_status, trash_undo_status,
-        trashed_ids_from_snapshot, undo_exists_status, undo_history_key_closes,
-        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
-        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
-        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers,
-        PropertiesErrorReaction, SearchRunStats, SecondarySlot, SettingsTab, SortKey,
-        TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT,
-        C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT,
-        PROGRESS_THROTTLE, SEARCH_GLOBAL_CAP, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX,
-        STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
-        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-        STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
-        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-        STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
-        STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
-        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
+        settings_write_status, should_clear_clipboard, should_forward_progress, source_presence,
+        split_undo_trash_items, startup_dir_from, startup_save_failure_status, status_color,
+        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
+        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
+        theme_choice_label, thumbnail_eligible, transfer_log_level, transfer_progress_status,
+        transfer_skip_notice, transferable_drop_paths, trash_batch, trash_delete_status,
+        trash_key_action, trash_load_error_status, trash_redo_cancelled_status,
+        trash_undo_outcome_status, trash_undo_status, trashed_ids_from_snapshot,
+        undo_exists_status, undo_history_key_closes, undo_missing_status, upsert_keymap_override,
+        validate_cli_dir, version_label, visible_secondary_slots, AppPalette, CliAction,
+        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
+        KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction, SearchRunStats, SecondarySlot,
+        SettingsTab, SortKey, SourcePresence, TrashKeyAction, UndoAction, ViewLayout, C_BLUE,
+        C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
+        GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT, PROGRESS_THROTTLE, SEARCH_GLOBAL_CAP,
+        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
+        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
+        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
+        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
         STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
         STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
         STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
@@ -13867,6 +13975,18 @@ mod tests {
             .map(|offset| after_start + offset)
             .unwrap_or_else(|| panic!("missing end source marker: {end} after {start}"));
         &source[from..to]
+    }
+
+    /// Verify a source marker is unique before it is passed to `source_region`.
+    /// A generic marker such as `if self.view == ViewSource::Search {` occurs in
+    /// several handlers; `source_region` takes the first hit, so a guard meant
+    /// for one route can silently inspect thousands of unrelated lines.
+    fn unique_source_marker(source: &str, marker: &str) {
+        assert_eq!(
+            source.matches(marker).count(),
+            1,
+            "source marker must be unique: {marker:?}"
+        );
     }
 
     /// BA11: one authoritative production/test split. Everything from the
@@ -14982,6 +15102,128 @@ mod tests {
         assert!(internal_drop_paths(&[], &destination).is_empty());
     }
 
+    #[test]
+    fn move_completion_clears_only_the_original_clipboard_slot() {
+        assert!(should_clear_clipboard(7, 7, true, true));
+        // Ctrl+C/X during the move installed a new slot (generation advanced).
+        assert!(!should_clear_clipboard(7, 8, true, true));
+        assert!(!should_clear_clipboard(7, 7, false, true));
+        assert!(!should_clear_clipboard(7, 7, true, false));
+        assert!(!should_clear_clipboard(7, 8, false, false));
+    }
+
+    #[test]
+    fn clipboard_is_cleared_only_when_every_source_is_confirmed_missing() {
+        assert!(clipboard_all_sources_missing(2, 0, 0));
+        // Unreadable sources stay transferable; a same-directory skip also
+        // leaves a live source behind, so neither may discard the slot.
+        assert!(!clipboard_all_sources_missing(2, 1, 0));
+        assert!(!clipboard_all_sources_missing(2, 0, 1));
+        assert!(!clipboard_all_sources_missing(0, 0, 0));
+    }
+
+    #[test]
+    fn source_presence_only_treats_not_found_as_missing() {
+        let missing: std::io::Result<std::fs::Metadata> =
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let denied: std::io::Result<std::fs::Metadata> =
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let other: std::io::Result<std::fs::Metadata> = Err(std::io::Error::other("broken"));
+        assert_eq!(source_presence(&missing), SourcePresence::Missing);
+        assert_eq!(source_presence(&denied), SourcePresence::Unreadable);
+        assert_eq!(source_presence(&other), SourcePresence::Unreadable);
+
+        let dir = f618_temp_dir("presence");
+        assert_eq!(
+            source_presence(&std::fs::metadata(&dir)),
+            SourcePresence::Present
+        );
+        assert_eq!(
+            classify_source_path(&dir.join("does-not-exist")),
+            SourcePresence::Missing
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn drop_destination_rejection_accepts_unreadable_paths() {
+        let missing: std::io::Result<std::fs::Metadata> =
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let denied: std::io::Result<std::fs::Metadata> =
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(reject_drop_destination(missing));
+        assert!(!reject_drop_destination(denied));
+
+        let dir = f618_temp_dir("drop-dest");
+        let file = dir.join("file.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(!reject_drop_destination(std::fs::metadata(&dir)));
+        assert!(reject_drop_destination(std::fs::metadata(&file)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_denied_source_is_not_misclassified_as_missing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = f618_temp_dir("eacces");
+        let locked = dir.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        let hidden = locked.join("file.txt");
+        std::fs::write(&hidden, b"x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let presence = classify_source_path(&hidden);
+        let destination_rejected = reject_drop_destination(std::fs::metadata(&hidden));
+        // Restore permissions before asserting so a failure does not leave an
+        // undeletable temporary directory behind.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        if presence == SourcePresence::Present {
+            // A privileged test runner can stat through mode 000; the guard is
+            // not observable there, so only verify the pure classification.
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert_eq!(presence, SourcePresence::Unreadable);
+        assert!(
+            !destination_rejected,
+            "EACCES must not be reported as a missing drop destination"
+        );
+        assert!(!clipboard_all_sources_missing(0, 1, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn drop_filter_removes_self_duplicates_and_nested_paths_in_either_order() {
+        let destination = PathBuf::from("/work/target");
+        let dragged = vec![
+            destination.clone(),
+            PathBuf::from("/work/tree"),
+            PathBuf::from("/work/tree/a.txt"),
+            PathBuf::from("/work/tree/sub/b.txt"),
+            PathBuf::from("/work/tree/a.txt"),
+            PathBuf::from("/work/other.txt"),
+        ];
+        assert_eq!(
+            transferable_drop_paths(&dragged, &destination),
+            vec![
+                PathBuf::from("/work/tree"),
+                PathBuf::from("/work/other.txt")
+            ]
+        );
+        let reversed = vec![
+            PathBuf::from("/work/tree/sub/b.txt"),
+            PathBuf::from("/work/tree"),
+        ];
+        assert_eq!(
+            transferable_drop_paths(&reversed, &destination),
+            vec![PathBuf::from("/work/tree")]
+        );
+        assert!(transferable_drop_paths(&[], &destination).is_empty());
+    }
+
     // AA07: `record_trashed_paths` wraps a blocking trash listing, so exercise
     // its pure snapshot-mapping half with raw (invalid UTF-8) bytes and pin the
     // wrapper's delegation in source. Losing bytes here would silently break
@@ -15572,6 +15814,34 @@ mod tests {
             non_utf8_files: 1,
         })
         .contains("非 UTF-8 のため 1 件を正確に検索できませんでした"));
+    }
+
+    #[test]
+    fn rescan_counters_are_folded_into_search_summary() {
+        // BD06: the first-pass counters alone under-report files that only
+        // appear after a root's fair share was consumed. Pin the fold into
+        // the summary so a future refactor cannot drop it silently.
+        let source = include_str!("main.rs");
+        let needle = concat!("rescan_skipped_large", ".load(Ordering::SeqCst)");
+        assert_eq!(source.matches(needle).count(), 1);
+        let needle = concat!("rescan_non_utf8", ".load(Ordering::SeqCst)");
+        assert_eq!(source.matches(needle).count(), 1);
+        let region = source_region(
+            source,
+            concat!("let skipped_large", " = Arc::new(AtomicUsize::new(0));"),
+            concat!(
+                "let merged",
+                " = merge_search_results(batches, SEARCH_GLOBAL_CAP);"
+            ),
+        );
+        assert!(
+            region.contains(concat!("let rescan_skipped_large", " = Arc::new")),
+            "rescan counters must be allocated alongside the first-pass counters"
+        );
+        assert!(
+            region.contains(concat!("rescan_non_utf8", ".clone()")),
+            "re-scans must use their own non-UTF-8 counter"
+        );
     }
 
     #[test]
@@ -19125,11 +19395,17 @@ mod tests {
         ));
 
         let source = include_str!("main.rs");
-        let guard = source_region(
-            source,
-            "        if self.view == ViewSource::Search {",
-            "        // Escape is intentionally literal here:",
+        // The generic Search-view marker appears in several handlers; the old
+        // guard sliced from the first hit (~line 4216) and checked ~2200
+        // unrelated lines. Pin the early route with its own multi-line marker.
+        let start = concat!(
+            "            // Ctrl+Shift+F (FocusSearchName) must reach the name filter even\n",
+            "            // while a search text input owns the keyboard. Handle it before\n",
         );
+        let end = "            // AE01: the query field still keeps every key while typing\n";
+        unique_source_marker(source, start);
+        unique_source_marker(source, end);
+        let guard = source_region(source, start, end);
         assert!(
             guard.contains("focus_search_name_key_reaches_dispatch(")
                 && guard.contains("modifiers.alt"),
@@ -19220,6 +19496,13 @@ mod tests {
             .expect("keymap dispatch marker");
         let keys = &keys[..end];
         let position = |marker: &str| {
+            // Each layered guard must be unambiguous inside `on_key_down`;
+            // otherwise this ordering assertion could compare the wrong hit.
+            assert_eq!(
+                keys.matches(marker).count(),
+                1,
+                "layered guard marker must be unique: {marker}"
+            );
             keys.find(marker)
                 .unwrap_or_else(|| panic!("missing layered guard: {marker}"))
         };

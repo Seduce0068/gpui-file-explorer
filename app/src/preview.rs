@@ -996,15 +996,31 @@ mod image_tests {
         bytes
     }
 
-    fn jpeg_header(width: u16, height: u16) -> Vec<u8> {
-        let mut bytes = vec![0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08];
+    /// 40-byte BITMAPINFOHEADER: width/height are signed i32, so a top-down
+    /// DIB stores its height as a negative value whose magnitude is the size.
+    fn bmp_info_header(width: i32, height: i32) -> Vec<u8> {
+        let mut bmp = b"BM".to_vec();
+        bmp.extend_from_slice(&[0u8; 8]);
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&width.to_le_bytes());
+        bmp.extend_from_slice(&height.to_le_bytes());
+        bmp
+    }
+
+    /// `marker` is the SOF marker byte; callers pass the frame variants they
+    /// want the scanner to recognise (0xc0 baseline, 0xc2 progressive, ...).
+    fn jpeg_header(marker: u8, width: u16, height: u16) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0xd8, 0xff, marker, 0x00, 0x11, 0x08];
         bytes.extend_from_slice(&height.to_be_bytes());
         bytes.extend_from_slice(&width.to_be_bytes());
         bytes.extend_from_slice(&[0x01, 0x01, 0x11, 0x00]);
         bytes
     }
 
-    fn tiff_header(little: bool, width: u32, height: u32) -> Vec<u8> {
+    /// `value_type` is the TIFF field type: 3 (SHORT) stores the value inline
+    /// in the first two bytes of the value field, 4 (LONG) uses all four.
+    fn tiff_header_with_type(little: bool, value_type: u16, width: u32, height: u32) -> Vec<u8> {
         let mut bytes = if little {
             b"II*\0".to_vec()
         } else {
@@ -1028,11 +1044,21 @@ mod image_tests {
         bytes.extend_from_slice(&word(2)); // two entries: width, height
         for (tag, value) in [(0x0100u16, width), (0x0101u16, height)] {
             bytes.extend_from_slice(&word(tag));
-            bytes.extend_from_slice(&word(4)); // LONG
+            bytes.extend_from_slice(&word(value_type));
             bytes.extend_from_slice(&dword(1)); // count
-            bytes.extend_from_slice(&dword(value));
+            if value_type == 3 {
+                // SHORT is left-aligned in the 4-byte inline value field.
+                bytes.extend_from_slice(&word(value as u16));
+                bytes.extend_from_slice(&[0, 0]);
+            } else {
+                bytes.extend_from_slice(&dword(value));
+            }
         }
         bytes
+    }
+
+    fn tiff_header(little: bool, width: u32, height: u32) -> Vec<u8> {
+        tiff_header_with_type(little, 4, width, height)
     }
 
     #[test]
@@ -1108,7 +1134,7 @@ mod image_tests {
 
         // JPEG SOF0: width/height are big-endian u16 after the precision byte.
         assert_eq!(
-            declared_dimensions(&jpeg_header(640, 480)),
+            declared_dimensions(&jpeg_header(0xc0, 640, 480)),
             Some(ImageDimensions {
                 width: 640,
                 height: 480
@@ -1117,15 +1143,7 @@ mod image_tests {
 
         // BMP both DIB header variants.
         for (dib_size, header) in [
-            (40u32, {
-                let mut bmp = b"BM".to_vec();
-                bmp.extend_from_slice(&[0u8; 8]);
-                bmp.extend_from_slice(&0u32.to_le_bytes());
-                bmp.extend_from_slice(&40u32.to_le_bytes());
-                bmp.extend_from_slice(&640u32.to_le_bytes());
-                bmp.extend_from_slice(&480u32.to_le_bytes());
-                bmp
-            }),
+            (40u32, bmp_info_header(640, 480)),
             (12u32, {
                 let mut bmp = b"BM".to_vec();
                 bmp.extend_from_slice(&[0u8; 8]);
@@ -1182,10 +1200,85 @@ mod image_tests {
     }
 
     #[test]
+    fn declared_dimensions_reads_top_down_bmp_negative_height() {
+        // A top-down DIB stores height as a negative i32. A regression from
+        // `unsigned_abs()` to `as u32` turns -480 into 4294966816, which would
+        // both report a bogus size and trip the pixel guard on a normal image.
+        assert_eq!(
+            declared_dimensions(&bmp_info_header(640, -480)),
+            Some(ImageDimensions {
+                width: 640,
+                height: 480
+            })
+        );
+        // The negative magnitude must stay inside the shared pixel budget:
+        // this is the exact file `read_image_preview` would accept.
+        assert!(!pixels_exceed_limit(640, 480));
+    }
+
+    #[test]
+    fn declared_dimensions_reads_every_jpeg_sof_marker() {
+        // Every SOF frame variant carries the same big-endian H/W fields.
+        // The old helper only emitted SOF0, leaving progressive (0xc2) and
+        // lossless (0xc3/0xc5/...) JPEGs untested.
+        for marker in [
+            0xc0u8, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+        ] {
+            assert_eq!(
+                declared_dimensions(&jpeg_header(marker, 640, 480)),
+                Some(ImageDimensions {
+                    width: 640,
+                    height: 480
+                }),
+                "SOF marker 0x{marker:02x} must be read"
+            );
+        }
+        // DHT / JPG / DAC share the SOF marker range but are not frames, so
+        // they must not be mistaken for a dimension-carrying segment.
+        for marker in [0xc4u8, 0xc8, 0xcc] {
+            assert_eq!(
+                declared_dimensions(&jpeg_header(marker, 640, 480)),
+                None,
+                "0x{marker:02x} is not a SOF marker"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_dimensions_reads_tiff_short_and_long_tag_types() {
+        for little in [true, false] {
+            // Type 3 (SHORT): the value is left-aligned in the 4-byte field.
+            assert_eq!(
+                declared_dimensions(&tiff_header_with_type(little, 3, 640, 480)),
+                Some(ImageDimensions {
+                    width: 640,
+                    height: 480
+                }),
+                "SHORT TIFF (little={little})"
+            );
+            // Type 4 (LONG) stays the reference case.
+            assert_eq!(
+                declared_dimensions(&tiff_header_with_type(little, 4, 640, 480)),
+                Some(ImageDimensions {
+                    width: 640,
+                    height: 480
+                }),
+                "LONG TIFF (little={little})"
+            );
+            // An unsupported type has no inline width/height to read.
+            assert_eq!(
+                declared_dimensions(&tiff_header_with_type(little, 5, 640, 480)),
+                None,
+                "RATIONAL TIFF (little={little}) must be refused"
+            );
+        }
+    }
+
+    #[test]
     fn declared_dimensions_refuse_truncated_and_lying_headers() {
         assert_eq!(declared_dimensions(&PNG_HEADER), None);
         assert_eq!(declared_dimensions(b"GIF89a\x80\x02"), None);
-        assert_eq!(declared_dimensions(&jpeg_header(1, 1)[..10]), None);
+        assert_eq!(declared_dimensions(&jpeg_header(0xc0, 1, 1)[..10]), None);
         // A RIFF container that is not WebP must not be parsed as one.
         let mut wave = b"RIFF".to_vec();
         wave.extend_from_slice(&4u32.to_le_bytes());
@@ -1226,7 +1319,7 @@ mod image_tests {
             ("png.png", png),
             ("gif.gif", gif),
             ("webp.webp", webp),
-            ("jpeg.jpg", jpeg_header(30_000, 30_000)),
+            ("jpeg.jpg", jpeg_header(0xc0, 30_000, 30_000)),
             ("bmp.bmp", bmp),
             ("tiff.tiff", tiff_header(true, 100_000, 100_000)),
             ("pnm.pnm", b"P6\n100000 100000\n255\n".to_vec()),

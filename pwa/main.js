@@ -43,6 +43,9 @@ const state = {
   wasmReady: false,
   entries: [],
   debounce: 0,
+  // 検索リクエストの単調カウンタ。連続入力 / clearSearch / スワイプバックの
+  // 後に古い await 完了が新しい結果を上書きしないための識別子（BD05）。
+  searchGeneration: 0,
   rootName: '.',
   // 現在描画中の一覧と選択状態（タップ / 長押し / スワイプ / キーボードで共有）。
   // 選択は object 参照ではなく path で保持する。再描画 / 検索 / 再ソートで
@@ -120,6 +123,21 @@ function emptyStateText(query, mode) {
 // 「検索をクリア」ボタンは検索0件のときだけ出し、一覧そのものが空のときは出さない。
 function shouldShowClearSearch(mode) {
   return mode === 'search';
+}
+
+// --- 非同期検索の世代ガード（BD05） ----------------------------------------
+// デバウンス解除だけでは await 中のリクエストを止められないため、リクエスト
+// 開始ごとに世代を進め、完了時に自分がまだ現役かを照合する。双方 pure なので
+// node --test から「古い結果が描画されない」手順を固定できる。
+
+function nextSearchGeneration(current) {
+  return (Number.isSafeInteger(current) && current >= 0 ? current : 0) + 1;
+}
+
+function isCurrentSearchRequest(current, captured) {
+  return Number.isSafeInteger(current)
+    && Number.isSafeInteger(captured)
+    && current === captured;
 }
 
 // --- 複数選択の pure helper ------------------------------------------------
@@ -707,6 +725,15 @@ function onListContextMenu(event) {
   if (entry) showEntryMeta(entry);
 }
 
+// 長押しは touchstart 時点の行 index を捕捉していたが、500ms の間に検索完了で
+// 再描画されると別行をトグルしてしまう（BD12）。path で現在の一覧を再解決し、
+// 見つからなければ（-1）発火自体をスキップする。入力は変更しない pure helper。
+function longPressTargetIndex(entries, path) {
+  if (typeof path !== 'string' || path.length === 0) return -1;
+  const list = Array.isArray(entries) ? entries : [];
+  return list.findIndex((entry) => Boolean(entry) && entry.path === path);
+}
+
 function clearLongPress() {
   if (state.touch && state.touch.timer) {
     window.clearTimeout(state.touch.timer);
@@ -726,11 +753,15 @@ function onListTouchStart(event) {
   const touch = event.touches[0];
   const { li, entry } = entryFromEvent(event);
   const index = li ? Number(li.dataset.index) : -1;
+  // 長押しの対象は数値 index ではなく path で捕捉する（BD12）。500ms の間に
+  // 検索完了で一覧が描き直されても、発火時に同じ行を探し直せるようにする。
+  const path = entry ? entry.path : null;
   state.touch = {
     startX: touch.clientX,
     startY: touch.clientY,
     index,
     entry,
+    path,
     moved: false,
     // 画面左端から始まるジェスチャは OS の戻る操作へ譲る。
     swipeEnabled: touch.clientX > SWIPE_EDGE_GUARD,
@@ -741,9 +772,13 @@ function onListTouchStart(event) {
     // 詳細表示はキーボードの Space / i とマウスの右クリックに退避する。
     state.touch.timer = window.setTimeout(() => {
       state.touch = null;
+      // 現在の一覧から path の位置を再解決する。旧 index のままトグルすると
+      // 再描画後に別行を選択してしまうため、見つからなければ何もしない。
+      const targetIndex = longPressTargetIndex(state.renderedEntries, path);
+      if (targetIndex < 0) return;
       state.rangeArmed = false;
       enterSelectMode();
-      toggleAt(index);
+      toggleAt(targetIndex);
       // 長押し直後に発火する click で二重トグルされないようにする。
       state.suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
     }, LONG_PRESS_MS);
@@ -789,6 +824,9 @@ function onListTouchCancel() {
 // スワイプバックと空状態の「検索をクリア」ボタンから共通で呼ぶ。
 async function clearSearch() {
   window.clearTimeout(state.debounce);
+  // デバウンス解除に加え、既に await 中の検索も無効化する（BD05）。
+  // runSearch('') → refreshList() でも世代が進むが、単調なので重複は無害。
+  state.searchGeneration = nextSearchGeneration(state.searchGeneration);
   els.search.value = '';
   state.selectedPaths = selectionClear();
   state.anchorPath = null;
@@ -918,6 +956,9 @@ function fillDemoIfEmpty() {
 }
 
 async function refreshList() {
+  // 開始ごとに世代を進めて捕捉する。await 完了時に現役でなければ、結果も
+  // エラーも一切反映しない（BD05）。
+  const generation = state.searchGeneration = nextSearchGeneration(state.searchGeneration);
   if (state.wasmReady && state.viewer) {
     try {
       let raw;
@@ -926,6 +967,7 @@ async function refreshList() {
       } else {
         raw = await callCore(state.viewer, 'list_entries', [state.rootName]);
       }
+      if (!isCurrentSearchRequest(state.searchGeneration, generation)) return;
       const decoded = decodeCorePayload(raw);
       if (!decoded.ok) throw new Error(decoded.error);
       state.entries = normalizeEntries(decoded.data);
@@ -933,18 +975,22 @@ async function refreshList() {
       setStatus(`core API 経由で ${state.entries.length} 件を表示`);
       return;
     } catch (error) {
+      if (!isCurrentSearchRequest(state.searchGeneration, generation)) return;
       // wasm 上の std::fs は実ファイルを読めない。エラーを隠さず表示したうえで
       // scaffold の確認用に読み取り専用デモへ退避する（受け入れ基準を満たさない）。
       setStatus(`core API の一覧取得に失敗: ${errorMessage(error)}`, 'error');
       fillDemoIfEmpty();
     }
   }
+  if (!isCurrentSearchRequest(state.searchGeneration, generation)) return;
   render(state.entries, { heading: '一覧（読み取り専用デモ）', mode: 'list' });
 }
 
 async function runSearch(query) {
+  const generation = state.searchGeneration = nextSearchGeneration(state.searchGeneration);
   const q = query.trim();
   if (!q) {
+    // 空クエリは一覧取得へ委譲する（refreshList 側でも世代を進める）。
     await refreshList();
     return;
   }
@@ -957,6 +1003,7 @@ async function runSearch(query) {
       } else {
         raw = await callCore(state.viewer, 'search', [q, state.rootName]);
       }
+      if (!isCurrentSearchRequest(state.searchGeneration, generation)) return;
       const decoded = decodeCorePayload(raw);
       if (!decoded.ok) throw new Error(decoded.error);
       const results = normalizeEntries(decoded.data);
@@ -964,11 +1011,13 @@ async function runSearch(query) {
       setStatus(`core API の検索で ${results.length} 件`);
       return;
     } catch (error) {
+      if (!isCurrentSearchRequest(state.searchGeneration, generation)) return;
       setStatus(`core API の検索に失敗: ${errorMessage(error)}`, 'error');
       fillDemoIfEmpty();
     }
   }
 
+  if (!isCurrentSearchRequest(state.searchGeneration, generation)) return;
   const filtered = state.entries.filter((entry) =>
     entry.name.toLowerCase().includes(q.toLowerCase()),
   );
@@ -1017,6 +1066,9 @@ function useDemo(message) {
 async function boot() {
   els.search.addEventListener('input', () => {
     window.clearTimeout(state.debounce);
+    // 新しい入力の時点で実行中リクエストを無効化する。デバウンス解除だけだと
+    // 150ms の待ちの間に古い結果が描画されてしまう（BD05）。
+    state.searchGeneration = nextSearchGeneration(state.searchGeneration);
     state.debounce = window.setTimeout(() => runSearch(els.search.value), SEARCH_DEBOUNCE_MS);
   });
 
@@ -1086,6 +1138,10 @@ if (hasDom) boot();
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     isClickSuppressed,
+    // 非同期検索の世代ガード / 長押し対象の再解決（BD05 / BD12）。
+    nextSearchGeneration,
+    isCurrentSearchRequest,
+    longPressTargetIndex,
     canPickDirectory,
     emptyStateText,
     shouldShowClearSearch,

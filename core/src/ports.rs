@@ -144,9 +144,106 @@ pub trait OpenRevealPrompt {
     fn open_with_system(&self, path: &Path) -> Result<(), PortError>;
 }
 
+/// 1 回の uri-list 読み取りで受け付けるファイル URI の上限。
+pub const MAX_CLIPBOARD_FILE_URIS: usize = 256;
+
+/// `text/uri-list` の各行を検証し、絶対ファイルパスへデコードする。
+///
+/// std のみの純粋関数。`file` scheme（大文字小文字不問、authority は空または
+/// `localhost`）だけを受け付け、パーセントエスケープをデコードし、絶対パス
+/// 以外・不正エスケープ・NUL・改行を含む行を捨てる。呼び出し順を保ち、
+/// [`MAX_CLIPBOARD_FILE_URIS`] 件を超えた行は無視する。
+pub fn parse_file_uri_list(uris: &[String]) -> Vec<PathBuf> {
+    let mut paths = Vec::with_capacity(uris.len().min(MAX_CLIPBOARD_FILE_URIS));
+    for uri in uris {
+        if paths.len() >= MAX_CLIPBOARD_FILE_URIS {
+            break;
+        }
+        if let Some(path) = parse_file_uri(uri) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// 1 行の `file://` URI を検証してパスに変換する（不正なら `None`）。
+fn parse_file_uri(uri: &str) -> Option<PathBuf> {
+    let line = uri.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let rest = line
+        .get(..7)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("file://"))
+        .map(|_| &line[7..])?;
+    let (authority, raw_path) = rest.split_once('/').unwrap_or((rest, ""));
+    if !(authority.is_empty() || authority.eq_ignore_ascii_case("localhost")) {
+        return None;
+    }
+    if raw_path.is_empty() {
+        return None;
+    }
+    // `split_once('/')` が落とした先頭の '/' を戻し、絶対パスだけを通す。
+    let encoded = format!("/{raw_path}");
+    let bytes = percent_decode(encoded.as_bytes())?;
+    if bytes.is_empty() || bytes.contains(&0) {
+        return None;
+    }
+    let path = PathBuf::from(decoded_path_bytes(bytes)?);
+    path.is_absolute().then_some(path)
+}
+
+/// パーセントエスケープをバイト列へデコードする（不正な列は拒否）。
+fn percent_decode(input: &[u8]) -> Option<Vec<u8>> {
+    let mut decoded = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        match input[index] {
+            b'%' => {
+                let high = *input.get(index + 1)?;
+                let low = *input.get(index + 2)?;
+                decoded.push((hex_value(high)? << 4) | hex_value(low)?);
+                index += 3;
+            }
+            b'\r' | b'\n' => return None,
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    Some(decoded)
+}
+
+/// 16 進数 1 文字を対応する値へ変換する。
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[cfg(unix)]
+fn decoded_path_bytes(bytes: Vec<u8>) -> Option<OsString> {
+    use std::os::unix::ffi::OsStringExt;
+    Some(OsString::from_vec(bytes))
+}
+
+#[cfg(not(unix))]
+fn decoded_path_bytes(bytes: Vec<u8>) -> Option<OsString> {
+    String::from_utf8(bytes).ok().map(OsString::from)
+}
+
 /// OS クリップボードのファイル一覧（uri-list）。
+///
+/// 実装は [`parse_file_uri_list`] と同じ検証を適用し、**検証済みファイル URI
+/// のみ**を返す契約とする（`file` scheme・絶対パス・
+/// [`MAX_CLIPBOARD_FILE_URIS`] 件まで）。生の uri-list や他 scheme の行を
+/// そのまま返してはならない。
 pub trait Clipboard {
-    /// uri-list を読み取る。
+    /// 検証済みファイル URI を読み取る（最大 [`MAX_CLIPBOARD_FILE_URIS`] 件）。
     fn read_uri_list(&self) -> Result<Vec<String>, PortError>;
     /// uri-list を書き込む。
     fn write_uri_list(&self, uris: &[String]) -> Result<(), PortError>;
@@ -234,5 +331,60 @@ mod tests {
         // A non-OS io::Error has no errno to expose.
         let text_only = PortError::io("read failed", io::Error::other("boom"));
         assert_eq!(text_only.raw_os_error(), None);
+    }
+
+    #[test]
+    fn parse_file_uri_list_accepts_only_valid_absolute_file_uris() {
+        let uris: Vec<String> = [
+            "file:///tmp/a.txt",
+            "FILE://localhost/tmp/b%20c.txt",
+            "file:///tmp/%E3%81%82.txt",
+            "http://example.com/tmp/a.txt",
+            "file://remote-host/tmp/a.txt",
+            "file:///tmp/%ZZ.txt",
+            "file:///tmp/%00.txt",
+            "file:///tmp/a\r\nfile:///tmp/b.txt",
+            "/tmp/a.txt",
+            "file://localhost/",
+            "",
+            "# comment",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        let parsed = parse_file_uri_list(&uris);
+        assert_eq!(
+            parsed,
+            vec![
+                PathBuf::from("/tmp/a.txt"),
+                PathBuf::from("/tmp/b c.txt"),
+                PathBuf::from("/tmp/あ.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_file_uri_list_caps_the_number_of_entries() {
+        let uris: Vec<String> = (0..MAX_CLIPBOARD_FILE_URIS + 16)
+            .map(|index| format!("file:///tmp/{index}"))
+            .collect();
+        let parsed = parse_file_uri_list(&uris);
+        assert_eq!(parsed.len(), MAX_CLIPBOARD_FILE_URIS);
+        assert_eq!(parsed[0], PathBuf::from("/tmp/0"));
+        assert_eq!(
+            parsed[MAX_CLIPBOARD_FILE_URIS - 1],
+            PathBuf::from(format!("/tmp/{}", MAX_CLIPBOARD_FILE_URIS - 1))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_file_uri_list_preserves_non_utf8_percent_encoded_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let uris = vec![String::from("file:///tmp/%FF.bin")];
+        let parsed = parse_file_uri_list(&uris);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].as_os_str().as_bytes(), b"/tmp/\xFF.bin");
     }
 }

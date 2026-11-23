@@ -4,6 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   isClickSuppressed,
+  nextSearchGeneration,
+  isCurrentSearchRequest,
+  longPressTargetIndex,
   canPickDirectory,
   emptyStateText,
   shouldShowClearSearch,
@@ -52,6 +55,107 @@ test('isClickSuppressed is safe at integer-number boundaries', () => {
   assert.equal(isClickSuppressed(max, max), false);
   assert.equal(isClickSuppressed(max + 1, max), false, 'past the largest safe deadline');
   assert.equal(isClickSuppressed(0, Number.MAX_VALUE), true);
+});
+
+// --- 非同期検索の世代ガード（BD05） ----------------------------------------
+
+test('search generations advance monotonically and only the latest request is current', () => {
+  let generation = 0;
+  const first = generation = nextSearchGeneration(generation);
+  const second = generation = nextSearchGeneration(generation);
+  assert.equal(first, 1);
+  assert.equal(second, 2);
+  assert.ok(second > first, 'a new request must invalidate the previous one');
+  assert.equal(isCurrentSearchRequest(generation, first), false, 'older request is stale');
+  assert.equal(isCurrentSearchRequest(generation, second), true, 'newest request is current');
+});
+
+test('isCurrentSearchRequest rejects malformed identifiers', () => {
+  assert.equal(isCurrentSearchRequest(undefined, undefined), false);
+  assert.equal(isCurrentSearchRequest(null, 1), false);
+  assert.equal(isCurrentSearchRequest(1, null), false);
+  assert.equal(isCurrentSearchRequest(1.5, 1.5), false, 'only safe integers count');
+  assert.equal(isCurrentSearchRequest(3, 2), false, 'a later generation wins');
+});
+
+test('古い検索結果が描画されない（BD05 回帰）', () => {
+  let generation = 0;
+  const rendered = [];
+  // main.js の runSearch / refreshList と同じ判定を pure helper へ委譲する。
+  function complete(captured, label) {
+    if (!isCurrentSearchRequest(generation, captured)) return;
+    rendered.push(label);
+  }
+
+  // 1 回目の検索が await 中に、連続入力で 2 回目の検索が始まる。
+  const first = generation = nextSearchGeneration(generation);
+  const second = generation = nextSearchGeneration(generation);
+  complete(first, '最初の検索');
+  assert.deepEqual(rendered, [], '古い await 完了は一覧を書き換えない');
+  complete(second, '2 回目の検索');
+  assert.deepEqual(rendered, ['2 回目の検索'], '最新の結果だけが描画される');
+});
+
+test('clear 後に古い検索結果が復活しない（BD05 回帰）', () => {
+  let generation = 0;
+  const rendered = [];
+  function complete(captured, label) {
+    if (!isCurrentSearchRequest(generation, captured)) return;
+    rendered.push(label);
+  }
+
+  // 検索 await 中 → clearSearch() → runSearch('') → refreshList() の順に世代が進む。
+  const search = generation = nextSearchGeneration(generation);
+  const cleared = generation = nextSearchGeneration(generation);
+  const emptyQuery = generation = nextSearchGeneration(generation);
+  const list = generation = nextSearchGeneration(generation);
+
+  complete(search, '古い検索結果');
+  complete(cleared, 'クリア操作');
+  complete(emptyQuery, '空クエリの検索');
+  assert.deepEqual(rendered, [], 'クリア後に古い検索結果が復活しない');
+  complete(list, '一覧');
+  assert.deepEqual(rendered, ['一覧'], 'クリア後の一覧だけが残る');
+});
+
+test('新しい入力はデバウンス待ちの間も実行中リクエストを無効化する（BD05）', () => {
+  let generation = 0;
+  const inFlight = generation = nextSearchGeneration(generation);
+  // input ハンドラは clearTimeout と同時に世代を進める（150ms 待つ前に無効化）。
+  generation = nextSearchGeneration(generation);
+  assert.equal(isCurrentSearchRequest(generation, inFlight), false,
+    'デバウンスが発火する前に古い結果を破棄する');
+});
+
+// --- 長押し対象の path 再解決（BD12） --------------------------------------
+
+test('longPressTargetIndex follows the touched path when the indices shift', () => {
+  const before = [{ path: '/a' }, { path: '/b' }, { path: '/c' }];
+  const oldIndex = 1;
+  const path = before[oldIndex].path;
+  assert.equal(longPressTargetIndex(before, path), oldIndex);
+
+  // 500ms の間に検索が完了し、先頭に 1 行追加された想定。
+  const after = [{ path: '/new' }, { path: '/a' }, { path: '/b' }, { path: '/c' }];
+  assert.equal(after[oldIndex].path, '/a', '旧 index は別行を指す');
+  const target = longPressTargetIndex(after, path);
+  assert.equal(target, 2, 'path は新しい index へ再解決される');
+  assert.equal(after[target].path, path, '旧 index ではなく path の行が選ばれる');
+  assert.notEqual(after[oldIndex].path, path);
+});
+
+test('longPressTargetIndex skips a vanished row and stays pure', () => {
+  const entries = [{ path: '/a' }, { path: '/b' }];
+  assert.equal(longPressTargetIndex(entries, '/gone'), -1, '消えた行はスキップ');
+  assert.equal(longPressTargetIndex([], '/a'), -1);
+  assert.equal(longPressTargetIndex(null, '/a'), -1);
+  assert.equal(longPressTargetIndex(undefined, '/a'), -1);
+  assert.equal(longPressTargetIndex('not-an-array', '/a'), -1);
+  assert.equal(longPressTargetIndex(entries, null), -1);
+  assert.equal(longPressTargetIndex(entries, ''), -1);
+  const snapshot = JSON.parse(JSON.stringify(entries));
+  longPressTargetIndex(entries, '/a');
+  assert.deepEqual(entries, snapshot, '入力配列は変更しない');
 });
 
 test('canPickDirectory needs both core API and File System Access', () => {

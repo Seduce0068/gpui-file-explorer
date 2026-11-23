@@ -71,10 +71,11 @@ sudo apt install libxkbcommon-x11-dev
 sudo を使わない場合は同梱スクリプトで回避できます（システムは変更しません）:
 
 ```bash
-bash scripts/dev-setup.sh   # app/native-libs/libxkbcommon-x11.so を作成
+bash scripts/dev-setup.sh   # app/ と poc/ の native-libs/ に symlink を作成
 ```
 
-- スクリプトは `libxkbcommon-x11.so.0` を探して `app/native-libs/` に symlink します。
+- スクリプトは `libxkbcommon-x11.so.0` を探して `app/` と `poc/` の
+  `native-libs/` に symlink します。
   pkg-config で開発用ファイルが見つかるホストでは、逆に symlink を削除します。
 - `app/build.rs` が `native-libs/` を **絶対パスで** リンカ検索パスに追加します
   （CWD に依存しないため、どのディレクトリから `cargo build` しても動作します）。

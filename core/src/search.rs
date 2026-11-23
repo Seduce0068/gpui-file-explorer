@@ -444,8 +444,15 @@ fn first_matching_line_in_file_checked(
     // The read range is bounded by `max_bytes` (the caller's max_file_size),
     // so materializing it is cheap and lets us split on \r as well as \n.
     let mut bytes = Vec::new();
-    file.take(max_bytes).read_to_end(&mut bytes)?;
-    let cut_at_limit = bytes.len() as u64 == max_bytes;
+    // BD07: read one extra byte so a file whose exact size equals max_bytes is
+    // not mistaken for a truncated read. Only an actual overrun permits lossy
+    // decoding of the final segment.
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let cut_at_limit = bytes.len() as u64 > max_bytes;
+    if cut_at_limit {
+        bytes.truncate(max_bytes as usize);
+    }
     if bytes.contains(&0) {
         return Ok(None); // binary file
     }
@@ -1340,6 +1347,75 @@ mod content_tests {
             .map(|result| result.entry.name_text.clone())
             .collect();
         assert_eq!(names, vec!["clean.txt"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exact_max_bytes_size_is_not_a_truncated_read() {
+        use super::first_matching_line_in_file;
+
+        let dir = scratch("exact-max-bytes");
+        let file = dir.join("exact.txt");
+        // Exactly max_bytes (8) with an invalid byte in the final line. A
+        // naive `bytes.len() == max_bytes` truncation check would allow lossy
+        // decoding and report a false match; an exact-size file is complete.
+        write(&file, b"TARGET\xff\xff");
+        assert_eq!(file.metadata().unwrap().len(), 8);
+
+        let live = AtomicBool::new(false);
+        assert_eq!(
+            first_matching_line_in_file(&file, "target", 8, &live).unwrap(),
+            None,
+            "an exact-size file with invalid UTF-8 must not match"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_utf8_line_discards_an_earlier_match_and_is_counted() {
+        use super::first_matching_line_in_file;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let dir = scratch("invalid-utf8-discard");
+        // A genuine match on line 1 must NOT survive a non-UTF-8 byte on line 2:
+        // the whole file is undecodable, so reporting line 1 would search it
+        // only partially. The old fixture put TARGET *on* the invalid line and
+        // therefore pinned neither the discard nor the caller's counter.
+        let invalid = dir.join("invalid.txt");
+        write(&invalid, b"TARGET valid first line\nplain \xff\xfe\n");
+        // Control: a clean file still matches and must not inflate the counter.
+        let clean = dir.join("clean.txt");
+        write(&clean, b"TARGET clean\n");
+
+        let live = AtomicBool::new(false);
+        assert_eq!(
+            first_matching_line_in_file(&invalid, "target", 1024, &live).unwrap(),
+            None,
+            "an invalid UTF-8 line must discard the preceding valid match"
+        );
+        assert_eq!(
+            first_matching_line_in_file(&clean, "target", 1024, &live).unwrap(),
+            Some(1),
+            "clean control line must still match"
+        );
+
+        let non_utf8 = Arc::new(AtomicUsize::new(0));
+        let options = ContentSearchOptions {
+            non_utf8_files: Arc::clone(&non_utf8),
+            ..ContentSearchOptions::default()
+        };
+        let found = search_contents(&dir, "target", options, &AtomicBool::new(false));
+        let names: Vec<_> = found
+            .iter()
+            .map(|result| result.entry.name_text.clone())
+            .collect();
+        assert_eq!(names, vec!["clean.txt"]);
+        assert_eq!(
+            non_utf8.load(Ordering::SeqCst),
+            1,
+            "exactly one file must be counted as not valid UTF-8"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

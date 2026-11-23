@@ -19,7 +19,7 @@ status: draft
 
 ## 目的と範囲
 
-承認済みモバイルADR（`docs/adr/adr-20261122-mobile-android-ios-support.md:191-195`）の
+承認済みモバイルADR（`docs/adr/adr-20261122-mobile-android-ios-support.md の「Phase 1: モバイルアーキテクチャspike」節`）の
 Phase 1 合格条件のうち **(1) 抽出境界定義** を本設計で満たす。対象は設計のみであり、
 `Cargo.toml` / ソースの直接変更は行わない。R1 の実読事実（親エージェント確認済み）を前提に、
 第1スコープ・逆参照の解消・ポート定義・段階移行を具体的に定める。
@@ -315,7 +315,7 @@ use core::{model, ops, search, strings};
 ## 参照
 
 - `docs/adr/adr-20261122-mobile-android-ios-support.md`
-  （承認済み、Phase 1 条件 :213-218）
+  （承認済み、Phase 1 条件は同 ADR の「Phase 1: モバイルアーキテクチャspike」節）
 - [wasm 調査ノート](../../notes/wasm-browser-notes.md)（:51-91、gpui-kit wasm 制約）
 - `AGENTS.md`（クロスプラットフォーム対応方針、2026-11-23）
 - `app/src/model.rs`, `app/src/ops.rs`, `app/src/search.rs`, `app/src/error.rs`

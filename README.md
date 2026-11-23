@@ -49,7 +49,8 @@ fmt / clippy は同ワークフローが `rustfmt` / `clippy` コンポーネン
 `Cargo.lock` はリポジトリ直下・`app/`・`poc/` の 3 箇所に存在しますが、
 virtual workspace で実際に解決に使われるのは**ルートの `Cargo.lock` のみ**です。
 `app/Cargo.lock` と `poc/Cargo.lock` は workspace 化前の残骸で**未使用**
-（方針により削除せず、ビルドや `scripts/check.sh` からも参照していません）。
+（方針により削除せず、ビルド入力には使いません。`build-deb.sh` の
+`--skip-build` 時は古い残骸が更新されていないか警告のみ行います）。
 
 ## キーマップの上書き
 
@@ -286,7 +287,8 @@ fmt → check → test → clippy → `cargo audit` を実行する。リポジ�
 
 ### ローカル検証ループ
 
-CI と同じ範囲を手元で回すスクリプトを用意しています。既定では release 検証も
+CI と同じ範囲を手元で回すスクリプトを用意しています（差分: ローカルは poc/ にも cargo audit を実行）。
+既定では release 検証も
 実行します。
 
 ```bash

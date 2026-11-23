@@ -1075,8 +1075,9 @@ app/
   （`app/supply-chain/config.toml` 存在時のみ）を **`app/` のみ**に実行し、
   `gates` ジョブが `cargo audit` を実行する。ローカルの `scripts/check.sh`
   （`--no-release` / `--strict` 対応）は両プロジェクトで `cargo vet` の
-  store 有無を試行するが、CI のゲートは `app/` のみである
-  （[`README.md`](README.md)「CI の検証範囲」）。
+  store 有無を試行し、`cargo audit` も `app/` と `poc/` の両方へ実行する。
+  一方 CI のゲートは `app/` のみ（`supply-chain` ジョブは audit を再実行しない）。
+  この差分は [`README.md`](README.md)「CI の検証範囲」に記載する。
 
 ---
 

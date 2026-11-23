@@ -3659,6 +3659,77 @@ mod tests {
         );
     }
 
+    /// Render a concrete JSON path in the dotted form used by `NESTED_SITES`.
+    /// Array indices are collapsed to `[]` so a seeded `windows[0].bounds`
+    /// matches the registry path `windows[].bounds.`.
+    fn nested_object_path(segments: &[String]) -> String {
+        let mut path = String::new();
+        for segment in segments {
+            path.push_str(segment);
+            path.push('.');
+        }
+        path
+    }
+
+    /// Recursively enumerate every object node, including objects inside
+    /// arrays. The root is skipped: top-level unknown keys are preserved by
+    /// `extra_fields` and are deliberately not nested sites (AV21).
+    fn nested_object_paths(
+        value: &serde_json::Value,
+        segments: &mut Vec<String>,
+        paths: &mut Vec<String>,
+    ) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if !segments.is_empty() {
+                    paths.push(nested_object_path(segments));
+                }
+                for (key, child) in map {
+                    segments.push(key.clone());
+                    nested_object_paths(child, segments, paths);
+                    segments.pop();
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for child in values {
+                    segments.push("[]".to_string());
+                    nested_object_paths(child, segments, paths);
+                    segments.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn nested_sites_register_every_object_in_the_shipped_defaults() {
+        // BC06: derive the expected sites from the *settings shape*, not from
+        // NESTED_SITES itself. The registry-driven test above can only verify
+        // sites that are already registered; a newly added nested struct would
+        // silently lose its read-only guard. serde_json alone is enough to
+        // walk the persisted shape — no reflection or custom derive needed.
+        let default = persisted_default_json();
+        let mut paths = Vec::new();
+        nested_object_paths(&default, &mut Vec::new(), &mut paths);
+        assert!(
+            !paths.is_empty(),
+            "shipped defaults must contain nested objects: {default}"
+        );
+
+        // `column_prefs.widths` is a dynamic column-key -> width map: its keys
+        // are enum sites (`column_prefs.widths.<key>`), not nested struct keys.
+        // It is the one object intentionally not registered as a NestedSite.
+        const DYNAMIC_MAPS: &[&str] = &["column_prefs.widths."];
+
+        for path in paths {
+            assert!(
+                NESTED_SITES.iter().any(|site| site.path == path)
+                    || DYNAMIC_MAPS.contains(&path.as_str()),
+                "nested object {path} in the shipped defaults has no NESTED_SITES entry"
+            );
+        }
+    }
+
     #[test]
     fn detect_unknown_nested_keys_registers_every_nested_default_object() {
         let default = persisted_default_json();
