@@ -101,7 +101,8 @@ pub struct SettingsUiPalette {
     pub text: u32,
     /// Row descriptions.
     pub subtext: u32,
-    /// De-emphasized notes.
+    /// De-emphasized notes. AR04: still WCAG AA (4.5:1) on `surface` in both
+    /// themes because the width captions and footer notes use small text.
     pub muted: u32,
     /// Section titles and selection accents (Catppuccin `blue`).
     pub accent: u32,
@@ -119,7 +120,9 @@ impl SettingsUiPalette {
             overlay: 0x45475a,
             text: 0xcdd6f4,
             subtext: 0xa6adc8,
-            muted: 0x6c7086,
+            // Mocha subtext0 (#a6adc8): 5.65:1 on surface (#313244).
+            // The old overlay0 (#6c7086) only reached 2.57:1.
+            muted: 0xa6adc8,
             accent: 0x89b4fa,
             green: 0xa6e3a1,
             red: 0xf38ba8,
@@ -133,7 +136,9 @@ impl SettingsUiPalette {
             overlay: 0xbcc0cc,
             text: 0x4c4f69,
             subtext: 0x5c5f77,
-            muted: 0x6c6f85,
+            // Latte text (#4c4f69): 5.17:1 on surface (#ccd0da).
+            // The old subtext0 (#6c6f85) only reached 3.20:1.
+            muted: 0x4c4f69,
             accent: 0x1e66f5,
             green: 0x40a02b,
             red: 0xd20f39,
@@ -2188,7 +2193,7 @@ mod tests {
         assert_eq!(dark.overlay, 0x45475a);
         assert_eq!(dark.text, 0xcdd6f4);
         assert_eq!(dark.subtext, 0xa6adc8);
-        assert_eq!(dark.muted, 0x6c7086);
+        assert_eq!(dark.muted, 0xa6adc8);
         assert_eq!(dark.accent, 0x89b4fa);
         assert_eq!(dark.green, 0xa6e3a1);
         assert_eq!(dark.red, 0xf38ba8);
@@ -2198,10 +2203,47 @@ mod tests {
         assert_eq!(light.overlay, 0xbcc0cc);
         assert_eq!(light.text, 0x4c4f69);
         assert_eq!(light.subtext, 0x5c5f77);
-        assert_eq!(light.muted, 0x6c6f85);
+        assert_eq!(light.muted, 0x4c4f69);
         assert_eq!(light.accent, 0x1e66f5);
         assert_eq!(light.green, 0x40a02b);
         assert_eq!(light.red, 0xd20f39);
+    }
+
+    /// sRGB 相対輝度（WCAG 2.x の定義）。0xRRGGBB を想定する。
+    fn relative_luminance(color: u32) -> f64 {
+        let channel = |shift: u32| {
+            let value = ((color >> shift) & 0xff) as f64 / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+
+    /// 2 色の WCAG コントラスト比（1.0〜21.0）。
+    fn contrast_ratio(foreground: u32, background: u32) -> f64 {
+        let fg = relative_luminance(foreground);
+        let bg = relative_luminance(background);
+        let (lighter, darker) = if fg > bg { (fg, bg) } else { (bg, fg) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn muted_text_meets_wcag_aa_contrast_on_surface() {
+        // AR04: muted は列幅キャプションやフッターの注記など小さな文字に使う。
+        // 通常文本の WCAG AA 閾値 4.5:1 を両テーマで満たすことを検算する。
+        for palette in [SettingsUiPalette::dark(), SettingsUiPalette::light()] {
+            let ratio = contrast_ratio(palette.muted, palette.surface);
+            assert!(
+                ratio >= 4.5,
+                "muted #{:06x} on surface #{:06x} is {:.2}:1 (< 4.5:1)",
+                palette.muted,
+                palette.surface,
+                ratio
+            );
+        }
     }
 
     #[test]

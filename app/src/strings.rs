@@ -1761,6 +1761,16 @@ pub const STATUS_MISSING_COUNT_SUFFIX: &str = " 件は既に存在しません";
 /// 名前で指定した対象が見つからないときの共通接尾（保存検索の呼び出し／削除）。
 /// 動的な `{name}` が後続するため、接尾自体を色判定のマーカーとして登録する。
 pub const STATUS_NOT_FOUND_SUFFIX: &str = "が見つかりません";
+/// AR15: `gfe_core::error::AppError::message_ja()` / `Display` が返す
+/// 失敗フラグメント。core は色分類を持たないため、app 側で定数として保持し
+/// `STATUS_ERROR_MARKERS` に登録して success green への落下を防ぐ。
+/// 「見つかりません: 」「未対応の操作です: 」は動的なパス／理由が後続するため
+/// 接頭辞自体をマーカーにする。
+pub const STATUS_CORE_NOT_FOUND_PREFIX: &str = "見つかりません: ";
+pub const STATUS_CORE_UNSUPPORTED_PREFIX: &str = "未対応の操作です: ";
+/// io エラー（EIO 等）と未知エラーの理由文言。
+pub const STATUS_CORE_IO_FAILED: &str = "読み取れませんでした";
+pub const STATUS_CORE_UNKNOWN_ERROR: &str = "エラーが発生しました";
 /// Undo / Redo の「対象なし」と失敗。
 /// T09: 操作履歴ダイアログ側は「元に戻せる操作はありません」だったため、
 /// 助詞を「は」に統一する（状態を説明する文として自然な形）。
@@ -2537,6 +2547,11 @@ mod tests {
             STATUS_PATH_COPIED,
             STATUS_MISSING_COUNT_SUFFIX,
             STATUS_NOT_FOUND_SUFFIX,
+            // AR15: core::error 由来の失敗フラグメント。
+            STATUS_CORE_NOT_FOUND_PREFIX,
+            STATUS_CORE_UNSUPPORTED_PREFIX,
+            STATUS_CORE_IO_FAILED,
+            STATUS_CORE_UNKNOWN_ERROR,
             STATUS_UNDO_EMPTY,
             STATUS_UNDO_HISTORY_HINT,
             STATUS_UNDO_EXISTS_SUFFIX,
@@ -2808,6 +2823,25 @@ mod tests {
                 "error",
             ),
             ("STATUS_NOT_FOUND_SUFFIX", STATUS_NOT_FOUND_SUFFIX, "error"),
+            // AR15: core::error::AppError の失敗フラグメントも concrete failure。
+            // これらが未登録だと、prefix を付けずに status へ入った場合に
+            // success green に落ちていた。
+            (
+                "STATUS_CORE_NOT_FOUND_PREFIX",
+                STATUS_CORE_NOT_FOUND_PREFIX,
+                "error",
+            ),
+            (
+                "STATUS_CORE_UNSUPPORTED_PREFIX",
+                STATUS_CORE_UNSUPPORTED_PREFIX,
+                "error",
+            ),
+            ("STATUS_CORE_IO_FAILED", STATUS_CORE_IO_FAILED, "error"),
+            (
+                "STATUS_CORE_UNKNOWN_ERROR",
+                STATUS_CORE_UNKNOWN_ERROR,
+                "error",
+            ),
             // X08: Undo の存在しない対象も concrete failure（接尾辞を共有）。
             (
                 "STATUS_UNDO_MISSING_SUFFIX",
@@ -3064,7 +3098,9 @@ mod tests {
                         // AB07: 監視の一部無効 / 無効（secondary slot 直接描画）。
                         || message.contains("無効")
                         // AJ02: Windows の不正文字は「使えない文字が含まれています」。
-                        || message.contains("使えない"),
+                        || message.contains("使えない")
+                        // AR15: core::error の未知エラー文言「エラーが発生しました」。
+                        || message.contains("エラーが発生しました"),
                     "{name} is not refusal-worded: {message}"
                 );
             }

@@ -75,7 +75,7 @@ R1 で確認済みの事実を、本設計の前提として引用する。
 - Android（Compose アプリ）: `Dispatchers.IO` と `MainIoDispatcher` /
   `Dispatchers.Main`。
 - PWA（iOS / Android 共通 Web）: Web Worker + `postMessage`。
-  ProgressSink は `postMessage` を受けて React state を更新する。
+  進捗は `postMessage` を受けて React state を更新する（trait は未採用）。
 
 ブロッキングport（Trash / Volume / Image）はコアを同期のまま呼び、
 アダプタがバックグラウンド実行系へ退避してから結果をコアへ戻す。
@@ -241,21 +241,14 @@ pub trait WatchSource: Send + Sync {
 Phase 1 のビューアは手動リロードで要件を満たすため、no-op 実装でよい。
 デスクトップは既存の `notify` / `notify-debouncer-full` を維持する。
 
-### ProgressSink
+### ProgressSink（as-built 2026-11-23: 未採用）
 
-`ops.rs` の `FnMut(u64)` + `CancelFlag` を 1 つの trait にまとめる。
-`total_bytes`（`app/src/ops.rs:825`）で事前計算された総量を第 2 引数で渡す。
-
-```rust
-pub trait ProgressSink: Send + Sync {
-    fn report(&self, done: u64, total: u64);
-    fn cancel_flag(&self) -> &crate::ops::CancelFlag;
-}
-```
-
-コア側のアダプタ実装は `FnMut(u64)` をラップして `report(done, total)` へ変換するだけで、
-`ops.rs` のシグネチャ自体は変更しない。スロットル（約 80 ms）は既存の
-`main.rs:6215-6242` に残し、コアへ持ち込まない。
+当初は `ops.rs` の `FnMut(u64)` + `CancelFlag` を trait にまとめる案を
+検討したが、**採用しなかった**。未配線の trait が残ると二重契約になるため、
+`core/src/ports.rs` の `ProgressSink` は削除済み。現行契約は
+`ops::copy_entry` / `move_entry` の `impl FnMut(u64)`（累積バイトのみ）と
+`&CancelFlag` のままで、`total_bytes` は呼び出し側が別途計算する。
+スロットル（約 80 ms）は `main.rs` 側に残し、コアへ持ち込まない。
 
 ## GPUI アダプタの接続先
 
@@ -272,8 +265,8 @@ pub trait ProgressSink: Send + Sync {
    （同 `:3503-3504,4226`）。
 - FileDialogPort: `Explorer::open_path` → `cx.open_with_system(&path)`
    （同 `:4813,4826`）と `cx.reveal_path(&path)`（同 `:8555`）。
-- ProgressSink: `Explorer::begin_op` → `async_channel` → `cx.spawn` →
-   `this.update`（同 `:6200-6240`）。
+- 進捗: `Explorer::begin_op` → `async_channel` → `cx.spawn` →
+   `this.update`（同 `:6200-6240`、trait 未採用）。
 - ImageDecoder: `thumbnail_eligible` →
    `preview::read_image_preview` / `ImageBytes`（同 `:2125`、
    `app/src/preview.rs:79,150`）。
@@ -308,8 +301,8 @@ UniFFI のようなバインディング生成は選択肢として残すが、�
 - 一覧 / 検索: wasm 化したコア API を Web Worker で呼び、結果を React state へ反映する。
 - FileDialogPort: File System Access API の `showDirectoryPicker` を
   ユーザー操作起点で呼ぶ（対応ブラウザに依存）。`reveal` / `open_with` は no-op。
-- ProgressSink: Worker からの `postMessage` を受けて React state を更新する。
-  コアの `cancel_flag` は Worker 側で共有し、UI のキャンセル操作で設定する。
+- 進捗: Worker からの `postMessage` を受けて React state を更新する。
+  キャンセルは Worker 側の `CancelFlag` を UI 操作で設定する。
 - Service Worker: 静的資産とシェルのキャッシュを担う。Phase 1 では最小構成でよい。
 - TrashBackend / ClipboardPort / WatchSource: no-op 実装
   （`app/src/trash_view.rs:78-125` と同じ方針）。監視は手動リロードで代替する。

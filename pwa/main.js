@@ -343,6 +343,24 @@ function onListKeyDown(event) {
     moveSelection(-1);
     return;
   }
+  if (event.key === 'Home') {
+    event.preventDefault();
+    selectIndex(0);
+    return;
+  }
+  if (event.key === 'End') {
+    event.preventDefault();
+    selectIndex(state.renderedEntries.length - 1);
+    return;
+  }
+  // ポインタの長押し / 右クリックと同じ詳細表示（path / size / isDir）を
+  // キーボードからも呼べるようにする。Space はページスクロールを止める。
+  if (event.key === ' ' || event.key === 'Spacebar' || event.key.toLowerCase() === 'i') {
+    event.preventDefault();
+    const { entry } = entryFromEvent(event);
+    showEntryMeta(state.selected ?? entry);
+    return;
+  }
   if (event.key === 'Enter') {
     const { li, entry } = entryFromEvent(event);
     if (li && entry) {

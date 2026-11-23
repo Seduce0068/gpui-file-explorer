@@ -1654,6 +1654,46 @@ status: current
 - [x] **AQ17** gfe-win32 の非 Windows Drop / 空文字 NUL が無テスト — 対応: loop5
 - [x] **AQ18** workspace 化後にメンバ配下の旧 Cargo.lock が残存 — 対応: loop5
 
+## 進行中（ループ6 バックログ）
+
+### 優先度: 高（ループ6・confirmed）
+
+- [x] **AR01** Search フィルタ変更が RESCAN_FAILED を上書き（実バグ） — 対応: loop6
+- [x] **AR02** 公開シグナル port が thread_local（跨线程で信号喪失） — 対応: loop6
+- [x] **AR03** PWA ダークテーマ error 文字が WCAG AA 未満 — 対応: loop6
+- [x] **AR04** 設定UI muted 色が両テーマで 4.5:1 未満 — 対応: loop6
+- [x] **AR05** app/README アーキテクチャ表が core 抽出後も旧構成 — 対応: loop6
+- [x] **AR06** Windows ドライブ列挙が未実装とする as-built 記述が残存 — 対応: loop6
+
+### 優先度: 中（ループ6・confirmed）
+
+- [x] **AR07** AppError::from_io が raw_os_error を失う — 対応: loop6
+- [x] **AR08** AppError::from_io が IsADirectory / EROFS / ENOSPC を誤分類 — 対応: loop6
+- [x] **AR09** wasm 境界エラーが非構造文字列で種別判別不可 — 対応: loop6
+- [x] **AR10** ScopedIcon のハンドルアクセス手段が無い — 対応: loop6
+- [x] **AR11** undocumented_unsafe_blocks ゲートが宣言のみ — 対応: loop6
+- [x] **AR12** Windows ADR が gfe-win32 実装後も未更新 — 対応: loop6
+- [x] **AR13** DESIGN §4.1 が workspace 構成を反映していない — 対応: loop6
+- [x] **AR14** Debian 同梱 NOTICE-app.md が旧スナップショット — 対応: loop6
+- [x] **AR15** core::error 文言が status 色分類表に未登録 — 対応: loop6
+- [x] **AR16** PWA listbox にアクセシブルネームが無い — 対応: loop6
+- [x] **AR17** PWA キーボードでパス詳細を取得できない — 対応: loop6
+- [x] **AR18** cargo test を「全テスト」とする記述が workspace 化後も残存 — 対応: loop6
+
+### 優先度: 低（ループ6・confirmed）
+
+- [x] **AR19** ProgressSink が未配線（ops と二重契約） — 対応: loop6
+- [x] **AR20** PortError::source() に直接テストが無い — 対応: loop6
+- [x] **AR21** NOTICE.md の app/NOTICE.md リンクが deb 内で切れる — 対応: loop6
+- [x] **AR22** PWA リストボックスに Home/End が無い — 対応: loop6
+
+### 既知リスク（ループ6で記録）
+
+- 未知 persisted enum シグナルは `AtomicBool` + thread_local の併用。
+  32 スレッド並列実行時に他テストの note を拾う低頻度レースが残る
+  （12 スレッドでは 12 連続成功、core 169 tests pass）。
+  根本解消には settings ロードのスコープ明示受け渡しが必要。
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

@@ -123,7 +123,7 @@
 | OS ネイティブアイコン | × | × | ◎ | | **as-built**: Breeze 実装済み（§8.3、fs-notes §3） |
 | 画像サムネイル | × | × | ◎ | | **as-built（NW09、基本形）**: §8.3 参照 |
 | 再帰検索（名前/複数ルート） | ○ | ◎ | ◎ | 単一実装 | `std::fs` walker（symlink 非追跡・上限付き）、範囲: 現在/タブ/ブックマーク |
-| ボリューム/空き容量 | × | × | ◎ | | as-built: `/proc/mounts` 解析、空き容量/Win/mac 未対応 |
+| ボリューム/空き容量 | × | × | ◎ | | as-built: Linux は `/proc/mounts` 解析、Windows は `gfe-win32` 経由で実装済み（実機未検証）。空き容量・macOS は未対応 |
 | タブ / 複数ウィンドウ | × | × | △ | ◎ | まず 1 ウィンドウ 1 状態（ADR-002） |
 | OS からの D&D（取り込み） | × | × | △ | ◎ | **as-built**: P1 実装済み（ExternalPaths、§4.1） |
 | アプリ外への D&D | × | × | × | △ | **as-built**: P1 実装済み（ExternalDragPayload、§4.1） |
@@ -343,7 +343,7 @@ main()
 
 ## 4. アーキテクチャ
 
-### 4.1 クレート構成（単一バイナリ crate）
+### 4.1 クレート構成（workspace: core / app / poc / win32）
 
 ```
 app/
@@ -387,6 +387,15 @@ app/
         └── dialogs.rs          # 削除確認ラッパ・エラーダイアログ・名前変更（P1）
 ```
 
+> **as-built 注記（2026-11-23）**: ルート `Cargo.toml` は
+> `[workspace]` の `members = ["core", "app", "poc", "win32"]`
+> （`default-members = ["core", "app"]`）へ移行済み。上図は当初の
+> 単一バイナリ crate（`app/` のみ）を設計した歴史的記録として残す。
+> 現行は `core/`（`gfe_core`）が GPUI 非依存のロジックを保持し、
+> `app/src/{model,ops,search,error}.rs` は re-export／互換シェル、
+> `app/src/ports_gpui.rs` が GPUI 側の ports 実装を提供する。
+> `win32/`（`gfe-win32`）は Windows の FFI を隔離する別クレート。
+
 - **POC の単一 `main.rs`（472 行、テストモジュールは 413 行目から）をそのまま拡張しない**。ロジックのテストと並行安全レビューのため、最初から上記分割で書く（`poc/src/main.rs` は API の実例として参照）。
 - `ui/` は **model/fs に依存するが、その逆は禁止**。`icons.rs` は `model::Entry` を受け取り `IconName` を返す（model 側はアイコン型を知らない）。
 - 設定・アイコン・文字列のモジュールは UI から独立して単体テスト可能にする。
@@ -407,16 +416,16 @@ fe-dev が並行実装中の `app/src/` は、時間優先で次の**フラッ�
 | 実装（現状） | 設計（§4.1/§5） | 評価・扱い |
 |---|---|---|
 | `main.rs` に `Explorer`(root Entity) + UI 描画を集約 | `app.rs` + `ui/*` に分割 | 完全分割は設計判断で実施しない（現状維持）、段階的集約で代替済み（review-report.md H-1） |
-| `model.rs` に Entry/ソート/列挙/整形を集約（GPUI 非依存） | `model/{entry,sort,listing,format}.rs` + `fs/listing.rs` | GPUI 非依存は設計どおり（◎）。分割のみ P1 |
+| `app/src/model.rs` は `gfe_core::model` の re-export（互換シェル）。Entry/ソート/列挙/整形の本体は `core/` クレート | `model/{entry,sort,listing,format}.rs` + `fs/listing.rs` | GPUI 非依存は設計どおり（◎）。分割は `core/` クレートへ抽出済み |
 | `Entry { name: OsString（+ lossy の name_text）, sort_key（構築時事前計算）, path: PathBuf, is_dir, is_symlink, size, modified }` | `Entry { name: OsString, sort_key, kind, size: Option<u64>, is_hidden }` | **移行済み（as-built）**: `name` を `OsString` 化し lossy の `name_text` を追加、`sort_key` を構築時に事前計算。非 UTF-8 名の I/O 保持を Unix テストで検証済み（review-report.md 207-224 行目）。設計列は当初案を維持 |
 | `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択。順序保持 `Vec` + `HashSet` インデックス） | `Selection`（PathBuf キー、複数） | **移行済み（as-built）**: §5.3 の型へ置換し、バッチ操作・O(1) の `contains` を実装。行 index 競合を回避（review-report.md 217-220, 393-394 行目） |
-| `LoadState`（Loading/Ready/Error、generation 保持）+ `FsError` / `FsErrorKind` | `LoadState` / `FsError` | **移行済み（as-built）**: 排他状態へ置換し generation で古い結果を破棄。エラー文言の日本語化も済み（review-report.md 191-196 行目） |
+| `app/src/error.rs` は `gfe_core::error` の re-export（互換シェル）。`LoadState`（Loading/Ready/Error、generation 保持）+ `FsError` / `FsErrorKind` の定義は `core/` クレート | `LoadState` / `FsError` | **移行済み（as-built）**: 排他状態へ置換し generation で古い結果を破棄。エラー文言の日本語化も済み（review-report.md 191-196 行目） |
 | `history.rs` に `NavMode` + `apply` を追加（Push/Back/Forward/Up/Replace の統一 API） | `model/history.rs`（`apply(target, mode)`） | **移行済み（as-built）**: `apply(target, mode)` で統一 API 化。`go_parent` は `Up`、同一パス再読込は `Replace` へ接続（review-report.md 318-322 行目） |
 | `watcher.rs`（`DirWatcher`）が `async-channel` 経由で前景ループへ通知 | `fs/watch.rs` + mpsc/timer pump（ADR-006） | **async-channel 採用は許容**（GPUI の依存に既にあり、`Cargo.toml` に明示追加済み）。前景ループ + 10s tick で設計意図（UI スレッドで I/O しない/バッチ化）は満たす |
 | `chrono` を日時表示に使用 | §8.4 は std で可とした | P0 は許容（表示専用）。依存を増やしたくない場合は P1 で `std::time` に戻す |
 | `icons.rs`（FileKind + IconName） | `icons.rs`（同じ役割） | 一致 |
 | `settings.rs`（atomic save） | `settings.rs` | 一致 |
-| （P1 先行）`ops.rs` に copy/move/rename エンジンを追加（ユニットテストは当初見積もり 11 件、件数は `cargo test` の実行結果を参照）＋ `Ctrl+C/X/V`・右クリックメニュー・F2 リネームダイアログへ接続済み（貼り付けは常に Rename、Esc でキャンセル、リネーム失敗時は原名維持） | `fs/ops.rs`（§6 の安全則） | 上書き禁止・symlink 非追跡・`.partial` 経由の原子的コピー・EXDEV フォールバック・キャンセル・64 KiB 単位のバイト進捗通知を実装。複数選択（`model::Selection`、パスキー）とバッチ操作（コピー/切り取り/ゴミ箱、件数付き確認）、ゴミ箱ビュー（`trash_view.rs`、一覧・復元のみで完全削除なし）、視覚的進捗バー（`ops::total_bytes` の事前計算 + ステータスバー表示）、アイコングリッド表示（`uniform_list` の行チャンク方式、`settings.view` に永続化）、再帰検索（`search.rs`、symlink非追跡・上限付き・キャンセル対応）、ボリューム一覧（`mounts.rs`、Linux /proc/mounts 解析）、タブ（`tabs.rs`、タブごとの cwd/履歴・切替/close/循環）、最近使った場所（`Settings::recent_dirs`、最大10件）、ドラッグ&ドロップ（`ExternalPaths` 受信→Renameコピー、フォルダ行へのドロップ先指定、`ExternalDragPayload` でOSへドラッグアウト）、検索結果の後段フィルタ（`search::filter_results`、種別・拡張子）、内容検索（`search::search_contents`、1MiB上限・バイナリ除外・symlink非読取・行番号）、ブックマーク（`Settings::bookmarks`、Ctrl+D・最大50件）、プロパティ表示（`PropsState`、読み取り専用・`model::permissions_string`）、空状態/ローディング表示（`empty_state_message`）、キーボードヘルプ（`HELP_SECTIONS`、F1）、タブ構成の永続化（`Settings::tabs`/`active_tab`、`Tabs::from_paths`）、ディレクトリサイズ計算（`ops::dir_stats`、symlink非追跡・キャンセル対応）、種類ソートと「種類」列（`SortKey::Kind`、`model::kind_label`）、タブの並べ替え（`Tabs::move_active_left/right`）、検索履歴（`Settings::recent_searches`、最大10件・チップ表示）、パス直接入力（`model::resolve_location_input`、Ctrl+L）、テキスト/画像プレビュー（`preview.rs`、テキスト256KiB上限・画像8MiB上限・バイナリ/symlink拒否・`sniff_image_format` による内容優先判定）、アンドゥ（`undo.rs`、名前変更とゴミ箱のみ・ゴミ箱は ID 指定で復元・最大20件）にも対応。OS ファイルクリップボードは GPUI 側未実装のため保留（`notes/os-file-clipboard-notes.md`）。`#![forbid(unsafe_code)]` を app 本体/build.rs に適用。最終的に `fs/ops.rs` へ移動 |
+| `app/src/ops.rs` は `gfe_core::ops` の re-export（互換シェル）。copy/move/rename エンジンは `core/` クレートへ抽出済み（P1 先行。ユニットテストは当初見積もり 11 件、件数は `cargo test` の実行結果を参照）＋ `Ctrl+C/X/V`・右クリックメニュー・F2 リネームダイアログへ接続済み（貼り付けは常に Rename、Esc でキャンセル、リネーム失敗時は原名維持） | `fs/ops.rs`（§6 の安全則） | 上書き禁止・symlink 非追跡・`.partial` 経由の原子的コピー・EXDEV フォールバック・キャンセル・64 KiB 単位のバイト進捗通知を実装。複数選択（`model::Selection`、パスキー）とバッチ操作（コピー/切り取り/ゴミ箱、件数付き確認）、ゴミ箱ビュー（`trash_view.rs`、一覧・復元のみで完全削除なし）、視覚的進捗バー（`ops::total_bytes` の事前計算 + ステータスバー表示）、アイコングリッド表示（`uniform_list` の行チャンク方式、`settings.view` に永続化）、再帰検索（`gfe_core::search`、symlink非追跡・上限付き・キャンセル対応）、ボリューム一覧（`mounts.rs`、Linux /proc/mounts 解析）、タブ（`tabs.rs`、タブごとの cwd/履歴・切替/close/循環）、最近使った場所（`Settings::recent_dirs`、最大10件）、ドラッグ&ドロップ（`ExternalPaths` 受信→Renameコピー、フォルダ行へのドロップ先指定、`ExternalDragPayload` でOSへドラッグアウト）、検索結果の後段フィルタ（`search::filter_results`、種別・拡張子）、内容検索（`search::search_contents`、1MiB上限・バイナリ除外・symlink非読取・行番号）、ブックマーク（`Settings::bookmarks`、Ctrl+D・最大50件）、プロパティ表示（`PropsState`、読み取り専用・`model::permissions_string`）、空状態/ローディング表示（`empty_state_message`）、キーボードヘルプ（`HELP_SECTIONS`、F1）、タブ構成の永続化（`Settings::tabs`/`active_tab`、`Tabs::from_paths`）、ディレクトリサイズ計算（`ops::dir_stats`、symlink非追跡・キャンセル対応）、種類ソートと「種類」列（`SortKey::Kind`、`model::kind_label`）、タブの並べ替え（`Tabs::move_active_left/right`）、検索履歴（`Settings::recent_searches`、最大10件・チップ表示）、パス直接入力（`model::resolve_location_input`、Ctrl+L）、テキスト/画像プレビュー（`preview.rs`、テキスト256KiB上限・画像8MiB上限・バイナリ/symlink拒否・`sniff_image_format` による内容優先判定）、アンドゥ（`undo.rs`、名前変更とゴミ箱のみ・ゴミ箱は ID 指定で復元・最大20件）にも対応。OS ファイルクリップボードは GPUI 側未実装のため保留（`notes/os-file-clipboard-notes.md`）。`#![forbid(unsafe_code)]` を app 本体/build.rs に適用。最終的に `core/`（`gfe_core::ops`）へ抽出（`fs/ops.rs` は当初案） |
 | 保存検索 / ラベル（F6-38/F6-49） | 設計時は未定義 | as-built(11-22): 検索バー/右クリックに配線 |
 
 - **差分の記録義務**: 上表に無い逸脱が生じた場合は [`app/README.md`](app/README.md) の「設計からの差分」に追記し、本設計書の改版（v0.2）で反映する。
@@ -893,7 +902,7 @@ pub fn confirm_and_trash(
 | 通知 | gpui-component `push_notification` ✅ source / ⚠ Wayland 実機 | 同左 | 同左 | ✅ | | | component `src/window_ext.rs:118` |
 | パス正規化 | `PathBuf`/`OsStr` 保持、表示のみ lossy ✅ | 長パス `\\?\` + `dunce`（P2） | NFD→NFC 表示（P2） | Linux のみ | | ✅ | fs-notes §5.3 |
 | 隠しファイル | `.` 始まり ✅ | FILE_ATTRIBUTE_HIDDEN（P2） | `.` + UF_HIDDEN（P2） | ✅ | | | fs-notes §5.4 |
-| ボリューム/空き容量 | sysinfo | sysinfo | sysinfo | - | - | ✅ | as-built: /proc 解析 |
+| ボリューム/空き容量 | sysinfo | sysinfo | sysinfo | - | - | ✅ | as-built: Linux は /proc 解析、Windows は gfe-win32 経由（実機未検証）。空き容量・macOS は未対応 |
 | D&D IN | `on_drop::<ExternalPaths>`（Wayland ✅/他 ⚠） | 同左 | 同左 |  |  | △ | api-notes §4.2 / as-built: P1 実装済み（ExternalPaths 受信→Rename コピー） |
 | D&D OUT | `external_drag_payload`（Wayland ✅） | ⚠ | ⚠ |  |  |  | api-notes §4.3 / as-built: P1 実装済み（ExternalDragPayload で OS へドラッグアウト） |
 
@@ -1295,6 +1304,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | 0.1-as-built | 2026-11-22 | 保存検索 / ブックマークラベルの as-built 反映、Z14 / AA01 修正、日付統一 |
 | 0.1-要件 | 2026-11-22 | 新要件を反映: Windows を第一級ターゲットへ昇格、Explorer / Double Commander 並みの UX を明示要件化、Android / iOS を要件化（[モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md) を approved（2026-11-23 承認）・未実装） |
 | 0.1-要件 | 2026-11-23 | 新要件の個別 ADR を 4 件追加: [デュアルペイン UI](docs/adr/adr-20261122-dual-pane-ui.md)（2026-11-22）/ [日本語照合](docs/adr/adr-20261123-japanese-collation.md)（2026-11-23）/ [OS ファイルクリップボード](docs/adr/adr-20261123-os-file-clipboard.md)（2026-11-23）/ [Windows ネイティブ API](docs/adr/adr-20261123-windows-native-api-strategy.md)（2026-11-23）。いずれも **draft・未承認**で、DESIGN.md の確定済み ADR-001〜012 とは別系列 |
+| 0.1-as-built | 2026-11-23 | core 抽出と win32 クレート追加を反映: §4.1 を workspace 構成（core / app / poc / win32）として as-built 注記を追加し、差分表の model / ops / search / error 行を `gfe_core` の re-export／互換シェルへ更新。Windows ドライブ列挙は `gfe-win32` 経由で実装済み（実機未検証）、macOS は未対応 |
 
 2026-11-22 の as-built 差分の内訳。保存検索 / ブックマークラベルは §4.1
 の差分表と [app/README.md](app/README.md) の「再帰検索」を参照。

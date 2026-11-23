@@ -10,6 +10,8 @@
   --accent: #1f6feb;
   --accent-text: #ffffff;
   --dir: #8250df;
+  /* エラーメッセージ: light 面 (#ffffff) で WCAG AA 4.5:1 以上。 */
+  --error: #cf222e;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,6 +24,8 @@
     --accent: #388bfd;
     --accent-text: #ffffff;
     --dir: #bc8cff;
+    /* #cf222e は dark 面 (#161b22) で 3.23:1 しか出ないため高コントラスト色へ。 */
+    --error: #ff7b72;
   }
 }
 
@@ -61,7 +65,7 @@ body {
 }
 
 .status[data-level="error"] {
-  color: #cf222e;
+  color: var(--error);
 }
 
 .app-main {

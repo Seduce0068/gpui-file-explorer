@@ -33,7 +33,16 @@ cd gpui-file-explorer   # リポジトリ直下
 bash scripts/dev-setup.sh   # 初回のみ（下記「前提」を参照）
 cd app
 cargo build                 # 初回（依存込み）約 1m30s / 2回目以降 約2s / debug バイナリ 約 165MiB
-cargo test                  # 全テスト（データ層・監視・P1 機能を含む。件数は実行結果を参照）
+cargo test                  # app クレートのテストのみ（データ層・監視・P1 機能を含む。件数は実行結果を参照）
+```
+
+workspace 全体（`core` / `app` / `poc` / `win32`）を対象にする場合は、
+リポジトリ直下で `cargo test --workspace` を実行してください（上の `cargo test` は
+`cd app` 後なので app クレートのみが対象です）。
+
+```bash
+cd ..                       # リポジトリ直下へ戻る
+cargo test --workspace      # core / app / poc / win32 を含む全クレート
 ```
 
 リポジトリ直下から全体をビルドする場合:
@@ -449,8 +458,8 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 | ファイル | 役割 |
 |---|---|
 | `src/main.rs` | ウィンドウ / UI レイアウト（ツールバー・サイドバー・リスト・ステータスバー）/ キー・マウス操作 / コンテキストメニュー / 非同期ロード / 設定・履歴の結線 |
-| `src/model.rs` | `Entry` と `read_dir`、フィルタ、自然順ソート、人間向けサイズ/日時、選択計算、パンくず、fingerprint（GPUI 非依存 = テスト容易） |
-| `src/error.rs` | `AppError`（`FsError` / `OpError` の共通実装）。`model.rs` のサブモジュール |
+| `src/model.rs` | `gfe_core::model` の re-export（互換シェル）。`Entry` と `read_dir`、フィルタ、自然順ソート、人間向けサイズ/日時、選択計算、パンくず、fingerprint のロジック本体は `core/` クレート（GPUI 非依存） |
+| `src/error.rs` | `gfe_core::error` の re-export（互換シェル）。`AppError`（`FsError` / `OpError` の共通実装）の本体は `core/` クレート |
 | `src/history.rs` | 戻る/進む履歴スタック |
 | `src/tabs.rs` | タブごとのカレントディレクトリと戻る/進む履歴（GPUI 非依存） |
 | `src/settings.rs` | serde_json 永続化（アトミック書き込み） |
@@ -458,18 +467,23 @@ GPUI のキー入力イベントはグローバルに配信されるため、ダ
 | `src/icons.rs` | 拡張子 → Lucide アイコン分類（GPUI 非依存）・システムアイコン欠落時のフォールバック |
 | `src/system_icons.rs` | freedesktop アイコン（Breeze 等）のパス解決とサイズ別キャッシュ |
 | `src/watcher.rs` | debounce 付き OS ファイル監視（カレント + 親、非再帰） |
-| `src/ops.rs` | 安全なコピー/移動/リネーム/ゴミ箱の操作エンジン |
-| `src/search.rs` | 名前・内容検索、複数ルート統合、後段フィルタ |
+| `src/ops.rs` | `gfe_core::ops` の re-export（互換シェル）。安全なコピー/移動/リネーム/ゴミ箱の操作エンジン本体は `core/` クレート |
+| `src/search.rs` | 空の互換シェル。名前・内容検索、複数ルート統合、後段フィルタは `gfe_core::search`（`core/` クレート）へ移行済み |
 | `src/preview.rs` | テキスト/画像プレビューの読み取りと形式判定 |
 | `src/mounts.rs` | `/proc/mounts` 解析（Linux）とボリューム一覧 |
 | `src/trash_view.rs` | ゴミ箱内一覧と ID 指定の復元 |
 | `src/undo.rs` | 名前変更・ゴミ箱の undo/redo スタック |
 | `src/strings.rs` | UI 文言の集約（ヘルプ・空状態・ステータス） |
+| `src/ports_gpui.rs` | GPUI 側の ports 実装（`core/` が要求するトレイトを app 側で提供） |
+| `core/`（`gfe_core`） | GPUI 非依存のコアロジック（model / ops / search / error 等）。app は re-export 経由で参照 |
+| `win32/`（`gfe-win32`） | Windows ネイティブ API（ドライブ列挙等）を隔離する FFI クレート。`unsafe` を app の `forbid(unsafe_code)` 外に閉じ込める |
 
 設計方針:
 
-- **データ層（model/history/settings/icons の分類）は GPUI 非依存**にして
-  ヘッドレステスト。UI 層だけが GPUI に依存。
+- **データ層（model / ops / search / error 等）は `core/`（`gfe_core`）へ抽出済み**で
+  GPUI 非依存。`model.rs` / `ops.rs` / `search.rs` / `error.rs` は既存参照を保つ
+  re-export／互換シェルで、`src/ports_gpui.rs` が GPUI 側の ports 実装を提供する。
+  UI 層だけが GPUI に依存。
 - 一覧は「全件（`all_entries`）」と「表示用（`entries`）」を分離し、
   隠しファイル切替・ソート切替は再読込なしで再構築。
 - 監視スレッドは UI に触れず、`async-channel` でフォアグラウンドの
@@ -701,8 +715,9 @@ bash packaging/linux/build-deb.sh
 - 内容検索は**読み取り専用**で、正規表現・単語境界・全行表示は未対応です。
   1 ファイル 1 MiB を超えるファイル、読み込んだ範囲に NUL を含む
   バイナリファイル、symlink は検索対象外です。行番号は最初の一致行のみ表示します。
-- ボリューム一覧は **Linux（/proc/mounts）のみ**。空き容量・Windows/macOS の
-  ドライブ列挙は未対応（macOS/Windows では「ドライブ」セクションが出ません）。
+- ボリューム一覧は **Linux（/proc/mounts）と Windows（`gfe-win32` クレート経由の
+  ネイティブ列挙）で実装済み**（Windows は実機未検証）。macOS は未対応で
+  「ドライブ」セクションは出ません。空き容量も未対応です。
   リムーバブルメディアのホットプラグにも対応します。**10 秒ごとの reconcile で
   /proc/mounts を再取得し、ホットプラグしたボリュームも反映（最大 10 秒遅延）**。
 - プレビューはテキストと画像のみ（PDF・動画・シンタックスハイライトは非対応）。

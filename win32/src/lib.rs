@@ -19,7 +19,8 @@
 //!   依存も有効にならないため、`app` の cross-compile がそのまま通る。
 //! * `app` / `core` の `#![forbid(unsafe_code)]` は変更しない。本クレートから
 //!   安全な関数のみが公開され、生の Win32 ハンドルは RAII ラッパー
-//!   [`ScopedIcon`] の内部に隠される。
+//!   [`ScopedIcon`] の所有下に置かれる。呼び出し元は `ScopedIcon::as_handle()`
+//!   で借用できるだけで、所有権も `DestroyIcon` の責任も移らない。
 //!
 //! ## 安全性の根拠（不変条件 / ADR:150-151）
 //!
@@ -57,6 +58,7 @@
 //! ImageList を保持する段階になったら、バイト列化を別タスクで検討する。
 
 #![deny(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 use std::marker::PhantomData;
 use std::path::Path;
@@ -256,6 +258,18 @@ pub struct ScopedIcon {
 }
 
 impl ScopedIcon {
+    /// 保持している HICON を借用する（Windows のみ）。
+    ///
+    /// `file_icon_handle` が返す所有権付きアイコンを実際に描画する側へ渡すため
+    /// の手段。返されたハンドルは `self` が生きている間だけ有効で、`Drop` 後は
+    /// 使用してはならない。所有権は、`ScopedIcon` が保持するため呼び出し元は
+    /// `DestroyIcon` を呼ばないこと（二重解放になる）。Windows 以外では
+    /// HICON 型自体が存在しないため、このメソッドはコンパイルされない。
+    #[cfg(windows)]
+    pub fn as_handle(&self) -> HICON {
+        self.handle
+    }
+
     /// 保持しているアイコンが有効かどうか。Windows 以外では常に `false`。
     pub fn is_valid(&self) -> bool {
         #[cfg(windows)]
@@ -333,8 +347,10 @@ pub fn file_icon_index(path: &Path) -> Option<u32> {
 /// パスに対応する小さい HICON を取得し、RAII ラッパーで返す（Windows）。
 ///
 /// 返された [`ScopedIcon`] は `!Send + !Sync` で、ドロップ時に同じスレッド上で
-/// `DestroyIcon` が呼ばれる。呼び出し元はバイト列を直接触らず、必要になった
-/// 段階で描画側がインデックス（[`file_icon_index`]）を用いること。
+/// `DestroyIcon` が呼ばれる。実際に描画する場合は
+/// `ScopedIcon::as_handle()` でハンドルを借用する（Windows のみ）。所有権は
+/// 移らないため `DestroyIcon` を呼ばないこと。HICON を必要としない場合は
+/// インデックスを返す [`file_icon_index`] を使う。
 #[cfg(windows)]
 pub fn file_icon_handle(path: &Path) -> Option<ScopedIcon> {
     let _sta = ComSta::enter()?;

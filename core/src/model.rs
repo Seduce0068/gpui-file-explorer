@@ -29,25 +29,40 @@ use crate::strings::{
 };
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 thread_local! {
-    /// 未知の persisted enum をデフォルトへフォールバックした痕跡。
-    /// `settings` クレート（app 側）から `take_unknown_persisted_enum()` で
-    /// 消費され、読み取り専用判定に使われる。core は app を参照しない。
-    static UNKNOWN_PERSISTED_ENUM_SEEN: Cell<bool> = const { Cell::new(false) };
+    /// 同一スレッド内の note→take を突き合わせるローカル痕跡。
+    /// この信号は format を跨いだ「どこかで未知 enum を見た」という事実だけで
+    /// よく、順序を跨ぐデータは無い。
+    static UNKNOWN_PERSISTED_ENUM_LOCAL: Cell<bool> = const { Cell::new(false) };
 }
+
+/// 未知の persisted enum をデフォルトへフォールバックした痕跡。
+/// `settings` クレート（app 側）から `take_unknown_persisted_enum()` で
+/// 消費され、読み取り専用判定に使われる。core は app を参照しない。
+///
+/// シグナルはスレッドをまたいで届く必要がある（設定のデシリアライズと
+/// read-only 判定は別スレッドで行われ得る）。旧 `thread_local!` 単独では
+/// 信号が失われたため、プロセス共有の `AtomicBool`（`Relaxed`）を追加した。
+/// 同一スレッドではローカル痕跡を優先し、並列テスト／並列ロードが互いの
+/// シグナルを横取りしないようにしている。
+static UNKNOWN_PERSISTED_ENUM_SEEN: AtomicBool = AtomicBool::new(false);
 
 /// 未知の persisted enum がデフォルトへフォールバックされたことを記録する
 /// シグナル port。旧 `crate::settings::note_unknown_persisted_enum()` の
 /// 呼び出しを core 内へ閉じ込めるための差し替えであり、挙動は同一。
 pub fn note_unknown_persisted_enum() {
-    UNKNOWN_PERSISTED_ENUM_SEEN.with(|flag| flag.set(true));
+    UNKNOWN_PERSISTED_ENUM_LOCAL.with(|flag| flag.set(true));
+    UNKNOWN_PERSISTED_ENUM_SEEN.store(true, Ordering::Relaxed);
 }
 
 /// 保留中のシグナルを取り出してクリアする。app の settings ロードが
 /// read-only 判定に使用する（詳細は design/phase1-core-extraction.md §3）。
 pub fn take_unknown_persisted_enum() -> bool {
-    UNKNOWN_PERSISTED_ENUM_SEEN.with(|flag| flag.replace(false))
+    let local = UNKNOWN_PERSISTED_ENUM_LOCAL.with(|flag| flag.replace(false));
+    let shared = UNKNOWN_PERSISTED_ENUM_SEEN.swap(false, Ordering::Relaxed);
+    local || shared
 }
 
 /// One entry of a directory listing.
@@ -1937,5 +1952,29 @@ mod personalization_tests {
 
         let partial: BookmarkLabel = serde_json::from_str(r#"{"path":"/a"}"#).unwrap();
         assert!(!partial.is_valid());
+    }
+}
+
+#[cfg(test)]
+mod persisted_enum_signal_tests {
+    use super::{note_unknown_persisted_enum, take_unknown_persisted_enum};
+
+    #[test]
+    fn signal_survives_note_on_another_thread() {
+        // AR02: the old thread_local Cell lost the signal when the unknown
+        // enum was noted on a different thread than the one that takes it
+        // (settings deserialization vs. read-only decision).
+        take_unknown_persisted_enum(); // clear any signal left by another test
+        std::thread::spawn(note_unknown_persisted_enum)
+            .join()
+            .expect("note thread must not panic");
+        assert!(
+            take_unknown_persisted_enum(),
+            "a cross-thread note must still be observable"
+        );
+        assert!(
+            !take_unknown_persisted_enum(),
+            "take() must clear the pending signal"
+        );
     }
 }

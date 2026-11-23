@@ -302,7 +302,15 @@ fn path_present(path: &Path) -> bool {
 /// "再検索が必要です" notice under a plain result count. When the summary is
 /// already that same sentinel (the Rescan/Renamed watch branch composes it),
 /// keep it as-is instead of duplicating the warning.
+///
+/// AR01: the same applies to a held [`STATUS_RESCAN_FAILED`]. A filter tweak
+/// only recomputes the existing snapshot — it is not a successful read — so
+/// it must not replace the failure notice before
+/// [`clear_rescan_failure_after_successful_read`] gets to clear it.
 fn search_filter_status(current: &str, summary: String) -> String {
+    if current.starts_with(STATUS_RESCAN_FAILED) {
+        return current.to_string();
+    }
     if current.starts_with(STATUS_SEARCH_STALE) && !summary.starts_with(STATUS_SEARCH_STALE) {
         format!("{STATUS_SEARCH_STALE}・{summary}")
     } else {
@@ -571,6 +579,12 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
 /// `STATUS_*FAILED` / partial-failure messages.
 const STATUS_ERROR_MARKERS: &[&str] = &[
     STATUS_ERROR_PREFIX,
+    // AR15: core::error が返す失敗フラグメント。prefix を付けずに
+    // self.status へミラーされても success green に落ちないようにする。
+    STATUS_CORE_NOT_FOUND_PREFIX,
+    STATUS_CORE_UNSUPPORTED_PREFIX,
+    STATUS_CORE_IO_FAILED,
+    STATUS_CORE_UNKNOWN_ERROR,
     STATUS_SETTINGS_SAVE_FAILED,
     // X01: 理由別の保存失敗は「できません」部分文字列で偶然赤くなっていただけ
     // なので、明示的なマーカーとして登録して回帰を防ぐ。
@@ -2227,24 +2241,26 @@ use crate::strings::{
     STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
     STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
     STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
-    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-    STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED,
-    STATUS_FOLDER_CREATED_ELSEWHERE_HINT, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
-    STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID,
-    STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX,
-    STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
-    STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MAX_TABS_SUFFIX,
-    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
-    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
-    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
-    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PLACE_GONE_HINT,
-    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
-    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_EXISTS_PREFIX,
-    STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR, STATUS_RENAME_INVALID_DOT,
-    STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL, STATUS_RENAME_INVALID_RESERVED_PREFIX,
-    STATUS_RENAME_INVALID_SEPARATOR, STATUS_RENAME_NO_PARENT, STATUS_RENAME_SAVED_PREFIX,
-    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
+    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CORE_IO_FAILED, STATUS_CORE_NOT_FOUND_PREFIX,
+    STATUS_CORE_UNKNOWN_ERROR, STATUS_CORE_UNSUPPORTED_PREFIX, STATUS_DROP_EMPTY,
+    STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
+    STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
+    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATED_ELSEWHERE_HINT, STATUS_FOLDER_CREATING,
+    STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
+    STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX,
+    STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX,
+    STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
+    STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
+    STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
+    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
+    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
+    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
+    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
+    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR,
+    STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL,
+    STATUS_RENAME_INVALID_RESERVED_PREFIX, STATUS_RENAME_INVALID_SEPARATOR,
+    STATUS_RENAME_NO_PARENT, STATUS_RENAME_SAVED_PREFIX, STATUS_RESCAN_FAILED,
+    STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
     STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
@@ -9052,14 +9068,16 @@ impl Explorer {
                 }
             }
         };
-        self.status = search_filter_status(
-            &self.status,
-            format!(
-                "検索{mode_label}{scope_label}: 「{}」 {} 件",
-                self.search.query,
-                self.entries.len()
-            ),
+        let summary = format!(
+            "検索{mode_label}{scope_label}: 「{}」 {} 件",
+            self.search.query,
+            self.entries.len()
         );
+        // AR01: a filter refresh is a watch-adjacent update, not a successful
+        // read. Route it through the same RESCAN_FAILED guard as the watch
+        // sites before applying the stale-warning prefix logic.
+        self.status =
+            search_filter_status(&self.status, reconcile_aware_status(&self.status, &summary));
         cx.notify();
     }
 
@@ -12367,19 +12385,20 @@ mod tests {
     use crate::strings::{
         DIALOG_FOOTER_HINT, DIALOG_FOOTER_HINT_READ_ONLY, SEARCH_IN_PROGRESS_LABEL,
         STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
-        STATUS_DROP_NO_DESTINATION, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID,
-        STATUS_KEYMAP_LIMIT_PREFIX, STATUS_MAX_TABS_SUFFIX, STATUS_NO_CLIPBOARD,
-        STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR,
-        STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL,
-        STATUS_RENAME_INVALID_RESERVED_PREFIX, STATUS_RENAME_INVALID_SEPARATOR,
-        STATUS_RENAME_NO_PARENT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
-        STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
-        STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
-        STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
-        STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
-        STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
-        STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED,
-        STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
+        STATUS_CORE_IO_FAILED, STATUS_CORE_NOT_FOUND_PREFIX, STATUS_CORE_UNKNOWN_ERROR,
+        STATUS_CORE_UNSUPPORTED_PREFIX, STATUS_DROP_NO_DESTINATION, STATUS_INVALID_CLI_DIR,
+        STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_LIMIT_PREFIX, STATUS_MAX_TABS_SUFFIX,
+        STATUS_NO_CLIPBOARD, STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED,
+        STATUS_RENAME_INVALID_CHAR, STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY,
+        STATUS_RENAME_INVALID_NUL, STATUS_RENAME_INVALID_RESERVED_PREFIX,
+        STATUS_RENAME_INVALID_SEPARATOR, STATUS_RENAME_NO_PARENT,
+        STATUS_SAVED_SEARCH_NAME_REQUIRED, STATUS_SAVED_SEARCH_QUERY_REQUIRED,
+        STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX, STATUS_SKIP_REASON_MISSING,
+        STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL, STATUS_TRASH_ALL_FAILED,
+        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+        STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+        STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_MISSING_SUFFIX,
+        STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
     use std::ffi::OsString;
@@ -12575,6 +12594,30 @@ mod tests {
         // amber に落ちないこと（接頭辞優先）も同時に検証する。
         let cli_error = format!("{STATUS_ERROR_PREFIX}{STATUS_INVALID_CLI_DIR}");
         assert_eq!(status_color(&cli_error), C_RED, "{cli_error}");
+    }
+
+    #[test]
+    fn core_error_fragments_are_classified_as_errors() {
+        // AR15: core::error の失敗フラグメントは、ラップ用 prefix が無くても
+        // red に分類されなければならない（未登録だと green に落ちた）。
+        for status in [
+            format!("{STATUS_CORE_NOT_FOUND_PREFIX}/tmp/missing"),
+            format!("{STATUS_CORE_UNSUPPORTED_PREFIX}reflink"),
+            format!("/tmp/x: {STATUS_CORE_IO_FAILED} (EIO)"),
+            format!("/tmp/x: {STATUS_CORE_UNKNOWN_ERROR} (ENOENT)"),
+        ] {
+            assert_eq!(status_color(&status), C_RED, "status = {status:?}");
+        }
+        // 各定数単体（マーカーとしての完全性）も赤。
+        for marker in [
+            STATUS_CORE_NOT_FOUND_PREFIX,
+            STATUS_CORE_UNSUPPORTED_PREFIX,
+            STATUS_CORE_IO_FAILED,
+            STATUS_CORE_UNKNOWN_ERROR,
+        ] {
+            assert_eq!(status_color(marker), C_RED, "marker = {marker:?}");
+            assert!(STATUS_ERROR_MARKERS.contains(&marker));
+        }
     }
 
     #[test]
@@ -15131,6 +15174,31 @@ mod tests {
             ),
             summary
         );
+    }
+
+    #[test]
+    fn search_filter_status_keeps_rescan_failure() {
+        // AR01: `apply_search_filter` now composes the rescan-failure guard
+        // with `search_filter_status` in the same order as the watch sites.
+        // A filter tweak (kind/extension/name/sort) is not a successful read
+        // and must not bury a held RESCAN_FAILED under the result count.
+        let failed = format!("{STATUS_RESCAN_FAILED}: permission denied");
+        let summary = "検索: 「rs」 3 件".to_string();
+        let composed = |current: &str| {
+            search_filter_status(current, reconcile_aware_status(current, &summary))
+        };
+        assert_eq!(composed(&failed), failed);
+        assert_eq!(composed(STATUS_RESCAN_FAILED), STATUS_RESCAN_FAILED);
+
+        // Ordinary statuses still get replaced by the fresh result count.
+        assert_eq!(
+            composed(&format!("{SEARCH_IN_PROGRESS_LABEL}「rs」")),
+            summary
+        );
+        // A stale warning still prefixes the summary when no failure is held.
+        let stale = composed(STATUS_SEARCH_STALE);
+        assert!(stale.starts_with(STATUS_SEARCH_STALE));
+        assert!(stale.contains("3 件"));
     }
 
     // AL01: the search bar and the status-bar messages must share the one

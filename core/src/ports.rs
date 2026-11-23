@@ -156,12 +156,6 @@ pub trait WatchSource {
     fn watch(&self, path: &Path) -> Result<Box<dyn WatchHandle>, PortError>;
 }
 
-/// 進捗シンク（同期コールバック。UI スレッドへの橋渡しはアダプタ側）。
-pub trait ProgressSink {
-    /// 進捗を通知する（done / total）。
-    fn report(&mut self, done: u64, total: u64);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,16 +171,6 @@ mod tests {
         }
         fn delete(&self, _path: &Path) -> Result<(), PortError> {
             Err(PortError::message("permanent delete is not available"))
-        }
-    }
-
-    struct CountingSink {
-        last: (u64, u64),
-    }
-
-    impl ProgressSink for CountingSink {
-        fn report(&mut self, done: u64, total: u64) {
-            self.last = (done, total);
         }
     }
 
@@ -208,9 +192,24 @@ mod tests {
     }
 
     #[test]
-    fn progress_sink_receives_latest_values() {
-        let mut sink = CountingSink { last: (0, 0) };
-        sink.report(35, 100);
-        assert_eq!(sink.last, (35, 100));
+    fn port_error_source_is_the_held_io_error_or_none() {
+        // AR20: `io_error()` is the port accessor; `Error::source()` is the
+        // standard error-chain contract used by callers that only see a
+        // `dyn Error`. Both must agree on Some/None.
+        use std::error::Error;
+
+        let caused = PortError::io("copy failed", io::Error::other("disk full"));
+        assert_eq!(
+            caused.source().map(ToString::to_string),
+            Some("disk full".to_string())
+        );
+        assert_eq!(
+            caused.source().map(ToString::to_string),
+            caused.io_error().map(ToString::to_string)
+        );
+
+        let plain = PortError::message("not available");
+        assert!(plain.source().is_none());
+        assert!(plain.io_error().is_none());
     }
 }

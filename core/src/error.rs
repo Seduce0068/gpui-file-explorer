@@ -25,6 +25,12 @@ pub enum FsErrorKind {
     NotFound,
     PermissionDenied,
     NotADirectory,
+    /// A directory was used where a file was expected (Linux `EISDIR`).
+    IsADirectory,
+    /// Write attempted on a read-only filesystem (Linux `EROFS`).
+    ReadOnlyFilesystem,
+    /// No space left on the device (Linux `ENOSPC`).
+    StorageFull,
     Io,
     Unknown,
 }
@@ -99,6 +105,10 @@ pub enum AppError {
         kind: FsErrorKind,
         path: PathBuf,
         os_message: Option<String>,
+        /// Raw OS error code as reported by `io::Error::raw_os_error`.
+        /// Kept separately from `cause` so callers can branch on it without
+        /// downcasting the boxed trait object.
+        raw_os_error: Option<i32>,
         cause: BoxedCause,
     },
 
@@ -127,27 +137,70 @@ pub enum AppError {
     },
 }
 
+/// Linux errno values for the three kinds that used to be flattened into
+/// [`FsErrorKind::Io`]. The mapping is explicit so it cannot drift with the
+/// standard library's `ErrorKind` coverage; non-Linux hosts keep the generic
+/// classification.
+#[cfg(target_os = "linux")]
+fn raw_os_error_kind(code: Option<i32>) -> Option<FsErrorKind> {
+    match code {
+        Some(21) => Some(FsErrorKind::IsADirectory), // EISDIR
+        Some(30) => Some(FsErrorKind::ReadOnlyFilesystem), // EROFS
+        Some(28) => Some(FsErrorKind::StorageFull),  // ENOSPC
+        _ => None,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn raw_os_error_kind(_code: Option<i32>) -> Option<FsErrorKind> {
+    None
+}
+
 impl AppError {
     /// Map an `io::Error` to a stable category (legacy `FsError::from_io`).
+    ///
+    /// Both the category and the raw OS code are retained: `kind()` drives the
+    /// Japanese message while [`Self::fs_raw_os_error`] exposes the original
+    /// errno for callers that need to distinguish otherwise identical kinds.
     pub fn from_io(path: PathBuf, err: &std::io::Error) -> Self {
         use std::io::ErrorKind;
-        let kind = match err.kind() {
+        let raw = err.raw_os_error();
+        let mut kind = match err.kind() {
             ErrorKind::NotFound => FsErrorKind::NotFound,
             ErrorKind::PermissionDenied => FsErrorKind::PermissionDenied,
             ErrorKind::NotADirectory => FsErrorKind::NotADirectory,
+            ErrorKind::IsADirectory => FsErrorKind::IsADirectory,
+            ErrorKind::ReadOnlyFilesystem => FsErrorKind::ReadOnlyFilesystem,
+            ErrorKind::StorageFull => FsErrorKind::StorageFull,
             ErrorKind::Other => FsErrorKind::Unknown,
             _ => FsErrorKind::Io,
         };
-        Self::Fs {
+        if matches!(kind, FsErrorKind::Io | FsErrorKind::Unknown) {
+            if let Some(specific) = raw_os_error_kind(raw) {
+                kind = specific;
+            }
+        }
+        // Build `FsCause` directly rather than going through `with_cause`: a
+        // plain `Fs` has no raw-code slot, so the code would be lost on the way.
+        Self::FsCause {
             kind,
             path,
             os_message: Some(err.to_string()),
+            raw_os_error: raw,
+            cause: BoxedCause::new(std::io::Error::new(err.kind(), err.to_string())),
         }
-        .with_cause(
-            // `io::Error` is not Clone; reconstruct one with the same kind and
-            // message so the cause stays reachable through `source()`.
-            BoxedCause::new(std::io::Error::new(err.kind(), err.to_string())),
-        )
+    }
+
+    /// OS 固有のエラー番号（Linux の `EISDIR` = 21 等）。
+    ///
+    /// `from_io` が保持した値のみを返す。`BoxedCause` を downcast せずに
+    /// errno で分岐できるようにするための追加 API で、既存 variant の
+    /// フィールドや `source()` の形は変更しない。
+    pub fn fs_raw_os_error(&self) -> Option<i32> {
+        match self {
+            Self::FsCause { raw_os_error, .. } => *raw_os_error,
+            _ => None,
+        }
     }
 
     /// Attach the underlying failure to a plain variant, keeping its rendered
@@ -162,6 +215,9 @@ impl AppError {
                 kind,
                 path,
                 os_message,
+                // A plain `Fs` never carried a raw code; `from_io` builds
+                // `FsCause` directly so its code is preserved.
+                raw_os_error: None,
                 cause,
             },
             Self::NotFound(path) => Self::NotFoundCause(path, cause),
@@ -203,6 +259,9 @@ impl AppError {
             FsErrorKind::NotFound => "見つかりません",
             FsErrorKind::PermissionDenied => "アクセスが拒否されました",
             FsErrorKind::NotADirectory => "ディレクトリではありません",
+            FsErrorKind::IsADirectory => "ディレクトリです",
+            FsErrorKind::ReadOnlyFilesystem => "読み取り専用のファイルシステムです",
+            FsErrorKind::StorageFull => "空き領域がありません",
             FsErrorKind::Io => "読み取れませんでした",
             FsErrorKind::Unknown => "エラーが発生しました",
         };
@@ -471,5 +530,57 @@ mod tests {
         let error = AppError::from_io(PathBuf::from("/tmp/invalid-input"), &io);
         assert_eq!(error.fs_kind(), Some(FsErrorKind::Io));
         assert!(error.message_ja().contains("読み取れませんでした"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_io_keeps_raw_os_error() {
+        // AR07: the reconstructed cause only keeps kind+text, so without a
+        // dedicated slot the original errno was lost. ENOENT = 2 on Unix.
+        let io = std::io::Error::from_raw_os_error(2);
+        let error = AppError::from_io(PathBuf::from("/tmp/missing"), &io);
+        assert_eq!(error.fs_raw_os_error(), Some(2));
+        assert_eq!(error.fs_kind(), Some(FsErrorKind::NotFound));
+
+        // Errors built without `from_io` have no OS code to expose.
+        let plain = AppError::NotFound(PathBuf::from("/tmp/gone"));
+        assert_eq!(plain.fs_raw_os_error(), None);
+        let fs_plain = AppError::Fs {
+            kind: FsErrorKind::Io,
+            path: PathBuf::from("/tmp/x"),
+            os_message: None,
+        };
+        assert_eq!(fs_plain.fs_raw_os_error(), None);
+        assert_eq!(
+            fs_plain
+                .with_cause(BoxedCause::text("detail"))
+                .fs_raw_os_error(),
+            None
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn from_io_maps_is_a_directory_read_only_and_storage_full() {
+        // AR08: these errno values used to be flattened into `Io` ("読み取れませんでした").
+        for (code, expected, fragment) in [
+            (21, FsErrorKind::IsADirectory, "ディレクトリです"),
+            (
+                30,
+                FsErrorKind::ReadOnlyFilesystem,
+                "読み取り専用のファイルシステムです",
+            ),
+            (28, FsErrorKind::StorageFull, "空き領域がありません"),
+        ] {
+            let io = std::io::Error::from_raw_os_error(code);
+            let error = AppError::from_io(PathBuf::from("/tmp/x"), &io);
+            assert_eq!(error.fs_kind(), Some(expected), "errno {code}");
+            assert_eq!(error.fs_raw_os_error(), Some(code));
+            assert!(
+                error.message_ja().contains(fragment),
+                "errno {code}: {}",
+                error.message_ja()
+            );
+        }
     }
 }

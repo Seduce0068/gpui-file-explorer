@@ -41,8 +41,9 @@ status: complete
 
 ## スコープと方法
 
-- 対象: `app/src/*.rs`（13 ファイルは初回レビュー時点のスナップショット、
-  現在は 17 ファイル。最新構成は `app/README.md` の「アーキテクチャ」表を参照）、
+- 対象: `app/src/*.rs`（13 ファイルは初回レビュー時点、17 ファイルは
+  第3回レビュー時点の**歴史スナップショット**。現在は 18 ファイル。
+  最新構成は `app/README.md` の「アーキテクチャ」表を参照）、
   `poc/src/main.rs`、各 `build.rs`、`Cargo.toml`、`scripts/`、
   `packaging/linux/`、`.github/workflows/ci.yml`、
   `DESIGN.md` / `README.md` / `app/README.md` / `app/PROGRESS.md`

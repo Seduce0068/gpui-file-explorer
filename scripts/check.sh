@@ -240,8 +240,14 @@ if [ "${run_poc}" = true ]; then
 		echo "==> ${member}: cargo test --all-targets --locked"
 		(cd "${member}" && cargo test --all-targets --locked)
 
-		echo "==> ${member}: cargo clippy --all-targets --locked -- -D warnings"
-		(cd "${member}" && cargo clippy --all-targets --locked -- -D warnings)
+		if [ "${member}" = "win32" ]; then
+			# win32 は FFI 境界なので unsafe ブロックの SAFETY 注記を必須化する。
+			echo "==> ${member}: cargo clippy --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks"
+			(cd "${member}" && cargo clippy --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks)
+		else
+			echo "==> ${member}: cargo clippy --all-targets --locked -- -D warnings"
+			(cd "${member}" && cargo clippy --all-targets --locked -- -D warnings)
+		fi
 	done
 fi
 

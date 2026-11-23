@@ -7,7 +7,7 @@
 #   /usr/bin/gpui-file-explorer
 #   /usr/share/applications/gpui-file-explorer.desktop
 #   /usr/share/icons/hicolor/<size>/apps/gpui-file-explorer.png
-#   /usr/share/doc/gpui-file-explorer/{README.md,copyright,LICENSE,NOTICE.md,NOTICE-app.md}
+#   /usr/share/doc/gpui-file-explorer/{README.md,copyright,LICENSE,NOTICE.md,NOTICE-app.md,app/NOTICE.md}
 #
 # `dpkg-deb --root-owner-group` sets root ownership inside the archive, so the
 # script must run as a normal user. Nothing is installed on the host.
@@ -159,6 +159,31 @@ install -Dm644 "${repo_root}/packaging/linux/copyright" "${doc_dir}/copyright"
 install -Dm644 "${repo_root}/LICENSE" "${doc_dir}/LICENSE"
 install -Dm644 "${repo_root}/NOTICE.md" "${doc_dir}/NOTICE.md"
 install -Dm644 "${repo_root}/app/NOTICE.md" "${doc_dir}/NOTICE-app.md"
+# NOTICE.md links to `app/NOTICE.md`; install the same file at that relative
+# path too so the link resolves inside the package. The repository-side link
+# in NOTICE.md is left unchanged.
+install -Dm644 "${repo_root}/app/NOTICE.md" "${doc_dir}/app/NOTICE.md"
+
+# Gate: every staged doc file must match the current repository source
+# byte-for-byte. Earlier packages under packaging/linux/build/ shipped a
+# NOTICE-app.md without the tracing / tracing-subscriber entries and no
+# LICENSE; this script copies the current sources, so a mismatch here means
+# the packaging layout regressed (or a stale staging tree was reused).
+# Abort before dpkg-deb; replacing an existing .deb is the caller's decision.
+doc_pairs=(
+  "${repo_root}/app/README.md|${doc_dir}/README.md"
+  "${repo_root}/packaging/linux/copyright|${doc_dir}/copyright"
+  "${repo_root}/LICENSE|${doc_dir}/LICENSE"
+  "${repo_root}/NOTICE.md|${doc_dir}/NOTICE.md"
+  "${repo_root}/app/NOTICE.md|${doc_dir}/NOTICE-app.md"
+  "${repo_root}/app/NOTICE.md|${doc_dir}/app/NOTICE.md"
+)
+for pair in "${doc_pairs[@]}"; do
+  src="${pair%%|*}"
+  installed="${pair#*|}"
+  cmp -s -- "${src}" "${installed}" ||
+    die "doc が現行ソースと一致しません: ${installed} (source: ${src})"
+done
 
 # Runtime dependencies from the ELF headers plus the dlopen'ed Vulkan loader.
 compute_depends() {

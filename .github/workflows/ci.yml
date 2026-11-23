@@ -47,6 +47,8 @@ jobs:
         cargo test -p gpui-file-explorer-core --all-targets --locked
         cargo clippy -p gpui-file-explorer-core --all-targets --locked -- -D warnings
         cargo test -p gfe-win32 --all-targets --locked
+        # FFI 境界の unsafe ブロックには必ず SAFETY 注記を要求する
+        cargo clippy -p gfe-win32 --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks
         (cd ../poc && cargo fmt --all -- --check)
         (cd ../poc && cargo check --all-targets --locked)
         (cd ../poc && cargo test --all-targets --locked)
