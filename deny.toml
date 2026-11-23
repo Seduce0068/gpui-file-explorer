@@ -18,8 +18,9 @@ unmaintained = "workspace"
 ignore = [
     { id = "RUSTSEC-2026-0543", reason = "chrono: gpui-kit/trash の推移依存でもあり、直接依存の削除は別タスク（F6 系）で対応する" },
 ]
-# 同じ設定を app/ と poc/ で共有するため、片方に無い advisory の ignore は警告しない。
-unused-ignored-advisory = "allow"
+# 同じ設定を app/ と poc/ で共有するため、片方に無い advisory の ignore は
+# 失敗させないが、警告として残す（allow だと失効した ignore が静かに隠される）。
+unused-ignored-advisory = "warn"
 
 [bans]
 # 大規模な GPUI 系 dependency graph では複数バージョンの共存が避けられないため

@@ -84,18 +84,22 @@ FileSystem ポートが必要（`notes/wasm-browser-notes.md` §2 を参照）�
 
 ## キーボード操作とアクセシビリティ
 
-一覧は `role="listbox"` を持ち、`aria-labelledby="list-heading"` で見出しと紐づく。
+一覧は `role="listbox"` と `aria-multiselectable="true"` を持ち、
+`aria-labelledby="list-heading"` で見出しと紐づく。
 ポインタ操作には必ずキーボードの代替経路を用意している。
 
 | キー | 動作 |
 | --- | --- |
-| `↑` / `↓` | 選択行を上下へ移動 |
-| `Home` / `End` | 先頭 / 末尾の行を選択 |
-| `Enter` | 選択を確定 |
-| `Space` / `i` | 選択行の詳細（`path` / `size` / `isDir`）をステータスへ表示（長押し・右クリックと同じ） |
+| `↑` / `↓` | フォーカス行を上下へ移動（通常モードでは選択も追従） |
+| `Home` / `End` | 先頭 / 末尾の行へ移動 |
+| `Enter` | 選択を確定（選択モード中は当該行をトグル / 範囲選択） |
+| `Space` / `i` | フォーカス行の詳細（`path` / `size` / `isDir`）をステータスへ表示 |
 
-`Ctrl` / `Cmd` / `Alt` との同時押しはブラウザ / OS のショートカットへ譲り、
-一覧のハンドラは横取りしない。キーボードで選択を移動したときだけ
+詳細表示はタッチの長押しから `Space` / `i`（マウスは右クリック）へ退避した。
+長押しは「選択モードへ突入 + 当該行をトグル」として扱う。
+`Ctrl` / `Shift` / `Cmd` / `Alt` との同時押しはブラウザ / OS のショートカットへ譲り、
+一覧のハンドラは横取りしない（デスクトップ版の Ctrl トグル / Shift 範囲 /
+Ctrl+A の代わりに、下記の専用ボタンを使う）。キーボードで移動したときだけ
 `scrollIntoView({ block: 'nearest' })` で viewport 内へ追従する。ポインタの
 タップでは `preventScroll` のままスクロール位置を動かさない。
 
@@ -103,6 +107,40 @@ FileSystem ポートが必要（`notes/wasm-browser-notes.md` §2 を参照）�
 `role="option"` のアクセシブル名にはファイル名とメタ情報だけが含まれる。
 長押し行では `user-select` / `-webkit-touch-callout` を無効化し、検索 input の
 テキスト選択には影響しない。
+
+## 複数選択（選択モード）
+
+`#select-mode` トグルを押すと選択モードへ入り、`aria-pressed` と表示が切り替わる。
+選択モード中は次の導線が使える（いずれも修飾キーを必要としない）。
+
+| 操作 | 相当するデスクトップ操作 | 動作 |
+| --- | --- | --- |
+| 行をタップ / `Enter` | Ctrl+クリック | pure helper `selectionToggle` で当該行をトグル |
+| 「範囲選択」→ 開始行 → 終端行 | Shift+クリック | `selectionRange(entries, anchor, target)` で両端込みの範囲を選択 |
+| 「すべて選択」 | Ctrl+A | `selectionSelectAll` で表示中の全行を選択 |
+| 「選択を解除」 | 選択クリア | `selectionClear` で全解除 |
+| 行を長押し | — | 選択モードへ突入し、当該行をトグル |
+
+選択は object 参照ではなく **path** で保持する（core の `Selection` と同じ不変条件）。
+再描画時に `retainSelectedPaths(prev, next)` が新一覧へ残った path だけを再選択するため、
+検索欄へ 1 文字入力しても一致が残る行の選択は消えない。検索で消えた行の選択だけが外れる。
+選択モードを終了すると選択状態もクリアする。
+
+## 並び替え
+
+core wasm API（`list_entries` / `search`）は既定の並び順固定で、ソート条件を
+JS から指定できない（BA18）。PWA 単体の pure helper `sortEntries(entries, key, dir)`
+で表示時に並べ替える。コントロールは一覧上部の「並び替え」セレクトと方向セレクト。
+
+- `key`: `name`（名前）/ `kind`（種類 = 小文字化した拡張子）/ `size` / `modified`
+- `dir`: `asc` / `desc`
+- ディレクトリはキー・方向に関わらず常に先頭（core の `SortOrder` と同挙動）
+- 名前は大小文字無視の自然順（`file2` < `file10`）、同値なら大小文字区別でタイブレーク
+- 入力配列は変更せず新しい配列を返す。ソート変更後も選択は path で残る
+
+core API 側のソート条件指定は後続タスク（core wasm API 拡張）で対応する。
+なおデスクトップ版のグリッド表示には列ヘッダ非表示のため並び替え導線が無いが、
+これは `app/` 側の対応事項で、この PWA コントロールはその代替ではない。
 
 右方向へ 80px 超スワイプすると検索をクリアして一覧へ戻る。左端 24px から
 始まるジェスチャは OS の戻る操作へ譲る。`touchmove` の 10px 超過で立つ `moved`

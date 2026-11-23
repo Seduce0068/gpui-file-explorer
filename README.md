@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- SPDX-FileCopyrightText: 2026 koppe <keitaonodera0903@gmail.com> -->
 
 # gpui-file-explorer
 
@@ -33,10 +34,22 @@ app クレートのみ）。
 
 前提: Rust 1.92+、Vulkan 対応 GPU ドライバ、Wayland または X11。
 Rust の 1.92 は [`app/Cargo.toml`](app/Cargo.toml) の `rust-version` に宣言した
-**MSRV（下限）** で、1.92 自体でのビルドは未検証です。実機で検証済みの
-ツールチェーンは rustc / cargo 1.99.1（[app/README.md](app/README.md) の
-「検証環境」を参照）。必要パッケージは [app/README.md](app/README.md) の「ビルド」を参照してください
+**MSRV（下限）** です。ただし、実検証したところ
+`cargo +1.92.0 check --locked --workspace --all-targets` は依存クレート
+`gpui-pre-util 0.3.12` の不安定機能 `slice_as_array`（E0658）で失敗します。
+そのため `rust-toolchain.toml` で 1.92 へピン留めすると CI が壊れるため、
+**意図的にピン留めしていません**。実機で検証済みのツールチェーンは
+rustc / cargo 1.99.1（[app/README.md](app/README.md) の「検証環境」を参照）。
+CI は共通ワークフローの `rust_toolchain` 入力（既定 `stable`）を使い、
+fmt / clippy は同ワークフローが `rustfmt` / `clippy` コンポーネントを明示導入するため
+バージョンのばらつきは抑えられています。必要パッケージは
+[app/README.md](app/README.md) の「ビルド」を参照してください
 （`libxkbcommon-x11-dev` が無い環境向けの回避スクリプトを同梱）。
+
+`Cargo.lock` はリポジトリ直下・`app/`・`poc/` の 3 箇所に存在しますが、
+virtual workspace で実際に解決に使われるのは**ルートの `Cargo.lock` のみ**です。
+`app/Cargo.lock` と `poc/Cargo.lock` は workspace 化前の残骸で**未使用**
+（方針により削除せず、ビルドや `scripts/check.sh` からも参照していません）。
 
 ## キーマップの上書き
 
@@ -132,7 +145,9 @@ bash packaging/linux/build-deb.sh --skip-build
 ```
 
 - 収録物: `/usr/bin/gpui-file-explorer`、`.desktop`、hicolor アイコン（16〜512px + scalable）、
-  `README.md` / `copyright` (DEP-5) / `LICENSE` / `NOTICE.md` / `NOTICE-app.md`
+  `README.md` / `copyright` (DEP-5) / `LICENSE` / `NOTICE.md`（アプリの詳細版） /
+  `NOTICE-repo.md`（リポジトリ版の要約） / `NOTICE-app.md` / `app/NOTICE.md` / `app/LICENSE`
+  （後者 2 つは `NOTICE-repo.md` の相対リンクをパッケージ内で解決するための複製）
 - `Depends` は `ldd` + `dpkg -S` から自動生成（Vulkan ローダは dlopen のため `libvulkan1` を明示追加）
 - `dpkg-deb --root-owner-group` を使うため **sudo 不要**。ホストへのインストールも行いません
 - 再現性: `SOURCE_DATE_EPOCH` を `dpkg-deb` へ渡します（明示値を優先。未設定なら HEAD のコミット時刻）。

@@ -25,6 +25,16 @@ const els = hasDom ? {
   list: document.getElementById('entry-list'),
   title: document.getElementById('list-title'),
   count: document.getElementById('list-count'),
+  // 選択モード関連（index.html の専用トグル。修飾キーは横取りしない）。
+  selectMode: document.getElementById('select-mode'),
+  selectActions: document.getElementById('select-actions'),
+  selectAll: document.getElementById('select-all'),
+  selectRange: document.getElementById('select-range'),
+  selectClear: document.getElementById('select-clear'),
+  selectCount: document.getElementById('select-count'),
+  // ソート関連（core wasm API の既定値に依存せず JS 側で並べ替える）。
+  sortKey: document.getElementById('sort-key'),
+  sortDir: document.getElementById('sort-dir'),
 } : {};
 
 const state = {
@@ -35,8 +45,15 @@ const state = {
   debounce: 0,
   rootName: '.',
   // 現在描画中の一覧と選択状態（タップ / 長押し / スワイプ / キーボードで共有）。
+  // 選択は object 参照ではなく path で保持する。再描画 / 検索 / 再ソートで
+  // エントリ object が差し替わっても選択が消えないようにするため。
   renderedEntries: [],
-  selected: null,
+  lastRender: { entries: [], options: {} },
+  selectedPaths: [],
+  anchorPath: null,
+  focusIndex: 0,
+  selectMode: false,
+  rangeArmed: false,
   touch: null,
   suppressClickUntil: 0,
 };
@@ -98,6 +115,152 @@ function emptyStateText(query, mode) {
 // 「検索をクリア」ボタンは検索0件のときだけ出し、一覧そのものが空のときは出さない。
 function shouldShowClearSearch(mode) {
   return mode === 'search';
+}
+
+// --- 複数選択の pure helper ------------------------------------------------
+// いずれも入力を変更せず新しい配列を返す。path をキーにするのは core の
+// Selection（core/src/model.rs）と同じ不変条件（選択はパスで残す）に合わせるため。
+
+// Ctrl+クリック相当のトグル。既存なら外し、無ければ末尾へ追加する。
+function selectionToggle(paths, path) {
+  if (typeof path !== 'string' || path.length === 0) return (paths || []).slice();
+  const source = Array.isArray(paths) ? paths : [];
+  const index = source.indexOf(path);
+  if (index < 0) return [...source, path];
+  return source.filter((item) => item !== path);
+}
+
+// 選択の全解除。毎回新しい配列を返す（呼び出し側の配列を共有しない）。
+function selectionClear() {
+  return [];
+}
+
+function selectionSelectSingle(path) {
+  return typeof path === 'string' && path.length ? [path] : [];
+}
+
+function selectionSelectAll(entries) {
+  return (Array.isArray(entries) ? entries : []).map((entry) => entry.path);
+}
+
+// Shift+クリック相当。anchor から target までを entries の並び順で両端込みで返す。
+// anchor が未設定 / 一覧外なら target 単独へフォールバックする（core と同挙動）。
+function selectionRange(entries, anchor, target) {
+  const list = Array.isArray(entries) ? entries : [];
+  const paths = list.map((entry) => entry.path);
+  const targetIndex = paths.indexOf(target);
+  if (targetIndex < 0) return [];
+  const anchorIndex = anchor == null ? -1 : paths.indexOf(anchor);
+  if (anchorIndex < 0) return [target];
+  const start = Math.min(anchorIndex, targetIndex);
+  const end = Math.max(anchorIndex, targetIndex);
+  return paths.slice(start, end + 1);
+}
+
+// 再描画時に旧選択パスのうち新一覧にも残っているものだけを残す（BA07）。
+// prev の順序を保つ。next に無いパス（検索で消えた項目）は選択から外れる。
+function retainSelectedPaths(prev, next) {
+  const previous = Array.isArray(prev) ? prev : [];
+  const nextSet = new Set(Array.isArray(next) ? next : []);
+  return previous.filter((path) => nextSet.has(path));
+}
+
+// --- 自然順ソートの pure helper --------------------------------------------
+// core の alphanumeric_sort::compare_str と同じ「数字列を数値として比較」を
+// 実装し、大小文字無視の比較が同値なら大小文字区別の比較でタイブレークする。
+
+function compareNatural(a, b) {
+  const left = String(a ?? '');
+  const right = String(b ?? '');
+  let i = 0;
+  let j = 0;
+  while (i < left.length && j < right.length) {
+    const ca = left[i];
+    const cb = right[j];
+    const digitA = ca >= '0' && ca <= '9';
+    const digitB = cb >= '0' && cb <= '9';
+    if (digitA && digitB) {
+      let iEnd = i;
+      let jEnd = j;
+      while (iEnd < left.length && left[iEnd] >= '0' && left[iEnd] <= '9') iEnd += 1;
+      while (jEnd < right.length && right[jEnd] >= '0' && right[jEnd] <= '9') jEnd += 1;
+      const rawA = left.slice(i, iEnd);
+      const rawB = right.slice(j, jEnd);
+      const numA = rawA.replace(/^0+/, '') || '0';
+      const numB = rawB.replace(/^0+/, '') || '0';
+      if (numA.length !== numB.length) return numA.length < numB.length ? -1 : 1;
+      if (numA !== numB) return numA < numB ? -1 : 1;
+      // 数値が等しいときは先頭ゼロの少ない方を前にする（桁あわせの安定化）。
+      const zerosA = rawA.length - numA.length;
+      const zerosB = rawB.length - numB.length;
+      if (zerosA !== zerosB) return zerosA < zerosB ? -1 : 1;
+      i = iEnd;
+      j = jEnd;
+      continue;
+    }
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    i += 1;
+    j += 1;
+  }
+  if (i < left.length) return 1;
+  if (j < right.length) return -1;
+  return 0;
+}
+
+function compareNames(a, b) {
+  const first = compareNatural(String(a ?? '').toLowerCase(), String(b ?? '').toLowerCase());
+  return first !== 0 ? first : compareNatural(a, b);
+}
+
+function extensionOf(name) {
+  const value = String(name ?? '');
+  const dot = value.lastIndexOf('.');
+  if (dot <= 0 || dot === value.length - 1) return '';
+  return value.slice(dot + 1).toLowerCase();
+}
+
+function kindSortKey(entry) {
+  if (entry && entry.isDir) return '';
+  return extensionOf(entry ? entry.name : '');
+}
+
+function compareModified(a, b) {
+  const aMissing = a === null || a === undefined || a === '';
+  const bMissing = b === null || b === undefined || b === '';
+  if (aMissing || bMissing) {
+    if (aMissing && bMissing) return 0;
+    return aMissing ? -1 : 1;
+  }
+  if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : 0;
+  const left = String(a);
+  const right = String(b);
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+// core の SortOrder と同じ方針: ディレクトリ常に先頭、指定キー、名前でタイブレーク。
+// key: 'name' | 'kind' | 'size' | 'modified'、dir: 'asc' | 'desc'。
+// 入力配列は変更しない（純粋関数）。
+function sortEntries(entries, key = 'name', dir = 'asc') {
+  const source = Array.isArray(entries) ? entries : [];
+  const descending = String(dir).toLowerCase() === 'desc';
+  const comparators = {
+    name: (a, b) => compareNames(a.name, b.name),
+    kind: (a, b) => compareNatural(kindSortKey(a), kindSortKey(b)),
+    size: (a, b) => {
+      const sizeA = Number(a.size) || 0;
+      const sizeB = Number(b.size) || 0;
+      return sizeA < sizeB ? -1 : sizeA > sizeB ? 1 : 0;
+    },
+    modified: (a, b) => compareModified(a.modified, b.modified),
+  };
+  const primary = comparators[key] || comparators.name;
+  return source.slice().sort((a, b) => {
+    const dirsFirst = Number(Boolean(b.isDir)) - Number(Boolean(a.isDir));
+    if (dirsFirst !== 0) return dirsFirst;
+    let result = primary(a, b);
+    if (result === 0) result = compareNames(a.name, b.name);
+    return descending ? -result : result;
+  });
 }
 
 // DOM 側の状態反映。wasm 初期化の成否が変わるどの経路でも呼ぶ。
@@ -210,15 +373,43 @@ function humanSize(bytes) {
 
 // --- 描画（テキストはすべて textContent で設定し XSS を避ける） -------------
 
-function render(entries, { heading, query = '', mode = 'list' } = {}) {
-  els.title.textContent = heading;
-  els.count.textContent = `${entries.length} 件`;
-  els.list.replaceChildren();
-  // 再描画時は選択をリセットし、以降の操作はこの配列を基準にする。
-  state.renderedEntries = entries;
-  state.selected = null;
+// 現在のセレクト値を pure sortEntries へ渡すための薄いラッパー。
+function currentSort() {
+  return {
+    key: hasDom && els.sortKey ? els.sortKey.value : 'name',
+    dir: hasDom && els.sortDir ? els.sortDir.value : 'asc',
+  };
+}
 
-  if (entries.length === 0) {
+// ソート条件を変更したとき、最後の入力（一覧 or 検索結果）を同じ見出しで描き直す。
+// render() 自身が sortEntries を通すため、選択は path で保持されたまま残る。
+function rerender() {
+  const { entries, options } = state.lastRender;
+  render(entries, options);
+}
+
+function render(entries, { heading, query = '', mode = 'list' } = {}) {
+  const options = { heading, query, mode };
+  state.lastRender = { entries, options };
+  const view = sortEntries(entries, currentSort().key, currentSort().dir);
+
+  els.title.textContent = heading;
+  els.count.textContent = `${view.length} 件`;
+  els.list.replaceChildren();
+  state.renderedEntries = view;
+
+  // 選択は object 参照ではなく path で保持する。再描画 / 検索 / 再ソートで
+  // エントリが差し替わっても新一覧に残っているパスだけを再選択する（BA07）。
+  state.selectedPaths = retainSelectedPaths(
+    state.selectedPaths,
+    view.map((entry) => entry.path),
+  );
+  if (state.anchorPath && !state.selectedPaths.includes(state.anchorPath)) {
+    state.anchorPath = state.selectedPaths.length ? state.selectedPaths[0] : null;
+  }
+  if (state.focusIndex >= view.length) state.focusIndex = Math.max(0, view.length - 1);
+
+  if (view.length === 0) {
     const li = document.createElement('li');
     // 空状態の li は listbox の選択肢ではないため、支援技術へ選択肢として
     // 読み上げられないよう role=presentation を付与する（状態通知は #status の
@@ -245,16 +436,17 @@ function render(entries, { heading, query = '', mode = 'list' } = {}) {
       li.append(button);
     }
     els.list.append(li);
+    applySelectionAria();
     return;
   }
 
   const fragment = document.createDocumentFragment();
-  for (const [index, entry] of entries.entries()) {
+  for (const [index, entry] of view.entries()) {
     const li = document.createElement('li');
     li.dataset.index = String(index);
     li.setAttribute('role', 'option');
     li.setAttribute('aria-selected', 'false');
-    li.tabIndex = index === 0 ? 0 : -1;
+    li.tabIndex = index === state.focusIndex ? 0 : -1;
 
     const name = document.createElement('span');
     name.className = 'entry-name';
@@ -289,6 +481,7 @@ function render(entries, { heading, query = '', mode = 'list' } = {}) {
     fragment.append(li);
   }
   els.list.append(fragment);
+  applySelectionAria();
 }
 
 // --- 選択 / タッチ / マウス / キーボード操作 -------------------------------
@@ -301,24 +494,31 @@ function entryAt(index) {
     : null;
 }
 
-function selectedIndex() {
-  return state.selected ? state.renderedEntries.indexOf(state.selected) : -1;
+function isPathSelected(path) {
+  return typeof path === 'string' && state.selectedPaths.includes(path);
 }
 
-function applySelection(index) {
+function selectedEntries() {
+  return state.renderedEntries.filter((entry) => isPathSelected(entry.path));
+}
+
+// 複数選択 listbox では aria-selected を各行へ個別に反映する。
+// tabIndex は「フォーカス行」だけ 0 にする（選択行とは独立）。
+function applySelectionAria() {
+  if (!hasDom) return;
   for (const li of els.list.querySelectorAll('li[data-index]')) {
-    const isSelected = Number(li.dataset.index) === index;
-    li.setAttribute('aria-selected', String(isSelected));
-    li.tabIndex = isSelected ? 0 : -1;
+    const index = Number(li.dataset.index);
+    const entry = entryAt(index);
+    li.setAttribute('aria-selected', String(Boolean(entry && isPathSelected(entry.path))));
+    li.tabIndex = index === state.focusIndex ? 0 : -1;
   }
+  updateSelectModeUi();
 }
 
-function selectIndex(index, { fromKeyboard = false } = {}) {
-  const entry = entryAt(index);
-  if (!entry) return;
-  state.selected = entry;
-  applySelection(index);
-  setStatus(`選択: ${entry.name}`);
+function focusRow(index, { fromKeyboard = false } = {}) {
+  if (!entryAt(index)) return;
+  state.focusIndex = index;
+  applySelectionAria();
   const li = els.list.querySelector(`li[data-index="${index}"]`);
   if (!li) return;
   li.focus({ preventScroll: true });
@@ -329,12 +529,102 @@ function selectIndex(index, { fromKeyboard = false } = {}) {
   }
 }
 
+// 通常タップ / 矢印キー: 単一選択へ置き換える（選択モード外の既定動作）。
+function selectSingle(index, { fromKeyboard = false } = {}) {
+  const entry = entryAt(index);
+  if (!entry) return;
+  state.selectedPaths = selectionSelectSingle(entry.path);
+  state.anchorPath = entry.path;
+  setStatus(`選択: ${entry.name}`);
+  focusRow(index, { fromKeyboard });
+}
+
+// 選択モードのタップ: 1 行をトグルする。アンカーは最後に触れた行へ追従する
+// （core の Selection::toggle と同じ規則）。
+function toggleAt(index) {
+  const entry = entryAt(index);
+  if (!entry) return;
+  state.selectedPaths = selectionToggle(state.selectedPaths, entry.path);
+  state.anchorPath = state.selectedPaths.length
+    ? state.selectedPaths[state.selectedPaths.length - 1]
+    : null;
+  state.focusIndex = index;
+  setStatus(`${isPathSelected(entry.path) ? '選択' : '解除'}: ${entry.name}`
+    + `（${state.selectedPaths.length} 件選択中）`);
+  focusRow(index);
+}
+
+// 範囲選択ボタンで arm した後のタップ: アンカーから当該行までを選択する。
+function selectRangeTo(index) {
+  const entry = entryAt(index);
+  if (!entry) return;
+  const anchor = state.anchorPath ?? entry.path;
+  state.selectedPaths = selectionRange(state.renderedEntries, anchor, entry.path);
+  state.focusIndex = index;
+  setStatus(`範囲選択: ${state.selectedPaths.length} 件`);
+  focusRow(index);
+}
+
+function selectAllEntries() {
+  state.selectedPaths = selectionSelectAll(state.renderedEntries);
+  if (state.selectedPaths.length) state.anchorPath = state.selectedPaths[0];
+  setStatus(`すべて選択: ${state.selectedPaths.length} 件`);
+  applySelectionAria();
+}
+
+function clearSelection() {
+  state.selectedPaths = selectionClear();
+  state.anchorPath = null;
+  setStatus('選択を解除しました');
+  applySelectionAria();
+}
+
+function enterSelectMode() {
+  if (state.selectMode) return;
+  state.selectMode = true;
+  state.rangeArmed = false;
+  updateSelectModeUi();
+  setStatus('選択モード: 行をタップして選択 / すべて選択 / 範囲選択 / 解除', 'info');
+}
+
+function exitSelectMode() {
+  if (!state.selectMode) return;
+  state.selectMode = false;
+  state.rangeArmed = false;
+  state.selectedPaths = selectionClear();
+  state.anchorPath = null;
+  updateSelectModeUi();
+  applySelectionAria();
+  setStatus('選択モードを終了しました');
+}
+
+// 選択モードのトグルボタン / 一括操作の表示を同期する。
+function updateSelectModeUi() {
+  if (!hasDom) return;
+  if (els.selectMode) {
+    els.selectMode.setAttribute('aria-pressed', String(state.selectMode));
+    els.selectMode.textContent = state.selectMode ? '選択モード: ON' : '選択モード';
+  }
+  if (els.selectActions) els.selectActions.hidden = !state.selectMode;
+  if (els.selectRange) els.selectRange.setAttribute('aria-pressed', String(state.rangeArmed));
+  if (els.selectCount) {
+    els.selectCount.textContent = state.selectMode ? `${state.selectedPaths.length} 件選択中` : '';
+  }
+}
+
+// キーボードの移動。選択モードではフォーカスのみ動かし、Enter でトグルする
+// （複数選択 listbox の標準的な挙動）。通常モードは単一選択を追従させる。
+function moveFocusTo(index, { fromKeyboard = true } = {}) {
+  if (!entryAt(index)) return;
+  if (state.selectMode) focusRow(index, { fromKeyboard });
+  else selectSingle(index, { fromKeyboard });
+}
+
 function moveSelection(delta) {
   const length = state.renderedEntries.length;
   if (length === 0) return;
-  const current = selectedIndex();
-  const start = current < 0 ? (delta > 0 ? -1 : 0) : current;
-  selectIndex(Math.min(length - 1, Math.max(0, start + delta)), { fromKeyboard: true });
+  const start = state.focusIndex < 0 ? (delta > 0 ? -1 : 0) : state.focusIndex;
+  moveFocusTo(Math.min(length - 1, Math.max(0, start + delta)), { fromKeyboard: true });
 }
 
 function showEntryMeta(entry) {
@@ -358,12 +648,19 @@ function entryFromEvent(event) {
 function onListClick(event) {
   if (isClickSuppressed(performance.now(), state.suppressClickUntil)) return;
   const { li, entry } = entryFromEvent(event);
-  if (li && entry) selectIndex(Number(li.dataset.index));
+  if (!li || !entry) return;
+  const index = Number(li.dataset.index);
+  if (state.selectMode) {
+    if (state.rangeArmed) selectRangeTo(index);
+    else toggleAt(index);
+  } else {
+    selectSingle(index);
+  }
 }
 
 function onListContextMenu(event) {
-  // ブラウザ標準のコンテキストメニューを抑制し、デスクトップ右クリックも
-  // タッチの長押しと同じメタ表示として扱う。
+  // ブラウザ標準のコンテキストメニューを抑制し、マウスの右クリックは
+  // 詳細表示として扱う（タッチの長押しは選択モード突入へ変更済み）。
   event.preventDefault();
   const { entry } = entryFromEvent(event);
   if (entry) showEntryMeta(entry);
@@ -379,17 +676,19 @@ function clearLongPress() {
 function onListTouchStart(event) {
   // 検索入力中は無効化（iOS Safari の標準スワイプバックとの競合を避ける）。
   // 2 本目の指が触れた場合もここを通る。state.touch を捨てる前にタイマーを
-  // キャンセルしないと、長押しコールバックが残って詳細表示が誤って出る。
+  // キャンセルしないと、長押しコールバックが残って選択モードへ誤突入する。
   if (document.activeElement === els.search || event.touches.length !== 1) {
     clearLongPress();
     state.touch = null;
     return;
   }
   const touch = event.touches[0];
-  const { entry } = entryFromEvent(event);
+  const { li, entry } = entryFromEvent(event);
+  const index = li ? Number(li.dataset.index) : -1;
   state.touch = {
     startX: touch.clientX,
     startY: touch.clientY,
+    index,
     entry,
     moved: false,
     // 画面左端から始まるジェスチャは OS の戻る操作へ譲る。
@@ -397,9 +696,15 @@ function onListTouchStart(event) {
     timer: 0,
   };
   if (entry) {
+    // 長押しは詳細表示ではなく「選択モードへ突入 + 当該行をトグル」へ変更（BA19）。
+    // 詳細表示はキーボードの Space / i とマウスの右クリックに退避する。
     state.touch.timer = window.setTimeout(() => {
       state.touch = null;
-      showEntryMeta(entry);
+      state.rangeArmed = false;
+      enterSelectMode();
+      toggleAt(index);
+      // 長押し直後に発火する click で二重トグルされないようにする。
+      state.suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
     }, LONG_PRESS_MS);
   }
 }
@@ -444,7 +749,8 @@ function onListTouchCancel() {
 async function clearSearch() {
   window.clearTimeout(state.debounce);
   els.search.value = '';
-  state.selected = null;
+  state.selectedPaths = selectionClear();
+  state.anchorPath = null;
   setStatus('検索をクリアして一覧へ戻りました');
   await runSearch('');
 }
@@ -469,29 +775,37 @@ function onListKeyDown(event) {
       return;
     case 'home':
       event.preventDefault();
-      selectIndex(0, { fromKeyboard: true });
+      moveFocusTo(0);
       return;
     case 'end':
       event.preventDefault();
-      selectIndex(state.renderedEntries.length - 1, { fromKeyboard: true });
+      moveFocusTo(state.renderedEntries.length - 1);
       return;
-    // ポインタの長押し / 右クリックと同じ詳細表示（path / size / isDir）を
-    // キーボードからも呼べるようにする。Space はページスクロールを止める。
+    // 詳細表示（path / size / isDir）は長押しから Space / i へ退避（BA19）。
+    // Space はページスクロールを止める。修飾キー付きは listKeyCommand が
+    // 既に null を返すため、ブラウザ / OS のショートカットを横取りしない。
     case 'details': {
       event.preventDefault();
       const { entry } = entryFromEvent(event);
-      showEntryMeta(state.selected ?? entry);
+      const firstSelected = selectedEntries()[0];
+      showEntryMeta(entry ?? firstSelected ?? entryAt(state.focusIndex));
       return;
     }
     case 'enter': {
       const { li, entry } = entryFromEvent(event);
-      if (li && entry) {
-        selectIndex(Number(li.dataset.index), { fromKeyboard: true });
-      } else if (!state.selected) {
+      const index = li ? Number(li.dataset.index) : state.focusIndex;
+      if (state.selectMode && entryAt(index)) {
+        // 選択モードの Enter は当該行のトグル（範囲 arm 中は範囲選択）。
+        event.preventDefault();
+        if (state.rangeArmed) selectRangeTo(index);
+        else toggleAt(index);
         return;
       }
+      const chosen = entry ?? entryAt(state.focusIndex);
+      if (!chosen) return;
       event.preventDefault();
-      setStatus(`選択確定: ${state.selected.name}`);
+      if (index >= 0) focusRow(index, { fromKeyboard: true });
+      setStatus(`選択確定: ${chosen.name}`);
       return;
     }
     default:
@@ -654,6 +968,8 @@ async function boot() {
 
   // ここでは検索 input の Enter には触れず、一覧内の操作だけを扱う。
   els.list.setAttribute('role', 'listbox');
+  // 範囲選択できることを支援技術へ伝える（index.html にも静的に付与済み）。
+  els.list.setAttribute('aria-multiselectable', 'true');
   els.list.addEventListener('click', onListClick);
   els.list.addEventListener('contextmenu', onListContextMenu);
   els.list.addEventListener('keydown', onListKeyDown);
@@ -661,6 +977,30 @@ async function boot() {
   els.list.addEventListener('touchmove', onListTouchMove, { passive: true });
   els.list.addEventListener('touchend', onListTouchEnd, { passive: true });
   els.list.addEventListener('touchcancel', onListTouchCancel, { passive: true });
+
+  // 修飾キー（Ctrl / Shift / Cmd / Alt）は横取りせず、専用トグルで複数選択を
+  // 提供する。デスクトップ版の Ctrl+クリック / Shift+範囲 / Ctrl+A に相当する
+  // 導線を、タッチしやすいボタンとして index.html に配置している。
+  if (els.selectMode) {
+    els.selectMode.addEventListener('click', () => {
+      if (state.selectMode) exitSelectMode();
+      else enterSelectMode();
+    });
+  }
+  if (els.selectAll) els.selectAll.addEventListener('click', selectAllEntries);
+  if (els.selectClear) els.selectClear.addEventListener('click', clearSelection);
+  if (els.selectRange) {
+    els.selectRange.addEventListener('click', () => {
+      state.rangeArmed = !state.rangeArmed;
+      updateSelectModeUi();
+      setStatus(state.rangeArmed
+        ? '範囲選択: 開始行をタップ、終端行をタップ'
+        : '範囲選択を解除しました');
+    });
+  }
+  if (els.sortKey) els.sortKey.addEventListener('change', rerender);
+  if (els.sortDir) els.sortDir.addEventListener('change', rerender);
+  updateSelectModeUi();
 
   if (supportsFileSystemAccess()) {
     els.pickDir.hidden = false;
@@ -699,5 +1039,15 @@ if (typeof module !== 'undefined' && module.exports) {
     listKeyCommand,
     updatePickDirAvailability,
     toEntry,
+    // 複数選択 / 残存 / ソートの pure helper（node --test から直接検証する）。
+    selectionToggle,
+    selectionClear,
+    selectionSelectSingle,
+    selectionSelectAll,
+    selectionRange,
+    retainSelectedPaths,
+    compareNatural,
+    compareNames,
+    sortEntries,
   };
 }

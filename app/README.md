@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- SPDX-FileCopyrightText: 2026 koppe <keitaonodera0903@gmail.com> -->
 
 # GPUI File Explorer — デスクトップ試作
 

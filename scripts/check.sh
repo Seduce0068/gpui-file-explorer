@@ -66,7 +66,8 @@ Usage:
   bash scripts/check.sh --fast      # skip audit/vet and deny advisories; implies
                                     # --no-release; deny still runs offline for
                                     # licenses/bans/sources
-  bash scripts/check.sh --app       # app/ only (includes release verification)
+  bash scripts/check.sh --app       # app/ + core/win32 + cross-target checks
+                                    # (includes release verification)
   bash scripts/check.sh --poc       # poc/ only
   bash scripts/check.sh --no-release # skip the app/ release verification
   bash scripts/check.sh --strict    # fail if a needed supply-chain tool is missing
@@ -229,7 +230,9 @@ fi
 
 # core / win32 は workspace member だが、app/poc の個別ゲートでは
 # それぞれの #[cfg(test)] が実行されないため明示的に回す。
-if [ "${run_poc}" = true ]; then
+# 以前はこのブロックが run_poc 内にあり、--app 指定時に黙ってスキップされていた。
+# app / poc のどちらかが有効なら常に実行する（CI の extra_gates と同じ範囲）。
+run_member_checks() {
 	for member in core win32; do
 		echo "==> ${member}: cargo test --all-targets --locked"
 		(cd "${member}" && cargo test --all-targets --locked)
@@ -252,6 +255,12 @@ if [ "${run_poc}" = true ]; then
 
 	echo '==> win32: cargo check --target x86_64-pc-windows-gnu --locked'
 	cargo check -p gfe-win32 --target x86_64-pc-windows-gnu --locked
+}
+
+if [ "${run_app}" = true ] || [ "${run_poc}" = true ]; then
+	run_member_checks
+else
+	echo 'SKIPPED: core/win32 member tests and cross-target checks (no scope selected)'
 fi
 
 

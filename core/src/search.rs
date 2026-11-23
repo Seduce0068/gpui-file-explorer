@@ -306,21 +306,95 @@ impl Default for ContentSearchOptions {
     }
 }
 
+/// Identity of the inode inspected by `symlink_metadata`. A path swapped for
+/// a symlink between that check and `File::open` resolves to a different inode
+/// and must be discarded, never read (BA13). `std` only, Unix `MetadataExt`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl FileIdentity {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Self {
+                dev: metadata.dev(),
+                ino: metadata.ino(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            Self {}
+        }
+    }
+}
+
+// Headless seam used by tests to simulate a swap between the metadata check
+// and the open; `#[cfg(test)]` only, thread-local so parallel tests cannot
+// influence each other.
+#[cfg(test)]
+thread_local! {
+    static SWAP_OPEN_WITH: std::cell::RefCell<Option<PathBuf>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+fn open_content_file(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(test)]
+    if let Some(swap) = SWAP_OPEN_WITH.with(|cell| cell.borrow().clone()) {
+        return std::fs::File::open(swap);
+    }
+    std::fs::File::open(path)
+}
+
 /// Return the 1-based line number of the first line containing `needle`
 /// (case-insensitive), or `None` when the file has no match or is binary.
 ///
 /// Reads one line at a time, remembering the first match but continuing to
 /// EOF so a NUL byte anywhere in the read range still marks the file as
 /// binary. Cancellation is checked between lines.
+#[cfg(test)]
 fn first_matching_line_in_file(
     path: &Path,
     needle: &str,
     max_bytes: u64,
     cancel: &AtomicBool,
 ) -> std::io::Result<Option<u32>> {
+    // Standalone callers take their own identity right before opening.
+    let identity = FileIdentity::of(&std::fs::symlink_metadata(path)?);
+    first_matching_line_in_file_checked(path, needle, max_bytes, cancel, identity)
+}
+
+/// Same as [`first_matching_line_in_file`], but with the identity captured by
+/// the walker's `symlink_metadata` check, so a post-check swap is detectable.
+fn first_matching_line_in_file_checked(
+    path: &Path,
+    needle: &str,
+    max_bytes: u64,
+    cancel: &AtomicBool,
+    expected: FileIdentity,
+) -> std::io::Result<Option<u32>> {
     use std::io::{BufRead, BufReader, Read};
 
-    let file = std::fs::File::open(path)?;
+    let file = open_content_file(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // `File::metadata` is fstat on the *opened* descriptor, so this sees
+        // the replacement even if the path was swapped after our check.
+        let opened = file.metadata()?;
+        if opened.dev() != expected.dev || opened.ino() != expected.ino {
+            return Ok(None);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = expected;
     let mut reader = BufReader::new(file.take(max_bytes));
     let mut line = Vec::new();
     let mut line_number = 0u32;
@@ -416,9 +490,17 @@ pub fn search_contents(
             if !link_metadata.is_file() || link_metadata.len() > options.max_file_size {
                 continue;
             }
-            if let Ok(Some(line)) =
-                first_matching_line_in_file(&path, &needle, options.max_file_size, cancel)
-            {
+            // Reuse the identity from the symlink_metadata check above: if the
+            // path is replaced before the open, the reader discards it instead
+            // of reading outside the search root (BA13).
+            let identity = FileIdentity::of(&link_metadata);
+            if let Ok(Some(line)) = first_matching_line_in_file_checked(
+                &path,
+                &needle,
+                options.max_file_size,
+                cancel,
+                identity,
+            ) {
                 if let Some(entry) = entry_for_path(&path) {
                     matches.push(SearchResult {
                         entry,
@@ -835,7 +917,7 @@ mod filter_tests {
 
 #[cfg(test)]
 mod content_tests {
-    use super::{search_contents, ContentSearchOptions};
+    use super::{search_contents, ContentSearchOptions, SWAP_OPEN_WITH};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -1074,6 +1156,34 @@ mod content_tests {
             None
         );
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_swapped_after_the_metadata_check_is_not_read() {
+        let dir = scratch("swap-after-metadata");
+        let root = dir.join("root");
+        fs::create_dir(&root).unwrap();
+        write(&root.join("harmless.txt"), b"nothing to see here\n");
+        // Outside the search root, containing the needle. If the walker were
+        // to read this after checking `harmless.txt`, it would escape root.
+        let outside = dir.join("outside.txt");
+        write(&outside, b"TARGET secret outside the root\n");
+
+        // No swap: the ordinary file is searched normally.
+        let options = ContentSearchOptions::default();
+        let normal = search_contents(&root, "target", options, &AtomicBool::new(false));
+        assert!(normal.is_empty(), "fixture must not match without the swap");
+
+        // Simulate the path being replaced between symlink_metadata and open.
+        SWAP_OPEN_WITH.with(|cell| *cell.borrow_mut() = Some(outside.clone()));
+        let swapped = search_contents(&root, "target", options, &AtomicBool::new(false));
+        SWAP_OPEN_WITH.with(|cell| *cell.borrow_mut() = None);
+        assert!(
+            swapped.is_empty(),
+            "the opened file's dev/ino differs from the checked path: {swapped:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -41,6 +41,7 @@
 //! This module is intentionally GPUI-free so it can be unit tested headlessly.
 //! It is exercised by the tests below and backs the cut/copy/paste UI.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -48,6 +49,27 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::error::UNKNOWN_ERROR_REASON;
 use crate::model::{AppError, BoxedCause};
+
+/// Headless test seams. All of them are thread-local and `#[cfg(test)]` only,
+/// so production builds neither pay for them nor gain a new failure mode.
+#[cfg(test)]
+mod test_seams {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        /// Fail the next `sync_all` with an injected I/O error (BA04).
+        pub static FAIL_NEXT_SYNC: Cell<bool> = const { Cell::new(false) };
+        /// Simulate a process crash immediately after the Unix `hard_link`
+        /// publish and before unlinking the partial (BA05).
+        pub static CRASH_AFTER_PUBLISH: Cell<bool> = const { Cell::new(false) };
+        /// Mutate the source between the copy and verification (BA01). The
+        /// callback receives the source path so the test can rewrite it with
+        /// a same-length, different-content payload.
+        pub static AFTER_COPY_HOOK: RefCell<Option<fn(&std::path::Path)>> = const {
+            RefCell::new(None)
+        };
+    }
+}
 
 /// Size of the chunks used when copying file contents.
 pub const COPY_CHUNK_SIZE: usize = 64 * 1024;
@@ -407,15 +429,72 @@ fn reserve_partial(
     }
 }
 
+/// FNV-1a (64-bit) offset basis and prime. Implemented with `std` only: the
+/// copy loop folds the bytes it reads into a digest that verification can
+/// re-check without a second read of the partial file at copy time.
+const FNV1A_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv1a_update(hash: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(hash, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(FNV1A_PRIME)
+    })
+}
+
+/// Digest of the bytes a copy actually read, captured in the 64 KiB copy loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ContentDigest {
+    len: u64,
+    hash: u64,
+}
+
+/// Digests captured during a copy, keyed by destination path so recursive
+/// copies can verify every file against what was written.
+type ExpectedDigests = HashMap<PathBuf, ContentDigest>;
+
+fn digest_of_file(path: &Path, cancel: &CancelFlag) -> Result<ContentDigest, OpError> {
+    let mut file = fs::File::open(path).map_err(|e| io_error(path, e))?;
+    let mut buffer = vec![0u8; COPY_CHUNK_SIZE];
+    let mut hash = FNV1A_OFFSET;
+    let mut len = 0u64;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(OpError::Cancelled);
+        }
+        let read = file.read(&mut buffer).map_err(|e| io_error(path, e))?;
+        if read == 0 {
+            break;
+        }
+        hash = fnv1a_update(hash, &buffer[..read]);
+        len += read as u64;
+    }
+    Ok(ContentDigest { len, hash })
+}
+
+/// Flush data to stable storage. `sync_all`'s result is fatal: silently
+/// ignoring ENOSPC/EIO would report a successful copy of data that may never
+/// reach disk. The test seam lets headless tests inject that failure.
+fn sync_output(output: &fs::File, dest: &Path) -> Result<(), OpError> {
+    #[cfg(test)]
+    if test_seams::FAIL_NEXT_SYNC.with(|flag| flag.replace(false)) {
+        return Err(OpError::Io {
+            path: dest.to_path_buf(),
+            message: "同期の失敗を注入しました".to_string(),
+        });
+    }
+    output.sync_all().map_err(|e| io_error(dest, e))
+}
+
 /// Copy a single file atomically: write a sibling `.partial-*` file, flush,
-/// then link it into place. `dest` must not exist.
+/// then publish it. Returns the digest of the bytes read so the caller can
+/// verify the destination against them. `dest` must not exist.
 fn copy_file_atomic(
     src: &Path,
     dest: &Path,
     cancel: &CancelFlag,
     stats: &mut OpStats,
     progress: &mut dyn FnMut(u64),
-) -> Result<(), OpError> {
+) -> Result<(u64, ContentDigest), OpError> {
     #[cfg(unix)]
     let metadata = fs::metadata(src).map_err(|e| io_error(src, e))?;
     let parent = dest
@@ -457,9 +536,10 @@ fn copy_file_atomic(
         )
     })?;
 
-    let result = (|| -> Result<u64, OpError> {
+    let result = (|| -> Result<(u64, ContentDigest), OpError> {
         let mut buffer = vec![0u8; COPY_CHUNK_SIZE];
         let mut total = 0u64;
+        let mut hash = FNV1A_OFFSET;
         loop {
             if cancel.is_cancelled() {
                 return Err(OpError::Cancelled);
@@ -468,6 +548,9 @@ fn copy_file_atomic(
             if read == 0 {
                 break;
             }
+            // Fold exactly the bytes we write, so verification can detect a
+            // source rewrite as well as a corrupted destination (BA01).
+            hash = fnv1a_update(hash, &buffer[..read]);
             output
                 .write_all(&buffer[..read])
                 .map_err(|e| io_error(dest, e))?;
@@ -475,51 +558,78 @@ fn copy_file_atomic(
             progress(base_bytes + total);
         }
         output.flush().map_err(|e| io_error(dest, e))?;
-        // Best-effort durability; a failure here is not fatal for a UI copy.
-        let _ = output.sync_all();
-        Ok(total)
+        // Durability failures are reported; the error path below removes the
+        // partial we created instead of claiming a successful copy (BA04).
+        sync_output(&output, dest)?;
+        Ok((total, ContentDigest { len: total, hash }))
     })();
 
-    let bytes = match result {
-        Ok(bytes) => bytes,
+    let (bytes, digest) = match result {
+        Ok(pair) => pair,
         Err(err) => {
             let _ = fs::remove_file(&partial);
             return Err(err);
         }
     };
 
-    // Reserve `dest` with O_EXCL semantics. A concurrent creator cannot slip
-    // in between this check and the final rename, so the "never overwrite"
-    // rule holds even under a race. `rename` then atomically replaces only our
-    // own empty reservation with the fully copied partial file.
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dest)
+    #[cfg(unix)]
     {
-        Ok(reservation) => {
-            drop(reservation);
-            // On Windows `fs::rename` refuses to replace an existing file, so
-            // the reservation must be removed first. The O_EXCL check above
-            // still prevents clobbering a pre-existing destination; Unix keeps
-            // the reservation in place for its atomic replace semantics.
-            #[cfg(windows)]
-            let _ = fs::remove_file(dest);
-            if let Err(error) = fs::rename(&partial, dest) {
-                // `dest` is our own reservation at this point; removing it is
-                // safe and leaves no half-written destination behind.
-                let _ = fs::remove_file(dest);
+        // Publish the *complete* partial with an atomic, create-new hard link.
+        // EEXIST protects a pre-existing destination, and there is never a
+        // 0-byte destination window: after a crash `dest` is either absent or
+        // the fully written file. The temporary name is unlinked afterwards;
+        // both names refer to the same inode until then (BA05).
+        match fs::hard_link(&partial, dest) {
+            Ok(()) => {
+                #[cfg(test)]
+                if test_seams::CRASH_AFTER_PUBLISH.with(|flag| flag.replace(false)) {
+                    // Simulated crash point: leave both links in place so the
+                    // test can assert the published destination is complete.
+                    return Ok((bytes, digest));
+                }
+                let _ = fs::remove_file(&partial);
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&partial);
+                return Err(OpError::AlreadyExists(dest.to_path_buf()));
+            }
+            Err(error) => {
                 let _ = fs::remove_file(&partial);
                 return Err(io_error(dest, error));
             }
         }
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            let _ = fs::remove_file(&partial);
-            return Err(OpError::AlreadyExists(dest.to_path_buf()));
-        }
-        Err(error) => {
-            let _ = fs::remove_file(&partial);
-            return Err(io_error(dest, error));
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Windows keeps the create_new reservation + remove-then-rename
+        // sequence: `std` offers no cross-platform atomic create-if-absent
+        // hard-link publish there. The O_EXCL check still prevents clobbering
+        // a pre-existing destination; the residual TOCTOU window between
+        // removing the reservation and renaming is platform-documented.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dest)
+        {
+            Ok(reservation) => {
+                drop(reservation);
+                #[cfg(windows)]
+                let _ = fs::remove_file(dest);
+                if let Err(error) = fs::rename(&partial, dest) {
+                    let _ = fs::remove_file(dest);
+                    let _ = fs::remove_file(&partial);
+                    return Err(io_error(dest, error));
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&partial);
+                return Err(OpError::AlreadyExists(dest.to_path_buf()));
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&partial);
+                return Err(io_error(dest, error));
+            }
         }
     }
 
@@ -533,7 +643,7 @@ fn copy_file_atomic(
 
     stats.files += 1;
     stats.bytes = base_bytes + bytes;
-    Ok(())
+    Ok((bytes, digest))
 }
 
 /// Copy a symlink as a symlink (never follow it). On non-Unix platforms this
@@ -564,6 +674,8 @@ fn copy_symlink(src: &Path, dest: &Path, stats: &mut OpStats) -> Result<(), OpEr
 /// the caller's failure cleanup. When the root creation loses a race to a
 /// concurrent creator it fails *before* the flag is set, so cleanup leaves that
 /// foreign entry untouched (see [`copy_entry`] and `move_entry`'s EXDEV path).
+/// `digests` collects the copy-time content digest of every regular file so
+/// verification can compare both sides against what was actually written.
 fn copy_recursive(
     src: &Path,
     dest: &Path,
@@ -571,6 +683,7 @@ fn copy_recursive(
     stats: &mut OpStats,
     progress: &mut dyn FnMut(u64),
     dest_created: &mut bool,
+    digests: &mut ExpectedDigests,
 ) -> Result<(), OpError> {
     if cancel.is_cancelled() {
         return Err(OpError::Cancelled);
@@ -604,6 +717,7 @@ fn copy_recursive(
                 stats,
                 progress,
                 dest_created,
+                digests,
             )?;
         }
         #[cfg(unix)]
@@ -615,7 +729,8 @@ fn copy_recursive(
         return Ok(());
     }
     if metadata.is_file() {
-        copy_file_atomic(src, dest, cancel, stats, progress)?;
+        let (_, digest) = copy_file_atomic(src, dest, cancel, stats, progress)?;
+        digests.insert(dest.to_path_buf(), digest);
         *dest_created = true;
         return Ok(());
     }
@@ -643,33 +758,69 @@ fn verify_mismatch(path: &Path, what: &str) -> OpError {
     ))
 }
 
+/// A verification failure plus whether the *source* changed after the copy.
+///
+/// A changed source must not trigger the usual "delete the destination"
+/// cleanup: `dest` still holds a complete copy of the bytes that were actually
+/// read, and the user needs an explicit report instead of silently losing it.
+#[derive(Debug)]
+struct VerifyFailure {
+    error: OpError,
+    source_changed: bool,
+}
+
+impl VerifyFailure {
+    fn mismatch(error: OpError) -> Self {
+        Self {
+            error,
+            source_changed: false,
+        }
+    }
+
+    fn source_changed(src: &Path, dest: &Path) -> Self {
+        Self {
+            error: OpError::InvalidTarget(format!(
+                "コピー元がコピー中に変更されました: {} (コピー先: {})",
+                src.display(),
+                dest.display()
+            )),
+            source_changed: true,
+        }
+    }
+}
+
 fn verify_entry(
     src: &Path,
     dest: &Path,
     stats: &mut VerifyStats,
     cancel: &CancelFlag,
-) -> Result<(), OpError> {
+    expected: Option<&ExpectedDigests>,
+) -> Result<(), VerifyFailure> {
     if cancel.is_cancelled() {
-        return Err(OpError::Cancelled);
+        return Err(VerifyFailure::mismatch(OpError::Cancelled));
     }
-    let src_meta = fs::symlink_metadata(src).map_err(|e| io_error(src, e))?;
+    let src_meta =
+        fs::symlink_metadata(src).map_err(|e| VerifyFailure::mismatch(io_error(src, e)))?;
     let dest_meta = fs::symlink_metadata(dest).map_err(|e| match e.kind() {
-        ErrorKind::NotFound => {
-            OpError::InvalidTarget(format!("コピー先が存在しません: {}", dest.display()))
-        }
-        _ => io_error(dest, e),
+        ErrorKind::NotFound => VerifyFailure::mismatch(OpError::InvalidTarget(format!(
+            "コピー先が存在しません: {}",
+            dest.display()
+        ))),
+        _ => VerifyFailure::mismatch(io_error(dest, e)),
     })?;
 
     let src_link = src_meta.file_type().is_symlink();
     let dest_link = dest_meta.file_type().is_symlink();
     if src_link || dest_link {
         if !src_link || !dest_link {
-            return Err(verify_mismatch(dest, "種類"));
+            return Err(VerifyFailure::mismatch(verify_mismatch(dest, "種類")));
         }
-        let src_target = fs::read_link(src).map_err(|e| io_error(src, e))?;
-        let dest_target = fs::read_link(dest).map_err(|e| io_error(dest, e))?;
+        let src_target =
+            fs::read_link(src).map_err(|e| VerifyFailure::mismatch(io_error(src, e)))?;
+        let dest_target =
+            fs::read_link(dest).map_err(|e| VerifyFailure::mismatch(io_error(dest, e)))?;
         if src_target != dest_target {
-            return Err(verify_mismatch(dest, "リンク先"));
+            return Err(VerifyFailure::mismatch(verify_mismatch(dest, "リンク先")));
         }
         stats.files += 1;
         return Ok(());
@@ -677,60 +828,115 @@ fn verify_entry(
 
     if src_meta.is_dir() || dest_meta.is_dir() {
         if !src_meta.is_dir() || !dest_meta.is_dir() {
-            return Err(verify_mismatch(dest, "種類"));
+            return Err(VerifyFailure::mismatch(verify_mismatch(dest, "種類")));
         }
         let mut src_names: Vec<std::ffi::OsString> = Vec::new();
-        for entry in fs::read_dir(src).map_err(|e| io_error(src, e))? {
-            src_names.push(entry.map_err(|e| io_error(src, e))?.file_name());
+        for entry in fs::read_dir(src).map_err(|e| VerifyFailure::mismatch(io_error(src, e)))? {
+            src_names.push(
+                entry
+                    .map_err(|e| VerifyFailure::mismatch(io_error(src, e)))?
+                    .file_name(),
+            );
         }
         let mut dest_names: Vec<std::ffi::OsString> = Vec::new();
-        for entry in fs::read_dir(dest).map_err(|e| io_error(dest, e))? {
-            dest_names.push(entry.map_err(|e| io_error(dest, e))?.file_name());
+        for entry in fs::read_dir(dest).map_err(|e| VerifyFailure::mismatch(io_error(dest, e)))? {
+            dest_names.push(
+                entry
+                    .map_err(|e| VerifyFailure::mismatch(io_error(dest, e)))?
+                    .file_name(),
+            );
         }
         src_names.sort();
         dest_names.sort();
         if src_names != dest_names {
-            return Err(verify_mismatch(dest, "子要素"));
+            return Err(VerifyFailure::mismatch(verify_mismatch(dest, "子要素")));
         }
         for name in src_names {
-            verify_entry(&src.join(&name), &dest.join(&name), stats, cancel)?;
+            verify_entry(&src.join(&name), &dest.join(&name), stats, cancel, expected)?;
         }
         stats.dirs += 1;
         return Ok(());
     }
 
     if src_meta.is_file() && dest_meta.is_file() {
-        if src_meta.len() != dest_meta.len() {
-            return Err(OpError::InvalidTarget(format!(
+        // Read both sides. Size-only verification accepted same-length,
+        // different-content files and could not notice a source rewrite
+        // during the copy (BA01). When a copy-time digest is available it is
+        // the authority: a changed source is reported (and `dest` preserved),
+        // while a changed destination is a regular mismatch.
+        let captured = expected.and_then(|map| map.get(dest)).copied();
+        let src_digest = digest_of_file(src, cancel).map_err(VerifyFailure::mismatch)?;
+        let dest_digest = digest_of_file(dest, cancel).map_err(VerifyFailure::mismatch)?;
+        let size_mismatch = || {
+            VerifyFailure::mismatch(OpError::InvalidTarget(format!(
                 "コピー先のサイズが一致しません: {} ({} != {})",
                 dest.display(),
-                dest_meta.len(),
-                src_meta.len()
-            )));
+                dest_digest.len,
+                src_digest.len
+            )))
+        };
+        match captured {
+            Some(expected_digest) => {
+                // Check the source first: a rewrite must be reported as such
+                // and must never trigger destination deletion, even when its
+                // length changed.
+                if src_digest != expected_digest {
+                    return Err(VerifyFailure::source_changed(src, dest));
+                }
+                if src_digest.len != dest_digest.len {
+                    return Err(size_mismatch());
+                }
+                if dest_digest != expected_digest {
+                    return Err(VerifyFailure::mismatch(verify_mismatch(dest, "内容")));
+                }
+            }
+            None => {
+                // Standalone verification has no captured digest: compare the
+                // two files directly so equal-length, different data still
+                // fails verification.
+                if src_digest.len != dest_digest.len {
+                    return Err(size_mismatch());
+                }
+                if src_digest != dest_digest {
+                    return Err(VerifyFailure::mismatch(verify_mismatch(dest, "内容")));
+                }
+            }
         }
         stats.files += 1;
-        stats.bytes += src_meta.len();
+        stats.bytes += src_digest.len;
         return Ok(());
     }
 
-    Err(verify_mismatch(dest, "種類"))
+    Err(VerifyFailure::mismatch(verify_mismatch(dest, "種類")))
+}
+
+/// Internal verification entry point that also reports whether the source
+/// changed, so callers can avoid deleting a destination the user may still
+/// want to inspect.
+fn verify_transfer_with_digests(
+    src: &Path,
+    dest: &Path,
+    cancel: &CancelFlag,
+    expected: Option<&ExpectedDigests>,
+) -> Result<VerifyStats, VerifyFailure> {
+    let mut stats = VerifyStats::default();
+    verify_entry(src, dest, &mut stats, cancel, expected)?;
+    Ok(stats)
 }
 
 /// Verify a completed transfer: `dest` must exist and match `src` in type,
-/// symlink target, directory children and regular-file byte length.
+/// symlink target, directory children and the actual file contents.
 ///
-/// Read-only and symlink-safe (never follows links). Called by [`copy_entry`]
-/// and the cross-device fallback of [`move_entry`] after the write finishes;
-/// a failed verification removes the destination so no truncated copy is left
-/// behind.
+/// Read-only and symlink-safe (never follows links). Standalone callers have
+/// no copy-time digest, so both sides are hashed and compared; [`copy_entry`]
+/// uses [`verify_transfer_with_digests`] to additionally detect a source that
+/// was rewritten during or after the copy.
 pub fn verify_transfer(
     src: &Path,
     dest: &Path,
     cancel: &CancelFlag,
 ) -> Result<VerifyStats, OpError> {
-    let mut stats = VerifyStats::default();
-    verify_entry(src, dest, &mut stats, cancel)?;
-    Ok(stats)
+    verify_transfer_with_digests(src, dest, cancel, None).map_err(|failure| failure.error)
 }
 
 /// Copy `src` into `dest_dir`, honouring `policy`. Returns counters for the
@@ -767,8 +973,16 @@ pub fn copy_entry(
     // flag instead. (A pre-existing dangling symlink is likewise never created
     // by us, so it is also preserved.)
     let mut dest_created = false;
-    if let Err(error) = copy_recursive(src, &dest, cancel, &mut stats, progress, &mut dest_created)
-    {
+    let mut digests = ExpectedDigests::new();
+    if let Err(error) = copy_recursive(
+        src,
+        &dest,
+        cancel,
+        &mut stats,
+        progress,
+        &mut dest_created,
+        &mut digests,
+    ) {
         // `copy_recursive` may already have created `dest` (or part of its
         // tree) before failing, for example on cancellation. Clean it up just
         // like the verification-failure path below and the cross-device
@@ -781,14 +995,25 @@ pub fn copy_entry(
         };
         return Err(with_cleanup_failure(error, &dest, cleanup));
     }
-    if let Err(error) = verify_transfer(src, &dest, cancel) {
+    #[cfg(test)]
+    if let Some(hook) = test_seams::AFTER_COPY_HOOK.with(|cell| *cell.borrow()) {
+        hook(src);
+    }
+    if let Err(failure) = verify_transfer_with_digests(src, &dest, cancel, Some(&digests)) {
         // `copy_recursive` succeeded, so `dest_created` is true and the entry is
         // ours; never leave a truncated or structurally different copy behind.
+        // A source that changed during/after the copy is the exception: the
+        // destination still matches the bytes actually read, so keep it and
+        // report the change instead of deleting it (BA01).
         // Residual TOCTOU: a concurrent creator that swaps `dest` between the
         // copy and this cleanup could still lose its entry — `std` exposes no
         // atomic "replace only if still ours" primitive for the whole tree.
-        let cleanup = remove_entry_safe(&dest);
-        return Err(with_cleanup_failure(error, &dest, cleanup));
+        let cleanup = if failure.source_changed {
+            Ok(())
+        } else {
+            remove_entry_safe(&dest)
+        };
+        return Err(with_cleanup_failure(failure.error, &dest, cleanup));
     }
     stats.created.insert(0, dest);
     progress(stats.bytes);
@@ -986,6 +1211,35 @@ impl Reservation {
     }
 }
 
+/// Reserve a fresh `.rename-*` sibling for a case-only rename with O_EXCL
+/// semantics. Mirrors [`reserve_partial`]: collisions are retried with a fresh
+/// nonce and a colliding name is never deleted. A directory source gets an
+/// empty *directory* reservation so POSIX `rename` can replace it atomically.
+fn reserve_rename_temp(
+    parent: &Path,
+    src_is_dir: bool,
+    mut make_name: impl FnMut() -> String,
+) -> Result<Reservation, OpError> {
+    const RENAME_TEMP_ATTEMPTS: usize = 32;
+    let mut attempts = 0usize;
+    loop {
+        let candidate = parent.join(make_name());
+        match Reservation::create(&candidate, src_is_dir) {
+            Ok(reservation) => return Ok(reservation),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                attempts += 1;
+                if attempts >= RENAME_TEMP_ATTEMPTS {
+                    return Err(OpError::Io {
+                        path: candidate,
+                        message: "一時ファイル名を確保できませんでした".to_string(),
+                    });
+                }
+            }
+            Err(error) => return Err(io_error(&candidate, error)),
+        }
+    }
+}
+
 /// Move `src` into `dest_dir`. Uses `rename` when possible; on `EXDEV` falls
 /// back to copy-then-delete, keeping the source intact if the copy fails.
 pub fn move_entry(
@@ -1051,9 +1305,16 @@ pub fn move_entry(
             // copy actually created it so an `AlreadyExists` failure never
             // turns our cleanup into a recursive delete of foreign data.
             let mut dest_created = false;
-            if let Err(copy_err) =
-                copy_recursive(src, &dest, cancel, &mut stats, progress, &mut dest_created)
-            {
+            let mut digests = ExpectedDigests::new();
+            if let Err(copy_err) = copy_recursive(
+                src,
+                &dest,
+                cancel,
+                &mut stats,
+                progress,
+                &mut dest_created,
+                &mut digests,
+            ) {
                 let cleanup = if dest_created {
                     remove_entry_safe(&dest)
                 } else {
@@ -1065,9 +1326,15 @@ pub fn move_entry(
             // below clean it up. Residual TOCTOU: a concurrent creator that
             // swaps `dest` after our copy could still lose its entry, because
             // `std` offers no atomic "replace only if still ours" for a tree.
-            if let Err(verify_err) = verify_transfer(src, &dest, cancel) {
-                let cleanup = remove_entry_safe(&dest);
-                return Err(with_cleanup_failure(verify_err, &dest, cleanup));
+            if let Err(failure) = verify_transfer_with_digests(src, &dest, cancel, Some(&digests)) {
+                // A rewritten source is reported without deleting the already
+                // complete destination (BA01).
+                let cleanup = if failure.source_changed {
+                    Ok(())
+                } else {
+                    remove_entry_safe(&dest)
+                };
+                return Err(with_cleanup_failure(failure.error, &dest, cleanup));
             }
             on_progress(stats.bytes);
             if cancel.is_cancelled() {
@@ -1146,17 +1413,34 @@ pub fn rename_entry(src: &Path, new_name: &str) -> Result<PathBuf, OpError> {
             return Err(OpError::AlreadyExists(target));
         }
         // Short, unpredictable intermediate name: embedding `new_name` can
-        // exceed NAME_MAX, and a predictable path risks collision with a
-        // pre-planted file on a case-insensitive filesystem.
-        let temp = parent.join(format!(
-            ".rename-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
+        // exceed NAME_MAX. Reserve it with create_new + nonce retry so a
+        // pre-planted file on a case-insensitive filesystem is never
+        // overwritten by the first rename (BA20).
+        let src_is_dir = fs::symlink_metadata(src)
+            .map(|meta| meta.file_type().is_dir())
+            .unwrap_or(false);
+        let mut temp_reservation = reserve_rename_temp(parent, src_is_dir, || {
+            let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_nanos())
-                .unwrap_or(0)
-        ));
-        fs::rename(src, &temp).map_err(|e| io_error(src, e))?;
+                .unwrap_or(0);
+            format!(
+                ".rename-{}-{nanos}-{}",
+                std::process::id(),
+                next_partial_nonce()
+            )
+        })?;
+        let temp = temp_reservation.path.clone();
+        // Windows cannot rename onto an existing entry, so it releases the
+        // reservation first and keeps the documented residual TOCTOU window.
+        #[cfg(windows)]
+        temp_reservation.cleanup();
+        if let Err(error) = fs::rename(src, &temp) {
+            temp_reservation.cleanup();
+            return Err(io_error(src, error));
+        }
+        // The reservation was atomically replaced by `src`; no cleanup remains.
+        temp_reservation.owned = false;
         if let Err(error) = fs::rename(&temp, &target) {
             // The first rename already removed `src`. Roll back to that path
             // so a failed second rename never leaves the entry only at the
@@ -2811,6 +3095,158 @@ mod tests {
         assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
         assert!(move_src.exists(), "a failed move must keep the source");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- R2-INTEGRITY: content verification, durability, publish, BA20 ----
+
+    #[test]
+    fn verify_transfer_detects_same_length_content_mismatch() {
+        let dir = scratch("verify-content");
+        let src = dir.join("src.txt");
+        let dest = dir.join("dest.txt");
+        write(&src, b"aaaaaaaa");
+        write(&dest, b"bbbbbbbb"); // identical length, different bytes
+        let err = verify_transfer(&src, &dest, &CancelFlag::new()).unwrap_err();
+        match &err {
+            OpError::InvalidTarget(message) | OpError::InvalidTargetCause(message, _) => {
+                assert!(message.contains("内容"), "unexpected message: {message}");
+            }
+            other => panic!("expected a content mismatch variant, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_entry_reports_source_change_and_preserves_destination() {
+        let dir = scratch("source-change");
+        let src = dir.join("src.txt");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+        write(&src, b"original-payload"); // 16 bytes
+
+        fn rewrite_same_length(path: &Path) {
+            // Same length: size-only verification would accept this (BA01).
+            fs::write(path, b"modified-payload").unwrap();
+        }
+        test_seams::AFTER_COPY_HOOK.with(|cell| {
+            *cell.borrow_mut() = Some(rewrite_same_length as fn(&Path));
+        });
+        let err = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap_err();
+        test_seams::AFTER_COPY_HOOK.with(|cell| *cell.borrow_mut() = None);
+
+        assert!(
+            err.to_string().contains("変更されました"),
+            "the user must be told the source changed, got {err:?}"
+        );
+        let dest = dest_dir.join("src.txt");
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            b"original-payload",
+            "a changed source must not delete the complete destination"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sync_all_failure_propagates_and_removes_partial() {
+        let dir = scratch("sync-failure");
+        let src = dir.join("src.txt");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+        write(&src, b"payload");
+
+        test_seams::FAIL_NEXT_SYNC.with(|flag| flag.set(true));
+        let err = copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .unwrap_err();
+        match &err {
+            OpError::Io { message, .. } | OpError::IoCause { message, .. } => {
+                assert!(
+                    message.contains("同期の失敗を注入しました"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected an injected sync failure, got {other:?}"),
+        }
+        assert!(!dest_dir.join("src.txt").exists());
+        let leftovers: Vec<_> = fs::read_dir(&dest_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".partial-"))
+            .collect();
+        assert!(leftovers.is_empty(), "partial left behind: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_publish_is_complete_at_simulated_crash_point() {
+        let dir = scratch("publish-crash");
+        let src = dir.join("src.txt");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+        write(&src, b"a-complete-payload");
+
+        test_seams::CRASH_AFTER_PUBLISH.with(|flag| flag.set(true));
+        copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .expect("publication already happened at the injected crash point");
+
+        let dest = dest_dir.join("src.txt");
+        assert_eq!(fs::read(&dest).unwrap(), b"a-complete-payload");
+        assert!(
+            fs::metadata(&dest).unwrap().len() > 0,
+            "a crash must never leave a 0-byte destination"
+        );
+        let partials: Vec<_> = fs::read_dir(&dest_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".partial-"))
+            .collect();
+        assert_eq!(partials.len(), 1, "temp link remains at the crash point");
+        assert!(
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&dest)
+                .is_err(),
+            "EEXIST must protect the already published destination"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_temp_reservation_retries_collisions_then_succeeds() {
+        let dir = scratch("rename-temp-retry");
+        let planted = dir.join("planted");
+        write(&planted, b"foreign");
+        let mut generator =
+            std::iter::once("planted".to_string()).chain(std::iter::once("fresh".to_string()));
+        let mut reservation =
+            reserve_rename_temp(&dir, false, || generator.next().expect("name sequence"))
+                .expect("one collision must be retried");
+        assert_eq!(reservation.path, dir.join("fresh"));
+        assert_eq!(fs::read(&planted).unwrap(), b"foreign");
+        reservation.cleanup();
+        assert!(!dir.join("fresh").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }

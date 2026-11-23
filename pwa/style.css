@@ -124,6 +124,55 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* 選択モードのトグル。押下中は outline で状態を示す（色だけに依存しない）。 */
+#select-mode[aria-pressed="true"],
+#select-range[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 選択モード中だけ現れる一括操作。小さい画面でも折り返して配置する。 */
+.select-actions {
+  align-items: center;
+}
+
+.select-count {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ソート条件（core wasm API は既定値固定なので JS 側で並べ替える）。 */
+.sort-field {
+  display: flex;
+  flex: 0 1 9rem;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.sort-label {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+#sort-key,
+#sort-dir {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.5rem 0.6rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  font: inherit;
+}
+
+#sort-key:focus-visible,
+#sort-dir:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .mode-note {
   margin: 0.75rem 0 0;
   padding: 0.6rem 0.75rem;

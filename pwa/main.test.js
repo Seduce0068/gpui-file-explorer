@@ -11,6 +11,15 @@ const {
   listKeyCommand,
   updatePickDirAvailability,
   toEntry,
+  selectionToggle,
+  selectionClear,
+  selectionSelectSingle,
+  selectionSelectAll,
+  selectionRange,
+  retainSelectedPaths,
+  compareNatural,
+  compareNames,
+  sortEntries,
 } = require('./main.js');
 
 test('isClickSuppressed uses a fixed clock and a strict lower bound', () => {
@@ -163,4 +172,133 @@ test('toEntry currently drops the core kind field (documented regression)', () =
   assert.equal(entry.kind, undefined,
     'PWA does not read kind yet; oversized sentinel is ignored here');
   assert.ok(!Object.keys(entry).includes('kind'), 'kind must not leak into the view model');
+});
+
+// --- 複数選択の pure helper（BA03 / BA07） --------------------------------
+
+test('selectionToggle adds, removes and never mutates its input', () => {
+  const original = ['/a', '/b'];
+  assert.deepEqual(selectionToggle(original, '/c'), ['/a', '/b', '/c'], 'add at the end');
+  assert.deepEqual(selectionToggle(original, '/a'), ['/b'], 'remove an existing path');
+  assert.deepEqual(original, ['/a', '/b'], 'input is untouched');
+  assert.deepEqual(selectionToggle(['/a', '/b', '/a'], '/a'), ['/b'],
+    'all duplicate occurrences are removed');
+  assert.deepEqual(selectionToggle(null, null), [], 'non-string paths are ignored');
+  assert.deepEqual(selectionToggle(undefined, '/a'), ['/a']);
+});
+
+test('selectionClear / selectSingle / selectAll return fresh arrays', () => {
+  const first = selectionClear();
+  first.push('/leak');
+  assert.deepEqual(selectionClear(), [], 'clear does not share the previous array');
+  assert.deepEqual(selectionSelectSingle('/a'), ['/a']);
+  assert.deepEqual(selectionSelectSingle(''), []);
+  assert.deepEqual(selectionSelectAll([
+    { path: '/a' }, { path: '/b' }, { path: '/a' },
+  ]), ['/a', '/b', '/a'], 'selectAll keeps the view order');
+  assert.deepEqual(selectionSelectAll(null), []);
+});
+
+test('selectionRange selects an inclusive span in view order', () => {
+  const entries = ['/a', '/b', '/c', '/d'].map((path) => ({ path }));
+  assert.deepEqual(selectionRange(entries, '/a', '/c'), ['/a', '/b', '/c']);
+  assert.deepEqual(selectionRange(entries, '/c', '/a'), ['/a', '/b', '/c'],
+    'a backwards range is normalised');
+  assert.deepEqual(selectionRange(entries, '/b', '/b'), ['/b'], 'single-row range');
+  assert.deepEqual(selectionRange(entries, null, '/b'), ['/b'], 'no anchor falls back to single');
+  assert.deepEqual(selectionRange(entries, '/missing', '/b'), ['/b'],
+    'an anchor outside the view falls back to single');
+  assert.deepEqual(selectionRange(entries, '/a', '/missing'), [],
+    'a target outside the view selects nothing');
+  assert.deepEqual(selectionRange([], '/a', '/b'), []);
+});
+
+test('retainSelectedPaths keeps only surviving paths and preserves prev order', () => {
+  const next = ['/b', '/c', '/d'];
+  assert.deepEqual(retainSelectedPaths(['/a', '/b', '/c'], next), ['/b', '/c']);
+  assert.deepEqual(retainSelectedPaths(['/c', '/a', '/b'], next), ['/c', '/b'],
+    'the original selection order is preserved');
+  assert.deepEqual(retainSelectedPaths([], next), []);
+  assert.deepEqual(retainSelectedPaths(['/a'], []), []);
+  assert.deepEqual(retainSelectedPaths(null, next), []);
+  assert.deepEqual(retainSelectedPaths(['/a'], null), []);
+
+  // BA07 の回帰: 検索で 1 文字入力しても、残る行の選択は消えない。
+  const view = [{ path: '/README.md' }, { path: '/src' }];
+  const selected = ['/README.md', '/src'];
+  assert.deepEqual(retainSelectedPaths(selected, view.map((entry) => entry.path)), selected,
+    'a one-character search that keeps both rows keeps both selections');
+});
+
+// --- 自然順ソート（BA18） --------------------------------------------------
+
+test('compareNatural treats digit runs as numbers', () => {
+  assert.equal(compareNatural('file2', 'file10'), -1);
+  assert.equal(compareNatural('file10', 'file2'), 1);
+  assert.equal(compareNatural('a1b2', 'a1b10'), -1);
+  assert.equal(compareNatural('item', 'item'), 0);
+  assert.equal(compareNatural('a2', 'a02'), -1, 'fewer leading zeros sorts first');
+});
+
+test('compareNames is case-insensitive with a case-sensitive tie-break', () => {
+  assert.equal(compareNames('alpha', 'Zebra'), -1);
+  assert.equal(compareNames('Alpha', 'alpha'), -1, 'case decides only when lowercase is equal');
+  assert.equal(compareNames('Zebra', 'alpha'), 1);
+  assert.equal(compareNames('file2', 'file10'), -1, 'natural ordering survives the helper');
+});
+
+function fixtureEntries() {
+  return [
+    { name: 'file10.txt', path: '/file10.txt', isDir: false, size: 10, modified: '2024-01-01' },
+    { name: 'file2.txt', path: '/file2.txt', isDir: false, size: 300, modified: '2024-03-01' },
+    { name: 'Zebra', path: '/Zebra', isDir: true, size: 0, modified: null },
+    { name: 'alpha', path: '/alpha', isDir: true, size: 0, modified: '2024-02-01' },
+    { name: 'Beta', path: '/Beta', isDir: false, size: 100, modified: null },
+  ];
+}
+
+function names(entries) {
+  return entries.map((entry) => entry.name);
+}
+
+test('sortEntries defaults to directories first, then natural case-insensitive names', () => {
+  const input = fixtureEntries();
+  const sorted = sortEntries(input);
+  assert.deepEqual(names(sorted), ['alpha', 'Zebra', 'Beta', 'file2.txt', 'file10.txt']);
+  assert.deepEqual(names(input), names(fixtureEntries()), 'input is not mutated');
+  assert.notEqual(sorted, input, 'a new array is returned');
+});
+
+test('sortEntries reverses within each group for desc but keeps directories first', () => {
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'desc')),
+    ['Zebra', 'alpha', 'file10.txt', 'file2.txt', 'Beta']);
+});
+
+test('sortEntries honours size and modified keys', () => {
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'size', 'desc')),
+    ['Zebra', 'alpha', 'file2.txt', 'Beta', 'file10.txt'],
+    'size descending, directories still first');
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'modified', 'asc')),
+    ['Zebra', 'alpha', 'Beta', 'file10.txt', 'file2.txt'],
+    'a missing timestamp sorts before any real timestamp');
+});
+
+test('sortEntries uses the lower-cased extension for the kind key', () => {
+  const input = fixtureEntries();
+  input.push({ name: 'PICTURE.PNG', path: '/PICTURE.PNG', isDir: false, size: 1, modified: null });
+  assert.deepEqual(names(sortEntries(input, 'kind', 'asc')),
+    ['alpha', 'Zebra', 'Beta', 'PICTURE.PNG', 'file2.txt', 'file10.txt'],
+    'no-extension files precede png, which precedes txt');
+});
+
+test('sortEntries falls back safely on unknown keys, bad dirs and empty input', () => {
+  const input = fixtureEntries();
+  assert.deepEqual(names(sortEntries(input, 'unknown', 'sideways')), names(sortEntries(input)));
+  assert.deepEqual(sortEntries(null, 'name', 'asc'), []);
+  assert.deepEqual(sortEntries(undefined), []);
+  assert.deepEqual(sortEntries([]), []);
+  // 大小文字だけが違う名前は、大小文字区別のタイブレークで安定して並ぶ。
+  const ties = [{ name: 'alpha', path: '/a' }, { name: 'Alpha', path: '/A' }];
+  assert.deepEqual(names(sortEntries(ties, 'name', 'asc')), ['Alpha', 'alpha']);
+  assert.deepEqual(names(sortEntries(ties, 'name', 'desc')), ['alpha', 'Alpha']);
 });

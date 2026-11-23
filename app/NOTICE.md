@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- SPDX-FileCopyrightText: 2026 koppe <keitaonodera0903@gmail.com> -->
 
 # NOTICE — GPUI File Explorer prototype
 
@@ -54,8 +55,12 @@ No OS-native file icons are extracted or redistributed.
 
 A GPUI application pulls in a large transitive dependency graph (wgpu, cosmic
 text, accesskit, rust-embed, wayland/x11 protocol crates, …). At the time of
-writing (`Cargo.lock`) those are licensed permissively (MIT / Apache-2.0 /
-BSD / ISC / CC0 / Zlib). For a complete per-crate inventory, run:
+writing (`Cargo.lock`) those are licensed permissively. The license identifiers
+allowed by `cargo deny check` are listed in the repository-root `deny.toml`:
+0BSD, Apache-2.0 (including `Apache-2.0 WITH LLVM-exception`), BSD-2-Clause,
+BSD-3-Clause, BSL-1.0, CC0-1.0, ISC, MIT, MIT-0, MPL-2.0, Unicode-3.0,
+Unlicense and Zlib, in addition to this project's AGPL-3.0-or-later. For a
+complete per-crate inventory, run:
 
 ```bash
 cargo metadata --format-version 1 --manifest-path app/Cargo.toml \

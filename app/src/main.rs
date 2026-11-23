@@ -13613,6 +13613,25 @@ mod tests {
         &source[from..to]
     }
 
+    /// BA11: one authoritative production/test split. A silent fallback to
+    /// the whole source would let the test module's own literals inflate
+    /// `.matches()` counts, so require exactly one separator.
+    fn production_text(source: &str) -> &str {
+        const SEPARATOR: &str = "#[cfg(test)]\nmod tests {";
+        let mut parts = source.split(SEPARATOR);
+        let production = parts
+            .next()
+            .unwrap_or_else(|| panic!("missing production portion"));
+        // `split` yields N+1 parts for N separators: require one trailing
+        // part (the test module) and no third part (a duplicate separator).
+        assert!(parts.next().is_some(), "missing production/test separator");
+        assert!(
+            parts.next().is_none(),
+            "expected exactly one production/test separator"
+        );
+        production
+    }
+
     #[test]
     fn source_region_rejects_a_missing_end_marker() {
         let source = "    fn first() {\n    }\n    fn second() {\n    }\n";
@@ -13634,6 +13653,28 @@ mod tests {
     fn source_region_rejects_identical_markers() {
         let result = std::panic::catch_unwind(|| source_region("abc", "a", "a"));
         assert!(result.is_err(), "start and end must be distinct markers");
+    }
+
+    #[test]
+    fn production_text_requires_exactly_one_separator() {
+        // Build the separator from fragments so this test's own source does
+        // not contribute an extra match to the synthetic input.
+        let sep = concat!("#[cfg(test)]", "\n", "mod tests {");
+        let source = format!("fn production() {{}}\n{sep}\nfn t() {{}}\n}}\n");
+        assert_eq!(production_text(&source), "fn production() {}\n");
+        // BA11: a missing separator must panic instead of falling back to the
+        // whole source, which would let test literals inflate match counts.
+        let missing = std::panic::catch_unwind(|| production_text("fn production() {}"));
+        assert!(
+            missing.is_err(),
+            "a missing separator must not be tolerated"
+        );
+        let dup = format!("fn a() {{}}\n{sep}\n{sep}\n");
+        let duplicate = std::panic::catch_unwind(|| production_text(&dup));
+        assert!(
+            duplicate.is_err(),
+            "duplicate separators must not be tolerated"
+        );
     }
 
     /// Byte index just past the brace closing the block opened at `open`.
@@ -17553,13 +17594,13 @@ mod tests {
         // Count only production sites: a test may quote the call as a literal
         // (e.g. to assert a failure branch still rolls back), which would
         // otherwise inflate the count without adding a write path.
-        let production = source
-            .split("#[cfg(test)]\nmod tests {")
-            .next()
-            .unwrap_or(source);
+        let production = production_text(source);
         let call_sites = production.matches(needle).count();
-        assert_eq!(
-            call_sites, 7,
+        // BA17: the exact count is a maintenance trap (a legitimate helper
+        // extraction changes it). The per-region structural checks below are
+        // the real contract; keep only a floor here.
+        assert!(
+            call_sites >= 7,
             "each preview-then-write path must call rollback_settings"
         );
         // AX12: a bare call count cannot tell a guarded failure branch from an

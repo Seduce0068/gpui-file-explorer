@@ -28,6 +28,11 @@ jobs:
     # 共有ワークフローは実アカウント名（旧 onoderakeita からリネーム済み）で参照する。
     uses: Seduce0068/workflows/.github/workflows/rust-gates.yml@v1
     with:
+      # AGENTS.md §5: まず共通ワークフロー側を確認。rust-gates.yml は既に
+      # timeout_minutes 入力（既定 60）を持ち、其内部ジョブへ timeout-minutes を
+      # 設定済み。提供側リポジトリへの書き込みは本タスクの権限外のため、
+      # 呼び出し側で同じ値を明示して固定する（既定変更時に意図せず変わらないように）。
+      timeout_minutes: 60
       working_directory: app
       apt_packages: |
         pkg-config

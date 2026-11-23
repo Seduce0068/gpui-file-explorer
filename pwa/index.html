@@ -35,6 +35,38 @@
           />
         </label>
         <button id="pick-dir" type="button" hidden>フォルダを選択</button>
+        <button
+          id="select-mode"
+          type="button"
+          class="select-mode"
+          aria-pressed="false"
+        >選択モード</button>
+      </div>
+
+      <div class="controls select-actions" id="select-actions" hidden>
+        <button id="select-all" type="button">すべて選択</button>
+        <button id="select-range" type="button" aria-pressed="false">範囲選択</button>
+        <button id="select-clear" type="button">選択を解除</button>
+        <span id="select-count" class="select-count"></span>
+      </div>
+
+      <div class="controls sort-controls">
+        <label class="sort-field">
+          <span class="sort-label">並び替え</span>
+          <select id="sort-key">
+            <option value="name">名前</option>
+            <option value="kind">種類</option>
+            <option value="size">サイズ</option>
+            <option value="modified">更新日時</option>
+          </select>
+        </label>
+        <label class="sort-field">
+          <span class="sort-label">方向</span>
+          <select id="sort-dir">
+            <option value="asc">昇順</option>
+            <option value="desc">降順</option>
+          </select>
+        </label>
       </div>
 
       <p id="mode-note" class="mode-note" hidden></p>
@@ -49,6 +81,7 @@
           class="entry-list"
           role="listbox"
           aria-labelledby="list-heading"
+          aria-multiselectable="true"
         ></ul>
       </section>
     </main>

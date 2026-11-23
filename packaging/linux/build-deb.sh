@@ -7,7 +7,10 @@
 #   /usr/bin/gpui-file-explorer
 #   /usr/share/applications/gpui-file-explorer.desktop
 #   /usr/share/icons/hicolor/<size>/apps/gpui-file-explorer.png
-#   /usr/share/doc/gpui-file-explorer/{README.md,copyright,LICENSE,NOTICE.md,NOTICE-app.md,app/NOTICE.md}
+#   /usr/share/doc/gpui-file-explorer/{README.md,copyright,LICENSE,NOTICE.md,NOTICE-repo.md,NOTICE-app.md,app/NOTICE.md,app/LICENSE}
+#   NOTICES: NOTICE.md / NOTICE-app.md / app/NOTICE.md = app/NOTICE.md（詳細版）、
+#            NOTICE-repo.md = ルート NOTICE.md（要約版）。README の
+#            [NOTICE.md](NOTICE.md) を詳細版へ解決するためこの配置にする。
 #
 # `dpkg-deb --root-owner-group` sets root ownership inside the archive, so the
 # script must run as a normal user. Nothing is installed on the host.
@@ -24,7 +27,9 @@
 # (read-only); it never builds, copies or removes anything. It compares the
 # staged DEBIAN/control with the control metadata inside the existing .deb, and
 # checks usr/bin/<pkg>: executable, matching --version, not older than the
-# freshness sources, and byte-identical to the .deb's payload binary.
+# freshness sources, and byte-identical to the .deb's payload binary. It also
+# verifies that relative Markdown links inside the staged NOTICE files resolve
+# to files present in the stage (this catches a missing doc/app/LICENSE).
 # --dry-run only resolves paths and prints the plan; no directory is created,
 # nothing is deleted, copied or built.
 # SOURCE_DATE_EPOCH is exported for dpkg-deb so the .deb is byte-reproducible
@@ -48,7 +53,8 @@ usage() {
                          DEBIAN/control を現行ソース／既存 .deb の
                          メタデータと非破壊で照合し、usr/bin/<pkg> の
                          実行可否・バージョン・鮮度・.deb との一致も検証
-                         （ビルド・コピー・削除なし、出力先も作らない）
+                         （ビルド・コピー・削除なし、出力先も作らない）。
+                          NOTICE 内の相対リンクがステージ内で解決するかも検証
       --dry-run         解決済みパスと実行計画のみ表示
                          （削除・コピー・ビルドせず、出力先も作らない）
   -h, --help            このヘルプを表示
@@ -171,7 +177,11 @@ doc_pairs=(
   "${repo_root}/app/README.md|${stage}/usr/share/doc/${pkg}/README.md"
   "${repo_root}/packaging/linux/copyright|${stage}/usr/share/doc/${pkg}/copyright"
   "${repo_root}/LICENSE|${stage}/usr/share/doc/${pkg}/LICENSE"
-  "${repo_root}/NOTICE.md|${stage}/usr/share/doc/${pkg}/NOTICE.md"
+  "${repo_root}/LICENSE|${stage}/usr/share/doc/${pkg}/app/LICENSE"
+  # README の [NOTICE.md](NOTICE.md) を詳細版へ解決するため、doc/NOTICE.md には
+  # app/NOTICE.md を入れる。リポジトリ版の要約は NOTICE-repo.md として同梱する。
+  "${repo_root}/app/NOTICE.md|${stage}/usr/share/doc/${pkg}/NOTICE.md"
+  "${repo_root}/NOTICE.md|${stage}/usr/share/doc/${pkg}/NOTICE-repo.md"
   "${repo_root}/app/NOTICE.md|${stage}/usr/share/doc/${pkg}/NOTICE-app.md"
   "${repo_root}/app/NOTICE.md|${stage}/usr/share/doc/${pkg}/app/NOTICE.md"
   "${repo_root}/packaging/linux/${pkg}.desktop|${stage}/usr/share/applications/${pkg}.desktop"
@@ -221,6 +231,59 @@ verify_staged_docs() {
     die "${mismatches} 件の不一致があります（ビルド・コピー・削除は行っていません）"
   fi
   echo "すべてのステージング済みファイルが現行ソースと一致しました: ${stage}"
+}
+
+# BA02: a relative Markdown link in a staged NOTICE file must resolve inside
+# the stage. The old layout installed app/NOTICE.md at doc/app/NOTICE.md but
+# omitted doc/app/LICENSE, so its [LICENSE](LICENSE) link was dangling.
+# Only NOTICE files are checked: app/README.md intentionally links to
+# repository-only files (DESIGN.md, notes/, screenshot/) that are not shipped.
+verify_notice_links() {
+  local doc_dir="${stage}/usr/share/doc/${pkg}"
+  local notice_files=(
+    "${doc_dir}/NOTICE.md"
+    "${doc_dir}/NOTICE-repo.md"
+    "${doc_dir}/NOTICE-app.md"
+    "${doc_dir}/app/NOTICE.md"
+  )
+  command -v realpath >/dev/null 2>&1 || die "realpath が見つかりません（NOTICE リンク検証に必要です）"
+  local notice target resolved mismatch=0
+  for notice in "${notice_files[@]}"; do
+    [ -f "${notice}" ] || {
+      echo "照合 NG (欠落): ${notice}" >&2
+      mismatch=$((mismatch + 1))
+      continue
+    }
+    while IFS= read -r target; do
+      [ -n "${target}" ] || continue
+      case "${target}" in
+        \#*|*://*|mailto:*) continue ;;  # ページ内アンカー・外部 URL は対象外
+      esac
+      target="${target%%#*}"  # フラグメントを除く
+      target="${target%% *}"  # リンクタイトルを除く
+      [ -n "${target}" ] || continue
+      resolved="$(cd -- "$(dirname -- "${notice}")" && realpath -m -- "${target}")" ||
+        { echo "照合 NG (解決不能): ${notice} -> ${target}" >&2; mismatch=$((mismatch + 1)); continue; }
+      case "${resolved}" in
+        "${doc_dir}"/*) ;;
+        *)
+          echo "照合 NG (doc 外へのリンク): ${notice} -> ${target} (${resolved})" >&2
+          mismatch=$((mismatch + 1))
+          continue
+          ;;
+      esac
+      if [ ! -e "${resolved}" ]; then
+        echo "照合 NG (リンク先欠落): ${notice} -> ${target} (${resolved})" >&2
+        mismatch=$((mismatch + 1))
+      else
+        echo "照合 OK (相対リンク): ${notice} -> ${target}"
+      fi
+    done < <(grep -oE '\]\([^)]+\)' "${notice}" | sed -E 's/^\]\(//; s/\)$//')
+  done
+  if [ "${mismatch}" -ne 0 ]; then
+    die "${mismatch} 件の切れた NOTICE 相対リンクがあります"
+  fi
+  echo "すべての NOTICE 相対リンクがステージ内で解決しました: ${doc_dir}"
 }
 
 # Also compare the staged control file with the metadata embedded in the
@@ -321,6 +384,7 @@ fi
 # step (stage removal, .deb removal, cargo build, dpkg-deb).
 if [ "${verify}" -eq 1 ]; then
   verify_staged_docs
+  verify_notice_links
   verify_control
   verify_staged_binary
   exit 0
@@ -358,11 +422,14 @@ esac
 # package it. core/src and core/Cargo.toml must be included: since the core
 # extraction they are linked into the binary just as much as app/src is.
 if [ "${skip_build}" -eq 1 ]; then
-  # app/Cargo.lock は workspace 化前の残骸で未使用（正本はルート Cargo.lock）。
-  # 指示により削除はしないが、個別ビルド等で更新されていたら警告する。
-  if [ -f "${app_dir}/Cargo.lock" ] && [ "${app_dir}/Cargo.lock" -nt "${repo_root}/Cargo.lock" ]; then
-    echo "警告: ${app_dir}/Cargo.lock は workspace では未使用です（正本: ${repo_root}/Cargo.lock）。" >&2
-  fi
+  # workspace 化前の残骸は app/Cargo.lock と poc/Cargo.lock の 2 つがあり、
+  # いずれも未使用（正本はルート Cargo.lock）。指示により削除はしないが、
+  # 個別ビルド等で更新されていたら警告する。
+  for leftover_lock in "${app_dir}/Cargo.lock" "${repo_root}/poc/Cargo.lock"; do
+    if [ -f "${leftover_lock}" ] && [ "${leftover_lock}" -nt "${repo_root}/Cargo.lock" ]; then
+      echo "警告: ${leftover_lock} は workspace では未使用です（正本: ${repo_root}/Cargo.lock）。" >&2
+    fi
+  done
   # AU06: core/src and core/Cargo.toml are part of the linked binary as well;
   # the shared `freshness_paths` above includes them so a core-only change
   # cannot ship with an old binary under --skip-build.
@@ -392,12 +459,18 @@ doc_dir="${stage}/usr/share/doc/${pkg}"
 install -Dm644 "${repo_root}/app/README.md" "${doc_dir}/README.md"
 install -Dm644 "${repo_root}/packaging/linux/copyright" "${doc_dir}/copyright"
 install -Dm644 "${repo_root}/LICENSE" "${doc_dir}/LICENSE"
-install -Dm644 "${repo_root}/NOTICE.md" "${doc_dir}/NOTICE.md"
+# BA09: the bundled README's `[NOTICE.md](NOTICE.md)` must reach the detailed
+# third-party inventory. Keep the source link valid in the repository (where
+# app/README.md sits next to app/NOTICE.md) by installing the detailed notice
+# as doc/NOTICE.md; the repository summary is shipped as NOTICE-repo.md.
+install -Dm644 "${repo_root}/app/NOTICE.md" "${doc_dir}/NOTICE.md"
+install -Dm644 "${repo_root}/NOTICE.md" "${doc_dir}/NOTICE-repo.md"
 install -Dm644 "${repo_root}/app/NOTICE.md" "${doc_dir}/NOTICE-app.md"
-# NOTICE.md links to `app/NOTICE.md`; install the same file at that relative
-# path too so the link resolves inside the package. The repository-side link
-# in NOTICE.md is left unchanged.
+# NOTICE-repo.md links to `app/NOTICE.md`, and that copy links to `LICENSE`.
+# Install both at those relative paths so every NOTICE link resolves in the
+# package (BA02). Repository-side links are left unchanged.
 install -Dm644 "${repo_root}/app/NOTICE.md" "${doc_dir}/app/NOTICE.md"
+install -Dm644 "${repo_root}/LICENSE" "${doc_dir}/app/LICENSE"
 
 # Gate: every staged file in doc_pairs (docs, .desktop and hicolor icons) must
 # match the current repository source byte-for-byte. Earlier packages under
@@ -413,6 +486,7 @@ for pair in "${doc_pairs[@]}"; do
   cmp -s -- "${src}" "${installed}" ||
     die "doc が現行ソースと一致しません: ${installed} (source: ${src})"
 done
+verify_notice_links
 
 # Runtime dependencies from the ELF headers plus the dlopen'ed Vulkan loader.
 compute_depends() {

@@ -1891,13 +1891,50 @@ status: current
 - [x] **AZ07** undo Trash の既存パス判定が他人のファイルを陳腐化 — 対応: loop13
 - [x] **AZ08** 一括リセット footer が keymap dialog に欠落 — 対応: loop13
 - [x] **AZ09** PWA 検索 input にモバイル自動補正の抑止属性を追加 — 対応: 親
-- [ ] **AZ10** PWA スクロール位置は keyboard select で scrollIntoView が走る設計
-  — 検索入力時のリセットは意図的な可能性があり、設計判断が必要ため保留
+- [x] **AZ10** PWA スクロール位置の設計判断（変更不要）
+  — 対応: 親（r13 で判断）
+  — render() の replaceChildren で結果変更時に先頭へ戻るのは検索 UI として望ましい。
+  — キーボード選択時は r11 の scrollIntoView({block:'nearest'}) が viewport 追従する。
+  — 両者は競合せず、現状を仕様どおりと確定。
 
 ### 優先度: 低（ループ13・confirmed）
 
 - [x] **AZ11** 展開ディレクトリ状態が undo/redo で復元されない — 対応: loop13
 - [x] **AZ12** 検索スナップショットが part なキーしか保持しない — 対応: loop13
+
+## 進行中（ループ14 バックログ）
+
+### 優先度: 高（ループ14・confirmed）
+
+- [x] **BA01** コピー検証がサイズのみで内容バイトを照合しない — 対応: loop14
+- [x] **BA02** DEB 同梱 app/NOTICE.md の LICENSE 相対リンクが切れる — 対応: loop14
+- [x] **BA03** PWA に複数選択・範囲選択の手段が無い — 対応: loop14
+
+### 優先度: 中（ループ14・confirmed）
+
+- [x] **BA04** sync_all() 失敗が無視され永続化されないコピーが成功報告 — 対応: loop14
+- [x] **BA05** 空予約ファイルが最終宛先に一時生成されクラッシュで残る — 対応: loop14
+- [x] **BA06** check.sh --app で core/win32 テストとクロスチェックが黙スキップ — 対応: loop14
+- [x] **BA07** PWA が再描画のたびに選択を破棄 — 対応: loop14
+- [x] **BA08** NOTICE のライセンス要約が deny.toml 許可集合と不一致 — 対応: loop14
+- [x] **BA09** 同梱 README の NOTICE.md リンクが要約版を指す — 対応: loop14
+- [x] **BA10** source_region のマーカー一意性が未検証 — 対応: loop14
+- [x] **BA11** 本番/テスト分割失敗時に全ソースへフォールバック — 対応: loop14
+- [x] **BA12** グリッド表示にポインタの並び替え手段が無い — 対応: loop14（F1 案内に設定 UI 導線を追記）
+- [x] **BA13** 内容検索の symlink 判定と File::open の間に TOCTOU — 対応: loop14
+
+### 優先度: 低（ループ14・confirmed）
+
+- [x] **BA14** NOTICE/SPDX に著作権者・年号が無い — 対応: loop14
+- [x] **BA15** README の DEB 収録物一覧に app/NOTICE.md が無い — 対応: loop14
+- [x] **BA16** ワークスペース直下とメンバー配下に Cargo.lock が3つ — 対応: loop14
+- [x] **BA17** source-guard のマジックナンバー固定が誤検知しやすい — 対応: loop14
+- [x] **BA18** PWA にソートキー／方向を指定する手段が無い — 対応: loop14
+- [x] **BA19** PWA タッチ長押しに複数選択の導線が無い — 対応: loop14
+- [x] **BA20** case-only rename の中間一時名が O_EXCL なし — 対応: loop14
+- [x] **BA21** gates ジョブに timeout-minutes が無い — 対応: loop14
+- [x] **BA22** ツールチェーン未ピン留めで fmt/clippy が drift に晒される — 対応: loop14（1.92 ピンは実検証で不採用・理由記録）
+- [x] **BA23** deny.toml の unused-ignored-advisory = allow が失効 ignore を隠す — 対応: loop14
 
 ## メモ
 
