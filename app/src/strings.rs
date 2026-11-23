@@ -541,6 +541,19 @@ macro_rules! column_width_settings_note {
 pub(crate) use column_width_settings_note;
 pub const COLUMN_WIDTH_SETTINGS_NOTE: &str = column_width_settings_note!();
 
+/// 最後の 1 列を非表示にできない旨の注記（AQ07）。
+///
+/// F1 の「一覧の列」行と設定ダイアログのファイルタブ行で共用する唯一の定義。
+/// `concat!` は定数識別子を受け付けないので、静的文字列へ埋め込む場合は
+/// `last_column_visibility_note!()` を使う。
+macro_rules! last_column_visibility_note {
+    () => {
+        "最後の 1 列は非表示にできません"
+    };
+}
+pub(crate) use last_column_visibility_note;
+pub const LAST_COLUMN_VISIBILITY_NOTE: &str = last_column_visibility_note!();
+
 const _: () =
     assert!(MOUSE_SELECTION_CLICK_DESCRIPTION.len() == mouse_selection_click_description!().len());
 const _: () = assert!(MOUSE_DRAG_DROP_DESCRIPTION.len() == mouse_drag_drop_description!().len());
@@ -555,6 +568,7 @@ const _: () =
 const _: () =
     assert!(SEARCH_HISTORY_CHIPS_DESCRIPTION.len() == search_history_chips_description!().len());
 const _: () = assert!(COLUMN_WIDTH_SETTINGS_NOTE.len() == column_width_settings_note!().len());
+const _: () = assert!(LAST_COLUMN_VISIBILITY_NOTE.len() == last_column_visibility_note!().len());
 
 /// AC07 / AC08 の定数は既存の `mod tests`（280 行目以降）からは触らない。
 /// 所有範囲内に小さなテストモジュールを置き、各案内が宣伝するキーを固定する。
@@ -1264,7 +1278,9 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "一覧の列",
                 concat!(
                     "設定（Ctrl+,）のファイルタブ「一覧の列」で表示列と順番を変更。",
-                    "Switch で表示 / 非表示、↑↓で並べ替え（最後の 1 列は非表示にできません）。",
+                    "Switch で表示 / 非表示、↑↓で並べ替え（",
+                    last_column_visibility_note!(),
+                    "）。",
                     "行ショートカットはこれらの Switch にはありません。",
                     column_width_settings_note!()
                 ),
@@ -1645,7 +1661,10 @@ pub const STATUS_CANCEL_HINT: &str = "（Esc でキャンセル）";
 
 /// 再スキャン失敗。後続の `STATUS_CHANGED` で上書きしない（R6-A-04）。
 /// V14: 失敗だけで終わらせず、手動での復帰操作（F5）を案内する。
-pub const STATUS_RESCAN_FAILED: &str = "再スキャンに失敗しました（F5 で再読込）";
+/// AQ15: 「再読込」は `reload_word!()` を通し、F1 / README / 読み込み失敗
+/// ヒントと同じ語を必ず共用する（値自体は従来と同じ）。
+pub const STATUS_RESCAN_FAILED: &str =
+    concat!("再スキャンに失敗しました（F5 で", reload_word!(), "）");
 /// 監視の状態表示。`last_error()` がある場合は理由を連結する。
 pub const STATUS_WATCH_PREFIX: &str = "監視: ";
 pub const STATUS_WATCH_PARTIAL: &str = "一部無効 — ";
@@ -1724,11 +1743,17 @@ pub const STATUS_SETTINGS_SAVED: &str = "設定を保存しました";
 /// K13 でターミナル欄の重複表示は削除され、共有フッターの未変更時
 /// （dirty = false）にのみ表示される。唯一の定義として文言のゆれを防ぐ（J08）。
 pub const STATUS_SETTINGS_UNSAVED_HINT: &str = "変更は「保存」を押すまで反映されません。";
+/// AQ06: 設定ダイアログのフッターが dirty 時に表示する文言。
+/// `settings_ui.rs::footer_status_text` のインラインリテラルをここへ集約する。
+pub const STATUS_SETTINGS_DIRTY_HINT: &str = "未保存の変更があります";
 /// タブ復元の成否。
 pub const STATUS_TAB_RESTORED: &str = "タブを復元しました";
 pub const STATUS_TAB_RESTORE_EMPTY: &str = "復元できるタブがありません";
 /// フォルダ作成の成否。
 pub const STATUS_FOLDER_CREATED: &str = "フォルダを作成しました";
+/// AQ06: 作成したフォルダが現在表示中のフォルダでない場合の補足。
+/// 動的なパスの後ろに連結するため、括弧付きの接尾だけを保持する。
+pub const STATUS_FOLDER_CREATED_ELSEWHERE_HINT: &str = "（別のフォルダを表示中）";
 pub const ERR_FOLDER_CREATE: &str = "フォルダを作成できません";
 /// パスコピー／件数付き通知の接尾。
 pub const STATUS_PATH_COPIED: &str = "パスをコピーしました";
@@ -1749,6 +1774,9 @@ pub const STATUS_UNDO_EXISTS_SUFFIX: &str = " が既に存在します";
 pub const STATUS_UNDO_MISSING_SUFFIX: &str = " が存在しません";
 pub const STATUS_REDO_EMPTY: &str = "やり直せる操作がありません";
 pub const STATUS_REDO_FAILED: &str = "やり直せません";
+/// AQ06: 名前変更成功通知の接頭辞。動的な旧名 / 新名が後続するため、
+/// 接頭辞自体を色判定のマーカーとして扱う。
+pub const STATUS_RENAME_SAVED_PREFIX: &str = "名前を変更しました: ";
 pub const STATUS_RENAME_FAILED: &str = "変更できません";
 pub const STATUS_TARGET_MISSING: &str = "対象は既に存在しません";
 /// テーマ切替後の通知（表示名は `THEME_LABEL_*` を参照）。
@@ -3798,6 +3826,11 @@ mod tests {
         // V14: 再スキャン失敗を表示するだけでは再試行方法が分からないため、
         // F5 の再読込導線を括弧内に添える（F6-36 の「復帰導線」）。
         assert!(STATUS_RESCAN_FAILED.starts_with("再スキャンに失敗しました"));
+        // AQ15: 括弧内の語は正規の `reload_word!()` と常に一致させる。
+        assert_eq!(
+            STATUS_RESCAN_FAILED,
+            concat!("再スキャンに失敗しました（F5 で", reload_word!(), "）")
+        );
         assert!(STATUS_RESCAN_FAILED.contains("（F5 で再読込）"));
         assert!(STATUS_RESCAN_FAILED.ends_with('）'));
     }
@@ -3881,6 +3914,39 @@ mod tests {
         }
         // X09: 移動済みであることを示す陳腐なコメントも削除されていること。
         assert!(!source.contains("strings.rs is intentionally out of scope"));
+    }
+
+    #[test]
+    fn aq06_inline_status_literals_are_routed_through_constants() {
+        // AQ06: 残っていた 3 箇所のインライン文言を定数へ集約したので、
+        // 呼び出し側のソースにリテラルが戻っていないことを include_str! で固定する。
+        let main_source = include_str!("main.rs");
+        for (name, literal) in [
+            ("STATUS_RENAME_SAVED_PREFIX", STATUS_RENAME_SAVED_PREFIX),
+            (
+                "STATUS_FOLDER_CREATED_ELSEWHERE_HINT",
+                STATUS_FOLDER_CREATED_ELSEWHERE_HINT,
+            ),
+        ] {
+            assert!(main_source.contains(name), "{name} must be used in main.rs");
+            assert!(
+                !main_source.contains(literal),
+                "inline literal for {name} must not reappear in main.rs"
+            );
+            assert!(
+                !main_source.contains(&format!("const {name}")),
+                "{name} must not be redefined locally in main.rs"
+            );
+        }
+        let settings_ui = include_str!("settings_ui.rs");
+        assert!(
+            settings_ui.contains("STATUS_SETTINGS_DIRTY_HINT"),
+            "settings_ui.rs must route through STATUS_SETTINGS_DIRTY_HINT"
+        );
+        assert!(
+            !settings_ui.contains(STATUS_SETTINGS_DIRTY_HINT),
+            "dirty hint literal must not be inlined in settings_ui.rs"
+        );
     }
 
     #[test]

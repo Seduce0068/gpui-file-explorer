@@ -36,7 +36,7 @@ wasm は `pkg/gfe_core_bg.wasm` になる（`main.js` の `WASM_MODULE` で指�
 
 実装済みの API は次のとおり（`core/src/wasm.rs` を実読）:
 
-- `new CoreViewer()` — 引数なし
+- `CoreViewer.new()` — 引数なし（wasm-bindgen の private constructor のため `new CoreViewer()` は不可）
 - `list_entries(dir: string)` — JSON 文字列（camelCase の配列）を返す
 - `search(query: string, dir: string)` — `{ entry, matchLine }[]` の JSON 文字列を返す
 - `set_panic_hook()` — panic を `console.error` に流す（初期化時に呼ぶ）

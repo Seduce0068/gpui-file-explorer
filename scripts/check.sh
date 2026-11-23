@@ -6,10 +6,10 @@
 #   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
 #   poc: fmt -> check -> test -> clippy -> (optional) cargo deny (advisories/bans/sources)
 #
-# The repository has no root Cargo.toml: `app/` and `poc/` are independent
-# Cargo projects. The shared CI workflow (Seduce0068/workflows rust-gates@v1)
-# covers `app/` and runs the `poc/` half through `extra_gates`; this script
-# reproduces both halves locally.
+# The repository is a virtual Cargo workspace with members core, app, poc
+# and win32 (root Cargo.toml). The shared CI workflow
+# (Seduce0068/workflows rust-gates@v1) covers `app/` and runs the other
+# members through `extra_gates`; this script reproduces those gates locally.
 #
 # Release verification (app/ only):
 #   Debug builds always enable `debug_assertions`, so `#[cfg(not(debug_assertions))]`
@@ -21,8 +21,7 @@
 #
 # Supply-chain gates:
 #   - cargo audit: RustSec advisory check for app/ and poc/
-#   - cargo deny check: full check for app/; for poc/ the licenses check is
-#     omitted because its Cargo.toml has no license field (out of scope here)
+#   - cargo deny check: full check for app/ and poc/ (both declare license)
 #     - see deny.toml
 #   - cargo vet check: only when <project>/supply-chain/config.toml exists
 #     (run `cargo vet init` in that project to opt in)
@@ -233,6 +232,19 @@ if [ "${run_app}" = true ]; then
 		run_vet_check app
 	fi
 fi
+
+# core / win32 は workspace member だが、app/poc の個別ゲートでは
+# それぞれの #[cfg(test)] が実行されないため明示的に回す。
+if [ "${run_poc}" = true ]; then
+	for member in core win32; do
+		echo "==> ${member}: cargo test --all-targets --locked"
+		(cd "${member}" && cargo test --all-targets --locked)
+
+		echo "==> ${member}: cargo clippy --all-targets --locked -- -D warnings"
+		(cd "${member}" && cargo clippy --all-targets --locked -- -D warnings)
+	done
+fi
+
 
 if [ "${run_poc}" = true ]; then
 	echo '==> poc: cargo fmt --all -- --check'

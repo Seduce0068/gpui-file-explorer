@@ -443,11 +443,12 @@ fn save_label(read_only: bool) -> &'static str {
 /// the Terminal tab used to repeat it in its body when the form was clean.
 /// AJ07: a read-only session replaces every dirty/clean hint with the canonical
 /// read-only footer so users are never told to press a disabled Save button.
+/// AQ06: the dirty hint comes from `strings::STATUS_SETTINGS_DIRTY_HINT`.
 fn footer_status_text(dirty: bool, read_only: bool) -> &'static str {
     if read_only {
         crate::strings::settings_read_only_footer!()
     } else if dirty {
-        "未保存の変更があります"
+        crate::strings::STATUS_SETTINGS_DIRTY_HINT
     } else {
         crate::strings::STATUS_SETTINGS_UNSAVED_HINT
     }
@@ -766,6 +767,12 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     "PageDown",
     "Ctrl+P",
     "Ctrl+Shift+L",
+    // AQ02: 「Ctrl+P … クイックジャンプ」「Alt+↑ / Backspace … 親フォルダ」
+    // 「Ctrl+B … サイドバー」の行説明に出る語も検索可能にする。正規ラベルは
+    // strings.rs の定数を参照し、表示文言との drift を防ぐ。
+    crate::strings::FUZZY_JUMP_LABEL,
+    crate::strings::PARENT_FOLDER_LABEL,
+    "サイドバー",
     // Chords from the F1 help "選択" section.
     "Ctrl+A",
     "Ctrl+Space",
@@ -902,8 +909,11 @@ const FILES_SORT_DESCRIPTION: &str = concat!(
 );
 /// AP03: 列幅は表示のみなので、変更先を正規文言で追記する（F1 はダイアログ内で
 /// 無効のため、この行がアプリ内で唯一の手掛かりになる）。
+/// AQ07: 「最後の 1 列は非表示にできません」も F1 と同じ正規マクロから埋め込む。
 const FILES_COLUMN_DESCRIPTION: &str = concat!(
-    "一覧ヘッダに出す列と順番を選びます（チェックボックスで表示/非表示、↑↓で並べ替え。幅は保存済みの値を表示）。",
+    "一覧ヘッダに出す列と順番を選びます（チェックボックスで表示/非表示、↑↓で並べ替え。",
+    crate::strings::last_column_visibility_note!(),
+    "。幅は保存済みの値を表示）。",
     crate::strings::column_width_settings_note!()
 );
 /// NW09: description of the thumbnail toggle. Kept as a constant so the search
@@ -2417,7 +2427,10 @@ mod tests {
             footer_status_text(false, false),
             crate::strings::STATUS_SETTINGS_UNSAVED_HINT
         );
-        assert_eq!(footer_status_text(true, false), "未保存の変更があります");
+        assert_eq!(
+            footer_status_text(true, false),
+            crate::strings::STATUS_SETTINGS_DIRTY_HINT
+        );
         assert_ne!(
             footer_status_text(true, false),
             footer_status_text(false, false)
@@ -4218,6 +4231,32 @@ mod tests {
     }
 
     #[test]
+    fn rendered_navigation_labels_are_searchable() {
+        // AQ02: Ctrl+P / Alt+↑ / Ctrl+B 行に描画される語を検索ボックスへ
+        // コピーしても zero-hit にならないことを固定する。
+        for (keyword, chord) in [
+            (crate::strings::FUZZY_JUMP_LABEL, "Ctrl+P"),
+            (crate::strings::PARENT_FOLDER_LABEL, "Alt+↑ / Backspace"),
+            ("サイドバー", "Ctrl+B"),
+        ] {
+            assert!(
+                SHORTCUTS_DEFAULTS_KEYWORDS.contains(&keyword),
+                "{keyword} must be a Shortcuts-tab search keyword"
+            );
+            assert!(
+                tabs_matching_query(keyword).contains(&SettingsTab::Shortcuts),
+                "query {keyword} must surface the Shortcuts tab"
+            );
+            assert!(
+                SHORTCUTS_DEFAULT_LINES
+                    .iter()
+                    .any(|line| line.starts_with(chord) && line.contains(keyword)),
+                "rendered row {chord} must carry the searchable wording {keyword}"
+            );
+        }
+    }
+
+    #[test]
     fn every_shortcut_keyword_is_rendered() {
         // T07/M09: a chord keyword that is absent from every rendered row
         // makes no_match_hint point at a tab that never shows the typed text.
@@ -4580,6 +4619,30 @@ mod column_prefs_ui_tests {
         assert!(
             f1.contains(note),
             "F1 column row must embed the canonical width note: {f1}"
+        );
+    }
+
+    #[test]
+    fn last_column_visibility_note_is_shared_by_row_and_f1_help() {
+        // AQ07: 「最後の 1 列は非表示にできません」は F1 と設定行の両方で
+        // 正規マクロから埋め込み、片方だけが drift しないようにする。
+        let note = crate::strings::LAST_COLUMN_VISIBILITY_NOTE;
+        assert_eq!(note, "最後の 1 列は非表示にできません");
+        assert_eq!(
+            FILES_COLUMN_DESCRIPTION.matches(note).count(),
+            1,
+            "column row must embed the canonical note once: {FILES_COLUMN_DESCRIPTION}"
+        );
+        let f1 = crate::strings::HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .find(|(key, _)| *key == "一覧の列")
+            .map(|(_, text)| text)
+            .expect("F1 must have the 一覧の列 row");
+        assert_eq!(
+            f1.matches(note).count(),
+            1,
+            "F1 column row must embed the canonical note once: {f1}"
         );
     }
 

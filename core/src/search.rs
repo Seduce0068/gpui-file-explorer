@@ -99,6 +99,25 @@ pub struct SearchResult {
     pub match_line: Option<u32>,
 }
 
+/// Normalize a user query for case-insensitive substring matching.
+///
+/// Surrounding whitespace is trimmed and the value is lowercased so that the
+/// filesystem walker and the in-memory wasm search share exactly one rule.
+/// Returns `None` for an empty or whitespace-only query, which must match no
+/// entry instead of becoming a literal needle such as `"  "`.
+pub fn normalized_query(query: &str) -> Option<String> {
+    let needle = query.trim().to_lowercase();
+    (!needle.is_empty()).then_some(needle)
+}
+
+/// Whether an entry name contains an already-normalized needle.
+///
+/// `needle` must come from [`normalized_query`]; callers must check that it is
+/// `Some` before matching so an empty query never turns into a literal match.
+pub fn name_matches(name: &str, needle: &str) -> bool {
+    name.to_lowercase().contains(needle)
+}
+
 /// Search `root` recursively for entries whose file name contains `query`
 /// (case-insensitive). Returns matching entries sorted by path.
 pub fn search_by_name(
@@ -107,10 +126,9 @@ pub fn search_by_name(
     options: SearchOptions,
     cancel: &AtomicBool,
 ) -> Vec<SearchResult> {
-    let needle = query.trim().to_lowercase();
-    if needle.is_empty() {
+    let Some(needle) = normalized_query(query) else {
         return Vec::new();
-    }
+    };
 
     let mut matches: Vec<SearchResult> = Vec::new();
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
@@ -146,7 +164,7 @@ pub fn search_by_name(
             let is_dir_without_following = std::fs::symlink_metadata(&path)
                 .map(|metadata| metadata.is_dir())
                 .unwrap_or(false);
-            if name.to_lowercase().contains(&needle) {
+            if name_matches(&name, &needle) {
                 if let Some(entry) = entry_for_path(&path) {
                     matches.push(SearchResult {
                         entry,
@@ -437,6 +455,48 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn normalized_query_handles_empty_whitespace_and_case() {
+        assert_eq!(normalized_query(""), None);
+        assert_eq!(normalized_query("   "), None);
+        assert_eq!(normalized_query(" \t\n\r "), None);
+        assert_eq!(normalized_query("  Foo  ").as_deref(), Some("foo"));
+        assert_eq!(normalized_query("README.md").as_deref(), Some("readme.md"));
+        assert_eq!(
+            normalized_query("  MIXED Case  ").as_deref(),
+            Some("mixed case")
+        );
+    }
+
+    #[test]
+    fn name_matches_is_case_insensitive() {
+        assert!(name_matches("README.md", "readme"));
+        assert!(name_matches("notes.txt", "TXT".to_lowercase().as_str()));
+        assert!(!name_matches("notes.txt", "readme"));
+        // An empty needle would match everything, so callers must filter the
+        // query through `normalized_query` before reaching this helper.
+        assert!(normalized_query("   ").is_none());
+    }
+
+    #[test]
+    fn search_by_name_uses_same_normalization_as_helper() {
+        let dir = scratch("normalize");
+        write(&dir.join("MixedCase.TXT"));
+        let cancel = AtomicBool::new(false);
+        // Leading/trailing whitespace is trimmed, case is folded.
+        assert_eq!(
+            names(&search_by_name(
+                &dir,
+                "  mixedcase  ",
+                SearchOptions::default(),
+                &cancel
+            )),
+            vec!["MixedCase.TXT"]
+        );
+        assert!(search_by_name(&dir, "\t  ", SearchOptions::default(), &cancel).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1625,6 +1625,35 @@ status: current
 - [x] 第6パスで重複・妥当性を吸収し最終 54 項目へ統合（2026-11-18）
 - [x] 最終項目を本 `todo.md` へ反映（2026-11-18）
 
+## 進行中（ループ5 バックログ）
+
+### 優先度: 高（confirmed）
+
+- [x] **AQ01** CI/check.sh が core / win32 の単体テストを実行していない — 対応: loop5
+- [x] **AQ02** 設定検索 zero-hit: クイックジャンプ / 親フォルダ / サイドバー — 対応: loop5
+- [x] **AQ03** wasm searchInJson が core の検索規約と不一致（空クエリ） — 対応: loop5
+- [x] **AQ04** PWA CoreViewer 生成が wasm-bindgen API と不一致 — 対応: loop5
+- [x] **AQ05** ADR 件数が4件のまま（実5件・モバイルのみ approved） — 対応: loop5
+
+### 優先度: 中（confirmed）
+
+- [x] **AQ06** status 文言のインライン残り（名前変更成功 / 別フォルダ / 未保存） — 対応: loop5
+- [x] **AQ07** 「最後の1列は非表示にできません」が設定行に案内されない — 対応: loop5
+- [x] **AQ08** モバイル ADR 見出しが「未確定」のまま（approved と矛盾） — 対応: loop5
+- [x] **AQ09** app/Cargo.toml 行番号参照が gfe-core 抽出後に陳腐化 — 対応: loop5
+- [x] **AQ10** DESIGN §11 未確認事項が as-built で更新されていない — 対応: loop5
+- [x] **AQ11** wasm DTO 変換の境界値が無テスト — 対応: loop5
+- [x] **AQ12** PWA タッチ防御分岐（多指 / 左端 / 斜め）が無テスト — 対応: loop5
+- [x] **AQ13** poc licenses 監査除外理由が失効（license フィールド存在） — 対応: loop5
+- [x] **AQ14** workspace 導入後に「ルート Cargo.toml が無い」記述が残存 — 対応: loop5
+
+### 優先度: 低（confirmed）
+
+- [x] **AQ15** STATUS_RESCAN_FAILED が reload_word! を通していない — 対応: loop5
+- [x] **AQ16** docs/adr/index.md が無く ADR 索引規約を満たさない — 対応: loop5
+- [x] **AQ17** gfe-win32 の非 Windows Drop / 空文字 NUL が無テスト — 対応: loop5
+- [x] **AQ18** workspace 化後にメンバ配下の旧 Cargo.lock が残存 — 対応: loop5
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

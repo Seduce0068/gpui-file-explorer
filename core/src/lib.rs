@@ -16,6 +16,8 @@ pub mod ports;
 pub mod search;
 pub mod strings;
 pub mod trash_view;
+/// wasm 向け DTO と純粋な変換ロジック（wasm 非依存、ネイティブでテスト可能）。
+pub mod wasm_view;
 
 /// wasm32 向けの JS バインディング。ネイティブビルドには一切影響しない。
 #[cfg(target_family = "wasm")]

@@ -37,13 +37,16 @@ jobs:
         libwayland-dev
         libx11-xcb-dev
       audit: true
-      # poc/ は app/ とは別の Cargo プロジェクト（ルート Cargo.toml なし）のため、
-      # 共有ワークフローの gates（working_directory: app）では検証されない。
-      # extra_gates は working_directory で実行されるので poc/ へ移動して回す。
+      # virtual workspace（core/app/poc/win32）のうち、共有ワークフローの
+      # gates は app/ のみ。残りは extra_gates で明示的に回す。
       extra_gates: |
         # release 固有の #[cfg(not(debug_assertions))] 分岐を検証する
         cargo check --release --all-targets --locked
         cargo test --release --all-targets --locked
+        # core / win32 の単体テストをゲートへ戻す
+        cargo test -p gpui-file-explorer-core --all-targets --locked
+        cargo clippy -p gpui-file-explorer-core --all-targets --locked -- -D warnings
+        cargo test -p gfe-win32 --all-targets --locked
         (cd ../poc && cargo fmt --all -- --check)
         (cd ../poc && cargo check --all-targets --locked)
         (cd ../poc && cargo test --all-targets --locked)
@@ -74,7 +77,7 @@ jobs:
       - name: 依存監査（cargo deny / poc）
         working-directory: poc
         # poc/ のルートクレートは Cargo.toml に license が無いため licenses は除外（deny.toml 参照）。
-        run: cargo deny check advisories bans sources
+        run: cargo deny check
 
       # poc/ の脆弱性監査は上の cargo deny advisories で実施。cargo-audit は
       # gates ジョブ（app/、audit: true）のみで導入・実行するため、ここでは

@@ -155,7 +155,7 @@ Critical 1 件・High 8 件が新たに検出され、上記判定は取り下�
 
 ### H-5 トランジティブ依存のメンテナンス停止
 
-- 箇所: `app/Cargo.toml:14`（`gpui-kit = "=0.9.1"`）
+- 箇所: `app/Cargo.toml:17`（`gpui-kit = "=0.9.1"`）
 - 根拠: `cargo audit` が 8 件の `unmaintained` 警告を報告
   （`instant` / `paste` / `rustls-pemfile` / `rustybuzz` /
   `ttf-parser` / `zbus_names` / `zvariant` / `zvariant_derive`）。

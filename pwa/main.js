@@ -4,9 +4,8 @@
 // （CoreViewer::list_entries / search）のみ。pkg/ が無い場合だけ、
 // 確認用の読み取り専用デモへフォールバックする。
 //
-// 注: 別エージェントが実装中の API の厳密なシグネチャに合わせ、
-// メソッド名・戻り値の形は複数候補を吸収するadapterを置いている。
-// API が確定したら normalize* / callAny の候補を絞ってよい。
+// core API のシグネチャは確定済み（core/src/wasm.rs / pkg/gfe_core.d.ts を参照）。
+// 生成物は camelCase の JSON 文字列を返し、CoreViewer は静的 `new()` で生成する。
 
 const WASM_MODULE = './pkg/gfe_core.js';
 const SEARCH_DEBOUNCE_MS = 150;
@@ -265,7 +264,10 @@ function clearLongPress() {
 
 function onListTouchStart(event) {
   // 検索入力中は無効化（iOS Safari の標準スワイプバックとの競合を避ける）。
+  // 2 本目の指が触れた場合もここを通る。state.touch を捨てる前にタイマーを
+  // キャンセルしないと、長押しコールバックが残って詳細表示が誤って出る。
   if (document.activeElement === els.search || event.touches.length !== 1) {
+    clearLongPress();
     state.touch = null;
     return;
   }
@@ -355,19 +357,13 @@ function onListKeyDown(event) {
 
 // --- コア API 呼び出し（主要経路） ----------------------------------------
 
-async function callAny(viewer, names, argsList) {
-  let lastError;
-  for (const name of names) {
-    if (typeof viewer[name] !== 'function') continue;
-    for (const args of argsList) {
-      try {
-        return await viewer[name](...args);
-      } catch (error) {
-        lastError = error;
-      }
-    }
+// 実在する core API（list_entries(dir) / search(query, dir)）だけを呼ぶ。
+// wasm-bindgen の Err(JsValue) は文字列例外として throw されるため、呼び出し側へ委譲する。
+async function callCore(viewer, name, args) {
+  if (typeof viewer[name] !== 'function') {
+    throw new Error(`core API が見つかりません: ${name}`);
   }
-  throw lastError ?? new Error(`core API が見つかりません: ${names.join(' / ')}`);
+  return await viewer[name](...args);
 }
 
 async function initCore() {
@@ -381,20 +377,13 @@ async function initCore() {
   if (typeof module.set_panic_hook === 'function') module.set_panic_hook();
 
   const Viewer = module.CoreViewer;
-  if (typeof Viewer !== 'function') throw new Error('CoreViewer が export されていません');
-
-  let viewer;
-  let lastError;
-  for (const args of [[], ['.'], [state.rootName]]) {
-    try {
-      viewer = new Viewer(...args);
-      break;
-    } catch (error) {
-      lastError = error;
-    }
+  if (typeof Viewer !== 'function' || typeof Viewer.new !== 'function') {
+    throw new Error('CoreViewer.new() が export されていません');
   }
-  if (!viewer) throw lastError ?? new Error('CoreViewer を生成できませんでした');
-  return viewer;
+  // wasm-bindgen の private constructor は JS から new すると
+  // __wbg_ptr の無い壊れた Object ができ、最初の試行で break してしまう。
+  // 公開 API は静的 `new()` のみ（pkg/gfe_core.d.ts で確認済み）。
+  return Viewer.new();
 }
 
 // wasm32 の std::fs はブラウザで実ファイルを読めないため、
@@ -423,7 +412,7 @@ async function refreshList() {
       if (typeof state.module?.listEntriesFromJson === 'function') {
         raw = state.module.listEntriesFromJson(demoJson());
       } else {
-        raw = await callAny(state.viewer, ['list_entries'], [[state.rootName]]);
+        raw = await callCore(state.viewer, 'list_entries', [state.rootName]);
       }
       const decoded = decodeCorePayload(raw);
       if (!decoded.ok) throw new Error(decoded.error);
@@ -454,7 +443,7 @@ async function runSearch(query) {
       if (typeof state.module?.searchInJson === 'function') {
         raw = state.module.searchInJson(q, demoJson());
       } else {
-        raw = await callAny(state.viewer, ['search'], [[q, state.rootName]]);
+        raw = await callCore(state.viewer, 'search', [q, state.rootName]);
       }
       const decoded = decodeCorePayload(raw);
       if (!decoded.ok) throw new Error(decoded.error);

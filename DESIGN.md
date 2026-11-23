@@ -1236,7 +1236,12 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
   依存解決を確認済み。署名・リポジトリ公開・タグ付けはスコープ外（リリースはユーザー指示時のみ）。
 - 制約: Linux amd64 のみ。AppImage/Flatpak/Windows/macOS のパッケージングは未実装。
 
-## 11. 未確認事項（⚠ 実装前に確認する）
+## 11. 設計時点の未確認事項（⚠ 実装前に確認する）
+
+> as-built（2026-11-23）: 以下は P0 設計時点の懸念リスト。
+> コンテキストメニュー（項目1）は Shift+F10 / Menu も含め実装済みで、
+> 解消状況は `app/README.md` と `review-report.md` を参照。
+> 未検証のまま残る項目は「既知の制限」として各文書に記録する。
 
 1. **gpui-component の ContextMenuExt / PopupMenu の Wayland 実行時挙動**（ソース存在は ✅ 確認。`src/menu/context_menu.rs`、`src/menu/popup_menu.rs`）。P0 実機で確認し、不調なら `deferred`+`anchored` に切替（ADR-008 のフォールバック）。
 2. **`Window::prompt` の Linux 表示**（GPUI fallback の見た目・フォーカス・Esc 挙動）。⚠ 実機未検証。
@@ -1271,8 +1276,8 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 - POC: [`notes/poc-report.md`](notes/poc-report.md) / [`poc/src/main.rs`](poc/src/main.rs) / [`poc/README.md`](poc/README.md) / [`poc/screenshot/`](poc/screenshot/)
 - 試作実装: [`app/`](app/) / [`app/README.md`](app/README.md)（実装・既知の制限・設計からの差分）
 - ライセンス原本: 本リポジトリの [LICENSE](LICENSE) / [app/NOTICE.md](app/NOTICE.md)（AGPL 全文・第三者表示）
-- 新要件の個別 ADR: [docs/adr/](docs/adr/)（モバイル / デュアルペイン / 日本語照合 /
-  OS ファイルクリップボードの 4 件。モバイルのみ approved（2026-11-23）、他3件は **draft・未承認**で、DESIGN.md の
+- 新要件の個別 ADR: [ADR 索引](docs/adr/index.md)（5 件。モバイルのみ
+  approved（2026-11-23）、他4件は **draft・未承認**。DESIGN.md の
   確定済み ADR-001〜012 とは別系列）
 - crate ソース（ローカル・✅ 確認に使用）:
   - `~/.cargo/registry/src/index.crates.io-*/gpui-kit-0.9.1/src/lib.rs`（facade / open_window / init）
@@ -1289,7 +1294,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | 0.1-as-built | 2026-11-21 | OS アイコン（Breeze）と as-built 差分を反映 |
 | 0.1-as-built | 2026-11-22 | 保存検索 / ブックマークラベルの as-built 反映、Z14 / AA01 修正、日付統一 |
 | 0.1-要件 | 2026-11-22 | 新要件を反映: Windows を第一級ターゲットへ昇格、Explorer / Double Commander 並みの UX を明示要件化、Android / iOS を要件化（[モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md) を approved（2026-11-23 承認）・未実装） |
-| 0.1-要件 | 2026-11-23 | 新要件の個別 ADR を 3 件追加: [デュアルペイン UI](docs/adr/adr-20261122-dual-pane-ui.md)（2026-11-22）/ [日本語照合](docs/adr/adr-20261123-japanese-collation.md)（2026-11-23）/ [OS ファイルクリップボード](docs/adr/adr-20261123-os-file-clipboard.md)（2026-11-23）。いずれも **draft・未承認**で、DESIGN.md の確定済み ADR-001〜012 とは別系列 |
+| 0.1-要件 | 2026-11-23 | 新要件の個別 ADR を 4 件追加: [デュアルペイン UI](docs/adr/adr-20261122-dual-pane-ui.md)（2026-11-22）/ [日本語照合](docs/adr/adr-20261123-japanese-collation.md)（2026-11-23）/ [OS ファイルクリップボード](docs/adr/adr-20261123-os-file-clipboard.md)（2026-11-23）/ [Windows ネイティブ API](docs/adr/adr-20261123-windows-native-api-strategy.md)（2026-11-23）。いずれも **draft・未承認**で、DESIGN.md の確定済み ADR-001〜012 とは別系列 |
 
 2026-11-22 の as-built 差分の内訳。保存検索 / ブックマークラベルは §4.1
 の差分表と [app/README.md](app/README.md) の「再帰検索」を参照。

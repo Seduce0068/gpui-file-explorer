@@ -2,18 +2,18 @@
 //! wasm32 向け JS バインディング（PWA から一覧・検索を呼ぶための薄い窓口）。
 //!
 //! このモジュールは `cfg(target_family = "wasm")` でのみコンパイルされ、
-//! ネイティブの `cargo test` には一切影響しない。既存の `std::fs` ベース
-//! `model::read_entries` / `search::search_by_name` をそのまま呼び、結果を
-//! `serde_json` で JSON 文字列にして `JsValue` で返す。
-//! 依存は `wasm-bindgen` と `serde_json` のみ（web_sys / js_sys は使わない）。
+//! ネイティブの `cargo test` には一切影響しない。DTO と変換ロジックは
+//! `wasm_view` に切り出してあり、ここでは JSON のデコード/`JsValue` 変換と
+//! バインディングの配線だけを行う。依存は `wasm-bindgen` と `serde_json` のみ
+//! （web_sys / js_sys は使わない）。
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+use crate::wasm_view::{EntryInput, EntryView, SearchHitView};
 use crate::{model, search};
 
 /// `console.error` を呼ぶ最小の bridge（`web_sys` を使わない）。
@@ -39,98 +39,6 @@ pub fn set_panic_hook() {
     }));
 }
 
-/// JS 側から見るファイル一覧の 1 行。
-///
-/// `model::Entry` は `OsString` / `PathBuf` / `SystemTime` を持つため
-/// `Serialize` を直接deriveできず、JSON 向けの平坦な DTO を用意する。
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EntryView {
-    name: String,
-    path: String,
-    is_dir: bool,
-    is_symlink: bool,
-    size: u64,
-    kind: String,
-    /// UNIX epoch からのミリ秒。時刻が読めない / epoch 前なら `null`。
-    modified_ms: Option<i64>,
-}
-
-impl From<&model::Entry> for EntryView {
-    fn from(entry: &model::Entry) -> Self {
-        Self {
-            name: entry.name_text.clone(),
-            path: entry.path.to_string_lossy().into_owned(),
-            is_dir: entry.is_dir,
-            is_symlink: entry.is_symlink,
-            size: entry.size,
-            kind: model::kind_label(entry),
-            modified_ms: entry
-                .modified
-                .and_then(|time: SystemTime| time.duration_since(UNIX_EPOCH).ok())
-                .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
-        }
-    }
-}
-
-/// JS 側から見る検索結果の 1 行（一覧 1 行 + 内容検索の行番号）。
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SearchHitView {
-    entry: EntryView,
-    match_line: Option<u32>,
-}
-
-impl From<&search::SearchResult> for SearchHitView {
-    fn from(hit: &search::SearchResult) -> Self {
-        Self {
-            entry: EntryView::from(&hit.entry),
-            match_line: hit.match_line,
-        }
-    }
-}
-
-/// JS 側から渡す一覧行（wasm の `std::fs` が使えないための in-memory 入力）。
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EntryInput {
-    name: String,
-    #[serde(default)]
-    path: Option<String>,
-    #[serde(default)]
-    is_dir: bool,
-    #[serde(default)]
-    is_symlink: bool,
-    #[serde(default)]
-    size: u64,
-    #[serde(default)]
-    modified_ms: Option<i64>,
-}
-
-impl EntryInput {
-    fn into_entry(self) -> model::Entry {
-        let name_text = self.name;
-        let sort_key = name_text.to_lowercase();
-        let path = self.path.unwrap_or_else(|| name_text.clone());
-        model::Entry {
-            name: std::ffi::OsString::from(name_text.clone()),
-            name_text,
-            sort_key,
-            path: Path::new(&path).to_path_buf(),
-            is_dir: self.is_dir,
-            is_symlink: self.is_symlink,
-            size: self.size,
-            modified: self.modified_ms.and_then(|millis| {
-                if millis >= 0 {
-                    UNIX_EPOCH.checked_add(std::time::Duration::from_millis(millis as u64))
-                } else {
-                    None
-                }
-            }),
-        }
-    }
-}
-
 /// JS から渡した JSON 配列をコアの並び順ロジックで整列し、JSON で返す。
 #[wasm_bindgen(js_name = listEntriesFromJson)]
 pub fn list_entries_from_json(json: &str) -> Result<JsValue, JsValue> {
@@ -145,13 +53,16 @@ pub fn list_entries_from_json(json: &str) -> Result<JsValue, JsValue> {
 /// JS から渡した JSON 配列に対してコアの名前検索を実行する。
 #[wasm_bindgen(js_name = searchInJson)]
 pub fn search_in_json(query: &str, json: &str) -> Result<JsValue, JsValue> {
-    let needle = query.to_lowercase();
     let inputs: Vec<EntryInput> =
         serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
     let all: Vec<model::Entry> = inputs.into_iter().map(EntryInput::into_entry).collect();
+    // `search_by_name` と同じ正規化を使う（trim + 小文字化 + 空クエリは 0 件）。
+    let Some(needle) = search::normalized_query(query) else {
+        return to_js_json(&Vec::<SearchHitView>::new());
+    };
     let hits: Vec<SearchHitView> = all
         .iter()
-        .filter(|entry| entry.name_text.to_lowercase().contains(&needle))
+        .filter(|entry| search::name_matches(&entry.name_text, &needle))
         .map(|entry| SearchHitView {
             entry: entry.into(),
             match_line: None,

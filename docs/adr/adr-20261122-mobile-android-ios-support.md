@@ -20,7 +20,7 @@ status: approved
 
 ## コンテキスト
 
-本プロジェクトは `gpui-kit = "=0.9.1"`（`app/Cargo.toml:14`）を唯一のUI基盤として、
+本プロジェクトは `gpui-kit = "=0.9.1"`（`app/Cargo.toml:17`）を唯一のUI基盤として、
 クロスプラットフォームのファイルエクスプローラを実装している。
 これまでデスクトップ（Linux / Windows / macOS）を主対象としてきたが、
 新たにモバイル対応を含む要件追加が発生した。
@@ -53,7 +53,7 @@ iOS はアプリ版ではなく PWA を対象とすることになった。
 
 ### GPUIスタックのモバイル除外設計
 
-- `app/Cargo.toml:14`: `gpui-kit = "=0.9.1"`（exact pin）。他UIフレームワークは依存なし。
+- `app/Cargo.toml:17`: `gpui-kit = "=0.9.1"`（exact pin）。他UIフレームワークは依存なし。
 - `gpui-kit-0.9.1/Cargo.toml:326-334`: `gpui-pre-platform` 依存は
   `cfg(not(any(target_os = "ios", target_os = "android")))` でゲートされている。
 - `gpui-kit-0.9.1/src/lib.rs:131-144`: `platform` / `web` の再エクスポートは
@@ -93,7 +93,7 @@ iOS はアプリ版ではなく PWA を対象とすることになった。
 ### ゴミ箱とライセンス
 
 - `trash` 5.3.0 は ios / android をcfgで除外（`trash-5.3.0/Cargo.toml:108-193`）。
-- `app/Cargo.toml:28-34` で対象外ターゲットを除外し、
+- `app/Cargo.toml:36-37` で対象外ターゲットを除外し、
   `app/src/trash_view.rs:12-19` がno-op fallbackを提供する。
 - アプリは AGPL-3.0-or-later（`app/Cargo.toml:1,7`）。
 - GPUIスタック（gpui-kit / gpui-pre / gpui-pre-platform / gpui-pre-ios）は Apache-2.0。
@@ -216,7 +216,7 @@ Android アプリは Jetpack Compose、iOS と Android の PWA は Web フロン
 注: B の UI 系統は 2026-11-23 方針で Compose（Androidアプリ）+
 PWA（iOS / Android）となった。承認済みの B 自体は維持している。
 
-## 推奨決定（未確定）
+## 決定（承認済み 2026-11-23）
 
 現時点の推奨は、**D（Windows先行）を直ちに実行し、
 モバイルの目標アーキテクチャとして B を Phase 1 のspike（検証）で確認する**
