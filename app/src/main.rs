@@ -390,6 +390,16 @@ fn reload_reruns_search(view: ViewSource) -> bool {
     matches!(view, ViewSource::Search)
 }
 
+/// Whether the "Forward" action is meaningful in the current view.
+///
+/// Back and Up deliberately leave the trash, but Forward has no target there:
+/// advertising it as enabled while `go_forward` merely called `exit_trash`
+/// misled users (BE15). One pure predicate drives both the toolbar state and
+/// the key/action handler so they cannot drift apart.
+fn forward_enabled(view: ViewSource, can_go_forward: bool) -> bool {
+    view != ViewSource::Trash && can_go_forward
+}
+
 /// A failed reconciliation sets `STATUS_RESCAN_FAILED` with its F5 recovery
 /// hint and must stay visible until the next *successful* read (strings.rs
 /// F6-36). The watch sites all route their "changed" notice through this helper
@@ -2407,6 +2417,36 @@ fn thumbnail_eligible(show_thumbnails: bool, view: ViewSource, entry: &Entry) ->
         && !entry.is_dir
         && entry.size <= preview::MAX_IMAGE_BYTES
         && preview::is_thumbnailable(&entry.name_text, entry.is_symlink, entry.is_file())
+}
+
+/// Only the *second* click activates a row. GPUI reports `click_count()` as
+/// `usize`; a third click must not re-open the same entry, and keyboard clicks
+/// (always 1) keep their existing dispatch. Shared by the list and grid
+/// renderers so the two cannot drift.
+fn is_activation_click(click_count: usize) -> bool {
+    click_count == 2
+}
+
+/// Selection modifiers to apply for a click. The activation click returns
+/// `None`: its modifiers must not rewrite the selection that the first click
+/// already established (Ctrl+double-click used to toggle the row off).
+fn selection_modifiers_for_click(
+    click_count: usize,
+    control: bool,
+    shift: bool,
+) -> Option<(bool, bool)> {
+    if is_activation_click(click_count) {
+        None
+    } else {
+        Some((control, shift))
+    }
+}
+
+/// Whether rows may be dragged out to the OS as real file paths. Directory and
+/// Search entries carry filesystem paths; Trash ids are not real paths, so
+/// dragging them out is refused. Shared by the list and grid renderers.
+fn drag_out_enabled(view: ViewSource) -> bool {
+    matches!(view, ViewSource::Directory | ViewSource::Search)
 }
 
 /// Keyboard intent while the trash view owns the key events. Permanent
@@ -5182,6 +5222,49 @@ impl Explorer {
 
     // -------------------------------------------------------------------- tabs
 
+    /// Pure admission check for adding a tab: tabs live in the directory view
+    /// only, and `MAX_TABS` is a runtime invariant shared by all four
+    /// tab-creating paths (BE01/BE08).
+    fn can_open_tab(&self) -> bool {
+        self.view == ViewSource::Directory && self.tabs.can_open_tab()
+    }
+
+    /// Common view guard for every tab operation. Without it, tab actions
+    /// pressed in the trash view silently switched back to Directory instead
+    /// of being refused (BE08).
+    fn guard_tab_view(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.view == ViewSource::Directory {
+            return true;
+        }
+        self.status = STATUS_TABS_ONLY_DIRECTORY.to_string();
+        cx.notify();
+        false
+    }
+
+    /// Shared cap guard. The canonical refusal text is emitted at the point
+    /// where every path (new tab, middle click, preview, restore) is stopped.
+    fn guard_tab_cap(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.tabs.can_open_tab() {
+            return true;
+        }
+        self.status = format!("{STATUS_MAX_TABS_PREFIX}{MAX_TABS}{STATUS_MAX_TABS_SUFFIX}");
+        cx.notify();
+        false
+    }
+
+    /// Admission guard for all four paths that add a tab. The view is checked
+    /// first so the user sees the same message as for close/navigate tab
+    /// actions; the cap check is shared with the other guards (BE01).
+    fn try_new_tab(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.can_open_tab() {
+            return true;
+        }
+        if !self.guard_tab_view(cx) {
+            return false;
+        }
+        self.guard_tab_cap(cx)
+    }
+
     /// Persist the current directory/history into the active tab.
     fn sync_active_tab(&mut self) {
         self.tabs.sync(self.cwd.clone(), self.history.clone());
@@ -5251,14 +5334,7 @@ impl Explorer {
     }
 
     fn new_tab(&mut self, cx: &mut Context<Self>) {
-        if self.view != ViewSource::Directory {
-            self.status = STATUS_TABS_ONLY_DIRECTORY.to_string();
-            cx.notify();
-            return;
-        }
-        if self.tabs.len() >= MAX_TABS {
-            self.status = format!("{STATUS_MAX_TABS_PREFIX}{MAX_TABS}{STATUS_MAX_TABS_SUFFIX}");
-            cx.notify();
+        if !self.try_new_tab(cx) {
             return;
         }
         self.sync_active_tab();
@@ -5269,9 +5345,7 @@ impl Explorer {
 
     /// Open a new tab rooted at `path` (middle click on a row / grid cell).
     fn new_tab_at(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if self.view != ViewSource::Directory {
-            self.status = STATUS_TABS_ONLY_DIRECTORY.to_string();
-            cx.notify();
+        if !self.guard_tab_view(cx) {
             return;
         }
         if !path.is_dir() {
@@ -5279,9 +5353,7 @@ impl Explorer {
             cx.notify();
             return;
         }
-        if self.tabs.len() >= MAX_TABS {
-            self.status = format!("{STATUS_MAX_TABS_PREFIX}{MAX_TABS}{STATUS_MAX_TABS_SUFFIX}");
-            cx.notify();
+        if !self.guard_tab_cap(cx) {
             return;
         }
         self.sync_active_tab();
@@ -5310,9 +5382,7 @@ impl Explorer {
     }
 
     fn close_tab(&mut self, cx: &mut Context<Self>) {
-        if self.view != ViewSource::Directory {
-            self.status = STATUS_TABS_ONLY_DIRECTORY.to_string();
-            cx.notify();
+        if !self.guard_tab_view(cx) {
             return;
         }
         if self.tabs.len() <= 1 {
@@ -5327,9 +5397,14 @@ impl Explorer {
     }
 
     fn restore_closed_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.try_new_tab(cx) {
+            return;
+        }
         self.sync_active_tab();
-        if let Some(cwd) = self.tabs.restore_last_closed() {
-            let tab = self.tabs.active().clone();
+        // The whole tab (cwd + history) is reinserted, so go_back() works
+        // after Ctrl+Shift+T just as it does after a session restore (BE07).
+        if let Some(tab) = self.tabs.restore_last_closed() {
+            let cwd = tab.cwd.clone();
             let saved = self.load_tab(tab, cx);
             self.status = settings_write_status(
                 &self.settings,
@@ -5357,18 +5432,27 @@ impl Explorer {
     }
 
     fn next_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.guard_tab_view(cx) {
+            return;
+        }
         self.sync_active_tab();
         let tab = self.tabs.next();
         self.load_tab(tab, cx);
     }
 
     fn prev_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.guard_tab_view(cx) {
+            return;
+        }
         self.sync_active_tab();
         let tab = self.tabs.prev();
         self.load_tab(tab, cx);
     }
 
     fn move_tab_left(&mut self, cx: &mut Context<Self>) {
+        if !self.guard_tab_view(cx) {
+            return;
+        }
         self.sync_active_tab();
         if self.tabs.move_active_left() {
             self.persist_tabs();
@@ -5384,6 +5468,9 @@ impl Explorer {
     }
 
     fn move_tab_right(&mut self, cx: &mut Context<Self>) {
+        if !self.guard_tab_view(cx) {
+            return;
+        }
         self.sync_active_tab();
         if self.tabs.move_active_right() {
             self.persist_tabs();
@@ -5548,8 +5635,9 @@ impl Explorer {
     }
 
     fn go_forward(&mut self, cx: &mut Context<Self>) {
-        if self.view == ViewSource::Trash {
-            self.exit_trash(cx);
+        if !forward_enabled(self.view, self.history.can_go_forward()) {
+            // In the trash view Forward is disabled rather than acting as a
+            // second "exit trash" button (BE15). Back/Up still leave the trash.
             return;
         }
         // Peek first: a missing target must leave cwd and history untouched.
@@ -8213,6 +8301,9 @@ impl Explorer {
         if !parent.is_dir() {
             self.status = format!("{STATUS_PATH_GONE}: {}", display_path(&parent));
             cx.notify();
+            return;
+        }
+        if !self.try_new_tab(cx) {
             return;
         }
         self.sync_active_tab();
@@ -11076,8 +11167,16 @@ impl Explorer {
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_handle.focus(window, cx);
             let modifiers = event.modifiers();
-            this.select_with_modifiers(index, modifiers.control, modifiers.shift, cx);
-            if event.click_count() >= 2 {
+            // The activation click (exactly 2) must not rewrite the selection
+            // with its own modifiers; other clicks keep the existing behaviour.
+            if let Some((control, shift)) = selection_modifiers_for_click(
+                event.click_count(),
+                modifiers.control,
+                modifiers.shift,
+            ) {
+                this.select_with_modifiers(index, control, shift, cx);
+            }
+            if is_activation_click(event.click_count()) {
                 if this.view == ViewSource::Trash {
                     this.restore_selected(cx);
                 } else {
@@ -11111,7 +11210,7 @@ impl Explorer {
             vec![entry.path.clone()]
         };
         let drag_paths = batch_paths.clone();
-        let drag_out = this.view == ViewSource::Directory;
+        let drag_out = drag_out_enabled(this.view);
         let drop_target = if drag_out && is_dir && !entry.is_symlink {
             Some(entry.path.clone())
         } else {
@@ -11294,6 +11393,13 @@ impl Explorer {
 
     fn grid_cell(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = this.entries.get(index).cloned()?;
+        // U-09: same guard as the list row — the full path in Search, the full
+        // name in every other view — so the truncated cell can be inspected.
+        let name_tooltip_text = if this.view == ViewSource::Search {
+            entry.path.display().to_string()
+        } else {
+            entry.name_text.clone()
+        };
         let display_name =
             display_name_for(&entry, this.view, &this.cwd, &this.search.active_roots);
         let display_name = match this.search_lines.get(&entry.path) {
@@ -11361,8 +11467,16 @@ impl Explorer {
         let click = cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_handle.focus(window, cx);
             let modifiers = event.modifiers();
-            this.select_with_modifiers(index, modifiers.control, modifiers.shift, cx);
-            if event.click_count() >= 2 {
+            // The activation click (exactly 2) must not rewrite the selection
+            // with its own modifiers; other clicks keep the existing behaviour.
+            if let Some((control, shift)) = selection_modifiers_for_click(
+                event.click_count(),
+                modifiers.control,
+                modifiers.shift,
+            ) {
+                this.select_with_modifiers(index, control, shift, cx);
+            }
+            if is_activation_click(event.click_count()) {
                 if this.view == ViewSource::Trash {
                     this.restore_selected(cx);
                 } else {
@@ -11394,7 +11508,7 @@ impl Explorer {
             vec![entry.path.clone()]
         };
         let drag_paths = batch_paths.clone();
-        let drag_out = this.view == ViewSource::Directory;
+        let drag_out = drag_out_enabled(this.view);
         let drop_target = if drag_out && is_dir && !entry.is_symlink {
             Some(entry.path.clone())
         } else {
@@ -11479,14 +11593,21 @@ impl Explorer {
                 } else {
                     icon_fallback()
                 })
-                .child(
-                    div()
+                .child({
+                    // `tooltip` needs an interactive (Stateful) element, hence
+                    // the explicit id on the truncated grid name cell.
+                    let base = div()
+                        .id(("grid-name", index))
                         .w_full()
                         .text_xs()
                         .text_center()
-                        .truncate()
-                        .child(display_name),
-                )
+                        .truncate();
+                    let tooltip_text = name_tooltip_text.clone();
+                    base.tooltip(move |window, cx| {
+                        Tooltip::new(tooltip_text.clone()).build(window, cx)
+                    })
+                    .child(display_name)
+                })
                 .into_any_element(),
         )
     }
@@ -11786,7 +11907,7 @@ impl Explorer {
             "nav-forward",
             "進む",
             IconName::ArrowRight,
-            self.history.can_go_forward() || self.view == ViewSource::Trash,
+            forward_enabled(self.view, self.history.can_go_forward()),
             cx.listener(|this, _event, window, cx| {
                 this.focus_handle.focus(window, cx);
                 this.go_forward(cx);
@@ -14007,6 +14128,37 @@ mod tests {
         production
     }
 
+    /// BE19: ガード oracle のマーカーが production_text 上で一意でなければ、
+    /// `source_region` は最初の一致を掴んで無関係な領域を検証してしまう。
+    /// `unique_source_marker` を従来の 1 箇所だけではなくガード経路へ段階導入
+    /// するための wrapper。全ガードはこれを通ること。
+    fn guard_region<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let production = production_text(source);
+        unique_source_marker(production, start);
+        unique_source_marker(production, end);
+        source_region(source, start, end)
+    }
+
+    #[test]
+    fn weak_oracle_guard_markers_are_unique_in_production_text() {
+        // BE19: ガード oracle が使うマーカーの一意性を一覧で固定する。
+        // production_text はテスト内の同名リテラルを除外するため、ここでの
+        // count()==1 は「本番コードにだけ存在する」ことを意味する。
+        let source = include_str!("main.rs");
+        let production = production_text(source);
+        const MARKERS: &[&str] = &[
+            "    fn run_transfer(\n",
+            "    /// Copy files/directories dropped from the OS into the current directory.",
+            "    fn drop_internal_into(\n",
+            "    /// Copy OS-dropped paths into `destination`",
+            "    fn drop_external_into(\n",
+            "    // ------------------------------------------------------------------ undo",
+        ];
+        for marker in MARKERS {
+            unique_source_marker(production, marker);
+        }
+    }
+
     #[test]
     fn source_region_rejects_a_missing_end_marker() {
         let source = "    fn first() {\n    }\n    fn second() {\n    }\n";
@@ -15110,6 +15262,56 @@ mod tests {
         assert!(!should_clear_clipboard(7, 7, false, true));
         assert!(!should_clear_clipboard(7, 7, true, false));
         assert!(!should_clear_clipboard(7, 8, false, false));
+        // BE05: 世代は wrapping_add で進むため u64::MAX → 0 の折り返しでも
+        // 「開始時と同じなら消す / 進んだら残す」判定が維持されること。
+        assert_eq!(u64::MAX.wrapping_add(1), 0);
+        assert!(should_clear_clipboard(u64::MAX, u64::MAX, true, true));
+        assert!(!should_clear_clipboard(
+            u64::MAX,
+            u64::MAX.wrapping_add(1),
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn run_transfer_snapshots_generation_before_task_and_calls_the_guard() {
+        // BE05: 真偽表だけでは start_generation の捕捉位置と呼び出し配線が
+        // 壊れても緑のままだった。本番 run_transfer を source-region で固定する。
+        let source = include_str!("main.rs");
+        let body = guard_region(
+            source,
+            "    fn run_transfer(\n",
+            "    /// Copy files/directories dropped from the OS into the current directory.",
+        );
+        let capture = "let start_generation = self.clipboard_generation;";
+        let spawn = "cx.background_spawn(";
+        let call = "should_clear_clipboard(\n";
+        assert!(
+            body.contains(capture),
+            "run_transfer must snapshot the generation"
+        );
+        assert!(
+            body.contains(spawn),
+            "run_transfer must start a background task"
+        );
+        assert!(
+            body.contains(call),
+            "run_transfer must call should_clear_clipboard"
+        );
+        assert!(
+            body.find(capture).expect("capture position")
+                < body.find(spawn).expect("spawn position"),
+            "start_generation must be captured before the operation's task starts"
+        );
+        assert!(
+            body.find(capture).expect("capture position") < body.find(call).expect("call position"),
+            "the guard must consume the snapshot taken before the task"
+        );
+        assert!(
+            body.contains("                    start_generation,\n                    this.clipboard_generation,"),
+            "the guard must compare the start snapshot with the live generation"
+        );
     }
 
     #[test]
@@ -15206,8 +15408,9 @@ mod tests {
             PathBuf::from("/work/tree/a.txt"),
             PathBuf::from("/work/other.txt"),
         ];
+        let once = transferable_drop_paths(&dragged, &destination);
         assert_eq!(
-            transferable_drop_paths(&dragged, &destination),
+            once,
             vec![
                 PathBuf::from("/work/tree"),
                 PathBuf::from("/work/other.txt")
@@ -15222,6 +15425,38 @@ mod tests {
             vec![PathBuf::from("/work/tree")]
         );
         assert!(transferable_drop_paths(&[], &destination).is_empty());
+        // BE06: 内部ドラッグは internal_drop_paths → drop_external_into で
+        // フィルタが二重に適用される。冪等でなければ別の結果になる。
+        assert_eq!(
+            transferable_drop_paths(&once, &destination),
+            once,
+            "the shared drop filter must be idempotent: filter(filter(x)) == filter(x)"
+        );
+    }
+
+    #[test]
+    fn both_drop_routes_go_through_the_shared_transferable_filter() {
+        // BE06: 純粋テストだけでは drop_internal_into / drop_external_into から
+        // 共有フィルタ呼び出しが消えても緑だった。両方の配線を固定する。
+        let source = include_str!("main.rs");
+        let internal = guard_region(
+            source,
+            "    fn drop_internal_into(\n",
+            "    /// Copy OS-dropped paths into `destination`",
+        );
+        let external = guard_region(
+            source,
+            "    fn drop_external_into(\n",
+            "    // ------------------------------------------------------------------ undo",
+        );
+        assert!(
+            internal.contains("internal_drop_paths(&paths, &destination)"),
+            "internal row drags must enter the shared filter"
+        );
+        assert!(
+            external.contains("transferable_drop_paths(&paths, &destination)"),
+            "OS drops must call the same filter (idempotent on internal output)"
+        );
     }
 
     // AA07: `record_trashed_paths` wraps a blocking trash listing, so exercise
@@ -17114,6 +17349,20 @@ mod tests {
         assert!(super::reload_reruns_search(super::ViewSource::Search));
         assert!(!super::reload_reruns_search(super::ViewSource::Directory));
         assert!(!super::reload_reruns_search(super::ViewSource::Trash));
+    }
+
+    #[test]
+    fn forward_is_disabled_in_trash_even_with_history() {
+        use super::{forward_enabled, ViewSource};
+
+        // BE15: Trash keeps Back/Up as exit routes, but Forward must stay off
+        // even when the directory history has a forward entry.
+        assert!(forward_enabled(ViewSource::Directory, true));
+        assert!(!forward_enabled(ViewSource::Directory, false));
+        assert!(!forward_enabled(ViewSource::Trash, true));
+        assert!(!forward_enabled(ViewSource::Trash, false));
+        assert!(forward_enabled(ViewSource::Search, true));
+        assert!(!forward_enabled(ViewSource::Search, false));
     }
 
     // AE01: the previous input-focus guard swallowed every key while the query
@@ -19403,9 +19652,9 @@ mod tests {
             "            // while a search text input owns the keyboard. Handle it before\n",
         );
         let end = "            // AE01: the query field still keeps every key while typing\n";
-        unique_source_marker(source, start);
-        unique_source_marker(source, end);
-        let guard = source_region(source, start, end);
+        // BE19: 全ガードマーカーは production_text 上で一意であることを
+        // guard_region が保証する（従来はこの 1 箇所だけだった）。
+        let guard = guard_region(source, start, end);
         assert!(
             guard.contains("focus_search_name_key_reaches_dispatch(")
                 && guard.contains("modifiers.alt"),
@@ -20633,5 +20882,55 @@ mod tests {
         );
         // Ctrl+Alt+T remains NewTab: `binding_matches` ignores alt for Ctrl.
         assert_eq!(keymap.resolve("t", true, false, true), KeyAction::NewTab);
+    }
+
+    // --- BE10 / BE11 / BE12: shared mouse-interaction helpers ---------------
+
+    #[test]
+    fn only_the_second_click_activates_and_it_skips_selection_modifiers() {
+        // 1 / 2 / 3 clicks × modifier present/absent (plus 0 and 4 guards).
+        for click_count in [0, 1, 2, 3, 4] {
+            for (control, shift) in [(false, false), (true, false), (false, true), (true, true)] {
+                let activation = super::is_activation_click(click_count);
+                let modifiers = super::selection_modifiers_for_click(click_count, control, shift);
+                assert_eq!(activation, click_count == 2);
+                if click_count == 2 {
+                    assert_eq!(
+                        modifiers, None,
+                        "the activation click must not rewrite the selection"
+                    );
+                } else {
+                    assert_eq!(modifiers, Some((control, shift)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drag_out_covers_directory_and_search_but_not_trash() {
+        assert!(super::drag_out_enabled(super::ViewSource::Directory));
+        assert!(super::drag_out_enabled(super::ViewSource::Search));
+        assert!(!super::drag_out_enabled(super::ViewSource::Trash));
+    }
+
+    #[test]
+    fn grid_name_tooltip_keeps_the_shared_source_guard() {
+        // BE11 source guard: the grid cell must reuse `name_tooltip_text` with
+        // the same Search → full-path rule as the list row. A literal tooltip
+        // on the cell without that guard would show the wrong text in Search.
+        let source = include_str!("main.rs");
+        let grid = source_region(source, "    fn grid_cell(", "    fn sidebar(");
+        assert!(
+            grid.contains("name_tooltip_text"),
+            "grid cell must reuse the shared tooltip text"
+        );
+        assert!(
+            grid.contains("ViewSource::Search"),
+            "the Search source guard must stay in the grid renderer"
+        );
+        assert!(
+            grid.contains(".tooltip("),
+            "the truncated grid name must expose a tooltip"
+        );
     }
 }

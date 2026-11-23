@@ -335,32 +335,43 @@ mod tests {
 
     #[test]
     fn parse_file_uri_list_accepts_only_valid_absolute_file_uris() {
+        // BE03: 有効行と不正行を交互に置く。全ての有効行が先頭にあると、
+        // 最初の不正行で打ち切る（continue → break）実装でも緑になってしまう。
+        // 不正行の後にも有効行が続くことで、最後まで走査することが検証できる。
         let uris: Vec<String> = [
-            "file:///tmp/a.txt",
-            "FILE://localhost/tmp/b%20c.txt",
-            "file:///tmp/%E3%81%82.txt",
-            "http://example.com/tmp/a.txt",
-            "file://remote-host/tmp/a.txt",
-            "file:///tmp/%ZZ.txt",
-            "file:///tmp/%00.txt",
-            "file:///tmp/a\r\nfile:///tmp/b.txt",
-            "/tmp/a.txt",
-            "file://localhost/",
-            "",
-            "# comment",
+            "file:///tmp/a.txt",                  // valid 1
+            "http://example.com/tmp/a.txt",       // invalid: foreign scheme
+            "FILE://localhost/tmp/b%20c.txt",     // valid 2
+            "file://remote-host/tmp/a.txt",       // invalid: foreign authority
+            "file:///tmp/%E3%81%82.txt",          // valid 3
+            "file:///tmp/%ZZ.txt",                // invalid: bad escape
+            "file:///tmp/d.txt",                  // valid 4
+            "file:///tmp/%00.txt",                // invalid: NUL
+            "/tmp/a.txt",                         // invalid: no scheme
+            "file:///tmp/e.txt",                  // valid 5
+            "file:///tmp/a\r\nfile:///tmp/b.txt", // invalid: embedded newline
+            "file://localhost/",                  // invalid: empty path
+            "file:///tmp/f.txt",                  // valid 6
+            "",                                   // invalid: blank line
+            "# comment",                          // invalid: comment
+            "file:///tmp/g.txt",                  // valid 7 (after invalid rows)
         ]
         .iter()
         .map(ToString::to_string)
         .collect();
+        let expected = vec![
+            PathBuf::from("/tmp/a.txt"),
+            PathBuf::from("/tmp/b c.txt"),
+            PathBuf::from("/tmp/あ.txt"),
+            PathBuf::from("/tmp/d.txt"),
+            PathBuf::from("/tmp/e.txt"),
+            PathBuf::from("/tmp/f.txt"),
+            PathBuf::from("/tmp/g.txt"),
+        ];
         let parsed = parse_file_uri_list(&uris);
-        assert_eq!(
-            parsed,
-            vec![
-                PathBuf::from("/tmp/a.txt"),
-                PathBuf::from("/tmp/b c.txt"),
-                PathBuf::from("/tmp/あ.txt"),
-            ]
-        );
+        // 件数と順序を明示的に固定する（長さだけ見ると並び替えを取りこぼす）。
+        assert_eq!(parsed.len(), 7, "exactly seven valid URIs must survive");
+        assert_eq!(parsed, expected);
     }
 
     #[test]

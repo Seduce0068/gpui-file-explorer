@@ -2,8 +2,11 @@
 // Pure click-suppression boundary tests: no browser, no timers, no dependencies.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const {
   isClickSuppressed,
+  secondClickSuppressed,
+  doubleClickCommand,
   nextSearchGeneration,
   isCurrentSearchRequest,
   longPressTargetIndex,
@@ -55,6 +58,52 @@ test('isClickSuppressed is safe at integer-number boundaries', () => {
   assert.equal(isClickSuppressed(max, max), false);
   assert.equal(isClickSuppressed(max + 1, max), false, 'past the largest safe deadline');
   assert.equal(isClickSuppressed(0, Number.MAX_VALUE), true);
+});
+
+// --- BE02: ダブルクリックの第2 click 抑制 ----------------------------------
+
+test('secondClickSuppressed only suppresses the second and later click', () => {
+  assert.equal(secondClickSuppressed(0), false);
+  assert.equal(secondClickSuppressed(1), false, 'a single click still selects');
+  assert.equal(secondClickSuppressed(2), true, 'the second click of a dblclick is ignored');
+  assert.equal(secondClickSuppressed(3), true, 'rapid repeated clicks are ignored too');
+});
+
+test('secondClickSuppressed rejects malformed detail values', () => {
+  assert.equal(secondClickSuppressed(undefined), false);
+  assert.equal(secondClickSuppressed(null), false);
+  assert.equal(secondClickSuppressed(NaN), false);
+  assert.equal(secondClickSuppressed('2'), false);
+  assert.equal(secondClickSuppressed(1.5), false);
+  assert.equal(secondClickSuppressed(-1), false);
+});
+
+test('doubleClickCommand only activates on exactly two clicks', () => {
+  assert.equal(doubleClickCommand(2), 'confirm');
+  assert.equal(doubleClickCommand(0), null);
+  assert.equal(doubleClickCommand(1), null);
+  assert.equal(doubleClickCommand(3), null, 'a third click must not re-activate');
+  assert.equal(doubleClickCommand(undefined), null);
+  assert.equal(doubleClickCommand('2'), null);
+});
+
+test('ダブルクリックでトグルが相殺されない（BE02 回帰）', () => {
+  let selectedPaths = [];
+  const path = '/demo/notes.txt';
+  // onListClick と同じ判定順を pure helper で再現する。
+  function click(detail) {
+    if (secondClickSuppressed(detail)) return;
+    selectedPaths = selectionToggle(selectedPaths, path);
+  }
+
+  click(1);
+  assert.deepEqual(selectedPaths, [path], '1回目で1行だけトグルされる');
+  click(2);
+  assert.deepEqual(selectedPaths, [path], '2回目はトグルを相殺しない');
+  assert.equal(doubleClickCommand(2), 'confirm', 'dblclick 側で選択確定へ進む');
+  click(3);
+  assert.deepEqual(selectedPaths, [path], '3回目も選択を書き換えない');
+  assert.equal(doubleClickCommand(3), null, '3回目は活性化しない');
 });
 
 // --- 非同期検索の世代ガード（BD05） ----------------------------------------
@@ -125,6 +174,58 @@ test('新しい入力はデバウンス待ちの間も実行中リクエスト�
   generation = nextSearchGeneration(generation);
   assert.equal(isCurrentSearchRequest(generation, inFlight), false,
     'デバウンスが発火する前に古い結果を破棄する');
+});
+
+// BE04: 上の BD05 テストは pure helper を再実装しただけなので、本番の
+// runSearch / refreshList / clearSearch からガードが消えても緑のままだった。
+// node:fs で main.js のソースを読み、await 完了直後の配線そのものを固定する。
+const mainSource = fs.readFileSync(__dirname + '/main.js', 'utf8');
+
+function sourceRegion(source, start, end) {
+  const from = source.indexOf(start);
+  assert.notEqual(from, -1, `missing start marker: ${start}`);
+  assert.equal(source.indexOf(start, from + 1), -1, `start marker must be unique: ${start}`);
+  const afterStart = from + start.length;
+  const to = source.indexOf(end, afterStart);
+  assert.notEqual(to, -1, `missing end marker: ${end}`);
+  return source.slice(afterStart, to);
+}
+
+test('本番 runSearch / refreshList の await 直後に世代ガードがある（BD05 配線）', () => {
+  const refreshList = sourceRegion(
+    mainSource, 'async function refreshList() {', 'async function runSearch(query) {');
+  const runSearch = sourceRegion(
+    mainSource, 'async function runSearch(query) {', '// --- File System Access API');
+
+  for (const [name, body] of [['refreshList', refreshList], ['runSearch', runSearch]]) {
+    const lines = body.split('\n');
+    let checked = 0;
+    lines.forEach((line, index) => {
+      if (line.trimStart().startsWith('//')) return; // コメント内の「await」は対象外
+      if (!line.includes('await ')) return;
+      // 空クエリは refreshList へ委譲するだけで、ガードは委譲先が持つ。
+      if (line.includes('await refreshList()')) return;
+      checked += 1;
+      const after = lines.slice(index + 1, index + 4).join('\n');
+      assert.match(
+        after,
+        /isCurrentSearchRequest\(state\.searchGeneration, generation\)/,
+        `${name} の await 完了直後に現役判定が必要: ${line.trim()}`,
+      );
+    });
+    assert.ok(checked > 0, `${name} に検証対象の await が必要`);
+  }
+});
+
+test('本番 clearSearch は await より前に世代を進め古い結果を無効化する（BD05 配線）', () => {
+  const clearSearch = sourceRegion(
+    mainSource, 'async function clearSearch() {', 'async function onSwipeBack()');
+  const bump = clearSearch.indexOf(
+    'state.searchGeneration = nextSearchGeneration(state.searchGeneration);');
+  const awaited = clearSearch.indexOf("await runSearch('')");
+  assert.notEqual(bump, -1, 'clearSearch は世代を進める必要がある');
+  assert.notEqual(awaited, -1, 'clearSearch は runSearch へ委譲する必要がある');
+  assert.ok(bump < awaited, 'clear は await の前に世代を進め、実行中の検索を無効化する');
 });
 
 // --- 長押し対象の path 再解決（BD12） --------------------------------------

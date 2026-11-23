@@ -240,6 +240,12 @@ button:disabled {
   scroll-margin-block: 4px;
 }
 
+/* BE18: ポインタ操作时にカーソル行へ視覚フィードバックを返す。
+   選択行は aria-selected 側の色を優先するため対象外にする。 */
+.entry-list li[role="option"]:not([aria-selected="true"]):hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
 .entry-list li[role="option"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;

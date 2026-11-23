@@ -2038,6 +2038,41 @@ status: current
 - [x] **BD18** search generation 不一致 early-return が running/task/cancel を不走清扫
   — 対応: loop17（generation を進めるのは clear_search/run_search のみで実害なし）
 
+## 進行中（ループ18 バックログ）
+
+### 優先度: 高（ループ18・confirmed）
+
+- [x] **BE01** MAX_TABS 上限が restore_closed_tab / preview でバイパス — 対応: loop18
+- [x] **BE02** PWA にダブルクリックの Activate 経路が無い — 対応: loop18
+- [x] **BE03** parse_file_uri_list テストが不正行スキップを検出できない — 対応: loop18
+- [x] **BE04** PWA 世代ガードのテストが本番配線を検証していない — 対応: loop18
+- [x] **BE05** clipboard generation テストが呼び出しサイトを固定していない — 対応: loop18
+- [x] **BE06** drop paths テストが OS ドロップ側の配線を固定していない — 対応: loop18
+
+### 優先度: 中（ループ18・confirmed）
+
+- [x] **BE07** 閉じたタブ復元が back/forward 履歴を失う — 対応: loop18
+- [x] **BE08** タブ循環・移動・復元キーが view ガードを持たない — 対応: loop18
+- [x] **BE09** 保存時パス除外で active_tab が再クランプされない — 対応: loop18
+- [x] **BE10** main.rs ダブルクリック判定が >=2 で3 click/修飾キーを誤処理 — 対応: loop18
+- [x] **BE11** アイコングリッド省略名セルにホバー Tooltip が無い — 対応: loop18
+- [x] **BE12** 検索ビュー行が OS へドラッグできない（README と不一致） — 対応: loop18
+- [x] **BE13** DESIGN §8.1 の設定保存ルールが実装と不一致 — 対応: loop18
+- [x] **BE14** モバイル ADR が未使用の app/Cargo.lock を根拠にする — 対応: loop18
+
+### 優先度: 低（ループ18・confirmed）
+
+- [x] **BE15** ゴミ箱ビューで「進む」が有効表示なのに履歴を進めない — 対応: loop18
+- [x] **BE16** app/README の --verify 説明がバイナリ/リンク検証を漏らす — 対応: loop18
+- [x] **BE17** README のローカル/CI 差分が cargo vet の対象を漏らす — 対応: loop18
+- [x] **BE18** PWA 一覧行にホバー視覚フィードバックが無い — 対応: loop18
+- [x] **BE19** source_region 一意性チェックが1箇所にのみ適用 — 対応: loop18
+
+### 却下（ループ18）
+
+- R1-KNOWN の最初の finding（title="テスト"、evidence=["a"] 等）は
+  内容がなく検証不能なため却下。既知残存2件の解消案は別途検討。
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

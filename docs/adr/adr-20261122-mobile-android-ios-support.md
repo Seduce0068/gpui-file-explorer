@@ -64,7 +64,8 @@ iOS はアプリ版ではなく PWA を対象とすることになった。
 
 ### プラットフォーム実装の有無
 
-- `app/Cargo.lock:2416-2429`: `gpui-pre-platform` 0.3.12 の依存は
+- `Cargo.lock:2443-2456`（virtual workspace の正本。旧 `app/Cargo.lock` は未使用残骸）:
+  `gpui-pre-platform` 0.3.12 の依存は
   ios / linux / macos / web / windows のみ。Android backend は存在しない。
 - `gpui-pre-platform-0.3.12/src/gpui_platform.rs:63-`: `cfg_select!` の分岐は
   ios / macos / windows / linux のみで、android 分岐はない。
@@ -307,7 +308,7 @@ macOS は実機動作検証を行わない。
 
 ## 参照
 
-- `app/Cargo.toml`, `app/Cargo.lock`, `app/src/trash_view.rs`
+- `app/Cargo.toml`, `Cargo.lock`（ルート）, `app/src/trash_view.rs`
 - `gpui-kit-0.9.1/Cargo.toml`, `gpui-kit-0.9.1/src/lib.rs`
 - `gpui-pre-platform-0.3.12/Cargo.toml`
 - `gpui-pre-platform-0.3.12/src/gpui_platform.rs`

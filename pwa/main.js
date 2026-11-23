@@ -69,6 +69,19 @@ function isClickSuppressed(now, until) {
   return now < until;
 }
 
+// BE02: ブラウザは dblclick の前に click を2回発火する。選択モードで両方を
+// toggleAt に渡すとトグルが相殺されるため、第2回以降（event.detail >= 2）は
+// click 側で無視し、dblclick 側で詳細表示 / 選択確定を行う。
+function secondClickSuppressed(eventDetail) {
+  return Number.isInteger(eventDetail) && eventDetail >= 2;
+}
+
+// ダブルクリック（正確に2回）だけを活性化コマンドへ変換する pure helper。
+// 3回以上の連打は誤操作なのでコマンドを出さない（Rust 側の count==2 と同規則）。
+function doubleClickCommand(eventDetail) {
+  return eventDetail === 2 ? 'confirm' : null;
+}
+
 // 右方向スワイプの純粋判定。touchmove は 10px 超で moved を立てるため、
 // ここへ moved は入れない（80px のスワイプが moved に潰されるのを防ぐ）。
 function shouldSwipeBack(touchState, dx, dy) {
@@ -483,6 +496,8 @@ function render(entries, { heading, query = '', mode = 'list' } = {}) {
     li.setAttribute('role', 'option');
     li.setAttribute('aria-selected', 'false');
     li.tabIndex = index === state.focusIndex ? 0 : -1;
+    // BE18: 省略名の行でもパスを確認できるよう行全体にツールチップを付ける。
+    li.title = entry.path;
 
     const name = document.createElement('span');
     name.className = 'entry-name';
@@ -706,6 +721,8 @@ function entryFromEvent(event) {
 
 function onListClick(event) {
   if (isClickSuppressed(performance.now(), state.suppressClickUntil)) return;
+  // BE02: dblclick の第2クリックはトグルを相殺するためここで捨てる。
+  if (secondClickSuppressed(event.detail)) return;
   const { li, entry } = entryFromEvent(event);
   if (!li || !entry) return;
   const index = Number(li.dataset.index);
@@ -715,6 +732,23 @@ function onListClick(event) {
   } else {
     selectSingle(index);
   }
+}
+
+// BE02: ダブルクリックは click の第2回を抑制したうえで、既存の詳細表示 /
+// 選択確定経路へ接続する。選択モードでは Enter と同じ「選択確定」を出す。
+function onListDblClick(event) {
+  if (isClickSuppressed(performance.now(), state.suppressClickUntil)) return;
+  if (!doubleClickCommand(event.detail)) return;
+  const { entry } = entryFromEvent(event);
+  if (!entry) return;
+  event.preventDefault();
+  if (state.selectMode && state.selectedPaths.length) {
+    const chosen = selectedEntries()[0] ?? entry;
+    showEntryMeta(chosen);
+    setStatus(`選択確定: ${chosen.name}（${state.selectedPaths.length} 件）`);
+    return;
+  }
+  showEntryMeta(entry);
 }
 
 function onListContextMenu(event) {
@@ -1077,6 +1111,8 @@ async function boot() {
   // 範囲選択できることを支援技術へ伝える（index.html にも静的に付与済み）。
   els.list.setAttribute('aria-multiselectable', 'true');
   els.list.addEventListener('click', onListClick);
+  // BE02: click の第2回を抑制した分を dblclick で詳細表示 / 選択確定へ接続。
+  els.list.addEventListener('dblclick', onListDblClick);
   els.list.addEventListener('contextmenu', onListContextMenu);
   els.list.addEventListener('keydown', onListKeyDown);
   els.list.addEventListener('touchstart', onListTouchStart, { passive: true });
@@ -1138,6 +1174,9 @@ if (hasDom) boot();
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     isClickSuppressed,
+    // BE02: ダブルクリックの第2 click 抑制と活性化コマンド。
+    secondClickSuppressed,
+    doubleClickCommand,
     // 非同期検索の世代ガード / 長押し対象の再解決（BD05 / BD12）。
     nextSearchGeneration,
     isCurrentSearchRequest,

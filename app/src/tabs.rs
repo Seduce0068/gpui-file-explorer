@@ -5,9 +5,10 @@
 use std::path::PathBuf;
 
 use crate::history::History;
+use crate::settings::MAX_TABS;
 
 /// One tab: a directory plus its back/forward history.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     pub cwd: PathBuf,
     pub history: History,
@@ -27,8 +28,11 @@ impl Tab {
 pub struct Tabs {
     tabs: Vec<Tab>,
     active: usize,
-    /// Recently closed tab directories, most recent last. In-memory only.
-    closed: Vec<PathBuf>,
+    /// Recently closed tabs, most recent last. The whole tab (cwd *and*
+    /// back/forward history) is kept so Ctrl+Shift+T matches the session
+    /// restore path, which also reattaches per-tab history (BE07).
+    /// In-memory only.
+    closed: Vec<Tab>,
 }
 
 impl Tabs {
@@ -81,7 +85,16 @@ impl Tabs {
         }
     }
 
-    /// Append a new tab and make it active. Returns its index.
+    /// True while another tab may be opened. The runtime cap is a state
+    /// invariant, not just a UI hint: every path that creates a tab must check
+    /// this (the app routes all four through its `try_new_tab` guard, BE01).
+    pub fn can_open_tab(&self) -> bool {
+        self.tabs.len() < MAX_TABS
+    }
+
+    /// Append a new tab and make it active. Returns its index. Callers must
+    /// have checked [`Self::can_open_tab`] first; unguarded callers could push
+    /// past `MAX_TABS`.
     pub fn new_tab(&mut self, cwd: PathBuf) -> usize {
         self.tabs.push(Tab::new(cwd));
         self.active = self.tabs.len() - 1;
@@ -104,7 +117,7 @@ impl Tabs {
         if self.tabs.len() <= 1 {
             return None;
         }
-        let closed = self.tabs.remove(self.active).cwd;
+        let closed = self.tabs.remove(self.active);
         self.closed.push(closed);
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
@@ -112,12 +125,18 @@ impl Tabs {
         Some(self.tabs[self.active].clone())
     }
 
-    /// Reopen the most recently closed tab. Returns its directory, or `None`
-    /// when there is nothing to restore.
-    pub fn restore_last_closed(&mut self) -> Option<PathBuf> {
-        let cwd = self.closed.pop()?;
-        self.new_tab(cwd.clone());
-        Some(cwd)
+    /// Reopen the most recently closed tab with its cwd *and* history intact.
+    /// Returns the restored tab, or `None` when there is nothing to restore or
+    /// the cap is reached. The cap is checked before popping so a refused
+    /// restore never discards the closed tab (BE01/BE07).
+    pub fn restore_last_closed(&mut self) -> Option<Tab> {
+        if !self.can_open_tab() {
+            return None;
+        }
+        let tab = self.closed.pop()?;
+        self.tabs.push(tab.clone());
+        self.active = self.tabs.len() - 1;
+        Some(tab)
     }
 
     /// Move the active tab one position to the left. Returns `false` when it
@@ -264,13 +283,77 @@ mod tests {
         tabs.close_active();
         assert_eq!(tabs.len(), 1);
 
-        assert_eq!(tabs.restore_last_closed(), Some(p("/b")));
+        assert_eq!(tabs.restore_last_closed().map(|tab| tab.cwd), Some(p("/b")));
         assert_eq!(tabs.len(), 2);
         assert_eq!(tabs.active().cwd, p("/b"));
 
-        assert_eq!(tabs.restore_last_closed(), Some(p("/c")));
+        assert_eq!(tabs.restore_last_closed().map(|tab| tab.cwd), Some(p("/c")));
         assert_eq!(tabs.len(), 3);
         assert_eq!(tabs.restore_last_closed(), None);
+    }
+
+    #[test]
+    fn restore_last_closed_reattaches_back_history() {
+        let mut tabs = Tabs::new(p("/a"));
+        tabs.new_tab(p("/b"));
+        // Give the /b tab a real back entry before closing it.
+        let mut history = History::new();
+        history.visit(p("/b"), p("/child"));
+        tabs.sync(p("/child"), history);
+
+        assert!(tabs.close_active().is_some(), "close /child (/b) tab");
+        let restored = tabs
+            .restore_last_closed()
+            .expect("closed tab must be restored");
+        assert_eq!(restored.cwd, p("/child"));
+        assert_eq!(
+            restored.history.peek_back(&restored.cwd),
+            Some(p("/b")),
+            "the restored tab must keep the history that go_back() peeks"
+        );
+        let expected = restored.history.snapshot();
+        assert_eq!(tabs.active().history.snapshot(), expected);
+    }
+
+    #[test]
+    fn can_open_tab_enforces_the_cap_at_the_31_32_boundary() {
+        use super::MAX_TABS;
+
+        assert_eq!(MAX_TABS, 32, "boundary fixtures assume the current cap");
+        let mut tabs = Tabs::new(p("/0"));
+        for index in 1..MAX_TABS - 1 {
+            assert!(
+                tabs.can_open_tab(),
+                "tab {index} must still be below the cap"
+            );
+            tabs.new_tab(p(&format!("/{index}")));
+        }
+        assert_eq!(tabs.len(), MAX_TABS - 1);
+        assert!(tabs.can_open_tab(), "31 tabs: one slot remains");
+
+        tabs.new_tab(p("/31"));
+        assert_eq!(tabs.len(), MAX_TABS);
+        assert!(!tabs.can_open_tab(), "32 tabs: the cap is reached");
+
+        // A refused restore must not consume the closed tab. (`close_active`
+        // returns the tab that becomes active, not the closed one.)
+        tabs.close_active().expect("close a tab");
+        assert_eq!(tabs.len(), MAX_TABS - 1);
+        tabs.new_tab(p("/31-again"));
+        assert_eq!(tabs.len(), MAX_TABS);
+        assert_eq!(
+            tabs.restore_last_closed(),
+            None,
+            "restore must refuse at the cap, not bypass it"
+        );
+        tabs.close_active().expect("make room again");
+        assert_eq!(
+            tabs.restore_last_closed().map(|tab| tab.cwd),
+            Some(p("/31-again")),
+            "the earlier refusal must not have consumed the closed tab"
+        );
+        assert!(!tabs.can_open_tab(), "restoring back to the cap is allowed");
+        assert_eq!(tabs.restore_last_closed(), None, "closed list is empty");
     }
 
     #[test]

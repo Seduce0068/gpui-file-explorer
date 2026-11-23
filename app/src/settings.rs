@@ -178,6 +178,16 @@ fn sane_query(query: &str) -> bool {
     !query.is_empty() && query.len() <= MAX_QUERY_BYTES && !query.contains('\0')
 }
 
+/// Clamp an active-tab index after its tab list was filtered.
+///
+/// `validate()` applies this on load; `sanitize_paths_for_save()` applies the
+/// same rule to the snapshot before writing. Without the second call, a
+/// non-UTF-8 tab dropped only from the serialized copy could leave an index
+/// that selects a different tab after restart (BE09).
+fn clamp_active_tab(active: &mut usize, tab_count: usize) {
+    *active = (*active).min(tab_count.saturating_sub(1));
+}
+
 /// Platform default terminal emulator command.
 ///
 /// Linux targets Kubuntu/KDE, where `konsole` is available. Other platforms
@@ -2022,7 +2032,7 @@ impl Settings {
                 "settings contain more tabs than the runtime cap; keeping all of them"
             );
         }
-        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        clamp_active_tab(&mut self.active_tab, self.tabs.len());
 
         // Window-scoped sessions get the same hardening as the legacy fields.
         // A bogus frame is dropped (the caller falls back to a centered window)
@@ -2053,7 +2063,7 @@ impl Settings {
                 // `back` is oldest-first: keep the recent tail, as `restore` does.
                 retain_last_n(&mut tab.back, MAX_HISTORY_ENTRIES - tab.forward.len());
             }
-            session.active_tab = session.active_tab.min(session.tabs.len().saturating_sub(1));
+            clamp_active_tab(&mut session.active_tab, session.tabs.len());
         }
 
         self.recent_searches = std::mem::take(&mut self.recent_searches)
@@ -2307,6 +2317,9 @@ impl Settings {
     /// This mirrors only the path filtering of `validate()`: no existence
     /// checks, de-duplication, truncation, migration or `read_only` changes,
     /// and it is applied to the snapshot so in-memory state is untouched.
+    /// The active-tab indices are re-clamped through the same helper as
+    /// `validate()` so dropping a tab cannot persist an index that activates
+    /// a different tab on restart (BE09).
     fn sanitize_paths_for_save(settings: &mut Settings) {
         if settings
             .last_dir
@@ -2321,12 +2334,14 @@ impl Settings {
             .bookmark_labels
             .retain(|entry| sane_path(&entry.path));
         settings.tabs.retain(|path| sane_path(path));
+        clamp_active_tab(&mut settings.active_tab, settings.tabs.len());
         for window in &mut settings.windows {
             window.tabs.retain(|tab| sane_path(&tab.cwd));
             for tab in &mut window.tabs {
                 tab.back.retain(|path| sane_path(path));
                 tab.forward.retain(|path| sane_path(path));
             }
+            clamp_active_tab(&mut window.active_tab, window.tabs.len());
         }
     }
 
@@ -3969,6 +3984,56 @@ mod tab_settings_tests {
         let settings = Settings::default();
         assert!(settings.tabs.is_empty());
         assert_eq!(settings.active_tab, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_sanitization_reclamps_active_tab_after_dropping_non_utf8_tab() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let bad = PathBuf::from(std::ffi::OsString::from_vec(vec![
+            b'/', b't', b'm', b'p', b'/', 0xff,
+        ]));
+        let good = PathBuf::from("/tmp/good");
+        let mut settings = Settings {
+            tabs: vec![bad.clone(), good.clone()],
+            active_tab: 1,
+            windows: vec![super::WindowSession {
+                tabs: vec![
+                    super::TabSession {
+                        cwd: bad.clone(),
+                        back: Vec::new(),
+                        forward: Vec::new(),
+                    },
+                    super::TabSession {
+                        cwd: good.clone(),
+                        back: Vec::new(),
+                        forward: Vec::new(),
+                    },
+                ],
+                active_tab: 1,
+                ..super::WindowSession::default()
+            }],
+            ..Settings::default()
+        };
+
+        Settings::sanitize_paths_for_save(&mut settings);
+
+        assert_eq!(settings.tabs, vec![good.clone()]);
+        assert_eq!(
+            settings.active_tab, 0,
+            "index 1 points past the last surviving tab"
+        );
+        let window = settings.primary_window().expect("window");
+        assert_eq!(window.tabs.len(), 1);
+        assert_eq!(window.active_tab, 0);
+
+        // The same clamp helper governs the load-time path.
+        settings.active_tab = 99;
+        settings.windows[0].active_tab = 99;
+        settings.validate();
+        assert_eq!(settings.active_tab, 0);
+        assert_eq!(settings.windows[0].active_tab, 0);
     }
 
     #[test]

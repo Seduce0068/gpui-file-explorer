@@ -949,7 +949,20 @@ pub fn confirm_and_trash(
     UNIX epoch からのナノ秒とプロセス ID を付与して衝突を避ける。退避に失敗した
     場合は読み取り専用で起動し、元ファイルを上書きしない。
   - `last_dir` が存在しない/ディレクトリでない場合は `$HOME`（`dirs::home_dir()`）へフォールバック。
-  - 保存は**原子的**（`settings.json.tmp` へ書いて `fs::rename`）。保存タイミング: ナビゲーション・ソート/隠しトグル・ウィンドウ終了時。頻度が低く 1KB 未満のため同期保存を許容（§4.4 の明示的例外）。
+  - 保存は**原子的**（as-built: `app/src/settings.rs` の `Settings::save` が
+    `settings.json.tmp-<epochナノ秒>-<PID>` を `create_new(true)` で予約し、
+    `write_all` → `sync_all()` → `fs::rename` の順で反映する）。固定名の tmp を
+    `create(true)` で使うと事前に置かれた symlink を追うため（CWE-59）、
+    衝突しない一時名と `O_EXCL` 予約が必須。書き込みまたは rename が失敗した
+    場合は tmp を削除して元ファイルを保持する。保存タイミング: ナビゲーション・
+    ソート/隠しトグル・ウィンドウ終了時。頻度が低く 1KB 未満のため同期保存を
+    許容（§4.4 の明示的例外）。
+  - 未知の `version`（`SCHEMA_VERSION` より大きい）、未知の列挙値、または
+    このバージョンでは解釈できないネストしたキーが含まれるファイルは
+    **読み取り専用**でロードする。値自体は安全な既定値へフォールバックするが、
+    元の値を破壊しないよう `save()` は no-op となり、ステータスバーに理由を
+    表示する（`migrate` / `detect_unknown_persisted_enum` /
+    `detect_unknown_nested_keys` が判定）。
   - `dirs` は 7.0.0 推奨（fs-notes §12）。試作が 6 系でも許容（確認済み: `config_dir()/home_dir()` API 同一、§11 項目14 / [app/README.md](app/README.md) 設計差分表を参照）。
 
 ### 8.2 テーマ方針
