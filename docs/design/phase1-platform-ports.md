@@ -34,10 +34,11 @@ iOS を PWA のみとする主因は、iOS アプリ配布に Apple Developer Pr
 
 R1 で確認済みの事実を、本設計の前提として引用する。
 
-- 進捗とキャンセルは同期 API である。`ops.rs` は
-   `progress: &mut dyn FnMut(u64)`（`app/src/ops.rs:409,564,736`）と
-   `cancel: &CancelFlag`（同 `:407,562`）を受け取る。
-   `CancelFlag` は `AtomicBool` のラッパ（同 `:47,56`）で Send / Sync を持つ。
+- 進捗とキャンセルは同期 API である。`gfe_core::ops` の `copy_entry` /
+   `move_entry`（`core/src/ops.rs`）は `progress: &mut dyn FnMut(u64)` と
+   `cancel: &CancelFlag` を受け取る。`CancelFlag` は `AtomicBool` のラッパで
+   Send / Sync を持つ。`app/src/ops.rs` は core への薄い re-export シェルであり、
+   本体の参照先ではない。
 - GPUI 側は既に同期 → 非同期の橋渡しを実装済みである。
    `app/src/main.rs:6215` で `async_channel::unbounded::<(u64, u64)>()` を作り、
    `cx.spawn` のループで受けて `this.update` へ渡す（同 `:6215-6242`）。
@@ -75,7 +76,7 @@ R1 で確認済みの事実を、本設計の前提として引用する。
 
 ### 共通原則: 同期コア / 非同期アダプタ
 
-コアは `async` を用いず、既存の `ops.rs` / `trash_view.rs` と同じ同期シグネチャを維持する。
+コアは `async` を用いず、既存の `core/src/ops.rs` / `gfe_core::trash_view` と同じ同期シグネチャを維持する。
 非同期性はすべてアダプタ側に閉じ込める。具体的な橋渡し先は次の 3 つに限定する。
 
 - GPUI（デスクトップ）: `cx.background_spawn` / `async_channel` /
@@ -93,7 +94,7 @@ Clipboard は同期 Result を返す。コアに `.await` を導入しない。
 UI 更新はアダプタがメインスレッドへ切り替えて行う。
 
 ```rust
-// すべてのportは Send + Sync を要求する（ops.rs の CancelFlag と同じ契約）。
+// すべてのportは Send + Sync を要求する（core/src/ops.rs の CancelFlag と同じ契約）。
 pub struct PortError(pub String);
 
 pub type Completion<T> = Box<dyn FnOnce(Result<T, PortError>) + Send + 'static>;
@@ -252,7 +253,7 @@ Phase 1 のビューアは手動リロードで要件を満たすため、no-op 
 
 ### ProgressSink（as-built 2026-11-23: 未採用）
 
-当初は `ops.rs` の `FnMut(u64)` + `CancelFlag` を trait にまとめる案を
+当初は `core/src/ops.rs` の `FnMut(u64)` + `CancelFlag` を trait にまとめる案を
 検討したが、**採用しなかった**。未配線の trait が残ると二重契約になるため、
 `core/src/ports.rs` の `ProgressSink` は削除済み。現行契約は
 `ops::copy_entry` / `move_entry` の `impl FnMut(u64)`（累積バイトのみ）と
@@ -268,8 +269,9 @@ Phase 1 のビューアは手動リロードで要件を満たすため、no-op 
    `cx.background_spawn`（`app/src/main.rs:4111-4113`）。
 - TrashBackend: `Explorer::reload_trash` → `trash_view::list()` を
    `cx.background_spawn`（同 `:3709-3713`、`app/src/trash_view.rs:46-48`）。
-- 一覧: `Explorer::reload` → `model::read_entries(&dir)`
-   （同 `:3625,3648`、`app/src/model.rs:92`）。
+- 一覧: `Explorer::reload` → `gfe_core::model::read_entries(&dir)`
+   （同 `:3625,3648`、`core/src/model.rs` の `read_entries`。
+   `app/src/model.rs` は re-export シェル）。
 - WatchSource: `DirWatcher::new` → `watch_tx` → `Explorer::spawn_watch_loop`
    （同 `:3503-3504,4226`）。
 - FileDialogPort: `Explorer::open_path` → `cx.open_with_system(&path)`
@@ -285,7 +287,8 @@ Phase 1 のビューアは手動リロードで要件を満たすため、no-op 
    （`app/src/settings.rs:71-72`）。
 
 検索はコア API の `search::search_by_name`、`search::filter_results`、
-`search::search_contents`（`app/src/search.rs:104,46,343`）をそのまま使う。
+`search::search_contents`（いずれも `core/src/search.rs`）をそのまま使う。
+`app/src/search.rs` は空の互換シェルで、実装の参照先ではない。
 GPUI アダプタはこれらを `cx.background_spawn` で呼ぶだけであり、
 port を新たに追加しない。
 
@@ -432,13 +435,14 @@ B と同じ UI 倍増が生じるため、本見積もりには含めない
 - [OS ファイルクリップボード ADR](../adr/adr-20261123-os-file-clipboard.md)
 - [wasm 調査ノート](../../notes/wasm-browser-notes.md)（:51-91、gpui-kit wasm 制約）
 - `AGENTS.md`（クロスプラットフォーム対応方針、2026-11-23）
-- `app/src/ops.rs:47,56,407-409,825`
+- `core/src/ops.rs`（`CancelFlag` / `copy_entry` / `move_entry` / `dir_stats`）
 - `app/src/main.rs`: 2481, 2962, 3503-3504, 3625, 3709, 4111, 4226,
   4813, 4826, 6200-6240, 8555
 - `app/src/settings.rs:71-72`、`app/src/trash_view.rs:1,31-39,49-53,81-125`
 - `app/src/mounts.rs:220-227`、`app/src/system_icons.rs:416,427-433`、
   `win32/src/lib.rs:154,206,306,355`
-- `app/src/model.rs:92`、`app/src/search.rs:46,104,343`
+- `core/src/model.rs`（`sort_entries` / `fingerprint`）、
+  `core/src/search.rs`（`filter_results` / `search_by_name` / `search_contents`）
 - `app/src/preview.rs:24,27,72,79,150`
 - `app/Cargo.toml:1,28-34`、`deny.toml:1,16-24,29-36,39-60`
 - `NOTICE.md:1`、`DESIGN.md:95,1222`

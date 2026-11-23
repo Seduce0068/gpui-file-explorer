@@ -41,8 +41,10 @@ iOS を PWA のみとする主因は、iOS アプリ配布に Apple Developer Pr
 
 Rust の sysroot に `core` クレートが存在するため、package/lib を単に `core` とすると
 名前解決が衝突する。app 側では `use gfe_core as core;` でローカル別名を張り、
-`core::{model, ops, search}` という参照形を維持する（`app/src/model.rs:897-898` の
-「crate ルートが `gpui_kit::*` を glob import する」問題からも分離できる）。
+`core::{model, ops, search}` という参照形を維持する。旧 `app/src/model.rs` の
+「crate ルートが `gpui_kit::*` を glob import する」問題からも分離できる
+（as-built: `app/src/model.rs` は `gfe_core::model` の re-export シェルで、
+実体は `core/src/model.rs`）。
 
 ### workspace Cargo.toml（as-built 2026-11-23）
 
@@ -80,8 +82,10 @@ strip = true
 
 設計上の注意点:
 
-- 現在 `app/Cargo.toml:36-45` と `poc/Cargo.toml:14-23` にある `[profile.*]` は
-   workspace ルートへ集約する。member 側の profile は警告付きで無視される。
+- `[profile.*]` は workspace ルート `Cargo.toml` へ集約済み（as-built）。
+   `profile.dev`（`debug = "line-tables-only"`）/ `profile.dev.package."*"`
+   （`debug = false`）/ `profile.release`（`strip = true`）を定義する。
+   member 側（app / poc）の `[profile.*]` は削除済みで、残ると警告付きで無視される。
 - virtual workspace の resolver 既定は 1 のため `resolver = "2"` を明示する。
 - `default-members` から `poc` を外し、ルートでの `cargo test` がコアと app を対象にする。
 - core は AGPL-3.0-or-later を維持する。GPUI スタック（Apache-2.0）は app アダプタ側に

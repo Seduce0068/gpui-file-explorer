@@ -2671,6 +2671,46 @@ fn should_start_reconcile(in_flight: bool, loading: bool, view: ViewSource) -> b
     !in_flight && !loading && view == ViewSource::Directory
 }
 
+/// Whether a Search-view watch batch invalidates the result snapshot beyond
+/// the paths that can be pruned in place.
+///
+/// `Removed` entries can be dropped from the cached listing by path. Every
+/// other event (Created / Modified / Rescan / Renamed) may add or move results
+/// that the snapshot cannot represent. Neither reconcile nor reload is allowed
+/// while Search is active, so marking the view stale is the only recovery.
+/// Kept pure so the decision is unit-testable without a live GPUI `Context`.
+fn search_view_watch_needs_stale(events: &[FsEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| !matches!(event, FsEvent::Removed(_)))
+}
+
+/// Whether the stored reconcile guard still describes the read that finished.
+///
+/// The guard is a `(generation, cwd)` token rather than a bool: a read that
+/// outlives `reload` / `set_cwd` must neither clear the newer read's guard nor
+/// keep blocking later ticks. Kept pure for a focused test.
+fn reconcile_token_matches(token: &Option<(u64, PathBuf)>, generation: u64, cwd: &Path) -> bool {
+    token.as_ref().is_some_and(|(token_generation, token_cwd)| {
+        *token_generation == generation && token_cwd == cwd
+    })
+}
+
+/// Whether a reconcile must re-apply its listing after a watch batch was
+/// dropped during a self-initiated operation.
+///
+/// Suppressed batches can hide a rename cycle whose fingerprint ends up
+/// unchanged; without a forced apply the dropped event would never be
+/// reflected. The caller consumes the flag on this read, so it forces at most
+/// one re-apply. Kept pure for a focused test.
+fn should_force_reapply_after_suppressed_watch(
+    flag: bool,
+    changed: bool,
+    clear_error: bool,
+) -> bool {
+    flag && !changed && !clear_error
+}
+
 /// Whether a finished properties metadata read may still be applied.
 ///
 /// `props_serial` is bumped on every open and close, so a callback from a
@@ -2975,11 +3015,12 @@ struct Explorer {
     /// Foreground waiter of the properties metadata read. Replaced on reopen
     /// and dropped on close, cancelling the previous read.
     props_read_task: Option<Task<()>>,
-    /// True while a 10s reconciliation `read_entries` is in flight. Prevents
-    /// the timer from starting an overlapping read (generation only guards
-    /// stale applies, not wasted/concurrent reads). Cleared on every completion
-    /// path, including errors.
-    reconcile_in_flight: bool,
+    /// Identity of the 10s reconciliation `read_entries` currently in flight:
+    /// `(generation, cwd)`. Prevents the timer from starting an overlapping
+    /// read (generation only guards stale applies, not concurrent reads).
+    /// A token is cleared on completion only when it still matches, so a read
+    /// that outlives `reload` / `set_cwd` cannot block later ticks (AU08).
+    reconcile_in_flight: Option<(u64, PathBuf)>,
     /// Foreground waiter of the latest load. Dropping it cancels the wait.
     load_task: Option<Task<()>>,
     /// A watcher event landed while the load of this generation was in flight.
@@ -2989,6 +3030,10 @@ struct Explorer {
     /// Cleared whenever `generation` advances: a newer read already sees the
     /// edit, so a flag from a superseded load must never be consumed (AS17).
     needs_reload_after_load: Option<u64>,
+    /// A watch batch was dropped while a self-initiated operation suppressed
+    /// monitoring. The next reconcile must re-apply its listing once even when
+    /// the fingerprint is unchanged (AU09).
+    needs_reapply_after_suppressed_watch: bool,
     watcher: DirWatcher,
     /// Self-triggered FS operations suppress the watcher for a short window.
     suppress_until: Option<Instant>,
@@ -3595,9 +3640,10 @@ impl Explorer {
             preview_serial: 0,
             props_serial: 0,
             props_read_task: None,
-            reconcile_in_flight: false,
+            reconcile_in_flight: None,
             load_task: None,
             needs_reload_after_load: None,
+            needs_reapply_after_suppressed_watch: false,
             watcher,
             suppress_until: None,
             places,
@@ -3681,6 +3727,10 @@ impl Explorer {
         // AS17: the superseded load's deferred flag is obsolete — the read
         // about to start already includes the watcher's edit.
         self.needs_reload_after_load = None;
+        // AU08/AU09: this new generation supersedes any reconcile token in
+        // flight, and the fresh read already covers a suppressed watch batch.
+        self.reconcile_in_flight = None;
+        self.needs_reapply_after_suppressed_watch = false;
         let generation = self.generation;
         self.load = LoadState::Loading { generation };
         self.refresh_places();
@@ -3758,6 +3808,9 @@ impl Explorer {
         // AS17: that helper advances `generation`, so any flag deferred for a
         // now-superseded load must be dropped here as well.
         self.needs_reload_after_load = None;
+        // The generation advanced again, so an in-flight reconcile carries a
+        // stale token and must not block the next tick (AU08).
+        self.reconcile_in_flight = None;
     }
 
     /// Load the system trash into the virtual listing (background executor).
@@ -4207,17 +4260,25 @@ impl Explorer {
         // rejects a tick fired while the previous `read_entries` is still
         // running (a slow read can outlive the 10s interval); otherwise the
         // reads would pile up and accumulate stale snapshots/tasks.
-        if !should_start_reconcile(self.reconcile_in_flight, self.load.is_loading(), self.view) {
+        if !should_start_reconcile(
+            self.reconcile_in_flight.is_some(),
+            self.load.is_loading(),
+            self.view,
+        ) {
             return;
         }
-        self.reconcile_in_flight = true;
         let generation = self.generation;
+        // AU08: bind the guard to the read's generation *and* directory. A
+        // slow read that outlives a reload or navigation must not clear a
+        // newer guard or keep blocking future ticks.
+        let token = (generation, self.cwd.clone());
+        self.reconcile_in_flight = Some(token.clone());
         // Watch incrementals can rewrite `all_entries` while this read is in
         // flight without touching `generation`. Capture the listing revision
         // now so a stale snapshot is not re-applied over their edits (AS02).
         let listing_revision = self.listing_revision;
-        let dir = self.cwd.clone();
-        let task = cx.background_spawn(async move { read_entries(&dir) });
+        let read_dir = token.1.clone();
+        let task = cx.background_spawn(async move { read_entries(&read_dir) });
         cx.spawn(async move |this, cx| {
             let entries = match task.await {
                 Ok(entries) => entries,
@@ -4226,9 +4287,12 @@ impl Explorer {
                     // missed; surface its failure instead of silently losing
                     // it (second cross-review H-4).
                     let _ = this.update(cx, |this, cx| {
-                        // Release the in-flight guard on every completion path,
-                        // errors included, so a later tick is never blocked.
-                        this.reconcile_in_flight = false;
+                        // Release the guard only when this completion still
+                        // belongs to the dispatched token; a reload or
+                        // navigation may have superseded it (AU08).
+                        if reconcile_token_matches(&this.reconcile_in_flight, token.0, &token.1) {
+                            this.reconcile_in_flight = None;
+                        }
                         // AS03: the failure notice is a status write, but it is
                         // still a directory-reconcile result. Ctrl+F while the
                         // read is in flight must not let it overwrite the
@@ -4248,8 +4312,11 @@ impl Explorer {
             };
             let _ = this.update(cx, |this, cx| {
                 // Release the in-flight guard before any early return so a
-                // later tick can always dispatch a fresh reconcile.
-                this.reconcile_in_flight = false;
+                // later tick can always dispatch a fresh reconcile. A stale
+                // completion must not clear a newer read's token (AU08).
+                if reconcile_token_matches(&this.reconcile_in_flight, token.0, &token.1) {
+                    this.reconcile_in_flight = None;
+                }
                 // The view check is essential: `open_search` does not bump
                 // `self.generation`, and search completion overwrites
                 // `fingerprint`. Without it a reconcile dispatched before
@@ -4271,6 +4338,15 @@ impl Explorer {
                 // still wins.
                 let clear_error = should_clear_error_on_reconcile(&this.load);
                 let changed = fingerprint(&entries) != this.fingerprint;
+                // AU09: consume the deferred flag on this read, at most once.
+                // A suppressed watch batch may have changed the listing
+                // without leaving a fingerprint difference (rename cycles).
+                let forced = should_force_reapply_after_suppressed_watch(
+                    this.needs_reapply_after_suppressed_watch,
+                    changed,
+                    clear_error,
+                );
+                this.needs_reapply_after_suppressed_watch = false;
                 // A watch incremental that landed after this read started
                 // rewrote `all_entries` without advancing `generation`. Its
                 // edit must survive: do not re-apply the older snapshot.
@@ -4291,10 +4367,11 @@ impl Explorer {
                     if needs_reload {
                         this.reload(cx);
                     }
-                } else if clear_error && !listing_current {
-                    // The stale error overlay still needs a fresh listing, but
-                    // this read predates a watch edit. Re-read instead of
-                    // applying a snapshot that would drop that edit.
+                } else if forced || (clear_error && !listing_current) {
+                    // A dropped watch batch forces exactly one fresh full
+                    // reload: the snapshot above cannot be trusted to reflect
+                    // it even when the fingerprint matches. The error branch
+                    // re-reads too, unless this read predates a watch edit.
                     this.reload(cx);
                 }
                 // AA01(b): this is a successful read even when the fingerprint
@@ -4328,6 +4405,11 @@ impl Explorer {
                 }
                 let updated = this.update(cx, |this, cx| {
                     if this.is_suppressed() || this.op_cancel.is_some() {
+                        // AU09: the batch likely describes our own mutation,
+                        // whose net fingerprint can be identical (rename
+                        // cycles). Defer one unconditional full re-read to the
+                        // next reconcile instead of losing the event outright.
+                        this.needs_reapply_after_suppressed_watch = true;
                         return;
                     }
                     let search_view = this.view == ViewSource::Search;
@@ -4336,59 +4418,48 @@ impl Explorer {
                     }
                     let batch: Vec<FsEvent> = batch.into_iter().flatten().collect();
                     if search_view {
-                        // A search result set is a snapshot; at least drop
-                        // entries that vanished so the view cannot act on a
-                        // deleted path. Full re-search is deferred to the user
-                        // (documented limitation).
-                        // Rescan/rename cannot be applied to a search snapshot
-                        // safely; tell the user to re-run the search.
-                        if batch
-                            .iter()
-                            .any(|event| matches!(event, FsEvent::Rescan | FsEvent::Renamed { .. }))
-                        {
-                            // AC01: a rescan/rename notice is a watch notice,
-                            // not a successful read. Compose the same guard as
-                            // the removed-entry branch below so a held
-                            // RESCAN_FAILED (with its F5 hint) survives.
-                            let reconciled =
-                                reconcile_aware_status(&this.status, STATUS_SEARCH_STALE);
+                        // A search result set is a snapshot: removals can be
+                        // pruned by path, but any other event may have added
+                        // or moved results the snapshot cannot represent.
+                        // Search forbids reconcile/reload, so a stale notice
+                        // is the only recovery (AU05).
+                        let needs_stale = search_view_watch_needs_stale(&batch);
+                        let removed = removed_paths(&batch);
+                        let mut pruned = false;
+                        if !removed.is_empty() {
+                            let before = this.all_entries.len();
+                            this.all_entries
+                                .retain(|entry| !removed.contains(&entry.path));
+                            for path in &removed {
+                                this.search_lines.remove(path);
+                            }
+                            if this.all_entries.len() != before {
+                                pruned = true;
+                                this.bump_listing_revision();
+                                let remaining: Vec<PathBuf> = this
+                                    .all_entries
+                                    .iter()
+                                    .map(|entry| entry.path.clone())
+                                    .collect();
+                                this.selection.retain(&remaining);
+                                this.apply_search_filter(cx);
+                            }
+                        }
+                        if needs_stale || pruned {
+                            // AC01/AB02: a watch notice is not a successful
+                            // read. Compose the rescan-failure guard first so
+                            // a held RESCAN_FAILED (with its F5 hint) survives;
+                            // search_filter_status then prefixes a stale
+                            // warning without duplicating it.
+                            let summary = if needs_stale {
+                                STATUS_SEARCH_STALE
+                            } else {
+                                STATUS_CHANGED
+                            };
+                            let reconciled = reconcile_aware_status(&this.status, summary);
                             this.status = search_filter_status(&this.status, reconciled);
                             cx.notify();
-                            return;
                         }
-                        let removed = removed_paths(&batch);
-                        if removed.is_empty() {
-                            return;
-                        }
-                        let before = this.all_entries.len();
-                        this.all_entries
-                            .retain(|entry| !removed.contains(&entry.path));
-                        for path in &removed {
-                            this.search_lines.remove(path);
-                        }
-                        if this.all_entries.len() == before {
-                            return;
-                        }
-                        this.bump_listing_revision();
-                        let remaining: Vec<PathBuf> = this
-                            .all_entries
-                            .iter()
-                            .map(|entry| entry.path.clone())
-                            .collect();
-                        this.selection.retain(&remaining);
-                        this.apply_search_filter(cx);
-                        // `apply_search_filter` already preserves a stale
-                        // warning; do not bury it under a plain "changed"
-                        // status when a removed entry pruned the snapshot.
-                        // AB02: search_filter_status only preserves
-                        // STATUS_SEARCH_STALE, so compose the rescan-failure
-                        // guard first. The reconciled status becomes the
-                        // summary passed to search_filter_status: a held
-                        // RESCAN_FAILED then survives unchanged, while a stale
-                        // warning still prefixes the reconciled summary.
-                        let reconciled = reconcile_aware_status(&this.status, STATUS_CHANGED);
-                        this.status = search_filter_status(&this.status, reconciled);
-                        cx.notify();
                         return;
                     }
                     if this.load.is_loading() {
@@ -4793,6 +4864,9 @@ impl Explorer {
     fn set_cwd(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.clear_search();
         self.view = ViewSource::Directory;
+        // AU08: a reconcile reading the previous directory must not keep the
+        // guard set after navigation, even before `reload` runs below.
+        self.reconcile_in_flight = None;
         if path == self.cwd {
             self.reload(cx);
             return;
@@ -11673,7 +11747,7 @@ impl Explorer {
         );
         // AJ07/AJ09: let the dialog show its read-only footer and disable Save
         // instead of silently accepting edits that `Settings::save` will no-op.
-        state.set_read_only(self.settings.read_only);
+        state.set_read_only(self.settings.ui_is_read_only());
         let theme_choice = match self.settings.theme_choice {
             crate::settings::ThemeChoice::Dark => "dark",
             crate::settings::ThemeChoice::Light => "light",
@@ -14532,8 +14606,9 @@ mod tests {
             "error branch must check the view before writing RESCAN_FAILED"
         );
         assert!(
-            err_branch.contains("this.reconcile_in_flight = false;"),
-            "the in-flight guard must still be released unconditionally"
+            err_branch.contains("reconcile_token_matches(&this.reconcile_in_flight")
+                && err_branch.contains("this.reconcile_in_flight = None;"),
+            "the in-flight token must still be released on the error path"
         );
     }
 
@@ -14551,6 +14626,237 @@ mod tests {
         assert!(!should_start_reconcile(false, false, ViewSource::Search));
         assert!(!should_start_reconcile(false, false, ViewSource::Trash));
         assert!(!should_start_reconcile(true, true, ViewSource::Directory));
+    }
+
+    // AU05: Search forbids reconcile/reload, so dropping a Created/Modified
+    // batch without a stale notice leaves no recovery path at all.
+    #[test]
+    fn search_watch_marks_stale_for_any_non_removed_event() {
+        use super::search_view_watch_needs_stale;
+        use crate::watcher::FsEvent;
+
+        let gone = PathBuf::from("/tmp/gone.txt");
+        assert!(!search_view_watch_needs_stale(&[]));
+        assert!(!search_view_watch_needs_stale(&[FsEvent::Removed(vec![
+            gone.clone()
+        ])]));
+        assert!(search_view_watch_needs_stale(&[FsEvent::Created(vec![
+            gone.clone()
+        ])]));
+        assert!(search_view_watch_needs_stale(&[FsEvent::Modified(vec![
+            gone.clone()
+        ])]));
+        assert!(search_view_watch_needs_stale(&[FsEvent::Rescan]));
+        assert!(search_view_watch_needs_stale(&[FsEvent::Renamed {
+            from: None,
+            to: Some(gone.clone()),
+        }]));
+        assert!(search_view_watch_needs_stale(&[
+            FsEvent::Removed(vec![gone]),
+            FsEvent::Created(vec![PathBuf::from("/tmp/new.txt")]),
+        ]));
+
+        let source = include_str!("main.rs");
+        let watch = source_region(
+            source,
+            "    fn spawn_watch_loop(",
+            "    fn spawn_reconcile_loop(",
+        );
+        assert!(
+            watch.contains("search_view_watch_needs_stale(&batch)"),
+            "the Search branch must use the pure predicate"
+        );
+        assert!(
+            watch.contains("reconcile_aware_status(&this.status, summary)"),
+            "the stale notice must keep the held RESCAN_FAILED guard"
+        );
+    }
+
+    // AU08: a bool guard survives reload/navigation and blocks later ticks,
+    // while its late completion can clear a newer read's guard.
+    #[test]
+    fn reconcile_guard_is_bound_to_generation_and_cwd() {
+        use std::path::Path;
+
+        use super::reconcile_token_matches;
+
+        let token = Some((7u64, PathBuf::from("/one")));
+        assert!(reconcile_token_matches(&token, 7, Path::new("/one")));
+        // Reload bumps the generation; navigation changes the directory.
+        assert!(!reconcile_token_matches(&token, 8, Path::new("/one")));
+        assert!(!reconcile_token_matches(&token, 7, Path::new("/two")));
+        assert!(!reconcile_token_matches(&None, 7, Path::new("/one")));
+        // A wrapped generation must not accidentally match an old token.
+        assert!(!reconcile_token_matches(
+            &Some((0, PathBuf::from("/one"))),
+            u64::MAX,
+            Path::new("/one")
+        ));
+
+        let source = include_str!("main.rs");
+        let reload = source_region(
+            source,
+            "    fn reload(&mut self, cx: &mut Context<Self>) {",
+            "    fn set_load_error(",
+        );
+        assert!(
+            reload.contains("self.reconcile_in_flight = None;"),
+            "reload must invalidate the superseded token"
+        );
+        let set_cwd = source_region(
+            source,
+            "    fn set_cwd(&mut self, path: PathBuf, cx: &mut Context<Self>) {",
+            "    fn navigate_to(",
+        );
+        assert!(
+            set_cwd.contains("self.reconcile_in_flight = None;"),
+            "navigation must invalidate the previous directory's token"
+        );
+        let reconcile = source_region(
+            source,
+            "    fn reconcile(&mut self, cx: &mut Context<Self>) {",
+            "    fn spawn_watch_loop(",
+        );
+        assert!(
+            reconcile.contains("let token = (generation, self.cwd.clone());"),
+            "reconcile must capture the (generation, cwd) token"
+        );
+        assert_eq!(
+            reconcile
+                .matches("reconcile_token_matches(&this.reconcile_in_flight, token.0, &token.1)")
+                .count(),
+            2,
+            "both success and error completions must verify the token"
+        );
+    }
+
+    // AU09: a watch batch dropped during a self-operation must be recovered
+    // by exactly one unconditional re-read on the next reconcile.
+    #[test]
+    fn suppressed_watch_batch_forces_exactly_one_reapply() {
+        use super::should_force_reapply_after_suppressed_watch;
+
+        assert!(should_force_reapply_after_suppressed_watch(
+            true, false, false
+        ));
+        assert!(!should_force_reapply_after_suppressed_watch(
+            false, false, false
+        ));
+        // A fingerprint change or error overlay already forces an apply, so
+        // the deferred flag is not needed in those cases.
+        assert!(!should_force_reapply_after_suppressed_watch(
+            true, true, false
+        ));
+        assert!(!should_force_reapply_after_suppressed_watch(
+            true, false, true
+        ));
+
+        let source = include_str!("main.rs");
+        let watch = source_region(
+            source,
+            "    fn spawn_watch_loop(",
+            "    fn spawn_reconcile_loop(",
+        );
+        assert!(
+            watch.contains("this.needs_reapply_after_suppressed_watch = true;"),
+            "a dropped batch must set the deferred flag"
+        );
+        let reconcile = source_region(
+            source,
+            "    fn reconcile(&mut self, cx: &mut Context<Self>) {",
+            "    fn spawn_watch_loop(",
+        );
+        assert!(
+            reconcile.contains("this.needs_reapply_after_suppressed_watch = false;"),
+            "reconcile must consume the flag once"
+        );
+        assert!(
+            reconcile.contains("} else if forced || (clear_error && !listing_current) {"),
+            "a suppressed batch must force a fresh reload without a fingerprint change"
+        );
+    }
+
+    // AU20: wrapping must not make an old revision/flag look current again.
+    #[test]
+    fn listing_revision_and_deferred_flag_handle_u64_wraparound() {
+        use super::{listing_revision_is_current, should_reload_after_load};
+
+        assert!(listing_revision_is_current(0, 0));
+        assert!(listing_revision_is_current(u64::MAX, u64::MAX));
+        assert!(!listing_revision_is_current(0, u64::MAX));
+        assert!(!listing_revision_is_current(u64::MAX, 0));
+        assert!(should_reload_after_load(Some(0), 0));
+        assert!(should_reload_after_load(Some(u64::MAX), u64::MAX));
+        assert!(!should_reload_after_load(Some(0), u64::MAX));
+        assert!(!should_reload_after_load(Some(u64::MAX), 0));
+        assert!(!should_reload_after_load(None, 0));
+
+        let source = include_str!("main.rs");
+        let bump = source_region(
+            source,
+            "    fn bump_listing_revision(&mut self) {",
+            "    fn apply_loaded(",
+        );
+        assert!(
+            bump.contains("wrapping_add(1)"),
+            "the revision counter must wrap explicitly"
+        );
+    }
+
+    // AU20: every `all_entries` write site must stay next to a revision bump,
+    // otherwise a reconcile dispatched earlier can overwrite it.
+    #[test]
+    fn all_entries_mutations_stay_pinned_to_listing_revision_bumps() {
+        let source = include_str!("main.rs");
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "    fn reload(&mut self, cx: &mut Context<Self>) {",
+                "    fn set_load_error(",
+                &["this.all_entries.clear();"],
+            ),
+            (
+                "    fn reload_trash(&mut self, cx: &mut Context<Self>) {",
+                "    fn enter_trash(&mut self, cx: &mut Context<Self>) {",
+                &["this.all_entries.clear();", "self.all_entries = entries.clone();"],
+            ),
+            (
+                "    fn apply_loaded(&mut self, entries: Vec<Entry>, generation: u64) -> bool {",
+                "    fn rebuild_view(",
+                &["self.all_entries = entries;"],
+            ),
+            (
+                "    fn spawn_watch_loop(",
+                "    fn spawn_reconcile_loop(",
+                &[
+                    ".retain(|entry| !removed.contains(&entry.path));",
+                    "this.all_entries.retain(|entry| entry.path != path);",
+                    "this.all_entries.push(entry);",
+                ],
+            ),
+            (
+                "    fn trash_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {",
+                "    fn search_input_focused(",
+                &[".retain(|entry| !trashed.contains(&entry.path));"],
+            ),
+            (
+                "    fn run_search(&mut self, cx: &mut Context<Self>) {",
+                "    fn apply_search_filter(",
+                &["this.all_entries = entries.into_iter().map(|result| result.entry).collect();"],
+            ),
+        ];
+        for (start, end, writes) in cases {
+            let region = source_region(source, start, end);
+            assert!(
+                region.contains("bump_listing_revision()"),
+                "{start} mutates all_entries without bumping the listing revision"
+            );
+            for write in *writes {
+                assert!(
+                    region.contains(write),
+                    "{start} lost its mutation site {write:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1231,6 +1231,53 @@ impl Settings {
     }
 }
 
+/// Refreshes a save lock's mtime for as long as the critical section runs.
+///
+/// A save can take longer than the 60 s stale threshold (large sessions, slow
+/// disks). Without a heartbeat another instance would see an old mtime and
+/// reclaim a lock that is still in use. The channel makes shutdown immediate:
+/// a fixed-interval sleep would otherwise delay every save by up to one tick.
+struct LockHeartbeat {
+    stop: std::sync::mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl LockHeartbeat {
+    fn start(lock: PathBuf, token: String) -> Self {
+        Self::with_interval(lock, token, std::time::Duration::from_secs(5))
+    }
+
+    /// `interval` is injectable so tests can observe a refresh without waiting
+    /// for the production tick.
+    fn with_interval(lock: PathBuf, token: String, interval: std::time::Duration) -> Self {
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            while stopped.recv_timeout(interval).is_err() {
+                // Only touch a lock that still carries our unique token; after
+                // a crash-reclaim and re-acquire the path belongs to someone
+                // else and must be left untouched.
+                if std::fs::read_to_string(&lock).ok().as_deref() != Some(token.as_str()) {
+                    continue;
+                }
+                if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&lock) {
+                    let _ = file.set_modified(std::time::SystemTime::now());
+                }
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn stop(mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 impl Settings {
     /// Unique backup path for a corrupt settings file (nanoseconds + PID).
     fn backup_path_for(path: &Path) -> PathBuf {
@@ -1294,21 +1341,12 @@ impl Settings {
     /// `load_from` with an injectable backup path so the failure branch can be
     /// tested deterministically.
     fn load_from_with_backup(path: &Path, backup: PathBuf) -> Self {
-        // Check the size before reading the whole file into memory: a crafted
-        // settings.json must not exhaust memory during startup.
-        if let Ok(metadata) = std::fs::metadata(path) {
-            if metadata.len() > MAX_SETTINGS_BYTES {
-                warn!(
-                    size = metadata.len(),
-                    limit = MAX_SETTINGS_BYTES,
-                    "oversized settings file"
-                );
-                return Self::back_up_unusable(path, &backup);
-            }
-        }
-        // `read_to_string` allocates the whole file before a post-hoc size
-        // check, so a TOCTOU size race could still exhaust memory. Read through
-        // `take` instead: at most MAX_SETTINGS_BYTES + 1 bytes can be allocated.
+        // Never size-check via `metadata` here: a file can grow or shrink
+        // between that check and the read, so a legal file could be backed up
+        // as corrupt (or an oversized one could slip through). `read_to_string`
+        // allocates the whole file before a post-hoc check, so read through
+        // `take` instead: at most MAX_SETTINGS_BYTES + 1 bytes can be
+        // allocated, and the byte count below is authoritative.
         let read_failed = |error: std::io::Error| -> Self {
             let reason = format!(
                 "設定ファイルを読み込めませんでした（{}: {error}）。書き込みは行いません",
@@ -1631,6 +1669,16 @@ impl Settings {
         self.read_only || self.ephemeral
     }
 
+    /// Whether the settings UI must present itself as read-only (disable Save,
+    /// show the footer). This is broader than [`Self::write_was_skipped`]: a
+    /// load that failed before any path was determined (e.g. no config dir)
+    /// sets `load_error` while leaving `read_only` false, so `save()` reports a
+    /// real failure instead of a skip. The user still needs the read-only UI.
+    /// The status-bar skip semantics of `write_was_skipped` are unchanged.
+    pub fn ui_is_read_only(&self) -> bool {
+        self.read_only || self.ephemeral || self.load_error.is_some()
+    }
+
     /// Persist settings to the platform config path. Returns `false` when no
     /// config directory can be determined or a real write failed. Read-only /
     /// ephemeral sessions still count as success: nothing was expected to be
@@ -1680,34 +1728,74 @@ impl Settings {
         self.save_to_optional_path_with_reason(path).is_ok()
     }
 
+    /// Per-acquisition identity written into the lock file. The PID makes the
+    /// owner attributable; the timestamp nonce distinguishes two acquisitions
+    /// by the same process so a stale reclaim can never be mistaken for ours.
+    fn lock_token() -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        format!("{}:{}", std::process::id(), nanos)
+    }
+
+    /// A lock is stale only when its mtime is provably older than the
+    /// threshold. A live save keeps its mtime fresh through [`LockHeartbeat`],
+    /// so a long critical section is no longer mistaken for a crashed owner.
+    /// Unreadable metadata (e.g. a broken symlink) is never treated as stale.
+    fn lock_is_stale(lock: &Path) -> bool {
+        std::fs::metadata(lock)
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.elapsed().ok())
+            .map(|age| age > std::time::Duration::from_secs(60))
+            .unwrap_or(false)
+    }
+
     /// Serialize concurrent saves from multiple app instances. A lock file
     /// created with O_EXCL is atomic on every supported platform; a stale lock
     /// older than 60 s is reclaimed so a crashed process cannot block saves
-    /// forever. The lock is advisory — atomic rename already prevents a
-    /// truncated settings file — but it prevents last-writer-wins surprise.
-    fn acquire_save_lock(path: &Path) -> std::io::Result<PathBuf> {
+    /// forever. Reclamation renames the lock to a unique name instead of
+    /// removing it, so only one contender can consume it; release verifies the
+    /// token before deleting, so it can never remove another instance's lock.
+    fn acquire_save_lock(path: &Path) -> std::io::Result<(PathBuf, String)> {
         use std::io::ErrorKind;
         let lock = path.with_extension("json.lock");
-        for _ in 0..50 {
+        let token = Self::lock_token();
+        let reclaim_tag = format!("{}-{}", std::process::id(), token);
+        for attempt in 0..50 {
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&lock)
             {
-                Ok(file) => {
-                    drop(file);
-                    return Ok(lock);
+                Ok(mut file) => {
+                    // Record ownership before entering the critical section.
+                    // If writing fails, drop our own reservation immediately
+                    // rather than leaving an empty lock that blocks all saves.
+                    let written = file.write_all(token.as_bytes());
+                    if let Err(error) = written.and_then(|()| file.sync_all()) {
+                        drop(file);
+                        let _ = std::fs::remove_file(&lock);
+                        return Err(error);
+                    }
+                    return Ok((lock, token));
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    let stale = std::fs::metadata(&lock)
-                        .ok()
-                        .and_then(|meta| meta.modified().ok())
-                        .and_then(|time| time.elapsed().ok())
-                        .map(|age| age > std::time::Duration::from_secs(60))
-                        .unwrap_or(false);
-                    if stale {
-                        let _ = std::fs::remove_file(&lock);
-                        continue;
+                    if Self::lock_is_stale(&lock) {
+                        // rename() is atomic: exactly one contender can move a
+                        // given stale lock aside. This closes the
+                        // metadata -> remove_file -> create_new TOCTOU where a
+                        // fresh lock could be deleted between check and remove.
+                        let reclaimed = lock
+                            .with_extension(format!("json.lock.reclaimed-{reclaim_tag}-{attempt}"));
+                        if std::fs::rename(&lock, &reclaimed).is_ok() {
+                            // The stale lock is already consumed; dropping the
+                            // renamed copy is only cleanup, never ownership.
+                            let _ = std::fs::remove_file(&reclaimed);
+                            continue;
+                        }
+                        // Another contender renamed it first; re-check.
                     }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
@@ -1718,6 +1806,20 @@ impl Settings {
             ErrorKind::WouldBlock,
             "settings save lock timeout",
         ))
+    }
+
+    /// Release a lock only if it still carries our token. After a stale
+    /// reclaim another instance may own the path; removing it unconditionally
+    /// would silently break that instance's mutual exclusion.
+    fn release_save_lock(lock: &Path, token: &str) -> std::io::Result<()> {
+        use std::io::ErrorKind;
+        if std::fs::read_to_string(lock).ok().as_deref() != Some(token) {
+            return Err(std::io::Error::new(
+                ErrorKind::PermissionDenied,
+                "settings save lock no longer belongs to this save",
+            ));
+        }
+        std::fs::remove_file(lock)
     }
 
     /// Drop paths serde cannot serialize from a *copy* of the settings before
@@ -1774,7 +1876,10 @@ impl Settings {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let lock = Self::acquire_save_lock(path)?;
+        let (lock, token) = Self::acquire_save_lock(path)?;
+        // Keep the lock fresh for the whole critical section so another
+        // instance never mistakes a slow save for an abandoned lock.
+        let heartbeat = LockHeartbeat::start(lock.clone(), token.clone());
         let result = (|| -> std::io::Result<()> {
             // Stamp the current schema version on the persisted copy even if
             // the in-memory struct was built with a stale/absent version.
@@ -1817,10 +1922,16 @@ impl Settings {
                 .create_new(true)
                 .open(&tmp)?;
             // Settings contain bookmarks / recent paths; keep them private.
+            // A failed chmod is no longer silently swallowed: on filesystems
+            // that refuse it the file may be world-readable, which the user
+            // must be able to see in the log. A warning (rather than a hard
+            // error) keeps saves working on mounts without permission support.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+                if let Err(error) = file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+                    warn!(path = %tmp.display(), %error, "failed to restrict settings file permissions to 0600");
+                }
             }
             let written = (|| -> std::io::Result<()> {
                 file.write_all(text.as_bytes())?;
@@ -1836,7 +1947,8 @@ impl Settings {
             }
             Ok(())
         })();
-        if let Err(error) = std::fs::remove_file(&lock) {
+        heartbeat.stop();
+        if let Err(error) = Self::release_save_lock(&lock, &token) {
             // Without this log a failed release looks like a 60-second stale
             // lock on every later save, with no clue why it was not removed.
             warn!(path = %lock.display(), %error, "failed to release settings save lock");
@@ -1850,8 +1962,9 @@ mod tests {
     // Explicit imports only: the crate root glob re-exports GPUI's `test`
     // proc-macro which would shadow the built-in `#[test]`.
     use super::{
-        next_theme, next_theme_choice, resolve_theme, Settings, SettingsSaveError, ThemeChoice,
-        ViewLayout, APP_DIR, LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES, SCHEMA_VERSION,
+        detect_unknown_persisted_enum, next_theme, next_theme_choice, resolve_theme, Settings,
+        SettingsSaveError, ThemeChoice, ViewLayout, APP_DIR, LEGACY_SCHEMA_VERSION,
+        MAX_SETTINGS_BYTES, SCHEMA_VERSION,
     };
     use crate::model::{SortDir, SortKey, SortSpec};
     use gpui_kit::component::ThemeMode;
@@ -2633,6 +2746,202 @@ mod tests {
         if let Some(path) = Settings::config_path() {
             assert!(path.ends_with(Path::new(APP_DIR).join("settings.json")));
         }
+    }
+
+    #[test]
+    fn ui_is_read_only_covers_load_error_and_ephemeral() {
+        assert!(!Settings::default().ui_is_read_only());
+
+        let read_only = Settings {
+            read_only: true,
+            ..Settings::default()
+        };
+        assert!(read_only.ui_is_read_only());
+
+        let ephemeral = Settings {
+            ephemeral: true,
+            ..Settings::default()
+        };
+        assert!(ephemeral.ui_is_read_only());
+
+        // A missing config dir records a load error but leaves `read_only`
+        // false; the UI must still be read-only in that state.
+        let load_error = Settings::load_from_optional_path(None);
+        assert!(!load_error.read_only);
+        assert!(load_error.load_error.is_some());
+        assert!(load_error.ui_is_read_only());
+        // Status-bar skip semantics are deliberately unchanged.
+        assert!(!load_error.write_was_skipped());
+    }
+
+    #[test]
+    fn release_save_lock_preserves_a_foreign_lock() {
+        let dir = scratch("lock-identity");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("settings.json.lock");
+
+        fs::write(&lock, b"999999:1").unwrap();
+        let error = Settings::release_save_lock(&lock, "1234:2").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            lock.exists(),
+            "a foreign lock must never be deleted on release"
+        );
+
+        fs::write(&lock, b"1234:2").unwrap();
+        Settings::release_save_lock(&lock, "1234:2").unwrap();
+        assert!(!lock.exists(), "our own lock must be released");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_staleness_requires_readable_metadata() {
+        let dir = scratch("lock-staleness");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("settings.json.lock");
+        fs::write(&lock, b"in-use").unwrap();
+        assert!(!Settings::lock_is_stale(&lock));
+
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(Settings::lock_is_stale(&lock));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_heartbeat_keeps_a_long_save_fresh_and_stops_cleanly() {
+        let dir = scratch("lock-heartbeat");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("settings.json.lock");
+        let token = "4242:nonce";
+        fs::write(&lock, token).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(Settings::lock_is_stale(&lock));
+
+        let heartbeat = super::LockHeartbeat::with_interval(
+            lock.clone(),
+            token.to_string(),
+            std::time::Duration::from_millis(20),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        assert!(
+            !Settings::lock_is_stale(&lock),
+            "the heartbeat must keep an in-progress save's lock fresh"
+        );
+        heartbeat.stop();
+
+        // Once stopped, no further refresh happens.
+        fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        assert!(
+            Settings::lock_is_stale(&lock),
+            "the heartbeat must stop on request"
+        );
+
+        // A foreign token is never refreshed, even while a heartbeat runs.
+        fs::write(&lock, b"foreign").unwrap();
+        let heartbeat = super::LockHeartbeat::with_interval(
+            lock.clone(),
+            token.to_string(),
+            std::time::Duration::from_millis(20),
+        );
+        fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        assert!(
+            Settings::lock_is_stale(&lock),
+            "a lock that no longer carries our token must be left alone"
+        );
+        heartbeat.stop();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn detect_unknown_persisted_enum_checks_every_persisted_enum_site() {
+        // Absent fields and malformed container shapes are skipped (the field
+        // deserializers own those errors); a present but unrecognized enum name
+        // is what the detector must catch.
+        let known = [
+            serde_json::json!({}),
+            serde_json::json!({"sort": "not-an-object"}),
+            serde_json::json!({"sort": {"key": "name", "dir": "asc"}}),
+            serde_json::json!({"view": "details"}),
+            serde_json::json!({"theme": "system", "theme_choice": "dark"}),
+            serde_json::json!({"windows": "not-an-array"}),
+            serde_json::json!({"windows": [{"tabs": []}]}),
+            serde_json::json!({"column_prefs": {"visible": ["name", "size"]}}),
+            serde_json::json!({"column_prefs": {"widths": {"name": 120}}}),
+            serde_json::json!({"column_prefs": {"widths": "not-an-object"}}),
+        ];
+        for raw in known {
+            assert!(
+                !detect_unknown_persisted_enum(&raw),
+                "unexpected unknown-enum signal for {raw}"
+            );
+        }
+
+        let unknown = [
+            serde_json::json!({"sort": {"key": "future"}}),
+            serde_json::json!({"sort": {"dir": "future"}}),
+            serde_json::json!({"view": "list"}),
+            serde_json::json!({"theme": "neon"}),
+            serde_json::json!({"theme_choice": "neon"}),
+            serde_json::json!({"windows": [{"bounds": {"mode": "minimized"}}]}),
+            serde_json::json!({"column_prefs": {"visible": [7]}}),
+            serde_json::json!({"column_prefs": {"visible": ["future"]}}),
+            serde_json::json!({"column_prefs": {"widths": {"future": 80}}}),
+        ];
+        for raw in unknown {
+            assert!(
+                detect_unknown_persisted_enum(&raw),
+                "missed unknown enum in {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_unknown_persisted_enum_scans_every_window_bounds_mode() {
+        let all_known = serde_json::json!({
+            "windows": [
+                {"bounds": {"mode": "windowed"}},
+                {"bounds": {"mode": "maximized"}},
+                {"bounds": {"mode": "fullscreen"}}
+            ]
+        });
+        assert!(!detect_unknown_persisted_enum(&all_known));
+
+        // "minimized" is not a known mode and sits last: an early return after
+        // the first window would miss it.
+        let mixed = serde_json::json!({
+            "windows": [
+                {"bounds": {"mode": "windowed"}},
+                {"bounds": {"mode": "minimized"}}
+            ]
+        });
+        assert!(detect_unknown_persisted_enum(&mixed));
     }
 }
 

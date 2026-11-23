@@ -1723,6 +1723,38 @@ status: current
 - [x] **AS19** PWA 空状態 li が option セマンティクスを持たない — 対応: loop7
 - [x] **AS20** DeserializeSeed 代替案の却下理由を記録（案2採用時） — 対応: loop7
 
+## 進行中（ループ8 バックログ）
+
+### 優先度: 高（ループ8・confirmed）
+
+- [x] **AU01** 設定ロック回収の TOCTOU と無条件解放で排他が無効化 — 対応: loop8
+- [x] **AU02** ロック mtime 未更新で存命中の保存ロックが60秒で奪われる — 対応: loop8
+- [x] **AU03** 読み込み前 metadata サイズ検査が競合し正常ファイルを退避 — 対応: loop8
+- [x] **AU04** 一時ファイルの 0600 設定失敗が無視され world-readable — 対応: loop8
+- [x] **AU05** Search で Created/Modified 監視イベントが無通知で破棄 — 対応: loop8
+- [x] **AU06** --skip-build 鮮度ガードが core/ の変更を検出しない — 対応: loop8
+- [x] **AU07** ビルド失敗時に前回の .deb が残り誤配布される — 対応: loop8
+
+### 優先度: 中（ループ8・confirmed）
+
+- [x] **AU08** reconcile_in_flight が generation / cwd に紐付かない — 対応: loop8
+- [x] **AU09** suppress_until / op_cancel 中の監視バッチが失われる — 対応: loop8
+- [x] **AU10** DESIGN §9.1 サプライチェーン as-built が CI と食い違う — 対応: loop8
+- [x] **AU11** DESIGN 監視 pump の120ms tick 記述が実装と不一致 — 対応: loop8
+- [x] **AU12** detect_unknown_persisted_enum に直接テストが無い — 対応: loop8
+- [x] **AU13** windows[].bounds.mode 全走査が未テスト — 対応: loop8
+- [x] **AU14** pipefail 下の head -n がビルドを非ゼロ終了させうる — 対応: loop8
+- [x] **AU15** doc ゲートがコミット済み成果物の陳腐化を検出できない — 対応: loop8
+
+### 優先度: 低（ループ8・confirmed）
+
+- [x] **AU16** 保存不能セッションで設定ダイアログが writable 表示 — 対応: loop8
+- [x] **AU17** normalize_events が3パス以上の Rename を捨てる — 対応: loop8
+- [x] **AU18** unwatch 失敗後に古いパスが監視集合から消える — 対応: loop8
+- [x] **AU19** phase1-platform-ports が core 抽出前のパスを引用 — 対応: loop8
+- [x] **AU20** u64 ラップ境界・語彙一致・ソース-pin テスト不足 — 対応: loop8
+- [x] **AU21** app/README DEB 節が --skip-build を説明していない — 対応: loop8
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

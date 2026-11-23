@@ -18,8 +18,10 @@
 # --skip-build reuses the existing release binary. To avoid shipping a stale
 # binary that still reports the same version, the script additionally rejects a
 # binary that is older than any of app/src, app/build.rs, app/native-libs/,
-# app/Cargo.toml or the workspace-root Cargo.lock (i.e. files newer than the
-# binary are detected with `find -newer`).
+# app/Cargo.toml, core/src, core/Cargo.toml or the workspace-root Cargo.lock
+# (i.e. files newer than the binary are detected with `find -newer`).
+# --verify only compares an existing staging tree against the current sources
+# (read-only); it never builds, copies or removes anything.
 # The workspace-profile output normally lands in the root target/; the explicit
 # `--target-dir "${app_dir}/target"` on `cargo build` keeps the binary at the
 # path consumed below (app/target/release/).
@@ -32,7 +34,11 @@ usage() {
 オプション:
   -o, --output-dir DIR  出力先（既定: packaging/linux/build）
       --skip-build      release バイナリを再ビルドせず既存のものを使う
-                        （app/src・build.rs・native-libs/・Cargo.toml・ルート Cargo.lock より古い場合は拒否し再ビルドを促す）
+                        （app/src・build.rs・native-libs/・Cargo.toml・
+                         core/src・core/Cargo.toml・ルート Cargo.lock より
+                         古い場合は拒否し再ビルドを促す）
+      --verify          既存ステージのドキュメント/.desktop/アイコンを
+                        現行ソースと非破壊で照合（ビルド・コピー・削除なし）
   -h, --help            このヘルプを表示
 
 root では実行できません（dpkg-deb --root-owner-group が所有権を設定します）。
@@ -49,6 +55,7 @@ app_dir="${repo_root}/app"
 pkg="gpui-file-explorer"
 out_dir="${repo_root}/packaging/linux/build"
 skip_build=0
+verify=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -59,6 +66,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --skip-build)
       skip_build=1
+      ;;
+    --verify)
+      verify=1
       ;;
     -h | --help)
       usage
@@ -112,7 +122,63 @@ case "${stage}" in
   *) die "安全でないステージングパス: ${stage}" ;;
 esac
 
+# Source → staged-path pairs shared by the build-time gate and --verify.
+# The old gate only compared copies made in the same run, so a stale committed
+# staging tree (.desktop / icons / NOTICE-app.md / ...) went unnoticed.
+# .desktop and every hicolor icon are now covered too.
+doc_pairs=(
+  "${repo_root}/app/README.md|${stage}/usr/share/doc/${pkg}/README.md"
+  "${repo_root}/packaging/linux/copyright|${stage}/usr/share/doc/${pkg}/copyright"
+  "${repo_root}/LICENSE|${stage}/usr/share/doc/${pkg}/LICENSE"
+  "${repo_root}/NOTICE.md|${stage}/usr/share/doc/${pkg}/NOTICE.md"
+  "${repo_root}/app/NOTICE.md|${stage}/usr/share/doc/${pkg}/NOTICE-app.md"
+  "${repo_root}/app/NOTICE.md|${stage}/usr/share/doc/${pkg}/app/NOTICE.md"
+  "${repo_root}/packaging/linux/${pkg}.desktop|${stage}/usr/share/applications/${pkg}.desktop"
+)
+shopt -s nullglob
+for icon in "${repo_root}/packaging/linux/icons/hicolor"/*/apps/*; do
+  rel="${icon#"${repo_root}/packaging/linux/icons/"}"
+  doc_pairs+=("${icon}|${stage}/usr/share/icons/${rel}")
+done
+shopt -u nullglob
+
+verify_staged_docs() {
+  [ -d "${stage}" ] ||
+    die "ステージがありません: ${stage}（--verify は既存ステージの照合のみ行います）"
+  local pair src installed mismatches=0
+  for pair in "${doc_pairs[@]}"; do
+    src="${pair%%|*}"
+    installed="${pair#*|}"
+    if [ ! -f "${installed}" ]; then
+      echo "照合 NG (欠落): ${installed}" >&2
+      mismatches=$((mismatches + 1))
+    elif ! cmp -s -- "${src}" "${installed}"; then
+      echo "照合 NG (不一致): ${installed} (source: ${src})" >&2
+      mismatches=$((mismatches + 1))
+    else
+      echo "照合 OK: ${installed}"
+    fi
+  done
+  if [ "${mismatches}" -ne 0 ]; then
+    die "${mismatches} 件の不一致があります（ビルド・コピー・削除は行っていません）"
+  fi
+  echo "すべてのステージング済みファイルが現行ソースと一致しました: ${stage}"
+}
+
+# Read-only mode: check an existing staging tree and stop before any destructive
+# step (stage removal, .deb removal, cargo build, dpkg-deb).
+if [ "${verify}" -eq 1 ]; then
+  verify_staged_docs
+  exit 0
+fi
+
 rm -rf -- "${stage}"
+# AU07: a failed build must not leave a previous .deb at the documented path.
+# ${deb} is ${stage}.deb inside the already-validated output directory.
+case "${deb}" in
+  "${out_dir}"/*.deb) rm -f -- "${deb}" ;;
+  *) die "安全でない出力先: ${deb}" ;;
+esac
 mkdir -p "${stage}/DEBIAN" "${stage}/usr/bin" "${stage}/usr/share/applications"
 
 if [ "${skip_build}" -eq 0 ]; then
@@ -135,17 +201,34 @@ esac
 # With --skip-build the binary is not rebuilt, so the version check above alone
 # cannot catch a stale binary from an earlier build of the same version. Detect
 # any source/build/native-lib/Cargo file newer than the binary and refuse to
-# package it: build.rs links native-libs/, so both affect the linked binary.
+# package it. core/src and core/Cargo.toml must be included: since the core
+# extraction they are linked into the binary just as much as app/src is.
 if [ "${skip_build}" -eq 1 ]; then
   # app/Cargo.lock は workspace 化前の残骸で未使用（正本はルート Cargo.lock）。
   # 指示により削除はしないが、個別ビルド等で更新されていたら警告する。
   if [ -f "${app_dir}/Cargo.lock" ] && [ "${app_dir}/Cargo.lock" -nt "${repo_root}/Cargo.lock" ]; then
     echo "警告: ${app_dir}/Cargo.lock は workspace では未使用です（正本: ${repo_root}/Cargo.lock）。" >&2
   fi
+  # AU06: core/src and core/Cargo.toml are part of the linked binary as well;
+  # omitting them let a core-only change ship with an old binary under
+  # --skip-build. Only pass existing paths so `find` does not abort early.
+  freshness_paths=()
+  for path in \
+    "${app_dir}/src" \
+    "${app_dir}/build.rs" \
+    "${app_dir}/native-libs" \
+    "${app_dir}/Cargo.toml" \
+    "${repo_root}/Cargo.lock" \
+    "${repo_root}/core/src" \
+    "${repo_root}/core/Cargo.toml"; do
+    if [ -e "${path}" ]; then
+      freshness_paths+=("${path}")
+    fi
+  done
+  [ "${#freshness_paths[@]}" -gt 0 ] || die "鮮度チェック対象が見つかりません"
   # `-print -quit` stops at the first match; `|| true` keeps `set -e` from
-  # aborting on a missing search path before our own error message is shown.
-  stale_source="$(find "${app_dir}/src" "${app_dir}/build.rs" "${app_dir}/native-libs" \
-    "${app_dir}/Cargo.toml" "${repo_root}/Cargo.lock" \
+  # aborting on a transient find error before our own error message is shown.
+  stale_source="$(find "${freshness_paths[@]}" \
     -newer "${binary}" -print -quit || true)"
   if [ -n "${stale_source}" ]; then
     die "release バイナリがソースより古いです: ${stale_source}（--skip-build を外して再ビルドしてください）"
@@ -175,20 +258,14 @@ install -Dm644 "${repo_root}/app/NOTICE.md" "${doc_dir}/NOTICE-app.md"
 # in NOTICE.md is left unchanged.
 install -Dm644 "${repo_root}/app/NOTICE.md" "${doc_dir}/app/NOTICE.md"
 
-# Gate: every staged doc file must match the current repository source
-# byte-for-byte. Earlier packages under packaging/linux/build/ shipped a
-# NOTICE-app.md without the tracing / tracing-subscriber entries and no
-# LICENSE; this script copies the current sources, so a mismatch here means
-# the packaging layout regressed (or a stale staging tree was reused).
-# Abort before dpkg-deb; replacing an existing .deb is the caller's decision.
-doc_pairs=(
-  "${repo_root}/app/README.md|${doc_dir}/README.md"
-  "${repo_root}/packaging/linux/copyright|${doc_dir}/copyright"
-  "${repo_root}/LICENSE|${doc_dir}/LICENSE"
-  "${repo_root}/NOTICE.md|${doc_dir}/NOTICE.md"
-  "${repo_root}/app/NOTICE.md|${doc_dir}/NOTICE-app.md"
-  "${repo_root}/app/NOTICE.md|${doc_dir}/app/NOTICE.md"
-)
+# Gate: every staged file in doc_pairs (docs, .desktop and hicolor icons) must
+# match the current repository source byte-for-byte. Earlier packages under
+# packaging/linux/build/ shipped a NOTICE-app.md without the tracing /
+# tracing-subscriber entries and no LICENSE. Here the files were just copied
+# from those sources, so a mismatch means the packaging layout regressed.
+# To check an already-existing staging tree use `--verify`, which never builds,
+# copies or deletes. Abort before dpkg-deb; a stale .deb was already removed at
+# the start of this run, so a failure here leaves no package at the README path.
 for pair in "${doc_pairs[@]}"; do
   src="${pair%%|*}"
   installed="${pair#*|}"
@@ -253,7 +330,9 @@ echo "作成しました: ${deb}"
 dpkg-deb --info "${deb}"
 echo
 echo "内容（先頭 20 行）:"
-dpkg-deb --contents "${deb}" | head -n 20
+# AU14: under `set -o pipefail`, `head` may close the pipe early and make this
+# pipeline fail with SIGPIPE even though dpkg-deb succeeded.
+dpkg-deb --contents "${deb}" | sed -n '1,20p'
 echo
 echo "展開して --version を確認する例:"
 echo "  dpkg-deb -x '${deb}' /tmp/gpui-fe-deb && /tmp/gpui-fe-deb/usr/bin/${pkg} --version"

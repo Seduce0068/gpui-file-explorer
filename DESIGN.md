@@ -421,7 +421,7 @@ fe-dev が並行実装中の `app/src/` は、時間優先で次の**フラッ�
 | `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択。順序保持 `Vec` + `HashSet` インデックス） | `Selection`（PathBuf キー、複数） | **移行済み（as-built）**: §5.3 の型へ置換し、バッチ操作・O(1) の `contains` を実装。行 index 競合を回避（review-report.md 217-220, 393-394 行目） |
 | `app/src/error.rs` は `gfe_core::error` の re-export（互換シェル）。`LoadState`（Loading/Ready/Error、generation 保持）+ `FsError` / `FsErrorKind` の定義は `core/` クレート | `LoadState` / `FsError` | **移行済み（as-built）**: 排他状態へ置換し generation で古い結果を破棄。エラー文言の日本語化も済み（review-report.md 191-196 行目） |
 | `history.rs` に `NavMode` + `apply` を追加（Push/Back/Forward/Up/Replace の統一 API） | `model/history.rs`（`apply(target, mode)`） | **移行済み（as-built）**: `apply(target, mode)` で統一 API 化。`go_parent` は `Up`、同一パス再読込は `Replace` へ接続（review-report.md 318-322 行目） |
-| `watcher.rs`（`DirWatcher`）が `async-channel` 経由で前景ループへ通知 | `fs/watch.rs` + mpsc/timer pump（ADR-006） | **async-channel 採用は許容**（GPUI の依存に既にあり、`Cargo.toml` に明示追加済み）。前景ループ + 10s tick で設計意図（UI スレッドで I/O しない/バッチ化）は満たす |
+| `watcher.rs`（`DirWatcher`）が `async-channel` 経由で前景ループへ通知 | `fs/watch.rs` + チャネル pump（ADR-006） | **async-channel 採用は許容**（GPUI の依存に既にあり、`Cargo.toml` に明示追加済み）。as-built は前景ループが `recv().await` + `try_recv()` でバッチ化し、10 s リコンサイルは独立 `spawn_reconcile_loop` が担当（UI スレッドで I/O しない/バッチ化の意図は維持） |
 | `chrono` を日時表示に使用 | §8.4 は std で可とした | P0 は許容（表示専用）。依存を増やしたくない場合は P1 で `std::time` に戻す |
 | `icons.rs`（FileKind + IconName） | `icons.rs`（同じ役割） | 一致 |
 | `settings.rs`（atomic save） | `settings.rs` | 一致 |
@@ -467,7 +467,7 @@ ExplorerApp のメソッド（open_location / select / open_selected / trash_sel
    │        ▼  cx.spawn(async move |this, cx| { result = task.await; this.update(...) })
    │      generation 一致時のみ: Listing 再構築 → Selection::reconcile → LoadState 更新 → cx.notify()
    │
-   └─(3) 監視イベント: pump が 120ms ごとに mpsc を drain → FsEvent 正規化
+   └─(3) 監視イベント: pump が recv().await で受信 → try_recv() で到着分を drain → FsEvent 正規化
              └ 抑制窓内なら破棄 / それ以外は差分適用（P0 は対象ディレクトリのイベントで再読込）
                  → sort/filter 再構築 → notify
    ▼
@@ -530,7 +530,7 @@ fn open_location(&mut self, target: PathBuf, mode: NavMode, cx: &mut Context<Sel
                  rearm(cwd ok)                        DebounceEventResult
    [Idle] ──────────────────────▶ [Armed] ────────────────────────▶ [Dirty]
       ▲                              │  ▲                               │
-      │ navigate/quit                │  │ 適用完了                       │ pump が 120ms 以内に drain
+      │ navigate/quit                │  │ 適用完了                       │ イベント到着時に pump が drain
       │ (handle drop)                │  └──────────── [Applying] ◀────────┘
       │                              │                   │  ※ 抑制窓内のイベントは破棄
       │                              │ 10s tick          │
@@ -556,9 +556,16 @@ fn open_location(&mut self, target: PathBuf, mode: NavMode, cx: &mut Context<Sel
 | `Access` | 無視 | — |
 
 - **自操作抑制**: ゴミ箱・新規フォルダ実行時に `suppress_until = now + 1.5s`（+ 対象パス集合）。抑制窓内のイベントは破棄するが、**10 秒リコンサイルは常に有効**（抑制で取りこぼしても回復）。
-- **10 秒リコンサイル**: pump の tick カウントで `reload` を発火（ネットワーク FS/イベント溢れ/Windows の RDCW 溢れ対策、RESEARCH §3.5）。抑制窓と独立。
+- **10 秒リコンサイル**: 独立した `spawn_reconcile_loop` の 10 秒タイマーで
+  `reload` を発火（ネットワーク FS/イベント溢れ/Windows の RDCW 溢れ対策、
+  RESEARCH §3.5）。抑制窓と独立。
 - **watch 失敗時**: `WatchState::Degraded { reason }`。通知トースト + ステータス右「自動更新: 無効」+ F5 を案内。ネットワーク FS では watch を張らず `Degraded` で開始する判定を P2 で追加（`statfs` の f_type、⚠ 実装未定）。
-- pump は `cx.spawn` の前景ループで実装する。監視スレッドからの通知は **チャネル**（`std::sync::mpsc` か `async-channel`。現行試作は `async-channel`、§4.1 as-built）で受け、前景ループが 120 ms タイマーごとに drain してバッチ適用する（ADR-006）。UI スレッドで `recv` ブロックしない。10 秒リコンサイルは同じループの tick カウントで発火する。
+- pump は `cx.spawn` の前景ループ（`spawn_watch_loop`）で実装する。監視スレッド
+  からの通知は **チャネル**（`async-channel`、§4.1 as-built）で受け、
+  `recv().await` で 1 バッチ目を待ってから `try_recv()` で到着分を drain し、
+  まとめて差分適用する（ADR-006）。同期 `recv` で UI スレッドをブロックせず、
+  タイマー待機もしない。10 秒リコンサイルはこのループとは独立した
+  `spawn_reconcile_loop` が `background.timer(RECONCILE_INTERVAL)`（10 秒）で発火する。
 
 ---
 
@@ -1057,16 +1064,17 @@ app/
 | serde / serde_json | MIT OR Apache-2.0 | 表示 | crates.io メタデータ |
 | dirs 7（試作は 6 可） | MIT OR Apache-2.0（⚠ 未確認） | 表示 | fs-notes §12 |
 
-- CI/リリース前に `cargo deny check licenses`（allow: AGPL-3.0-or-later,
-  Apache-2.0, MIT, ISC, CC0-1.0, Unlicense, BSD-3-Clause, Unicode-3.0 /
-  deny: GPL-2.0, GPL-3.0-only, SSPL）と `cargo audit` を実行
-  （[`RESEARCH.md`](RESEARCH.md) §11.2）。P0 では `cargo tree` で直接依存の
+- CI/リリース前に `cargo deny check`（licenses / bans / sources / advisories の
+  全チェック）と `cargo audit` を実行
+  （[`RESEARCH.md`](RESEARCH.md) §11.2）。allow ライセンスの一覧は
+  リポジトリ直下の `deny.toml` を正本とし、ここでは重複列挙しない
+  （`app/` と `poc/` が同じ設定を共有する）。P0 では `cargo tree` で直接依存の
   ライセンス確認を README に記録した。**自動化は as-built で完了済み**:
-  `.github/workflows/ci.yml` の `supply-chain` ジョブが `cargo deny check`
-  （`app/` は全チェック、`poc/` は advisories/bans/sources）と
-  `cargo vet check`（store 存在時のみ）を実行し、`gates` ジョブが
-  `cargo audit` を実行する。ローカルは `scripts/check.sh`（`--no-release` /
-  `--strict` 対応）で再現可（[`README.md`](README.md)「CI の検証範囲」）。
+  `.github/workflows/ci.yml` の `supply-chain` ジョブが `app/` と `poc/` の
+  両方に `cargo deny check`（全チェック）と `cargo vet check`
+  （store 存在時のみ）を実行し、`gates` ジョブが `cargo audit` を実行する。
+  ローカルは `scripts/check.sh`（`--no-release` / `--strict` 対応）で再現可
+  （[`README.md`](README.md)「CI の検証範囲」）。
 
 ---
 
@@ -1211,7 +1219,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | ADR-003 | 一覧は **`uniform_list`（固定行高）** | gpui-component DataTable / `list`(可変高) / カスタム Element | ファイル一覧は固定行高が自然。DataTable は列機能が豊富だが API 面積大・⚠ 未検証。P1 で列ソート必要時に再評価（RESEARCH §4.1） |
 | ADR-004 | **trash-first / P0-MVP は完全削除なし** | 完全削除をメニューに入れる | 誤削除の安全弁。fs notes の推奨に一致。完全削除は P2 で二段確認付き（§6） |
 | ADR-005 | 監視は **非再帰（cwd + 親）** + debounce 400 ms + 10 s リコンサイル | 再帰 watch / 監視なし | inotify watch 枯渇とネットワーク FS 破綻を回避（RESEARCH §3.5） |
-| ADR-006 | 監視イベントは **チャネル + 前景 pump ループ**（120 ms tick で drain、10 s リコンサイル）。チャネルは `std::sync::mpsc` か `async-channel` のどちらでも可 | ブロッキング recv / notify コールバックから直接 UI 更新 / イベントごとの `notify()` | UI をブロックせずバッチ化できる。`Debouncer` は `std::sync::mpsc::Sender` 実装を提供 ✅。現行試作は `async-channel`（§4.1 as-built） |
+| ADR-006 | 監視イベントは **チャネル + 前景 pump ループ**（`recv().await` + `try_recv()` で到着分を drain、10 s リコンサイルは独立 `spawn_reconcile_loop`）。チャネルは `std::sync::mpsc` か `async-channel` のどちらでも可 | 120 ms tick による周期 drain / ブロッキング recv / notify コールバックから直接 UI 更新 / イベントごとの `notify()` | UI をブロックせずバッチ化できる。`Debouncer` は `std::sync::mpsc::Sender` 実装を提供 ✅。as-built は `async-channel` と独立 10 s タイマー（§4.1） |
 | ADR-007 | P0 の OS 統合は **GPUI core API のみ**（open_with_system/reveal_path/クリップボード text） | opener/arboard を最初から導入 | 依存と検証面積を最小化。失敗時は通知で明示。P2 で opener/arboard を追加 |
 | ADR-008 | 削除確認は **`Window::prompt`** を第一候補 | gpui-component `open_alert_dialog` / 独自モーダル | GPUI 標準 API で Windows/macOS ではネイティブになる。Linux は GPUI fallback（✅ ソース確認）。UI が見劣りする場合のみ AlertDialog へ |
 | ADR-009 | Breeze システムアイコン優先、Lucide フォールバック | ネイティブのみ/なし | §8.3 |

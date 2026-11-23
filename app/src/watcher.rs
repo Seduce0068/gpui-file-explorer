@@ -61,11 +61,24 @@ pub fn normalize_events(result: &DebounceEventResult) -> Vec<FsEvent> {
         match event.kind {
             EventKind::Create(_) if !paths.is_empty() => out.push(FsEvent::Created(paths)),
             EventKind::Remove(_) if !paths.is_empty() => out.push(FsEvent::Removed(paths)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::Both)) if paths.len() >= 2 => {
-                out.push(FsEvent::Renamed {
-                    from: Some(paths[0].clone()),
-                    to: Some(paths[1].clone()),
-                });
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+                // The debouncer may coalesce several rename pairs into one
+                // event. Pair every two paths instead of silently dropping
+                // `paths[2..]`; an odd trailing path cannot form a pair, so it
+                // falls back to a full reload rather than being lost.
+                if paths.is_empty() {
+                    out.push(FsEvent::Rescan);
+                }
+                for pair in paths.chunks(2) {
+                    if pair.len() == 2 {
+                        out.push(FsEvent::Renamed {
+                            from: Some(pair[0].clone()),
+                            to: Some(pair[1].clone()),
+                        });
+                    } else {
+                        out.push(FsEvent::Rescan);
+                    }
+                }
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::From)) if !paths.is_empty() => {
                 out.push(FsEvent::Renamed {
@@ -166,6 +179,10 @@ impl Watcher for SafeWatcher {
 pub struct DirWatcher {
     debouncer: Option<FileEventWatcher>,
     watched: Vec<PathBuf>,
+    /// Paths whose `unwatch` failed during the previous replacement. Without
+    /// retaining them, the OS-level watch stays alive and keeps firing events
+    /// while the manager has already forgotten the path (AU18).
+    pending_unwatch: Vec<PathBuf>,
     last_error: Option<String>,
 }
 
@@ -187,6 +204,7 @@ impl DirWatcher {
         Self {
             debouncer: None,
             watched: Vec::new(),
+            pending_unwatch: Vec::new(),
             last_error: Some(reason),
         }
     }
@@ -215,6 +233,7 @@ impl DirWatcher {
             Ok(debouncer) => Self {
                 debouncer: Some(debouncer),
                 watched: Vec::new(),
+                pending_unwatch: Vec::new(),
                 last_error: None,
             },
             Err(error) => {
@@ -247,26 +266,50 @@ impl DirWatcher {
         // Retry when a previous attempt failed (permission denied, directory
         // temporarily missing, ...): a plain "already watched" check would make
         // that state sticky for the lifetime of the app.
-        if self.watched == dirs && self.last_error.is_none() {
+        if self.watched == dirs && self.last_error.is_none() && self.pending_unwatch.is_empty() {
             return;
         }
         let Some(debouncer) = &mut self.debouncer else {
             return;
         };
         let mut errors = Vec::new();
-        for old in std::mem::take(&mut self.watched) {
+        // Failed unwatches must be retried on the next replacement: dropping
+        // them here leaves a live OS watch the manager no longer knows about,
+        // whose events can trigger spurious reloads (AU18). `pending_unwatch`
+        // keeps those paths; the boolean marks an already-reported retry so a
+        // permanently stale path does not produce an ever-growing error.
+        let mut to_unwatch: Vec<(PathBuf, bool)> = Vec::new();
+        for path in std::mem::take(&mut self.watched) {
+            to_unwatch.push((path, false));
+        }
+        for path in std::mem::take(&mut self.pending_unwatch) {
+            if !to_unwatch.iter().any(|(other, _)| other == &path) {
+                to_unwatch.push((path, true));
+            }
+        }
+        let mut pending = Vec::new();
+        for (old, retry) in to_unwatch {
             if let Err(err) = debouncer.unwatch(&old) {
-                // A stale watch may still fire; report it instead of silently
-                // dropping the failure (second cross-review Low finding).
-                errors.push(format!("{} の監視解除に失敗: {err}", old.display()));
+                pending.push(old.clone());
+                if !retry {
+                    // A stale watch may still fire; report it instead of
+                    // silently dropping the failure (cross-review Low finding).
+                    errors.push(format!("{} の監視解除に失敗: {err}", old.display()));
+                }
             }
         }
         for dir in dirs {
             match debouncer.watch(dir, RecursiveMode::NonRecursive) {
-                Ok(()) => self.watched.push(dir.clone()),
+                Ok(()) => {
+                    // Re-watching a pending path means its watch is healthy
+                    // again and tracked in `watched`; no retry is needed.
+                    pending.retain(|path| path != dir);
+                    self.watched.push(dir.clone());
+                }
                 Err(err) => errors.push(format!("{}: {err}", dir.display())),
             }
         }
+        self.pending_unwatch = pending;
         self.last_error = if errors.is_empty() {
             None
         } else {
@@ -451,6 +494,45 @@ mod tests {
         assert_eq!(
             normalize_events(&Ok(vec![debounced])),
             vec![FsEvent::Rescan]
+        );
+    }
+
+    #[test]
+    fn rename_both_with_multiple_pairs_keeps_every_path() {
+        use notify_debouncer_full::notify::event::{Event, EventKind, ModifyKind, RenameMode};
+        use notify_debouncer_full::DebouncedEvent;
+        use std::time::Instant;
+
+        let debounced = |paths: Vec<PathBuf>| DebouncedEvent {
+            event: Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                paths,
+                attrs: Default::default(),
+            },
+            time: Instant::now(),
+        };
+        let path = |name: &str| PathBuf::from(format!("/tmp/{name}"));
+        let renamed = |from: &str, to: &str| FsEvent::Renamed {
+            from: Some(path(from)),
+            to: Some(path(to)),
+        };
+
+        // AU17: four paths are two complete rename pairs; none may be dropped.
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(vec![
+                path("a"),
+                path("b"),
+                path("c"),
+                path("d"),
+            ])])),
+            vec![renamed("a", "b"), renamed("c", "d")]
+        );
+
+        // An odd trailing path cannot form a pair: it must trigger a Rescan
+        // instead of silently disappearing after the first pair.
+        assert_eq!(
+            normalize_events(&Ok(vec![debounced(vec![path("a"), path("b"), path("c"),])])),
+            vec![renamed("a", "b"), FsEvent::Rescan]
         );
     }
 
@@ -749,6 +831,62 @@ mod tests {
             watcher.last_error()
         );
         assert_eq!(watcher.watched_paths(), std::slice::from_ref(&next));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_unwatch_is_retained_and_retried_on_the_next_replacement() {
+        // AU18: when `unwatch(old)` fails the OS-level watch is still alive.
+        // Dropping the path from `watched` alone would leave that stale watch
+        // firing events the manager can no longer attribute to a directory.
+        let dir = scratch("pending-unwatch");
+        let old = dir.join("old");
+        let next = dir.join("next");
+        let after = dir.join("after");
+        for path in [&old, &next, &after] {
+            fs::create_dir_all(path).unwrap();
+        }
+
+        let mut watcher = DirWatcher::new(|_| {});
+        if !watcher.is_supported() {
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        watcher.watch(std::slice::from_ref(&old));
+        assert!(watcher.pending_unwatch.is_empty());
+
+        // Invalidate the OS watch behind the manager's back so the next
+        // replacement observably fails to unwatch `old`.
+        {
+            let debouncer = watcher.debouncer.as_mut().expect("supported watcher");
+            debouncer.unwatch(&old).expect("seed watch exists");
+        }
+        watcher.watch(std::slice::from_ref(&next));
+        assert_eq!(
+            watcher.pending_unwatch,
+            vec![old.clone()],
+            "a failed unwatch must stay pending for a later retry"
+        );
+        assert!(watcher
+            .last_error()
+            .is_some_and(|error| error.contains(&old.display().to_string())));
+        assert_eq!(watcher.watched_paths(), std::slice::from_ref(&next));
+
+        // The retry fails again in this setup (the OS watch was removed), but
+        // it must be attempted and must not leave a permanent error behind.
+        watcher.watch(std::slice::from_ref(&after));
+        assert_eq!(
+            watcher.pending_unwatch,
+            vec![old.clone()],
+            "the retryable path is retained until an unwatch succeeds"
+        );
+        assert!(
+            watcher.last_error().is_none(),
+            "a reported failure must not become sticky on retry: {:?}",
+            watcher.last_error()
+        );
+        assert_eq!(watcher.watched_paths(), std::slice::from_ref(&after));
 
         let _ = fs::remove_dir_all(&dir);
     }

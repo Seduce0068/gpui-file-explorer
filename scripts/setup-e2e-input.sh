@@ -40,14 +40,14 @@ install_deb() {
   echo "Downloading ${package} (no sudo)..."
   (cd "${tmp_dir}" && apt-get download "${package}")
   local deb
-  deb="$(find "${tmp_dir}" -maxdepth 1 -name "${package}_*.deb" | head -n1)"
+  deb="$(find "${tmp_dir}" -maxdepth 1 -name "${package}_*.deb" -print -quit)"
   if [ -z "${deb}" ]; then
     echo "error: could not download ${package}" >&2
     return 1
   fi
   dpkg-deb -x "${deb}" "${tmp_dir}/root"
   local source
-  source="$(find "${tmp_dir}/root" -type f -name "${binary}" -perm -u+x | head -n1)"
+  source="$(find "${tmp_dir}/root" -type f -name "${binary}" -perm -u+x -print -quit)"
   if [ -z "${source}" ]; then
     echo "error: ${binary} not found in ${deb}" >&2
     return 1
@@ -74,7 +74,7 @@ rescue_libxdo3() {
     return 0
   fi
   local deb
-  deb="$(find "${tmp_dir}" -maxdepth 1 -name 'libxdo3_*.deb' | head -n1)"
+  deb="$(find "${tmp_dir}" -maxdepth 1 -name 'libxdo3_*.deb' -print -quit)"
   if [ -z "${deb}" ]; then
     echo "warning: libxdo3 .deb not found after download" >&2
     return 0

@@ -571,6 +571,39 @@ bash packaging/linux/build-deb.sh
 `.desktop`（`StartupWMClass=gpui-file-explorer`）、hicolor アイコン、ドキュメントを同梱します。
 依存パッケージはビルド時に `ldd` + `dpkg -S` から生成します。
 
+### 出力先の変更と `--skip-build`
+
+- `--output-dir DIR`（`-o DIR`）で出力先を変更できます。既定は
+  `packaging/linux/build` で、ステージングディレクトリと `.deb` が同じ場所に
+  作られます（出力ディレクトリ配下のみを清理するため、他の場所は触りません）。
+- `--skip-build` は既存の `app/target/release/gpui-file-explorer` を再利用します。
+  成立条件は次の 2 つです。
+  1. バイナリが存在し、`--version` が `app/Cargo.toml` の version と一致する。
+  2. `app/src` / `app/build.rs` / `app/native-libs/` / `app/Cargo.toml` /
+     `core/src` / `core/Cargo.toml` / ルート `Cargo.lock` のいずれより
+     バイナリが古くない（core だけを変更した場合も検出されます）。
+
+  満たさない場合は再ビルドを促すため、`--skip-build` を外して再実行してください。
+  `app/Cargo.lock` は workspace 化前の残骸で未使用（正本はルート `Cargo.lock`）。
+- 失敗時に前回の `.deb` が残って誤配布されることを防ぐため、開始時に
+  出力先の `.deb` を削除します。成功したときだけ同じパスへ生成されます。
+- `--verify` は既存ステージのドキュメント・`.desktop`・hicolor アイコンを
+  現行ソースと読み取り専用で照合します。ビルド・コピー・削除は行わないため、
+  古いステージの検出に使えます（不一致なら非ゼロ終了）。
+
+### 展開検証の例
+
+```bash
+cd /path/to/gpui-file-explorer
+deb="packaging/linux/build/gpui-file-explorer_$(sed -n 's/^version = "\([^"]*\)"/\1/p' app/Cargo.toml | head -n1)-1_$(dpkg --print-architecture).deb"
+bash packaging/linux/build-deb.sh --verify          # 既存ステージの照合（非破壊）
+dpkg-deb --info "${deb}"                             # control / 依存の確認
+dpkg-deb --contents "${deb}"                         # 同梱ファイル一覧
+verify_dir="$(mktemp -d /tmp/gpui-fe-deb-verify.XXXXXX)"
+dpkg-deb -x "${deb}" "${verify_dir}"
+"${verify_dir}/usr/bin/gpui-file-explorer" --version # 配布バイナリの確認
+```
+
 ## エラーが出たら
 
 エラー時は F5 再読込 / 親フォルダへ移動 / 名前変更で対処します。
