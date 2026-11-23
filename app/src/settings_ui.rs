@@ -718,6 +718,14 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     // substring, so copying the visible word would otherwise dead-end.
     "reset",
     "予約キー",
+    // AW01: SETTINGS_KEYMAP_INPUT_HINT embeds `keymap_format_hint!()`
+    // ("形式: アクション名 コード または unbind アクション名") and the
+    // 「この欄でも `unbind アクション名` で解除できます」 sentence. Copying
+    // those visible words into the search box must reach this tab, not
+    // dead-end with a zero-hit hint.
+    "形式",
+    "コード",
+    "解除",
 ];
 /// Searchable keywords of the "既定のショートカット" row group.
 ///
@@ -1053,6 +1061,12 @@ const PERSONALIZE_INFO_KEYWORDS: &[&str] = &[
     "settings.json",
     "保存",
     "配色",
+    // AW02: a read-only session renders `settings_read_only_save_note!()`
+    // ("現在は読み取り専用のため保存されません") instead of the settings.json
+    // save line. Copying that visible wording into the search box must still
+    // land on this tab; 「専用」 is the shorter substring users may type.
+    "読み取り専用",
+    "専用",
 ];
 
 /// Every searchable keyword group of a tab, in visible row order.
@@ -2762,6 +2776,10 @@ mod tests {
             // AS02: the format hint prints 「アクション名」; searching the
             // visible bare word 「アクション」 must also reach Shortcuts.
             "アクション",
+            // AW01: the format hint and the unbind sentence print these words.
+            "形式",
+            "コード",
+            "解除",
         ];
         let hint_lower = SETTINGS_KEYMAP_INPUT_HINT.to_lowercase();
         for example in EXAMPLES {
@@ -2789,6 +2807,13 @@ mod tests {
             vec![SettingsTab::Shortcuts],
             "AS02: the visible アクション word must resolve to exactly the Shortcuts tab"
         );
+        for word in ["形式", "コード", "解除"] {
+            assert_eq!(
+                tabs_matching_query(word),
+                vec![SettingsTab::Shortcuts],
+                "AW01: the visible keymap hint word {word} must resolve to exactly the Shortcuts tab"
+            );
+        }
     }
 
     #[test]
@@ -3191,11 +3216,13 @@ mod tests {
 
     #[test]
     fn personalize_keywords_point_at_visible_text_on_the_page() {
-        // X14/M09: a keyword that has no visible match can make the no-match
-        // hint point at a tab whose rows show nothing relevant. Build the
-        // visible text from the same pure helper the renderer uses so the two
-        // cannot drift. `theme` is a search-only alias of the Japanese label
-        // 「テーマ」 and is the sole explicit exception.
+        // X14/M09/AW02: a keyword that has no visible match can make the
+        // no-match hint point at a tab whose rows show nothing relevant. Build
+        // the visible text from the same pure helper the renderer uses so the
+        // two cannot drift. Both the writable and the read-only variants are
+        // included, so every keyword must appear in at least one rendered
+        // line. `theme` is a search-only alias of the Japanese label 「テーマ」
+        // and is the sole explicit exception.
         const SEARCH_ONLY_ALIASES: &[&str] = &["theme"];
         let visible = [
             SettingsTab::Personalize.label(),
@@ -3205,7 +3232,11 @@ mod tests {
             "このアプリについて",
         ]
         .join("\n");
-        let visible = format!("{visible}\n{}", personalize_info_lines(false).join("\n"));
+        let visible = format!(
+            "{visible}\n{}\n{}",
+            personalize_info_lines(false).join("\n"),
+            personalize_info_lines(true).join("\n")
+        );
         let visible_lower = visible.to_lowercase();
         for keyword in PERSONALIZE_INFO_KEYWORDS
             .iter()
@@ -3227,6 +3258,18 @@ mod tests {
         // The two keywords that motivated X14 are now rendered verbatim.
         let app_line = personalize_info_lines(false)[0].clone();
         assert!(app_line.contains("情報") && app_line.contains("about"));
+        // AW02: the read-only note is rendered only in the read-only variant,
+        // and copying its visible word must still land on this tab.
+        assert!(personalize_info_lines(true)
+            .iter()
+            .any(|line| line.contains("読み取り専用")));
+        for word in ["読み取り専用", "専用"] {
+            assert_eq!(
+                tabs_matching_query(word),
+                vec![SettingsTab::Personalize],
+                "AW02: the visible read-only word {word} must resolve to exactly the Personalize tab"
+            );
+        }
     }
 
     #[test]
@@ -3554,6 +3597,9 @@ mod tests {
             "最近の検索:",
             "保存検索:",
             "最大 10 件",
+            // AW03: main.rs renders only `.take(8)` chips, so neither README
+            // nor the shared F1/settings help may claim all 10 are displayed.
+            "直近 8 件",
             "最大 50 件",
             "同名は上書き",
         ] {

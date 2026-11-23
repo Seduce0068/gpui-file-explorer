@@ -522,7 +522,7 @@ pub const SETTINGS_READ_ONLY_PALETTE_NOTE: &str = settings_read_only_palette_not
 /// `app/README.md` の検索履歴・保存検索節と F1 ヘルプで共用する。
 macro_rules! search_history_chips_description {
     () => {
-        "検索語は最大 10 件を設定に保存し、検索欄が空のとき「最近の検索:」チップとして表示。保存検索は「保存検索:」欄に名前を入力して「保存」、最大 50 件を settings.json に保存。チップをクリックで呼び出し、「×」で削除（同名は上書き）"
+        "検索語は設定に最大 10 件保存し、うち直近 8 件を検索欄が空のとき「最近の検索:」チップとして表示。保存検索は「保存検索:」欄に名前を入力して「保存」、最大 50 件を settings.json に保存。チップをクリックで呼び出し、「×」で削除（同名は上書き）"
     };
 }
 pub(crate) use search_history_chips_description;
@@ -1030,6 +1030,9 @@ mod view_hint_and_keymap_format_tests {
             "最近の検索:",
             "保存検索:",
             "最大 10 件",
+            // AW03: only the latest 8 of the 10 stored terms are shown as
+            // chips (main.rs renders `.take(8)`), so both documents must say so.
+            "直近 8 件",
             "最大 50 件",
             "同名は上書き",
         ] {
