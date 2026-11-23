@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const {
   isClickSuppressed,
   canPickDirectory,
+  emptyStateText,
+  shouldShowClearSearch,
   shouldSwipeBack,
   listKeyCommand,
   updatePickDirAvailability,
@@ -47,6 +49,46 @@ test('canPickDirectory needs both core API and File System Access', () => {
   assert.equal(canPickDirectory(false, true), false, 'demo mode must disable FSA');
   assert.equal(canPickDirectory(true, false), false, 'unsupported browser');
   assert.equal(canPickDirectory(false, false), false);
+});
+
+test('emptyStateText distinguishes the three empty states', () => {
+  // クエリあり → クエリをエコー
+  assert.equal(
+    emptyStateText('README', 'search'),
+    '「README」に一致する項目はありません',
+    'query is echoed back to the user',
+  );
+  // クエリなし & 検索モード → 検索0件
+  assert.equal(
+    emptyStateText('', 'search'),
+    '検索に一致する項目はありません',
+    'an empty query in search mode is still a search miss',
+  );
+  // 一覧ゼロ → 一覧そのものが空
+  assert.equal(
+    emptyStateText('', 'list'),
+    '項目がありません',
+    'an empty listing is not confused with a search miss',
+  );
+});
+
+test('emptyStateText trims the query and keeps markup as plain text', () => {
+  assert.equal(emptyStateText('  notes  ', 'search'), '「notes」に一致する項目はありません');
+  assert.equal(emptyStateText('   ', 'search'), '検索に一致する項目はありません');
+  assert.equal(emptyStateText(null, 'search'), '検索に一致する項目はありません');
+  assert.equal(emptyStateText(undefined, 'list'), '項目がありません');
+  // 描画側は textContent を使うため、'<img>' はタグではなく文字列として扱われる。
+  assert.equal(
+    emptyStateText('<img src=x onerror=1>', 'search'),
+    '「<img src=x onerror=1>」に一致する項目はありません',
+  );
+});
+
+test('shouldShowClearSearch shows the button only for a search empty state', () => {
+  assert.equal(shouldShowClearSearch('search'), true);
+  assert.equal(shouldShowClearSearch('list'), false, 'no clear button for an empty listing');
+  assert.equal(shouldShowClearSearch('other'), false);
+  assert.equal(shouldShowClearSearch(undefined), false);
 });
 
 test('shouldSwipeBack ignores moved and uses only edge guard plus dx/dy', () => {

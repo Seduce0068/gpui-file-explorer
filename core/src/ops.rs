@@ -1075,12 +1075,23 @@ pub fn move_entry(
                 return Err(with_cleanup_failure(OpError::Cancelled, &dest, cleanup));
             }
             if let Err(remove_err) = remove_entry_safe(src) {
-                return Err(OpError::Io {
+                // AY01: the copy is complete but the source survived. Keeping
+                // `dest` as well leaves two copies of the same data and makes
+                // the UI treat the move as a partial failure: it retains the
+                // clipboard, so every Ctrl+V retry resolves a fresh
+                // `name (1)`, `name (2)`, … destination. Roll back only the
+                // `dest` this fallback created and keep `src` as the single
+                // surviving copy, exactly like the copy/verify/cancel paths
+                // above. `with_cleanup_failure` preserves the original error
+                // (and reports a cleanup failure when one occurs).
+                let primary = OpError::Io {
                     path: src.to_path_buf(),
                     message: format!(
                         "コピーは完了しましたが元を削除できませんでした: {remove_err}"
                     ),
-                });
+                };
+                let cleanup = remove_entry_safe(&dest);
+                return Err(with_cleanup_failure(primary, &dest, cleanup));
             }
             stats.created.insert(0, dest);
             Ok(stats)
@@ -2531,6 +2542,76 @@ mod tests {
             fs::read_dir(&dest_dir).unwrap().next().is_none(),
             "a failed fallback copy must not leave a destination behind"
         );
+
+        let _ = fs::remove_dir_all(&src_dir);
+        let _ = fs::remove_dir_all(&dest_dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn move_entry_crosses_devices_source_removal_failure_rolls_back_dest() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let Some(dest_dir) = exdev_shm_dest_dir("move-rollback") else {
+            return;
+        };
+        let src_dir = scratch("exdev-src-rollback");
+        let src = src_dir.join("payload.txt");
+        write(&src, b"keep the source only");
+
+        // Removing a file needs write permission on its parent directory.
+        // A read-only source directory forces exactly the post-copy
+        // `remove_entry_safe(src)` failure this regression targets.
+        struct RestoreMode(PathBuf, u32);
+        impl Drop for RestoreMode {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(self.1));
+            }
+        }
+        let original_mode = fs::metadata(&src_dir).unwrap().permissions().mode();
+        fs::set_permissions(&src_dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let restore_mode = RestoreMode(src_dir.clone(), original_mode);
+
+        let err = move_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .expect_err("source removal must fail while its parent is read-only");
+        assert!(
+            err.to_string().contains("元を削除できませんでした"),
+            "the original error must survive the rollback: {err}"
+        );
+        assert_eq!(fs::read(&src).unwrap(), b"keep the source only");
+        assert!(
+            fs::read_dir(&dest_dir).unwrap().next().is_none(),
+            "a failed source removal must not leave the copied destination behind"
+        );
+
+        // Retrying after the source is writable again must reuse the same
+        // destination name: `payload (1).txt`, `(2)` … must not accumulate.
+        drop(restore_mode);
+        let stats = move_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .expect("retry should succeed once the source can be removed");
+        assert_eq!(stats.created, vec![dest_dir.join("payload.txt")]);
+        let names: Vec<_> = fs::read_dir(&dest_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names.len(),
+            1,
+            "retry must not leave a duplicate: {names:?}"
+        );
+        assert_eq!(names[0], "payload.txt");
 
         let _ = fs::remove_dir_all(&src_dir);
         let _ = fs::remove_dir_all(&dest_dir);

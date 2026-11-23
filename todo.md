@@ -1860,6 +1860,21 @@ status: current
 - [x] **AX21** 絵文字アイコンが option のアクセシブル名に混入 — 対応: loop11
 - [x] **AX22** 長押し行に user-select 抑止が無い — 対応: loop11
 
+## 進行中（ループ12 バックログ）
+
+### 優先度: 中（ループ12・confirmed）
+
+- [x] **AY01** EXDEV 移動で元削除失敗時に dest が残り再試行で重複累積 — 対応: loop12
+- [x] **AY02** Trash Undo の部分復元が RestoreCollision で状態不一致 — 対応: loop12
+- [x] **AY03** PWA 0件ヒントにクエリエコー/クリア導線が無い — 対応: loop12
+- [x] **AY04** Redo Trash が元パス存在で復元済み判定し誤 trash する — 対応: loop12
+
+### 却下（ループ12・事実確認）
+
+- TrashSelected リバインドで .trashinfo を trash する指摘:
+  `trash_key_action("delete", false)` は常に NoPurge のため
+  Trash ビューではキー種別に依らず拒否される。誤検知。
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

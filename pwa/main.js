@@ -83,6 +83,23 @@ function canPickDirectory(wasmReady, fsaSupported) {
   return Boolean(wasmReady && fsaSupported);
 }
 
+// 空状態の文言をクエリとモードから決める pure helper。
+// 返り値は呼び出し側が textContent へ設定するため、クエリに HTML が入っていても
+// タグとして解釈されず XSS にならない。
+//   query あり            → 「${q}」に一致する項目はありません（クエリをエコー）
+//   query なし & 検索モード → 検索に一致する項目はありません
+//   一覧ゼロ              → 項目がありません
+function emptyStateText(query, mode) {
+  const q = typeof query === 'string' ? query.trim() : '';
+  if (q) return `「${q}」に一致する項目はありません`;
+  return mode === 'search' ? '検索に一致する項目はありません' : '項目がありません';
+}
+
+// 「検索をクリア」ボタンは検索0件のときだけ出し、一覧そのものが空のときは出さない。
+function shouldShowClearSearch(mode) {
+  return mode === 'search';
+}
+
 // DOM 側の状態反映。wasm 初期化の成否が変わるどの経路でも呼ぶ。
 // 引数を明示渡しできるようにして、node --test から DOM モックで disabled を検証する。
 function updatePickDirAvailability({
@@ -193,7 +210,7 @@ function humanSize(bytes) {
 
 // --- 描画（テキストはすべて textContent で設定し XSS を避ける） -------------
 
-function render(entries, { heading }) {
+function render(entries, { heading, query = '', mode = 'list' } = {}) {
   els.title.textContent = heading;
   els.count.textContent = `${entries.length} 件`;
   els.list.replaceChildren();
@@ -208,7 +225,25 @@ function render(entries, { heading }) {
     // aria-live に一本化済み）。
     li.setAttribute('role', 'presentation');
     li.className = 'empty';
-    li.textContent = '該当する項目はありません';
+
+    const text = document.createElement('span');
+    text.className = 'empty-text';
+    // クエリをエコーする文言も textContent 経由なので HTML として実行されない。
+    text.textContent = emptyStateText(query, mode);
+    li.append(text);
+
+    // 検索0件のときだけ復帰導線を出す。一覧が空のときはクリアする検索が無いので出さない。
+    if (shouldShowClearSearch(mode)) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'empty-clear';
+      button.textContent = '検索をクリア';
+      button.addEventListener('click', () => {
+        clearSearch().catch((error) =>
+          setStatus(`検索のクリアに失敗: ${errorMessage(error)}`, 'error'));
+      });
+      li.append(button);
+    }
     els.list.append(li);
     return;
   }
@@ -405,13 +440,19 @@ function onListTouchCancel() {
   state.touch = null;
 }
 
-async function onSwipeBack() {
-  state.suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
+// スワイプバックと空状態の「検索をクリア」ボタンから共通で呼ぶ。
+async function clearSearch() {
   window.clearTimeout(state.debounce);
   els.search.value = '';
   state.selected = null;
   setStatus('検索をクリアして一覧へ戻りました');
   await runSearch('');
+}
+
+async function onSwipeBack() {
+  // スワイプ後の click が行選択として誤処理されないようにする（ボタン側は不要）。
+  state.suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
+  await clearSearch();
 }
 
 function onListKeyDown(event) {
@@ -520,7 +561,7 @@ async function refreshList() {
       const decoded = decodeCorePayload(raw);
       if (!decoded.ok) throw new Error(decoded.error);
       state.entries = normalizeEntries(decoded.data);
-      render(state.entries, { heading: '一覧（core API）' });
+      render(state.entries, { heading: '一覧（core API）', mode: 'list' });
       setStatus(`core API 経由で ${state.entries.length} 件を表示`);
       return;
     } catch (error) {
@@ -530,7 +571,7 @@ async function refreshList() {
       fillDemoIfEmpty();
     }
   }
-  render(state.entries, { heading: '一覧（読み取り専用デモ）' });
+  render(state.entries, { heading: '一覧（読み取り専用デモ）', mode: 'list' });
 }
 
 async function runSearch(query) {
@@ -551,7 +592,7 @@ async function runSearch(query) {
       const decoded = decodeCorePayload(raw);
       if (!decoded.ok) throw new Error(decoded.error);
       const results = normalizeEntries(decoded.data);
-      render(results, { heading: `検索: ${q}（core API）` });
+      render(results, { heading: `検索: ${q}（core API）`, query: q, mode: 'search' });
       setStatus(`core API の検索で ${results.length} 件`);
       return;
     } catch (error) {
@@ -563,7 +604,7 @@ async function runSearch(query) {
   const filtered = state.entries.filter((entry) =>
     entry.name.toLowerCase().includes(q.toLowerCase()),
   );
-  render(filtered, { heading: `検索: ${q}（読み取り専用デモ）` });
+  render(filtered, { heading: `検索: ${q}（読み取り専用デモ）`, query: q, mode: 'search' });
 }
 
 // --- File System Access API（対応ブラウザのみ） ----------------------------
@@ -602,7 +643,7 @@ function useDemo(message) {
   els.modeNote.textContent =
     'pkg/ が見つからないためコア API を利用できません。README.md の手順で '
     + 'wasm-pack build を実行すると、一覧・検索が core API 経由になります。';
-  render(state.entries, { heading: '一覧（読み取り専用デモ）' });
+  render(state.entries, { heading: '一覧（読み取り専用デモ）', mode: 'list' });
 }
 
 async function boot() {
@@ -652,6 +693,8 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     isClickSuppressed,
     canPickDirectory,
+    emptyStateText,
+    shouldShowClearSearch,
     shouldSwipeBack,
     listKeyCommand,
     updatePickDirAvailability,

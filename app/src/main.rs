@@ -66,6 +66,10 @@ use gfe_core::search::{
     filter_results, merge_search_results, search_by_name, search_contents, search_roots,
     ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
 };
+use gfe_core::trash_view::{
+    missing_restore_ids, partition_restore_ids, partition_restore_outcome, redo_trash_targets,
+    RestoreByIdOutcome,
+};
 
 // Catppuccin Mocha values: kept as the dark defaults because pure unit tests
 // (and a few self-free helpers) still reference these constants. Rendered views
@@ -1043,6 +1047,46 @@ fn trash_undo_status(label: &str, restored: usize, missing: usize) -> String {
     }
 }
 
+/// Status for the per-item trash undo outcome (AY02). Missing ids and failed
+/// restores are both "not restored", so they share the partial-failure wording
+/// while the first concrete OS reason is appended instead of being swallowed
+/// by a single `Err`. Pure so the split can be reported without a GPUI context.
+fn trash_undo_outcome_status(label: &str, outcome: &RestoreByIdOutcome) -> String {
+    let restored = outcome.restored_ids.len();
+    let pending = outcome.missing_ids.len() + outcome.failed.len();
+    let base = trash_undo_status(label, restored, pending);
+    match outcome.error() {
+        Some(reason) => format!("{base}: {reason}"),
+        None => base,
+    }
+}
+
+/// One recorded trash entry: original path paired with its byte-exact id.
+type RecordedTrashItem = (PathBuf, OsString);
+
+/// Split a recorded trash action by the ids that actually came back (AY02).
+///
+/// Restored ids belong in redo, the rest belong back in undo so a retry only
+/// touches what is still missing. Pure: the outcome is supplied by the
+/// background restore, so the bookkeeping split is headlessly testable.
+fn split_undo_trash_items(
+    items: &[RecordedTrashItem],
+    outcome: &RestoreByIdOutcome,
+) -> (Vec<RecordedTrashItem>, Vec<RecordedTrashItem>) {
+    let restored: Vec<_> = items
+        .iter()
+        .filter(|(_, id)| outcome.restored_ids.contains(id))
+        .cloned()
+        .collect();
+    let pending_ids = outcome.remaining_ids();
+    let pending: Vec<_> = items
+        .iter()
+        .filter(|(_, id)| pending_ids.contains(id))
+        .cloned()
+        .collect();
+    (restored, pending)
+}
+
 /// Status after a cancelled trash redo. Items already moved to the trash before
 /// the cancellation are reported instead of being hidden behind a bare cancel
 /// message, mirroring the normal (non-redo) trash path. A zero count means
@@ -1062,6 +1106,17 @@ fn trash_redo_cancelled_status(trashed: usize) -> String {
 /// onto the undo stack forever (F6-15), so the redo entry is kept instead.
 fn redo_trash_should_record_undo(recorded: &[(PathBuf, OsString)]) -> bool {
     !recorded.is_empty()
+}
+
+/// Pre-flight result for a trash redo (AY04). The trash listing is read on the
+/// background executor, so the UI decides from this value instead of treating
+/// a bare `path.exists()` as proof that the restored file is still ours.
+enum TrashRedoPlan {
+    /// A recorded id is still in the trash (or the listing failed): the
+    /// original path may now hold a foreign file, so nothing may be trashed.
+    NoTarget,
+    Cancelled,
+    Ready(Vec<PathBuf>),
 }
 
 /// Status for a trash redo where no path could be moved. The other redo paths
@@ -3007,6 +3062,87 @@ fn record_trashed_paths(trashed: &[PathBuf]) -> Vec<(PathBuf, OsString)> {
     trash_view::list()
         .map(|items| trashed_ids_from_snapshot(&items, trashed))
         .unwrap_or_default()
+}
+
+/// Convert the platform trash listing into the GPUI-free core contract.
+/// Field-for-field and byte-exact: trash ids stay `OsString`, never lossy
+/// `String`, so undo bookkeeping and the pure core helpers agree on identity.
+fn core_trash_items(items: &[trash_view::TrashItem]) -> Vec<gfe_core::trash_view::TrashItem> {
+    items
+        .iter()
+        .map(|item| gfe_core::trash_view::TrashItem {
+            id: item.id.clone(),
+            name: item.name.clone(),
+            original_parent: item.original_parent.clone(),
+            time_deleted: item.time_deleted,
+        })
+        .collect()
+}
+
+/// Blocking (call from the background executor): restore each recorded id on
+/// its own and return a per-item outcome.
+///
+/// `trash_view::restore_by_id` hands the whole resolved set to one
+/// `restore_all`; a `RestoreCollision` after a few successes then becomes a
+/// single `Err`, so the UI treats every id as missing and re-queues ids that
+/// were already restored. Restoring one item per call keeps each result
+/// separate, and the pure core fold classifies restored / missing / failed ids
+/// (AY02) without any filesystem access in the test path.
+fn restore_trash_ids(entries: &[(PathBuf, OsString)]) -> RestoreByIdOutcome {
+    // With exactly one id there is no hidden partial success for the
+    // all-or-nothing wrapper to swallow, so keep using it for that case.
+    if let [entry] = entries {
+        let id = entry.1.clone();
+        return match trash_view::restore_by_id(std::slice::from_ref(entry)) {
+            Ok((restored, missing)) => RestoreByIdOutcome {
+                restored_ids: if restored > 0 {
+                    vec![id.clone()]
+                } else {
+                    vec![]
+                },
+                missing_ids: if missing > 0 { vec![id] } else { vec![] },
+                failed: Vec::new(),
+            },
+            Err(reason) => RestoreByIdOutcome {
+                failed: vec![(id, reason)],
+                ..RestoreByIdOutcome::default()
+            },
+        };
+    }
+    let items = match trash_view::list() {
+        Ok(items) => items,
+        Err(_) => {
+            // Without a listing no id can be confirmed. Keep the whole entry
+            // in undo for a later retry instead of claiming a partial success.
+            return RestoreByIdOutcome {
+                restored_ids: Vec::new(),
+                missing_ids: entries.iter().map(|(_, id)| id.clone()).collect(),
+                failed: Vec::new(),
+            };
+        }
+    };
+    let core_items = core_trash_items(&items);
+    let ids: Vec<OsString> = entries.iter().map(|(_, id)| id.clone()).collect();
+    let (to_restore, _) = partition_restore_ids(&core_items, &ids);
+    let missing = missing_restore_ids(&core_items, &ids);
+    let attempts: Vec<(OsString, Result<(), String>)> = to_restore
+        .iter()
+        .map(|item| {
+            let id = item.id.clone();
+            let result = match items
+                .iter()
+                .find(|candidate| candidate.id.as_os_str() == id.as_os_str())
+            {
+                Some(platform_item) => trash_view::restore(vec![platform_item.clone()]),
+                None => Err(format!(
+                    "ゴミ箱一覧から id を再解決できませんでした: {}",
+                    id.to_string_lossy()
+                )),
+            };
+            (id, result)
+        })
+        .collect();
+    partition_restore_outcome(&missing, &attempts)
 }
 
 /// Paths carried by an internal row drag that may be copied into
@@ -7147,9 +7283,6 @@ impl Explorer {
                 self.op_task = Some(task);
             }
             UndoAction::Trash { items } => {
-                let action_for_redo = UndoAction::Trash {
-                    items: items.clone(),
-                };
                 let Some(token) = self.begin_op(cx) else {
                     self.undo.push_undo(retry);
                     return;
@@ -7157,11 +7290,12 @@ impl Explorer {
                 self.status = format!("{label}を元に戻しています…{STATUS_CANCEL_HINT}");
                 cx.notify();
                 let cancel = token.cancel.clone();
+                let restore_items = items.clone();
                 let background = cx.background_spawn(async move {
                     if cancel.is_cancelled() {
                         None
                     } else {
-                        Some(trash_view::restore_by_id(&items))
+                        Some(restore_trash_ids(&restore_items))
                     }
                 });
                 let task = cx.spawn(async move |this, cx| {
@@ -7171,28 +7305,32 @@ impl Explorer {
                             return;
                         }
                         match result {
-                            Some(Ok((restored, missing))) => {
+                            Some(outcome) => {
                                 this.suppress_for(SELF_OP_SUPPRESS);
-                                if restored > 0 {
-                                    this.undo.push_redo(action_for_redo);
-                                } else {
-                                    // 何も復元されなかった場合は pop を取り消し、undo
-                                    // エントリをスタックへ戻して再試行可能にする。
-                                    this.undo.push_undo(action_for_redo);
+                                // AY02: split by id, never by an all-or-nothing
+                                // Result. An empty action can never restore
+                                // anything and would be pushed back on every
+                                // attempt, so neither side is recorded when it
+                                // has no ids.
+                                let (restored, pending) = split_undo_trash_items(&items, &outcome);
+                                if !restored.is_empty() {
+                                    this.undo.push_redo(UndoAction::Trash { items: restored });
+                                }
+                                if !pending.is_empty() {
+                                    this.undo.push_undo(UndoAction::Trash { items: pending });
                                 }
                                 eprintln!(
-                                    "undo-report: trash undone, restored={restored} missing={missing}"
+                                    "undo-report: trash undone, restored={} missing={} failed={}",
+                                    outcome.restored_ids.len(),
+                                    outcome.missing_ids.len(),
+                                    outcome.failed.len()
                                 );
-                                this.status = trash_undo_status(label, restored, missing);
+                                this.status = trash_undo_outcome_status(label, &outcome);
                                 this.reload(cx);
                             }
                             None => {
-                                this.undo.push_undo(action_for_redo);
+                                this.undo.push_undo(retry);
                                 this.status = STATUS_CANCELLED.to_string();
-                            }
-                            Some(Err(error)) => {
-                                this.undo.push_undo(action_for_redo);
-                                this.status = format!("{STATUS_UNDO_FAILED}: {error}");
                             }
                         }
                         cx.notify();
@@ -7298,19 +7436,6 @@ impl Explorer {
                 self.op_task = Some(task);
             }
             UndoAction::Trash { items } => {
-                // Redo means trashing the restored paths again; look them up by
-                // path and send them back to the trash.
-                let paths: Vec<PathBuf> = items
-                    .iter()
-                    .map(|(path, _)| path.clone())
-                    .filter(|path| path.exists() || path.is_symlink())
-                    .collect();
-                if paths.is_empty() {
-                    self.undo.push_redo(UndoAction::Trash { items });
-                    self.status = STATUS_REDO_NO_TARGET.to_string();
-                    cx.notify();
-                    return;
-                }
                 let action_for_undo = UndoAction::Trash {
                     items: items.clone(),
                 };
@@ -7321,11 +7446,62 @@ impl Explorer {
                 self.status = format!("{label}をやり直しています…{STATUS_CANCEL_HINT}");
                 cx.notify();
                 let cancel = token.cancel.clone();
-                // Keep the partial result even when cancelled: items already
-                // moved to the trash must still be recorded so they can be
-                // undone, exactly like the normal (non-redo) trash path.
-                let background = cx.background_spawn(async move { trash_batch(paths, &cancel) });
+                let plan_cancel = cancel.clone();
+                // AY04: resolve redo targets by recorded id against a fresh
+                // trash listing on the background executor. An id still in the
+                // trash was never restored, so its original path may now hold
+                // a foreign file; a bare `path.exists()` cannot tell the two
+                // apart. A failed listing is treated conservatively as no
+                // target instead of trashing unverified paths.
+                let background = cx.background_spawn(async move {
+                    if plan_cancel.is_cancelled() {
+                        return TrashRedoPlan::Cancelled;
+                    }
+                    let listing = match trash_view::list() {
+                        Ok(listing) => listing,
+                        Err(_) => return TrashRedoPlan::NoTarget,
+                    };
+                    let core_items = core_trash_items(&listing);
+                    let paths: Vec<PathBuf> = redo_trash_targets(&items, &core_items)
+                        .into_iter()
+                        .filter(|path| path_present(path))
+                        .collect();
+                    if paths.is_empty() {
+                        TrashRedoPlan::NoTarget
+                    } else {
+                        TrashRedoPlan::Ready(paths)
+                    }
+                });
                 let task = cx.spawn(async move |this, cx| {
+                    let paths = match background.await {
+                        TrashRedoPlan::NoTarget => {
+                            let _ = this.update(cx, |this, cx| {
+                                if !this.finish_op(&token, false) {
+                                    return;
+                                }
+                                this.undo.push_redo(action_for_undo);
+                                this.status = STATUS_REDO_NO_TARGET.to_string();
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        TrashRedoPlan::Cancelled => {
+                            let _ = this.update(cx, |this, cx| {
+                                if !this.finish_op(&token, false) {
+                                    return;
+                                }
+                                this.undo.push_redo(action_for_undo);
+                                this.status = STATUS_CANCELLED.to_string();
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        TrashRedoPlan::Ready(paths) => paths,
+                    };
+                    // Keep the partial result even when cancelled: items already
+                    // moved to the trash must still be recorded so they can be
+                    // undone, exactly like the normal (non-redo) trash path.
+                    let background = cx.background_spawn(async move { trash_batch(paths, &cancel) });
                     let (trashed, failures, cancelled) = background.await;
                     // Resolve the newly created trash ids on the background
                     // executor; the UI thread only consumes the final mapping.
@@ -12719,27 +12895,29 @@ mod tests {
         bookmark_label_set_rejection, bookmark_toggle_rejection, build_places, canonical_chord,
         chord_for_action, chords_collide, classify_cli, clear_dialog_error, clear_op_token,
         clear_rescan_failure_after_successful_read, clear_rescan_failure_status,
-        context_menu_anchor, dialog_footer_hint_for_session, effective_dialog_width,
-        effective_sidebar_width, format_chord, format_selected, fuzzy_candidates, fuzzy_score,
-        grid_columns_for_viewport, grid_columns_for_width, help_overrides_line,
-        icon_button_text_color, install_op_token, internal_drop_paths, join_status_notices,
-        keymap_action_name, keymap_bind_caption, keymap_chord_reserved, keymap_limit_status,
-        keymap_unbind_caption, kind_color, labeled_display_name, load_error_display_text,
-        middle_click_tab_dir, normalize_terminal_command, op_is_active, parse_chord,
-        parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
-        reconcile_aware_status, redo_exists_status, redo_missing_status, redo_trash_failed_status,
-        redo_trash_should_record_undo, remove_keymap_override, resolved_sidebar_width,
-        saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
-        settings_change_affects_list, settings_discard_status, settings_read_only_status,
-        settings_reset_status, settings_row_key_is_bare, settings_save_error_status,
-        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        context_menu_anchor, core_trash_items, dialog_footer_hint_for_session,
+        effective_dialog_width, effective_sidebar_width, format_chord, format_selected,
+        fuzzy_candidates, fuzzy_score, grid_columns_for_viewport, grid_columns_for_width,
+        help_overrides_line, icon_button_text_color, install_op_token, internal_drop_paths,
+        join_status_notices, keymap_action_name, keymap_bind_caption, keymap_chord_reserved,
+        keymap_limit_status, keymap_unbind_caption, kind_color, labeled_display_name,
+        load_error_display_text, middle_click_tab_dir, normalize_terminal_command, op_is_active,
+        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
+        read_properties_snapshot, reconcile_aware_status, redo_exists_status, redo_missing_status,
+        redo_trash_failed_status, redo_trash_should_record_undo, remove_keymap_override,
+        resolved_sidebar_width, saved_search_caption, saved_search_save_status,
+        search_filter_status, set_view_status, settings_change_affects_list,
+        settings_discard_status, settings_read_only_status, settings_reset_status,
+        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
+        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
         settings_validation_status, settings_with_live_save_error, settings_write_needs_rollback,
-        settings_write_status, startup_dir_from, startup_save_failure_status, status_color,
-        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
-        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
-        theme_choice_label, thumbnail_eligible, transfer_log_level, transfer_progress_status,
-        transfer_skip_notice, trash_batch, trash_delete_status, trash_key_action,
-        trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
+        settings_write_status, split_undo_trash_items, startup_dir_from,
+        startup_save_failure_status, status_color, summarize_op, tab_label, terminal_dir_for,
+        terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, theme_choice_label, thumbnail_eligible,
+        transfer_log_level, transfer_progress_status, transfer_skip_notice, trash_batch,
+        trash_delete_status, trash_key_action, trash_load_error_status,
+        trash_redo_cancelled_status, trash_undo_outcome_status, trash_undo_status,
         trashed_ids_from_snapshot, undo_exists_status, undo_missing_status, upsert_keymap_override,
         validate_cli_dir, version_label, visible_secondary_slots, AppPalette, CliAction,
         DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
@@ -17154,6 +17332,140 @@ mod tests {
         assert_eq!(status_color(&partial), C_RED, "partial restore: {partial}");
         // 全件成功は従来どおり green のまま。
         assert_eq!(status_color(&ok), C_GREEN, "full restore: {ok}");
+    }
+
+    #[test]
+    fn trash_undo_partial_outcome_splits_redo_and_undo_without_empty_actions() {
+        use gfe_core::trash_view::partition_restore_outcome;
+
+        let items = vec![
+            (PathBuf::from("/tmp/a.txt"), OsString::from("id-a")),
+            (PathBuf::from("/tmp/b.txt"), OsString::from("id-b")),
+            (PathBuf::from("/tmp/c.txt"), OsString::from("id-c")),
+        ];
+        // id-a came back, id-b collided, id-c was already gone from the trash.
+        let outcome = partition_restore_outcome(
+            &[OsString::from("id-c")],
+            &[
+                (OsString::from("id-a"), Ok(())),
+                (OsString::from("id-b"), Err("collision".to_string())),
+            ],
+        );
+        let (redo, undo) = split_undo_trash_items(&items, &outcome);
+        assert_eq!(
+            redo,
+            vec![items[0].clone()],
+            "only the restored id is redone"
+        );
+        assert_eq!(
+            undo,
+            vec![items[1].clone(), items[2].clone()],
+            "collided and missing ids stay in undo"
+        );
+        assert!(!redo.is_empty() && !undo.is_empty());
+
+        let full = partition_restore_outcome(
+            &[],
+            &[
+                (OsString::from("id-a"), Ok(())),
+                (OsString::from("id-b"), Ok(())),
+            ],
+        );
+        assert!(
+            split_undo_trash_items(&items[..2], &full).1.is_empty(),
+            "a full restore leaves no undo entry"
+        );
+        let none = gfe_core::trash_view::RestoreByIdOutcome {
+            missing_ids: items.iter().map(|(_, id)| id.clone()).collect(),
+            ..gfe_core::trash_view::RestoreByIdOutcome::default()
+        };
+        assert!(
+            split_undo_trash_items(&items, &none).0.is_empty(),
+            "an empty redo action must never be recorded"
+        );
+
+        let status = trash_undo_outcome_status("ゴミ箱", &outcome);
+        assert!(
+            status.contains("1 件") && status.contains("2 件"),
+            "{status}"
+        );
+        assert!(status.contains("collision"), "{status}");
+        assert_eq!(status_color(&status), C_RED, "{status}");
+    }
+
+    #[test]
+    fn trash_undo_wiring_splits_actions_and_drops_the_all_or_nothing_restore() {
+        let source = include_str!("main.rs");
+        let undo = source_region(
+            source,
+            "    fn undo_last(&mut self, cx: &mut Context<Self>) {",
+            "    /// Redo the most recently undone operation (Ctrl+Shift+Z).",
+        );
+        for marker in [
+            "split_undo_trash_items(&items, &outcome)",
+            "push_redo(UndoAction::Trash { items: restored })",
+            "push_undo(UndoAction::Trash { items: pending })",
+            "trash_undo_outcome_status(label, &outcome)",
+        ] {
+            assert!(undo.contains(marker), "trash undo must use {marker}");
+        }
+        assert!(
+            !undo.contains("trash_view::restore_by_id(&items)"),
+            "undo must not fold a partial restore into one Err"
+        );
+    }
+
+    #[test]
+    fn redo_trash_requires_recorded_id_confirmation_from_trash_listing() {
+        use gfe_core::trash_view::redo_trash_targets;
+
+        let recorded = vec![
+            (
+                PathBuf::from("/tmp/restored.txt"),
+                OsString::from("id-restored"),
+            ),
+            (
+                PathBuf::from("/tmp/still-trashed.txt"),
+                OsString::from("id-kept"),
+            ),
+        ];
+        let in_trash = gfe_core::trash_view::TrashItem {
+            id: OsString::from("id-kept"),
+            name: OsString::from("still-trashed.txt"),
+            original_parent: PathBuf::from("/tmp"),
+            time_deleted: 100,
+        };
+        assert_eq!(
+            redo_trash_targets(&recorded, std::slice::from_ref(&in_trash)),
+            vec![PathBuf::from("/tmp/restored.txt")],
+            "an id still in the trash was never restored; its path may be foreign"
+        );
+
+        // The platform listing converts field-for-field, keeping ids exact.
+        let platform = trash_view::TrashItem {
+            id: OsString::from("id-kept"),
+            name: OsString::from("still-trashed.txt"),
+            original_parent: PathBuf::from("/tmp"),
+            time_deleted: 100,
+        };
+        assert_eq!(core_trash_items(&[platform])[0].id, in_trash.id);
+
+        let source = include_str!("main.rs");
+        let redo = source_region(
+            source,
+            "    fn redo_last(&mut self, cx: &mut Context<Self>) {",
+            "    // ----------------------------------------------------------------- preview",
+        );
+        for marker in [
+            "redo_trash_targets(&items, &core_items)",
+            "STATUS_REDO_NO_TARGET",
+        ] {
+            assert!(redo.contains(marker), "trash redo must use {marker}");
+        }
+        assert!(
+            !redo.contains("filter(|path| path.exists() || path.is_symlink())"),
+            "redo must not rely on path existence alone"
+        );
     }
 
     #[test]

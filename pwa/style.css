@@ -224,6 +224,25 @@ button:disabled {
 }
 
 .empty {
+  flex-wrap: wrap;
   justify-content: center;
   color: var(--muted);
+}
+
+/* 検索0件の文言と「検索をクリア」ボタンを横並びにする。長いクエリでも折り返す。 */
+.empty-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.empty button {
+  /* タップ領域 44px 以上（iOS / Android の推奨最小サイズ）。 */
+  min-width: 44px;
+  min-height: 44px;
+  flex: 0 0 auto;
+}
+
+.empty button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

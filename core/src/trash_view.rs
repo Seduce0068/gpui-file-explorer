@@ -66,6 +66,105 @@ pub fn partition_restore_ids(items: &[TrashItem], ids: &[OsString]) -> (Vec<Tras
     (to_restore, missing)
 }
 
+/// Ids in `ids` with no match in `items`, preserving request order (and
+/// counting a repeated id once per occurrence). Pure counterpart of the
+/// `missing` count in [`partition_restore_ids`] that keeps the ids themselves,
+/// so the caller can leave them in the undo entry for a later retry.
+pub fn missing_restore_ids(items: &[TrashItem], ids: &[OsString]) -> Vec<OsString> {
+    ids.iter()
+        .filter(|id| {
+            !items
+                .iter()
+                .any(|item| item.id.as_os_str() == id.as_os_str())
+        })
+        .cloned()
+        .collect()
+}
+
+/// Per-item outcome of an id-addressed trash restore.
+///
+/// A partially successful restore must never be collapsed into one `Err`: the
+/// ids that came back belong in redo and the ones that did not belong back in
+/// undo, so a retry restores only what is still missing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoreByIdOutcome {
+    /// Ids that were actually restored (redo entry).
+    pub restored_ids: Vec<OsString>,
+    /// Ids with no match in the trash listing; nothing was attempted.
+    pub missing_ids: Vec<OsString>,
+    /// Ids whose restore failed, paired with the reason (undo entry).
+    pub failed: Vec<(OsString, String)>,
+}
+
+impl RestoreByIdOutcome {
+    /// The first restore error, if any. Kept as an `Option<error>` so callers
+    /// can report one concrete reason without losing the per-item split.
+    pub fn error(&self) -> Option<&str> {
+        self.failed.first().map(|(_, reason)| reason.as_str())
+    }
+
+    /// Every id that was not restored, so the undo entry can be retried.
+    pub fn remaining_ids(&self) -> Vec<OsString> {
+        self.missing_ids
+            .iter()
+            .chain(self.failed.iter().map(|(id, _)| id))
+            .cloned()
+            .collect()
+    }
+
+    /// True when not a single requested id was restored.
+    pub fn is_empty(&self) -> bool {
+        self.restored_ids.is_empty()
+    }
+}
+
+/// Fold single-item restore attempts into a [`RestoreByIdOutcome`].
+///
+/// `attempts` pairs each id resolved from the trash listing with the result of
+/// restoring that one item. Pure (no filesystem access), so a partial success
+/// — one collision among several ids — is deterministic to test without a
+/// usable system trash directory.
+pub fn partition_restore_outcome(
+    missing: &[OsString],
+    attempts: &[(OsString, Result<(), String>)],
+) -> RestoreByIdOutcome {
+    let mut outcome = RestoreByIdOutcome {
+        missing_ids: missing.to_vec(),
+        ..RestoreByIdOutcome::default()
+    };
+    for (id, result) in attempts {
+        match result {
+            Ok(()) => outcome.restored_ids.push(id.clone()),
+            Err(reason) => outcome.failed.push((id.clone(), reason.clone())),
+        }
+    }
+    outcome
+}
+
+/// Recorded `(path, id)` pairs that are safe to re-trash for a redo.
+///
+/// A recorded id that is *still present* in the trash listing means that item
+/// was never restored (a restore collision leaves it there) or was trashed
+/// again since then. Its original path must not be touched: if a foreign file
+/// was created at that path meanwhile, trashing it would delete data the user
+/// never asked to delete. Only ids absent from the listing — i.e. confirmed
+/// restored — are valid redo targets. Ids are compared byte-exactly as
+/// `OsString`. Pure: the listing snapshot is supplied by the caller.
+pub fn redo_trash_targets(
+    recorded: &[(PathBuf, OsString)],
+    trash_items: &[TrashItem],
+) -> Vec<PathBuf> {
+    recorded
+        .iter()
+        .filter(|(_, id)| {
+            !trash_items
+                .iter()
+                .any(|item| item.id.as_os_str() == id.as_os_str())
+        })
+        .map(|(path, _)| path.clone())
+        .collect()
+}
+
 /// Map trash items to list rows (newest first). The `path` is the trash id, so
 /// selection works without touching real files.
 pub fn entries_from_items(items: &[TrashItem]) -> Vec<Entry> {
@@ -323,6 +422,128 @@ mod tests {
         );
         assert!(to_restore.iter().all(|item| item.id == id));
         assert_eq!(missing, 2, "each occurrence of a missing id is counted");
+    }
+
+    #[test]
+    fn missing_restore_ids_keeps_the_unmatched_ids_in_request_order() {
+        let items = vec![item("/trash/info/a.trashinfo", "a.txt", "/home/u", 100)];
+        let ids = vec![
+            OsString::from("gone-1"),
+            OsString::from("/trash/info/a.trashinfo"),
+            OsString::from("gone-2"),
+            OsString::from("gone-1"),
+        ];
+        assert_eq!(
+            missing_restore_ids(&items, &ids),
+            vec![
+                OsString::from("gone-1"),
+                OsString::from("gone-2"),
+                OsString::from("gone-1"),
+            ]
+        );
+        assert!(missing_restore_ids(&items, &[]).is_empty());
+    }
+
+    #[test]
+    fn partition_restore_outcome_splits_partial_success_per_item() {
+        let kept = OsString::from("still-trashed");
+        let missing = OsString::from("not-in-listing");
+        let attempts = vec![
+            (OsString::from("restored-1"), Ok(())),
+            (kept.clone(), Err("collision".to_string())),
+            (OsString::from("restored-2"), Ok(())),
+        ];
+        let outcome = partition_restore_outcome(std::slice::from_ref(&missing), &attempts);
+        assert_eq!(
+            outcome.restored_ids,
+            vec![OsString::from("restored-1"), OsString::from("restored-2")]
+        );
+        assert_eq!(outcome.missing_ids, vec![missing.clone()]);
+        assert_eq!(
+            outcome.failed,
+            vec![(kept.clone(), "collision".to_string())]
+        );
+        assert_eq!(outcome.error(), Some("collision"));
+        assert_eq!(
+            outcome.remaining_ids(),
+            vec![missing, kept.clone()],
+            "missing and failed ids both stay in undo"
+        );
+        assert!(!outcome.is_empty());
+
+        let all_ok = partition_restore_outcome(&[], &[(kept.clone(), Ok(()))]);
+        assert_eq!(all_ok.error(), None);
+        assert!(all_ok.remaining_ids().is_empty());
+        let nothing = partition_restore_outcome(&[], &[]);
+        assert!(nothing.is_empty());
+        assert_eq!(nothing.error(), None);
+    }
+
+    #[test]
+    fn redo_trash_targets_refuses_ids_still_present_in_the_trash() {
+        let in_trash = item("/trash/info/kept.trashinfo", "kept.txt", "/home/u", 100);
+        let recorded = vec![
+            (
+                PathBuf::from("/home/u/restored.txt"),
+                OsString::from("/trash/info/restored.trashinfo"),
+            ),
+            (
+                PathBuf::from("/home/u/kept.txt"),
+                OsString::from("/trash/info/kept.trashinfo"),
+            ),
+        ];
+        assert_eq!(
+            redo_trash_targets(&recorded, std::slice::from_ref(&in_trash)),
+            vec![PathBuf::from("/home/u/restored.txt")],
+            "an id still in the trash was never restored; its path may be foreign"
+        );
+        assert!(redo_trash_targets(&recorded, &[]).len() == 2);
+        assert!(redo_trash_targets(&[], std::slice::from_ref(&in_trash)).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_split_and_redo_targets_compare_non_utf8_ids_byte_exactly() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let id_bytes = b"/trash/info/non-utf8-\xff.trashinfo".to_vec();
+        let id = OsString::from_vec(id_bytes.clone());
+        let near_miss = OsString::from_vec(b"/trash/info/non-utf8-\xfe.trashinfo".to_vec());
+        let item = TrashItem {
+            id: id.clone(),
+            name: OsString::from("v.txt"),
+            original_parent: PathBuf::from("/home/u"),
+            time_deleted: 100,
+        };
+
+        assert_eq!(
+            missing_restore_ids(std::slice::from_ref(&item), std::slice::from_ref(&id)),
+            Vec::<OsString>::new()
+        );
+        assert_eq!(
+            missing_restore_ids(
+                std::slice::from_ref(&item),
+                std::slice::from_ref(&near_miss)
+            ),
+            vec![near_miss.clone()],
+            "lossy string conversion would make 0xff and 0xfe collide"
+        );
+
+        let outcome =
+            partition_restore_outcome(std::slice::from_ref(&near_miss), &[(id.clone(), Ok(()))]);
+        assert_eq!(outcome.restored_ids, vec![id.clone()]);
+        assert_eq!(outcome.missing_ids, vec![near_miss.clone()]);
+
+        let recorded = vec![
+            (PathBuf::from("/home/u/v.txt"), id.clone()),
+            (PathBuf::from("/home/u/other.txt"), near_miss.clone()),
+        ];
+        assert_eq!(
+            redo_trash_targets(&recorded, std::slice::from_ref(&item)),
+            vec![PathBuf::from("/home/u/other.txt")],
+            "id still in trash must be skipped even when bytes differ only at 0xff"
+        );
+        assert_eq!(recorded[0].1.as_os_str().as_bytes(), id_bytes.as_slice());
     }
 
     #[cfg(unix)]
