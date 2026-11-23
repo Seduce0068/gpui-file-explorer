@@ -40,8 +40,10 @@ Android / iOS の共有 Intent である。
   ことと、ユーザーがコピーした内容を上書きしないことを理由に、意図的に使わないと述べる。
 - 保持フィールドは `app/src/main.rs::Explorer::clipboard`
   （`clipboard: Option<ClipboardSlot>`）である。
-- `app/src/main.rs::Explorer::copy_selected` は `ClipboardSlot { paths, cut: false }` を、
-  `app/src/main.rs::Explorer::cut_selected` は `ClipboardSlot { paths, cut: true }` を設定する。
+- `app/src/main.rs::Explorer::copy_selected` は
+  `ClipboardSlot { paths, cut: false }` を設定する。
+- `app/src/main.rs::Explorer::cut_selected` は
+  `ClipboardSlot { paths, cut: true }` を設定する。
   どちらも OS へは書き出さない。
 - `app/src/main.rs::Explorer::paste` は内部スロットを複製して開始する。競合時は常に
   `ConflictPolicy::Rename` を使い、既存ファイルを上書きしない。存在しなくなった元パスは

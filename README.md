@@ -169,7 +169,7 @@ bash packaging/linux/build-deb.sh --skip-build
   狭い画面でも 190px（[DESIGN.md](DESIGN.md) §3.1 の as-built 記載）。
 - Android / iOS は**要件化**したが**未実装**。実現可能性は
   [モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md)
-  を作成済み（draft・未承認）で評価中であり、決定はまだ無い。
+  は approved（2026-11-23 承認、選択肢B）である。
 - 配布は実装されるまで従来どおり **Linux amd64 の DEB のみ**。
   Windows / macOS / モバイル向けパッケージは未対応。
 

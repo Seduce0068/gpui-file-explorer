@@ -56,7 +56,7 @@
   実機対応を目標に昇格（§1.2 の新要件）。
 - Android / iOS は**要件化のみで未実装**。実現可能性は
   [モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md)
-  を作成済み（draft・未承認）で評価中であり、採用決定はまだ無い。
+  は approved（2026-11-23 承認、選択肢B: コア共有＋ネイティブUI）。
   現状の制約: `gpui-kit` 0.9.1 は iOS/Android を除外、Android
   バックエンドは不在、iOS のファイル API はスタブ、`trash` クレートは
   モバイルを除外。
@@ -72,7 +72,7 @@
   メニューなど、見やすさと使いやすさを重視（§1.2 の新要件）。
 - 第四（要件化、未実装）: Android / iOS のモバイルユーザー。
   実現可能性は[モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md)
-  を作成済み（draft・未承認）で評価中。
+  は approved（2026-11-23 承認、選択肢B）である。
 - 非ターゲット: 大量のクラウドストレージ運用。
   Windows ヘビーユーザーは非ターゲットから第一級ターゲットへ変更。
 
@@ -1272,7 +1272,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 - 試作実装: [`app/`](app/) / [`app/README.md`](app/README.md)（実装・既知の制限・設計からの差分）
 - ライセンス原本: 本リポジトリの [LICENSE](LICENSE) / [app/NOTICE.md](app/NOTICE.md)（AGPL 全文・第三者表示）
 - 新要件の個別 ADR: [docs/adr/](docs/adr/)（モバイル / デュアルペイン / 日本語照合 /
-  OS ファイルクリップボードの 4 件。いずれも **draft・未承認**で、DESIGN.md の
+  OS ファイルクリップボードの 4 件。モバイルのみ approved（2026-11-23）、他3件は **draft・未承認**で、DESIGN.md の
   確定済み ADR-001〜012 とは別系列）
 - crate ソース（ローカル・✅ 確認に使用）:
   - `~/.cargo/registry/src/index.crates.io-*/gpui-kit-0.9.1/src/lib.rs`（facade / open_window / init）
