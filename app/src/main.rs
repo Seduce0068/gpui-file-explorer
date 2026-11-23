@@ -12,6 +12,7 @@ mod icons;
 mod model;
 mod mounts;
 mod ops;
+mod ports_gpui;
 mod preview;
 mod search;
 mod settings;
@@ -44,18 +45,7 @@ use gpui_kit::*;
 
 use crate::history::{History, NavMode};
 use crate::icons::{icon_for_entry, kind_for_entry, FileKind};
-use crate::model::{
-    breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
-    grid_columns, grid_row_count, human_age, human_datetime, human_size, last_index, parent_dir,
-    read_entries, resolve_location_input, sort_entries, step_selection, visible_entries, Entry,
-    FsError, FsErrorKind, Selection, SortKey, SortSpec,
-};
 use crate::mounts::MountPoint;
-use crate::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
-use crate::search::{
-    filter_results, merge_search_results, search_by_name, search_contents, search_roots,
-    ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
-};
 use crate::settings::{
     next_theme_choice, resolve_theme, ColumnPrefs, Settings, SettingsSaveError, TabSession,
     ThemeChoice, ViewLayout, WindowBoundsState, COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH,
@@ -65,6 +55,17 @@ use crate::system_icons::SystemIconResolver;
 use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
 use crate::watcher::{removed_paths, DirWatcher, FsEvent};
+use gfe_core::model::{
+    breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
+    grid_columns, grid_row_count, human_age, human_datetime, human_size, last_index, parent_dir,
+    read_entries, resolve_location_input, sort_entries, step_selection, visible_entries, Entry,
+    FsError, FsErrorKind, Selection, SortKey, SortSpec,
+};
+use gfe_core::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
+use gfe_core::search::{
+    filter_results, merge_search_results, search_by_name, search_contents, search_roots,
+    ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
+};
 
 // Catppuccin Mocha values: kept as the dark defaults because pure unit tests
 // (and a few self-free helpers) still reference these constants. Rendered views

@@ -1362,7 +1362,8 @@ status: current
 - [x] **P1-02** 純粋ロジック移動: model/search/ops/trash_view 純関数群を core へ
   — 対応: p1-core-move + 親
   — model→settings 逆参照は core 内のシグナル port で解消（案3の代替）
-- [ ] **P1-03** app 側 re-export: `pub use gfe_core as core;` で参照を一本化
+- [x] **P1-03** app 側参照を gfe_core へ一本化 + GPUI アダプタ土台
+  — 対応: 親（main.rs import 直接化、ports_gpui.rs 追加）
   — デスクトップ全テスト green を維持
 - [ ] **P1-04** 1画面ビューア試作: Android Compose アプリ＋iOS/Android 共通 PWA
   — コア API 経由で一覧・検索を表示（外観完成は要求しない）
