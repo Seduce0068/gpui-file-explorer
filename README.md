@@ -164,6 +164,9 @@ bash packaging/linux/build-deb.sh --skip-build
   Windows は第一級ターゲット（Phase1/MVP）へ昇格。ただし権限編集・
   拡張メニュー・アーカイブ・クラウド・ネットワークブラウズの
   完全互換は非目的のまま（[DESIGN.md](DESIGN.md) §1.2）。
+- レスポンシブサイドバー（NW04）: ビューポート幅が 900px 以上なら 190px、
+  520px 以下なら 0px、その間は線形補間。`Ctrl+B` で表示を強制した場合は
+  狭い画面でも 190px（[DESIGN.md](DESIGN.md) §3.1 の as-built 記載）。
 - Android / iOS は**要件化**したが**未実装**。実現可能性は
   [モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md)
   を作成済み（draft・未承認）で評価中であり、決定はまだ無い。

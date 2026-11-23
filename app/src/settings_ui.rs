@@ -2066,10 +2066,8 @@ pub fn render_settings_content<V: SettingsUiHost>(
         .child(actions);
 
     div()
-        .id("settings-card-scroll")
         .w(px(card_width))
         .max_h(relative(0.82))
-        .overflow_y_scroll()
         .bg(rgb(palette.surface))
         .rounded_lg()
         .border_1()
@@ -2082,7 +2080,18 @@ pub fn render_settings_content<V: SettingsUiHost>(
         .child(header)
         .child(tab_bar)
         .child(divider(palette))
-        .child(body)
+        // AV03: only the body scrolls. With the id/overflow on the outer card,
+        // the header, tab bar and footer scrolled out of view on a long
+        // Shortcuts list. `min_h_0` lets this flex child shrink to the card's
+        // max height so the overflow stays inside the scroll container; the
+        // fixed siblings keep their content size.
+        .child(
+            div()
+                .id("settings-card-scroll")
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(body),
+        )
         .child(divider(palette))
         .child(footer)
 }
@@ -4275,6 +4284,74 @@ mod tests {
         assert_eq!(filtered, vec![SettingsTab::Terminal]);
         assert!(filtered.len() < SettingsTab::ALL.len());
         assert_eq!(tabs_matching_query(""), SettingsTab::ALL.to_vec());
+    }
+
+    #[test]
+    fn av03_settings_card_scrolls_only_the_body() {
+        // AV03: 長いショートカット一覧をスクロールしてもヘッダー / タブ bar /
+        // Save・Cancel + キー凡例のあるフッターは固定で残る。スクロール id と
+        // overflow は body だけを包む子 div に置き、外側のカードは高さ上限のみ
+        // 持つ（include_str! による source-guard）。
+        let source = include_str!("settings_ui.rs");
+        let render = source
+            .split("    div()\n        .w(px(card_width))")
+            .nth(1)
+            .expect("settings card render block must exist");
+        let outer = render
+            .split(".child(header)")
+            .next()
+            .expect("outer card must render a header child");
+        assert!(
+            outer.contains(".max_h(relative(0.82))"),
+            "outer card must keep the height cap: {outer}"
+        );
+        assert!(
+            !outer.contains("settings-card-scroll"),
+            "scroll id must not sit on the outer card: {outer}"
+        );
+        assert!(
+            !outer.contains(".overflow_y_scroll()"),
+            "outer card must not scroll: {outer}"
+        );
+
+        let lines: Vec<&str> = render.lines().collect();
+        let scroll_line = lines
+            .iter()
+            .position(|line| line.contains(".id(\"settings-card-scroll\")"))
+            .expect("scroll id must exist");
+        let start = lines[..scroll_line]
+            .iter()
+            .rposition(|line| line.trim_end().ends_with(".child("))
+            .expect("scroll id must live inside a .child(...) wrapper");
+        let end = scroll_line
+            + lines[scroll_line..]
+                .iter()
+                .position(|line| line.trim() == ")")
+                .expect("scroll wrapper must close");
+        let wrapper = lines[start..=end].join("\n");
+        assert!(
+            wrapper.contains(".overflow_y_scroll()"),
+            "body wrapper must scroll: {wrapper}"
+        );
+        assert!(
+            wrapper.contains(".child(body)"),
+            "body wrapper must contain the body: {wrapper}"
+        );
+        for chrome in [
+            ".child(header)",
+            ".child(tab_bar)",
+            ".child(divider",
+            ".child(footer)",
+        ] {
+            assert!(
+                !wrapper.contains(chrome),
+                "fixed chrome must not scroll: {chrome} in {wrapper}"
+            );
+        }
+        assert!(
+            render.contains(".child(footer)"),
+            "footer must remain a fixed sibling of the scroll wrapper"
+        );
     }
 
     #[test]

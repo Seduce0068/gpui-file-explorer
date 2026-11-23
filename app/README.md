@@ -7,6 +7,13 @@ Rust + [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) 系�
 ファイルエクスプローラの**試作**です。まず Linux / KDE Plasma / Wayland で動くことを
 目標にしつつ、コードはクロスプラットフォーム設計（`std::fs` + `dirs` + `trash`）です。
 
+Windows Explorer / Double Commander 並みの見やすさ・使いやすさも目標です
+（[DESIGN.md](../DESIGN.md) §1.2、ルート [README.md](../README.md) の「新要件」）。
+一覧の列（表示・並び順・幅）、画像サムネイル、キーボードからのコンテキストメニュー
+（`Shift+F10` / `Menu`）は実装済みです。実機検証は Linux / KDE Plasma / Wayland
+のみで、Windows / macOS は未検証です（下記「既知の制限」を参照）。
+Android / iOS は要件化のみで未実装です。
+
 ライセンス: **AGPL-3.0-or-later**（[LICENSE](LICENSE)、依存クレジットは [NOTICE.md](NOTICE.md)）。
 
 ![ウィンドウ（Wayland 実行、/tmp/gpui-fe-demo）](screenshot/window-crop.png)
@@ -105,7 +112,7 @@ cd app
 | `Ctrl+Shift+T` | 最後に閉じたタブを復元（メモリ上のみ、再起動後は不可） |
 | `Ctrl+D` | 現在のディレクトリをブックマークに追加 / 解除 |
 | `Ctrl+L` | パスを直接入力して移動（`~` / 相対パス対応） |
-| `Ctrl+B` | サイドバーを表示 / 非表示（狭い画面で再表示） |
+| `Ctrl+B` | サイドバーを表示 / 非表示（狭い画面で再表示。強制表示時は幅 190px。下記参照） |
 | `Ctrl+Shift+L` | サイドバーのホームへ移動（他の場所はマウスのみ） |
 | `Space` / `F3` | 選択ファイルのテキストプレビュー（読み取り専用） |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | 元に戻す / やり直す（**名前変更とゴミ箱のみ**） |
@@ -152,6 +159,10 @@ cd app
 
 ディレクトリ行の右クリックでは **ブックマークを追加/解除** / **ラベルを設定…** /
 **ラベルを削除** も選べます（F6-49）。
+
+**サイドバーの幅（NW04）**: ビューポート幅が 900px 以上なら 190px、520px 以下なら
+0px、その間は線形補間で変化します。`Ctrl+B` で表示を強制した場合は狭い画面でも
+190px です（[DESIGN.md](../DESIGN.md) §3.1 の as-built 記載）。
 
 **設定ダイアログの Tab 巡回**: `Tab` / `Shift+Tab` は検索欄 → 表示中の
 タブのテキスト入力 → キャンセル / 保存ボタンの順に循環します。
@@ -746,7 +757,7 @@ DESIGN.md §4.1 の指示に従い、P0 実装で設計からずれた点を記�
 |---|---|---|---|
 | モジュール構成 | `app.rs` + `model/*` + `fs/*` + `ui/*` に分割 | `main.rs` + データ層モジュール（GPUI 非依存）。`strings.rs` を新設し、`DebugHooks` / `SearchState` / `LoadState` へ状態を集約、描画フックも専用メソッドへ抽出 | 完全分割は設計判断で実施しない（現状維持）、段階的集約で代替済み（review-report.md H-1） |
 | キー入力 | 大半を `actions!` + `KeyBinding` + `.key_context("Explorer")` で実装 | ルート要素の `track_focus` + `on_key_down` で実装（矢印キー等と同じ経路に統一） | キー動作は §3.4 の表をカバー。Action 化は設計判断のため保留 |
-| 設定スキーマ | `version` / `sort`（`key`/`dir`/`dirs_first`）/ `show_hidden` / `view` | **DESIGN.md §5.7・§8.1 のスキーマに一致**（`settings.json` サンプル参照） | 一致 |
+| 設定スキーマ | `version` / `sort`（`key`/`dir`/`dirs_first`）/ `show_hidden` / `view` | **DESIGN.md §5.7・§8.1 の基本5項目は一致**（`settings.json` サンプル参照）。下記の拡張キーを追加保持 | 基本5項目は一致（拡張キーあり） |
 | 選択 | `Selection`（`PathBuf` キー、複数選択） | `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択・バッチ操作対応） | 一致（`BTreeSet` 化は見送り） |
 | ロード状態 | `LoadState` / `FsError` の型 | `LoadState`（Loading/Ready/Error）+ `FsError` / `FsErrorKind` を導入 | 一致（generation も LoadState が保持） |
 | ステータスバー | gpui-component `StatusBar` | 自作 `div`（5 領域の 1 つ） | 見た目同等。置換は任意 |
@@ -759,6 +770,22 @@ DESIGN.md §4.1 の指示に従い、P0 実装で設計からずれた点を記�
 | 空き領域の右クリックメニュー | §3.2 で『新規/更新』と明記 | 未対応（仮想リストが領域を占有。新規はツールバー/行メニュー） | 既知の制限 |
 | 入力 E2E | §10.3 の手動操作 | 入力ツールは導入済みだが権限/ポータル制約で **実押下は未検証** | 既知の制限（§実行検証記録） |
 | 通知トースト | `push_notification` で成功/失敗を右に表示 | 単一のステータス行で代替（トースト機構なし） | 設計判断で現状維持。連続操作の通知は上書きされる |
+
+**設定スキーマの拡張キー**: DESIGN.md §5.7・§8.1 のスキーマ例で定義されるのは
+`version` / `last_dir` / `sort` / `show_hidden` / `view` の基本 5 項目のみです。
+本実装はこれらに加えて下記のキーを `settings.json` に保持しており、いずれも
+DESIGN のスキーマ例には反映されていません。
+
+- テーマ: `theme`（解決済みモード・legacy）、`theme_choice`（選択値）
+- 入力・起動: `keymap`、`terminal_command`
+- タブ: `tabs`、`active_tab`
+- ブックマーク: `bookmarks`、`bookmark_labels`
+- 検索: `recent_searches`、`saved_searches`、`recent_dirs`
+- 表示: `show_thumbnails`、`column_prefs`（`visible` / `widths`）
+- ウィンドウ: `windows`
+
+DESIGN §8.1 の「未知フィールドは無視」ルール（フィールド単位の `serde(default)`）
+により、これらの拡張キーが無い旧ファイルも従来どおり読み込めます。
 
 ## ライセンス
 

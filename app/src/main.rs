@@ -8528,7 +8528,9 @@ impl Explorer {
                     .child(Button::new("label-confirm").label("設定").on_click(confirm)),
             )
             .child(div().text_xs().text_color(rgb(p.muted)).child(format!(
-                "{DIALOG_FOOTER_HINT} / {DIALOG_FOOTER_DELETE_SUFFIX}"
+                "{} / {}",
+                dialog_footer_hint_for_session(self.settings.read_only),
+                DIALOG_FOOTER_DELETE_SUFFIX
             )));
         Some(
             div()
@@ -12587,12 +12589,15 @@ mod tests {
 
     #[test]
     fn alt_t_and_alt_k_dialogs_choose_the_read_only_footer() {
-        // AT01: 2 つの設定ダイアログが self.settings.read_only から脚文を
-        // 選ぶことを source-guard で固定する（ダイアログ自体は無効化しない）。
+        // AT01: 3 つのダイアログ（Alt+T / Alt+K / ブックマークラベル）が
+        // self.settings.read_only から脚文を選ぶことを source-guard で固定する
+        // （ダイアログ自体は無効化しない）。ラベルは削除案内を併記するため、
+        // 共通文言部分だけがセッションに応じて切り替わる。
         let source = include_str!("main.rs");
         for (start, end) in [
             ("    fn terminal_command_dialog(", "    fn confirm_keymap("),
             ("    fn keymap_dialog(", "    fn on_key_down("),
+            ("    fn label_dialog(", "    fn reveal("),
         ] {
             let region = source_region(source, start, end);
             assert!(

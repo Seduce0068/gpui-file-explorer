@@ -425,6 +425,17 @@ mod tests {
     }
 
     #[test]
+    fn with_cause_is_noop_for_cancelled() {
+        // `Cancelled` has no cause-carrying counterpart: the `other => other`
+        // arm must leave it untouched (and keep source() empty), so a supplied
+        // cause cannot turn a cancellation into a different error.
+        let cancelled = AppError::Cancelled.with_cause(BoxedCause::text("ignored"));
+        assert!(matches!(cancelled, AppError::Cancelled));
+        assert!(cancelled.source().is_none());
+        assert_eq!(cancelled.to_string(), "操作はキャンセルされました");
+    }
+
+    #[test]
     fn fs_message_omits_parenthetical_for_empty_os_message() {
         // `io::Error::other("")` carries an empty OS message: from_io stores
         // Some(""), and fs_message must fall through to the no-parenthesis arm.

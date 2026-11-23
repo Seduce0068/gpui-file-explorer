@@ -1548,19 +1548,19 @@ status: current
 
 ### 優先度: 中（ループ R49・confirmed）
 
-- [ ] **AV01** ラベル編集ダイアログが read-only でも「Enter で保存」
+- [x] **AV01** ラベル編集ダイアログが read-only でも「Enter で保存」 — 対応: impl-r49-core（実バグ修正）
   — main.rs:8531
-- [ ] **AV02** app/README の設定スキーマ「一致」主張が as-built と乖離
+- [x] **AV02** app/README の設定スキーマ「一致」主張が as-built と乖離 — 対応: impl-r49-docs
   — app/README.md:749
-- [ ] **AV03** 設定カード全体がスクロールし操作ボタンが画面外へ
+- [x] **AV03** 設定カード全体がスクロールし操作ボタンが画面外へ — 対応: impl-r49-core（実バグ修正）
   — settings_ui.rs:2068
 
 ### 優先度: 低（ループ R49）
 
-- [ ] **AV04** NW04 レスポンシブが README/app/README に未記載
-- [ ] **AV05** AppError::with_cause の Cancelled no-op 分岐が無テスト
+- [x] **AV04** NW04 レスポンシブが README/app/README に未記載 — 対応: impl-r49-docs
+- [x] **AV05** AppError::with_cause の Cancelled no-op 分岐が無テスト — 対応: impl-r49-docs
   — error.rs:177
-- [ ] **AV06** app/README が新要件（Windows 第一級）を未反映
+- [x] **AV06** app/README が新要件（Windows 第一級）を未反映 — 対応: impl-r49-docs
   — app/README.md:5
 
 ### 優先度: 低（調査タスク）
