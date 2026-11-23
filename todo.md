@@ -1933,7 +1933,8 @@ status: current
 - [x] **BA19** PWA タッチ長押しに複数選択の導線が無い — 対応: loop14
 - [x] **BA20** case-only rename の中間一時名が O_EXCL なし — 対応: loop14
 - [x] **BA21** gates ジョブに timeout-minutes が無い — 対応: loop14
-- [x] **BA22** ツールチェーン未ピン留めで fmt/clippy が drift に晒される — 対応: loop14（1.92 ピンは実検証で不採用・理由記録）
+- [x] **BA22** ツールチェーン未ピン留めで fmt/clippy が drift に晒される
+  — 対応: loop14（1.92 ピンは実検証で不採用・理由記録）
 - [x] **BA23** deny.toml の unused-ignored-advisory = allow が失効 ignore を隠す — 対応: loop14
 
 ## メモ
