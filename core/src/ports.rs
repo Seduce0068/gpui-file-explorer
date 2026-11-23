@@ -46,6 +46,14 @@ impl PortError {
     pub fn io_error(&self) -> Option<&io::Error> {
         self.source.as_ref()
     }
+
+    /// 原因となった IO エラーの OS エラー番号（あれば）。
+    ///
+    /// `AppError::raw_os_error()` と同じ名前・意味に揃え、呼び出し側が
+    /// errno で分岐するときに型ごとに別の accessor を覚えなくて済むようにする。
+    pub fn raw_os_error(&self) -> Option<i32> {
+        self.io_error().and_then(io::Error::raw_os_error)
+    }
 }
 
 impl std::fmt::Display for PortError {
@@ -211,5 +219,20 @@ mod tests {
         let plain = PortError::message("not available");
         assert!(plain.source().is_none());
         assert!(plain.io_error().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn port_error_exposes_raw_os_error() {
+        // AV04: ports kept errno behind io_error(); match AppError's one-call
+        // accessor so both sides of the boundary can branch on the same code.
+        let code = 2; // ENOENT
+        let caused = PortError::io("read failed", io::Error::from_raw_os_error(code));
+        assert_eq!(caused.raw_os_error(), Some(code));
+        let plain = PortError::message("unavailable");
+        assert_eq!(plain.raw_os_error(), None);
+        // A non-OS io::Error has no errno to expose.
+        let text_only = PortError::io("read failed", io::Error::other("boom"));
+        assert_eq!(text_only.raw_os_error(), None);
     }
 }

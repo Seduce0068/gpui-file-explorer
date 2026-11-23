@@ -1729,6 +1729,10 @@ pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開�
 /// 読み取り専用通知に添える回復導線（W08）。読み込み失敗の理由を連結した後ろに
 /// 置き、設定を確認する操作を案内する。
 pub const STATUS_SETTINGS_READ_ONLY_HINT: &str = "（Ctrl+, で設定を確認）";
+/// 壊れた設定ファイルを退避し、初期値で起動したときの通知接頭辞（AV01）。
+/// 退避先パスを連結するため接頭辞自体を warning マーカーとして登録する。
+/// `load_error` と異なり書き込みは継続できるので、読み取り専用文言は使わない。
+pub const STATUS_SETTINGS_RESET_PREFIX: &str = "壊れた設定を退避して初期値で起動しました";
 /// Esc / 背景クリックで未保存の設定変更を破棄したときの通知（H03）。
 /// フッターの「保存せず閉じる」ボタンと違い、これらの操作は事前の警告がない。
 /// 情報量ルール (F6-36) の「復帰導線」に従い、設定を開き直す操作を併記する（I06）。
@@ -1771,6 +1775,16 @@ pub const STATUS_CORE_UNSUPPORTED_PREFIX: &str = "未対応の操作です: ";
 /// io エラー（EIO 等）と未知エラーの理由文言。
 pub const STATUS_CORE_IO_FAILED: &str = "読み取れませんでした";
 pub const STATUS_CORE_UNKNOWN_ERROR: &str = "エラーが発生しました";
+/// AV08: 残りの core::error 失敗フラグメント。`Display` / `message_ja()` が
+/// 接頭辞なしで status にミラーされても success green に落ちないよう、
+/// 以下のマーカー表と色分類表の両方に登録する。
+/// 「ディレクトリです」は「ディレクトリではありません」とは異なる断片なので
+/// 個別の定数として保持する。
+pub const STATUS_CORE_IS_A_DIRECTORY: &str = "ディレクトリです";
+pub const STATUS_CORE_READ_ONLY_FS: &str = "読み取り専用のファイルシステムです";
+pub const STATUS_CORE_STORAGE_FULL: &str = "空き領域がありません";
+/// InvalidTarget / InvalidTargetCause の動的な理由が後続する接頭辞。
+pub const STATUS_CORE_INVALID_TARGET_PREFIX: &str = "操作できません: ";
 /// Undo / Redo の「対象なし」と失敗。
 /// T09: 操作履歴ダイアログ側は「元に戻せる操作はありません」だったため、
 /// 助詞を「は」に統一する（状態を説明する文として自然な形）。
@@ -2536,6 +2550,7 @@ mod tests {
             STATUS_SETTINGS_SAVE_LOCKED,
             STATUS_SETTINGS_READ_ONLY,
             STATUS_SETTINGS_READ_ONLY_HINT,
+            STATUS_SETTINGS_RESET_PREFIX,
             STATUS_SETTINGS_DISCARDED,
             // AG06: 保存成功も在庫に登録し、空文字列や登録漏れを検出する。
             STATUS_SETTINGS_SAVED,
@@ -2552,6 +2567,11 @@ mod tests {
             STATUS_CORE_UNSUPPORTED_PREFIX,
             STATUS_CORE_IO_FAILED,
             STATUS_CORE_UNKNOWN_ERROR,
+            // AV08: 残りの core::error 失敗フラグメント。
+            STATUS_CORE_IS_A_DIRECTORY,
+            STATUS_CORE_READ_ONLY_FS,
+            STATUS_CORE_STORAGE_FULL,
+            STATUS_CORE_INVALID_TARGET_PREFIX,
             STATUS_UNDO_EMPTY,
             STATUS_UNDO_HISTORY_HINT,
             STATUS_UNDO_EXISTS_SUFFIX,
@@ -2654,6 +2674,11 @@ mod tests {
             (
                 "STATUS_SETTINGS_READ_ONLY",
                 STATUS_SETTINGS_READ_ONLY,
+                "warning",
+            ),
+            (
+                "STATUS_SETTINGS_RESET_PREFIX",
+                STATUS_SETTINGS_RESET_PREFIX,
                 "warning",
             ),
             (
@@ -2842,6 +2867,29 @@ mod tests {
                 STATUS_CORE_UNKNOWN_ERROR,
                 "error",
             ),
+            // AV08: these remaining core failure fragments were absent from
+            // both the marker table and this class table, so an unprefixed
+            // status carrying one of them could fall through to success green.
+            (
+                "STATUS_CORE_IS_A_DIRECTORY",
+                STATUS_CORE_IS_A_DIRECTORY,
+                "error",
+            ),
+            (
+                "STATUS_CORE_READ_ONLY_FS",
+                STATUS_CORE_READ_ONLY_FS,
+                "error",
+            ),
+            (
+                "STATUS_CORE_STORAGE_FULL",
+                STATUS_CORE_STORAGE_FULL,
+                "error",
+            ),
+            (
+                "STATUS_CORE_INVALID_TARGET_PREFIX",
+                STATUS_CORE_INVALID_TARGET_PREFIX,
+                "error",
+            ),
             // X08: Undo の存在しない対象も concrete failure（接尾辞を共有）。
             (
                 "STATUS_UNDO_MISSING_SUFFIX",
@@ -2973,6 +3021,7 @@ mod tests {
             "STATUS_SEARCH_STALE",
             "STATUS_CANCELLED",
             "STATUS_SETTINGS_READ_ONLY",
+            "STATUS_SETTINGS_RESET_PREFIX",
         ];
         // AM01: 動的なパスを連結する既存排斥の接頭辞は拒否語（「〜ません」等）を
         // 含まないが、concrete error として分類する。一般ルールから外して
@@ -2988,6 +3037,15 @@ mod tests {
         const VALIDATION_ERROR_NOTICES: &[&str] = &[
             "STATUS_KEYMAP_FORMAT_INVALID",
             "STATUS_TERMINAL_COMMAND_INVALID",
+        ];
+        // AV08: core::error の失敗フラグメントは「ディレクトリです」のように
+        // 拒否語を含まないものがあるため一般ルールから外し、error 分類と
+        // core 側の文言との一致を個別に固定する。
+        const CORE_ERROR_FRAGMENTS: &[&str] = &[
+            "STATUS_CORE_IS_A_DIRECTORY",
+            "STATUS_CORE_READ_ONLY_FS",
+            "STATUS_CORE_STORAGE_FULL",
+            "STATUS_CORE_INVALID_TARGET_PREFIX",
         ];
         // L06 / N02 / N03 / N08 / N09 の指摘で main.rs 側への登録が必要な定数名
         // （重複・脱落を防止）。全て warning として分類されなければならない。
@@ -3080,6 +3138,18 @@ mod tests {
                     ),
                     other => panic!("unexpected validation error notice: {other}"),
                 }
+            } else if CORE_ERROR_FRAGMENTS.contains(name) {
+                // AV08: core 側の FsErrorKind / InvalidTarget 文言と 1:1 で
+                // 対応することを固定し、マーカー登録漏れもここで止める。
+                assert!(*class == "error", "{name} must be error");
+                let expected = match *name {
+                    "STATUS_CORE_IS_A_DIRECTORY" => "ディレクトリです",
+                    "STATUS_CORE_READ_ONLY_FS" => "読み取り専用のファイルシステムです",
+                    "STATUS_CORE_STORAGE_FULL" => "空き領域がありません",
+                    "STATUS_CORE_INVALID_TARGET_PREFIX" => "操作できません: ",
+                    other => panic!("unexpected core error fragment: {other}"),
+                };
+                assert_eq!(*message, expected, "{name} must match core::error wording");
             } else {
                 assert!(
                     message.contains("ません")

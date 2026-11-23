@@ -21,7 +21,10 @@
 # app/Cargo.toml, core/src, core/Cargo.toml or the workspace-root Cargo.lock
 # (i.e. files newer than the binary are detected with `find -newer`).
 # --verify only compares an existing staging tree against the current sources
-# (read-only); it never builds, copies or removes anything.
+# (read-only); it never builds, copies or removes anything. It also compares
+# the staged DEBIAN/control with the control metadata inside the existing .deb.
+# --dry-run only resolves paths and prints the plan; no directory is created,
+# nothing is deleted, copied or built.
 # The workspace-profile output normally lands in the root target/; the explicit
 # `--target-dir "${app_dir}/target"` on `cargo build` keeps the binary at the
 # path consumed below (app/target/release/).
@@ -37,8 +40,12 @@ usage() {
                         （app/src・build.rs・native-libs/・Cargo.toml・
                          core/src・core/Cargo.toml・ルート Cargo.lock より
                          古い場合は拒否し再ビルドを促す）
-      --verify          既存ステージのドキュメント/.desktop/アイコンを
-                        現行ソースと非破壊で照合（ビルド・コピー・削除なし）
+      --verify          既存ステージのドキュメント/.desktop/アイコンと
+                         DEBIAN/control を現行ソース／既存 .deb の
+                         メタデータと非破壊で照合
+                         （ビルド・コピー・削除なし、出力先も作らない）
+      --dry-run         解決済みパスと実行計画のみ表示
+                         （削除・コピー・ビルドせず、出力先も作らない）
   -h, --help            このヘルプを表示
 
 root では実行できません（dpkg-deb --root-owner-group が所有権を設定します）。
@@ -56,6 +63,7 @@ pkg="gpui-file-explorer"
 out_dir="${repo_root}/packaging/linux/build"
 skip_build=0
 verify=0
+dry_run=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -69,6 +77,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --verify)
       verify=1
+      ;;
+    --dry-run)
+      dry_run=1
       ;;
     -h | --help)
       usage
@@ -104,10 +115,23 @@ binary="${app_dir}/target/release/${pkg}"
 if [ -z "${out_dir}" ]; then
   die "出力ディレクトリが空です"
 fi
-mkdir -p -- "${out_dir}"
-if ! out_dir_abs="$(cd -- "${out_dir}" 2>/dev/null && pwd -P)"; then
-  die "出力ディレクトリを解決できません: ${out_dir}"
+# Read-only modes must not create the output directory (AV23). A missing
+# directory in --verify is reported as a missing stage below, and --dry-run
+# resolves the path lexically without touching the filesystem.
+if [ "${verify}" -eq 1 ] && [ ! -d "${out_dir}" ]; then
+  die "ステージがありません: ${out_dir}/${pkg}_${deb_version}_${arch}（--verify は既存ステージの照合のみ行います）"
 fi
+if [ "${verify}" -eq 0 ] && [ "${dry_run}" -eq 0 ]; then
+  mkdir -p -- "${out_dir}"
+fi
+if [ -d "${out_dir}" ]; then
+  out_dir_abs="$(cd -- "${out_dir}" 2>/dev/null && pwd -P)"
+elif command -v realpath >/dev/null 2>&1; then
+  out_dir_abs="$(realpath -m -- "${out_dir}")"
+else
+  out_dir_abs="${out_dir}"
+fi
+[ -n "${out_dir_abs}" ] || die "出力ディレクトリを解決できません: ${out_dir}"
 repo_root_abs="$(cd -- "${repo_root}" && pwd -P)"
 parent_of_repo="$(dirname -- "${repo_root_abs}")"
 case "${out_dir_abs}" in
@@ -165,10 +189,63 @@ verify_staged_docs() {
   echo "すべてのステージング済みファイルが現行ソースと一致しました: ${stage}"
 }
 
+# Also compare the staged control file with the metadata embedded in the
+# existing .deb, so a committed package built from an older control goes
+# unnoticed by the byte-for-byte source/stage check alone.
+verify_control() {
+  [ -f "${stage}/DEBIAN/control" ] ||
+    die "ステージの DEBIAN/control がありません: ${stage}/DEBIAN/control"
+  grep -qx "Package: ${pkg}" "${stage}/DEBIAN/control" ||
+    die "control の Package が不正です: ${stage}/DEBIAN/control"
+  grep -qx "Version: ${deb_version}" "${stage}/DEBIAN/control" ||
+    die "control の Version が不正です: ${stage}/DEBIAN/control"
+  grep -qx "Architecture: ${arch}" "${stage}/DEBIAN/control" ||
+    die "control の Architecture が不正です: ${stage}/DEBIAN/control"
+  [ -f "${deb}" ] ||
+    die "既存 .deb がありません: ${deb}（--verify は既存 .deb との照合も行います）"
+  if cmp -s -- "${stage}/DEBIAN/control" \
+      <(dpkg-deb --ctrl-tarfile "${deb}" | tar -xO ./control 2>/dev/null); then
+    echo "照合 OK: ${stage}/DEBIAN/control == ${deb} の control"
+  else
+    echo "照合 NG (不一致): ${stage}/DEBIAN/control vs ${deb} の control" >&2
+    die "DEBIAN/control と既存 .deb のメタデータが一致しません"
+  fi
+}
+
+# Dry-run: print the resolved paths and the exact plan, but never create a
+# directory, delete a file, copy anything or invoke cargo/dpkg-deb.
+if [ "${dry_run}" -eq 1 ]; then
+  echo "ドライラン: 削除・コピー・ビルドは行いません"
+  echo "  repo root : ${repo_root}"
+  echo "  output dir: ${out_dir}"
+  echo "  stage     : ${stage}"
+  echo "  deb       : ${deb}"
+  echo "  binary    : ${binary}"
+  echo "  version   : ${deb_version} (arch: ${arch})"
+  echo "実行予定:"
+  echo "  1. ステージを削除: ${stage}"
+  echo "  2. 既存 DEB を削除: ${deb}"
+  if [ "${skip_build}" -eq 1 ]; then
+    echo "  3. release ビルドはスキップし、既存バイナリのバージョン/鮮度を検証"
+  else
+    echo "  3. cargo build --release --locked → ${binary}"
+  fi
+  echo "  4. バイナリ/.desktop/アイコン/ドキュメントを ${stage} へ配置"
+  echo "  5. ステージング済みファイルと現行ソースを照合"
+  echo "  6. DEBIAN/control を生成して ${deb} をビルド"
+  echo "  7. --verify でステージと .deb のメタデータを照合"
+  printf '  照合対象 (%d 件):\n' "${#doc_pairs[@]}"
+  for pair in "${doc_pairs[@]}"; do
+    echo "    ${pair%%|*} -> ${pair#*|}"
+  done
+  exit 0
+fi
+
 # Read-only mode: check an existing staging tree and stop before any destructive
 # step (stage removal, .deb removal, cargo build, dpkg-deb).
 if [ "${verify}" -eq 1 ]; then
   verify_staged_docs
+  verify_control
   exit 0
 fi
 

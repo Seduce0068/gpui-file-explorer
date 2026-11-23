@@ -46,6 +46,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use crate::error::UNKNOWN_ERROR_REASON;
 use crate::model::{AppError, BoxedCause};
 
 /// Size of the chunks used when copying file contents.
@@ -122,6 +123,14 @@ fn io_error(path: &Path, err: std::io::Error) -> OpError {
             "ディレクトリに対してファイル操作はできません: {}",
             path.display()
         )),
+        // AV11: FsError::from_io maps Other to FsErrorKind::Unknown
+        // ("エラーが発生しました"). Splitting it out of the catch-all keeps the
+        // two sides symmetric; the original io text is still held by the cause
+        // and surfaces in `message_ja()` as "(os text)", just like Fs.
+        std::io::ErrorKind::Other => OpError::Io {
+            path: path.to_path_buf(),
+            message: UNKNOWN_ERROR_REASON.to_string(),
+        },
         _ => OpError::Io {
             path: path.to_path_buf(),
             message: err.to_string(),
@@ -2728,6 +2737,7 @@ mod tests {
 #[cfg(test)]
 mod dir_stats_tests {
     use super::{dir_stats, io_error, unique_path, unique_path_with_limit, CancelFlag, OpError};
+    use crate::error::UNKNOWN_ERROR_REASON;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -2854,6 +2864,21 @@ mod dir_stats_tests {
             std::error::Error::source(&other).map(ToString::to_string),
             Some("boom".to_string())
         );
+        // AV11: Other must read like FsError::from_io's Unknown kind, with the
+        // original reason kept in the cause rather than dropped.
+        assert!(
+            other.to_string().contains(UNKNOWN_ERROR_REASON),
+            "Display: {other}"
+        );
+        assert_eq!(
+            other.message_ja(),
+            format!("/tmp/example: {UNKNOWN_ERROR_REASON} (boom)")
+        );
+
+        // Other ErrorKinds keep the concrete io text as the status message.
+        let invalid = io_error(path, std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        assert!(invalid.message_ja().starts_with("/tmp/example: "));
+        assert!(!invalid.message_ja().contains(UNKNOWN_ERROR_REASON));
     }
 
     #[test]

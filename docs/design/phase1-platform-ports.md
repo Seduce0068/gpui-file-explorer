@@ -40,8 +40,9 @@ R1 で確認済みの事実を、本設計の前提として引用する。
    Send / Sync を持つ。`app/src/ops.rs` は core への薄い re-export シェルであり、
    本体の参照先ではない。
 - GPUI 側は既に同期 → 非同期の橋渡しを実装済みである。
-   `app/src/main.rs:6215` で `async_channel::unbounded::<(u64, u64)>()` を作り、
-   `cx.spawn` のループで受けて `this.update` へ渡す（同 `:6215-6242`）。
+   `Explorer::run_transfer`（`app/src/main.rs`）で
+   `async_channel::unbounded::<(u64, u64)>()` を作り、`cx.spawn` のループで
+   受けて `this.update` へ渡す（同関数の進捗ポンプ）。
    約 80 ms のスロットルも同じ箇所にある。
 - `settings.rs` は `gpui_kit` に直依存する
    （`ThemeMode` / `Window` / `WindowBounds`、`app/src/settings.rs:71-72`）。
@@ -170,7 +171,7 @@ pub trait ImageDecoder: Send + Sync {
 ```
 
 `max_pixels` には `preview::MAX_IMAGE_PIXELS`（`app/src/preview.rs:27`）を渡す。
-表示可否の判定はコア側の `thumbnail_eligible`（`app/src/main.rs:2125`）が
+表示可否の判定はコア側の `thumbnail_eligible`（`app/src/main.rs` の同名関数）が
 `preview::is_thumbnailable`（`app/src/preview.rs:72`）と
 `MAX_IMAGE_BYTES`（同 `:24`）を使って行うため、port 側には重複させない。
 
@@ -211,7 +212,8 @@ pub trait FileDialogPort: Send + Sync {
 
 ### ClipboardPort
 
-現状の cut / copy はアプリ内部の `ClipboardSlot`（`app/src/main.rs:2481,2962`）だけで、
+現状の cut / copy はアプリ内部の `ClipboardSlot` / `Explorer::clipboard`
+（`app/src/main.rs`）だけで、
 OS クリップボードへはパス文字列 1 本を書き込むのみである
 （`docs/adr/adr-20261123-os-file-clipboard.md` の「検証済み事実」）。
 Phase 1 の読み取り専用ビューアでは no-op でよいが、将来の相互運用のため境界だけ定義する。
@@ -233,8 +235,9 @@ PWA の Clipboard API の対応状況は ADR に譲り、port の形のみを固
 
 ### WatchSource
 
-`DirWatcher` + `watch_rx` の `async_channel`（`app/src/main.rs:2945,3503-3504`）と
-`spawn_watch_loop`（同 `:4226`）を port 化する。登録は同期、通知はコールバックである。
+`DirWatcher` + `watch_rx` の `async_channel`（`Explorer::new`）と
+`Explorer::spawn_watch_loop`（いずれも `app/src/main.rs`）を port 化する。
+登録は同期、通知はコールバックである。
 
 ```rust
 pub struct WatchHandle { /* Drop で監視解除 */ }
@@ -262,27 +265,28 @@ Phase 1 のビューアは手動リロードで要件を満たすため、no-op 
 
 ## GPUI アダプタの接続先
 
-既存コードのどの関数／型を呼ぶかを、根拠となる行とともに列挙する。
+既存コードのどの関数／型を呼ぶかを、根拠となるシンボルとともに列挙する
+（行番号は drift するためシンボル名で参照する）。
 抽出後もデスクトップの挙動は変えない。
 
 - VolumeSource: `Explorer::refresh_mounts` → `mounts::list_mounts()` を
-   `cx.background_spawn`（`app/src/main.rs:4111-4113`）。
+   `cx.background_spawn`（`app/src/main.rs`）。
 - TrashBackend: `Explorer::reload_trash` → `trash_view::list()` を
-   `cx.background_spawn`（同 `:3709-3713`、`app/src/trash_view.rs:46-48`）。
+   `cx.background_spawn`（`app/src/main.rs`、`app/src/trash_view.rs:46-48`）。
 - 一覧: `Explorer::reload` → `gfe_core::model::read_entries(&dir)`
-   （同 `:3625,3648`、`core/src/model.rs` の `read_entries`。
+   （`app/src/main.rs`、`core/src/model.rs` の `read_entries`。
    `app/src/model.rs` は re-export シェル）。
-- WatchSource: `DirWatcher::new` → `watch_tx` → `Explorer::spawn_watch_loop`
-   （同 `:3503-3504,4226`）。
-- FileDialogPort: `Explorer::open_path` → `cx.open_with_system(&path)`
-   （同 `:4813,4826`）と `cx.reveal_path(&path)`（同 `:8555`）。
-- 進捗: `Explorer::begin_op` → `async_channel` → `cx.spawn` →
-   `this.update`（同 `:6200-6240`、trait 未採用）。
+- WatchSource: `Explorer::new` の `DirWatcher::new` → `watch_tx` →
+   `Explorer::spawn_watch_loop`（いずれも `app/src/main.rs`）。
+- FileDialogPort: `Explorer::open_path` → `cx.open_with_system(&path)` と
+   `Explorer::reveal` → `cx.reveal_path(&path)`（`app/src/main.rs`）。
+- 進捗: `Explorer::begin_op` → `Explorer::run_transfer` の `async_channel` →
+   `cx.spawn` → `this.update`（`app/src/main.rs`、trait 未採用）。
 - ImageDecoder: `thumbnail_eligible` →
-   `preview::read_image_preview` / `ImageBytes`（同 `:2125`、
-   `app/src/preview.rs:79,150`）。
+   `preview::read_image_preview` / `ImageBytes`
+   （`app/src/main.rs`、`app/src/preview.rs:79,150`）。
 - ClipboardPort: `ClipboardSlot` / `Explorer::clipboard`（no-op で維持、
-   同 `:2481,2962`）。
+   `app/src/main.rs`）。
 - 設定変換: `settings.rs` の gpui_kit 型をアダプタで受け、コアは JSON 互換値
    （`app/src/settings.rs:71-72`）。
 
@@ -436,8 +440,10 @@ B と同じ UI 倍増が生じるため、本見積もりには含めない
 - [wasm 調査ノート](../../notes/wasm-browser-notes.md)（:51-91、gpui-kit wasm 制約）
 - `AGENTS.md`（クロスプラットフォーム対応方針、2026-11-23）
 - `core/src/ops.rs`（`CancelFlag` / `copy_entry` / `move_entry` / `dir_stats`）
-- `app/src/main.rs`: 2481, 2962, 3503-3504, 3625, 3709, 4111, 4226,
-  4813, 4826, 6200-6240, 8555
+- `app/src/main.rs`: `thumbnail_eligible` / `ClipboardSlot` / `Explorer::new` /
+  `Explorer::reload` / `Explorer::reload_trash` / `Explorer::refresh_mounts` /
+  `Explorer::spawn_watch_loop` / `Explorer::open_path` / `Explorer::reveal` /
+  `Explorer::begin_op` / `Explorer::run_transfer`
 - `app/src/settings.rs:71-72`、`app/src/trash_view.rs:1,31-39,49-53,81-125`
 - `app/src/mounts.rs:220-227`、`app/src/system_icons.rs:416,427-433`、
   `win32/src/lib.rs:154,206,306,355`

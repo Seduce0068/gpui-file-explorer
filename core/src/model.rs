@@ -734,11 +734,13 @@ pub fn human_datetime(time: Option<SystemTime>) -> String {
 }
 
 /// Relative age (`3分前`, `2時間前`, ...) used in the status bar.
-pub fn human_age(time: Option<SystemTime>) -> String {
+///
+/// Pure variant: both the reference time and `now` are arguments, so callers
+/// (and tests) can pin the clock and avoid time-dependent flakiness.
+pub fn human_age_at(time: Option<SystemTime>, now: SystemTime) -> String {
     let Some(time) = time else {
         return VALUE_UNKNOWN.to_string();
     };
-    let now = SystemTime::now();
     let Ok(elapsed) = now.duration_since(time) else {
         return AGE_FUTURE.to_string();
     };
@@ -754,6 +756,12 @@ pub fn human_age(time: Option<SystemTime>) -> String {
     } else {
         format!("{}{}", secs / (86_400 * 365), AGE_YEARS_SUFFIX)
     }
+}
+
+/// Relative age against the current wall clock. Thin wrapper around
+/// [`human_age_at`] so production code keeps a zero-argument call site.
+pub fn human_age(time: Option<SystemTime>) -> String {
+    human_age_at(time, SystemTime::now())
 }
 
 /// Path shown in the status bar / used for the window title.
@@ -884,8 +892,8 @@ mod tests {
     // the original test import style avoids churn when porting from app.
     use super::{
         breadcrumb_segments, clamp_index, compare_names, create_unique_folder, display_path,
-        entry_for_path, fingerprint, first_index, human_age, human_datetime, human_size,
-        is_hidden_name, is_root_path, kind_label, last_index, parent_dir, read_entries,
+        entry_for_path, fingerprint, first_index, human_age, human_age_at, human_datetime,
+        human_size, is_hidden_name, is_root_path, kind_label, last_index, parent_dir, read_entries,
         root_display_for_platform, root_path_for_platform, sort_entries, step_selection,
         unique_child_name, visible_entries, AppError, Entry, FsError, FsErrorKind, SortDir,
         SortKey, SortOrder, SortSpec,
@@ -1260,25 +1268,40 @@ mod tests {
         assert!(hour < 24, "invalid hour in {formatted:?}");
         assert!(minute < 60, "invalid minute in {formatted:?}");
 
-        assert_eq!(human_age(Some(SystemTime::now())), "たった今");
+        assert_eq!(human_age_at(Some(now()), now()), "たった今");
+    }
+
+    // Fixed reference clock: the pure `human_age_at` must not consult
+    // `SystemTime::now()`, so these assertions are deterministic.
+    fn now() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(86_400 * 365 * 2)
     }
 
     #[test]
     fn human_age_covers_all_relative_units() {
-        let now = SystemTime::now();
+        let now = now();
         let future = now + Duration::from_secs(3600);
-        assert_eq!(human_age(Some(future)), "未来");
-        assert_eq!(human_age(Some(now - Duration::from_secs(120))), "2分前");
-        assert_eq!(human_age(Some(now - Duration::from_secs(7200))), "2時間前");
-        assert_eq!(human_age(Some(now - Duration::from_secs(172_800))), "2日前");
+        assert_eq!(human_age_at(Some(future), now), "未来");
         assert_eq!(
-            human_age(Some(now - Duration::from_secs(86_400 * 730))),
+            human_age_at(Some(now - Duration::from_secs(120)), now),
+            "2分前"
+        );
+        assert_eq!(
+            human_age_at(Some(now - Duration::from_secs(7200)), now),
+            "2時間前"
+        );
+        assert_eq!(
+            human_age_at(Some(now - Duration::from_secs(172_800)), now),
+            "2日前"
+        );
+        assert_eq!(
+            human_age_at(Some(now - Duration::from_secs(86_400 * 730)), now),
             "2年前"
         );
 
         // Boundary pairs: the unit changes exactly at each threshold, so a
         // regression from `<` to `<=` (or an off-by-one divisor) is caught.
-        let boundary = |secs| human_age(Some(now - Duration::from_secs(secs)));
+        let boundary = |secs| human_age_at(Some(now - Duration::from_secs(secs)), now);
         assert_eq!(boundary(59), "たった今");
         assert_eq!(boundary(60), "1分前");
         assert_eq!(boundary(3599), "59分前");

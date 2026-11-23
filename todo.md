@@ -1755,6 +1755,42 @@ status: current
 - [x] **AU20** u64 ラップ境界・語彙一致・ソース-pin テスト不足 — 対応: loop8
 - [x] **AU21** app/README DEB 節が --skip-build を説明していない — 対応: loop8
 
+## 進行中（ループ9 バックログ）
+
+### 優先度: 高（ループ9・confirmed）
+
+- [x] **AV01** 破損設定が無通知で退避され起動直後に初期値上書き — 対応: loop9
+- [x] **AV02** 読み込み時の truncate が無警告でウィンドウ/履歴を失う — 対応: loop9
+- [x] **AV03** 単一フィールドの型不一致で全設定が初期化される — 対応: loop9
+- [x] **AV04** errno 保持 API が Fs/Op/Port で非対称 — 対応: loop9
+- [x] **AV05** human_age 境界テストが実時刻に依存（フレーク） — 対応: loop9
+- [x] **AV06** watcher 統合テストが is_supported() を必須化 — 対応: loop9
+
+### 優先度: 中（ループ9・confirmed）
+
+- [x] **AV07** 未知 enum 1つでセッション全体が書込不能 — 対応: loop9
+- [x] **AV08** core 由来の失敗フラグメント4種が色分類に未登録 — 対応: loop9
+- [x] **AV09** BoxedCause::clone が errno を失う — 対応: loop9
+- [x] **AV10** OS エラー理由が Fs は表示 / Op は cause に閉じ込め — 対応: loop9
+- [x] **AV11** ErrorKind::Other の分類が Fs=Unknown / Op=Io — 対応: loop9
+- [x] **AV12** DESIGN §9.6 の cargo vet スコープ誤記 — 対応: loop9
+- [x] **AV13** README の --poc 説明が実動作と食い違う — 対応: loop9
+- [x] **AV14** コミット済み DEB ステージの .desktop/README が古い — 対応: loop9
+- [x] **AV15** LockHeartbeat テストが固定 sleep に依存 — 対応: loop9
+- [x] **AV16** PWA クリック抑止が performance.now 直結で決定性不可 — 対応: loop9
+- [x] **AV17** EXDEV テストが /dev/shm 構成で黙ってスキップ — 対応: loop9
+- [x] **AV18** DEB にアンインストール手順と残存データの明示なし — 対応: loop9
+- [x] **AV19** build-deb.sh に --dry-run が無い — 対応: loop9
+- [x] **AV20** --verify が control/.deb メタデータを照合しない — 対応: loop9
+
+### 優先度: 低（ループ9・confirmed）
+
+- [x] **AV21** 未知フィールドが read_only 判定対象外 — 対応: loop9
+- [x] **AV22** phase1-platform-ports の main.rs 行番号が drift — 対応: loop9
+- [x] **AV23** --verify が出力ディレクトリを作成する — 対応: loop9
+- [x] **AV24** .desktop に TryExec が無い — 対応: loop9
+- [x] **AV25** 未知フィールド保全テストが保存時を検証していない — 対応: loop9
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

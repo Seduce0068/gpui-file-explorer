@@ -35,6 +35,11 @@ pub enum FsErrorKind {
     Unknown,
 }
 
+/// Japanese reason used when an `io::Error` has no more specific category
+/// (`ErrorKind::Other`). Shared with `ops::io_error` so filesystem scans and
+/// operations render the same kind with the same wording.
+pub const UNKNOWN_ERROR_REASON: &str = "エラーが発生しました";
+
 /// An error that carries text only, used when a boxed cause has to be cloned or
 /// the original failure cannot be moved into [`BoxedCause::new`].
 #[derive(Debug)]
@@ -72,12 +77,41 @@ impl BoxedCause {
     pub fn as_error(&self) -> &(dyn Error + 'static) {
         self.0.as_ref()
     }
+
+    /// Raw OS error code when the cause is an `io::Error` carrying one.
+    ///
+    /// Used by [`AppError::raw_os_error`] so every cause-carrying variant can
+    /// expose errno through one API, regardless of which variant produced it.
+    pub fn raw_os_error(&self) -> Option<i32> {
+        self.as_error()
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+    }
+
+    /// Cause text appended to a Japanese status message.
+    ///
+    /// Returns `None` for an empty cause so a clone or a reconstructed error
+    /// never renders a stray pair of parentheses.
+    pub fn detail_text(&self) -> Option<String> {
+        let text = self.0.to_string();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
 }
 
 impl Clone for BoxedCause {
-    /// A cloned cause cannot clone the boxed trait object, so it keeps the
-    /// original message: the chain survives, the concrete type does not.
+    /// A cloned cause cannot clone the boxed trait object. When the cause is an
+    /// `io::Error` with an OS error code, rebuild it with
+    /// [`std::io::Error::from_raw_os_error`] so callers can still read errno
+    /// through [`Self::raw_os_error`]; otherwise keep the rendered text as the
+    /// original fallback. The chain and the message survive either way.
     fn clone(&self) -> Self {
+        if let Some(code) = self.raw_os_error() {
+            return Self::new(std::io::Error::from_raw_os_error(code));
+        }
         Self::text(self.0.to_string())
     }
 }
@@ -203,6 +237,31 @@ impl AppError {
         }
     }
 
+    /// Raw OS error code of any cause-carrying failure.
+    ///
+    /// `fs_raw_os_error()` only sees the dedicated slot on `FsCause`; operation
+    /// errors instead keep the original `io::Error` inside their
+    /// [`BoxedCause`]. This accessor unifies both paths (and `PortError`'s
+    /// equivalent) so a caller needs one method to branch on errno. `FsCause`
+    /// prefers its slot and falls back to the boxed cause for one built with
+    /// `with_cause`; plain variants have no cause and return `None`.
+    pub fn raw_os_error(&self) -> Option<i32> {
+        match self {
+            Self::FsCause {
+                raw_os_error,
+                cause,
+                ..
+            } => raw_os_error.or_else(|| cause.raw_os_error()),
+            Self::NotFoundCause(_, cause)
+            | Self::PermissionDeniedCause(_, cause)
+            | Self::AlreadyExistsCause(_, cause)
+            | Self::InvalidTargetCause(_, cause)
+            | Self::UnsupportedCause(_, cause)
+            | Self::IoCause { cause, .. } => cause.raw_os_error(),
+            _ => None,
+        }
+    }
+
     /// Attach the underlying failure to a plain variant, keeping its rendered
     /// text unchanged. Already-caused variants are returned as-is.
     pub fn with_cause(self, cause: BoxedCause) -> Self {
@@ -235,8 +294,12 @@ impl AppError {
     }
 
     /// Japanese message including the affected path (legacy
-    /// `FsError::message_ja`). For non-filesystem failures the status text is
-    /// exactly `Display`, so existing UI wording is preserved.
+    /// `FsError::message_ja`). Failure-scan errors keep their `os_message` in
+    /// parentheses; cause-carrying operation errors now do the same with the
+    /// text held in their [`BoxedCause`], so the OS reason is visible in the
+    /// status/log instead of being stranded in `source()`. `IoCause` already
+    /// renders that text as its `message`, so it is not appended twice. Plain
+    /// variants still render exactly as `Display`.
     pub fn message_ja(&self) -> String {
         match self {
             Self::Fs {
@@ -250,7 +313,42 @@ impl AppError {
                 os_message,
                 ..
             } => Self::fs_message(*kind, path, os_message.as_deref()),
+            Self::NotFoundCause(path, cause) => {
+                Self::with_cause_detail(format!("見つかりません: {}", path.display()), cause, None)
+            }
+            Self::PermissionDeniedCause(path, cause) => Self::with_cause_detail(
+                format!("アクセスが拒否されました: {}", path.display()),
+                cause,
+                None,
+            ),
+            Self::AlreadyExistsCause(path, cause) => {
+                Self::with_cause_detail(format!("既に存在します: {}", path.display()), cause, None)
+            }
+            Self::InvalidTargetCause(reason, cause) => {
+                Self::with_cause_detail(format!("操作できません: {reason}"), cause, None)
+            }
+            Self::UnsupportedCause(reason, cause) => {
+                Self::with_cause_detail(format!("未対応の操作です: {reason}"), cause, None)
+            }
+            Self::IoCause {
+                path,
+                message,
+                cause,
+            } => Self::with_cause_detail(
+                format!("{}: {message}", path.display()),
+                cause,
+                Some(message),
+            ),
             other => other.to_string(),
+        }
+    }
+
+    fn with_cause_detail(base: String, cause: &BoxedCause, already_shown: Option<&str>) -> String {
+        match cause.detail_text() {
+            Some(detail) if Some(detail.as_str()) != already_shown => {
+                format!("{base} ({detail})")
+            }
+            _ => base,
         }
     }
 
@@ -263,7 +361,7 @@ impl AppError {
             FsErrorKind::ReadOnlyFilesystem => "読み取り専用のファイルシステムです",
             FsErrorKind::StorageFull => "空き領域がありません",
             FsErrorKind::Io => "読み取れませんでした",
-            FsErrorKind::Unknown => "エラーが発生しました",
+            FsErrorKind::Unknown => UNKNOWN_ERROR_REASON,
         };
         match os_message {
             Some(message) if !message.is_empty() => {
@@ -452,7 +550,12 @@ mod tests {
             not_found.source().map(ToString::to_string)
         );
         assert_eq!(cloned.message_ja(), not_found.message_ja());
-        assert_eq!(cloned.message_ja(), "見つかりません: /tmp/gone");
+        // AV10: a cause-carrying operation error now surfaces its OS/detail
+        // text in the Japanese message, mirroring `FsCause`'s "(os text)".
+        assert_eq!(
+            cloned.message_ja(),
+            "見つかりません: /tmp/gone (underlying detail)"
+        );
     }
 
     #[test]
@@ -582,5 +685,73 @@ mod tests {
                 error.message_ja()
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn all_cause_variants_expose_raw_os_error() {
+        // AV04: one accessor must work for every cause-carrying variant, not
+        // just FsCause's dedicated slot.
+        let code = 2; // ENOENT
+        let io = || std::io::Error::from_raw_os_error(code);
+        let cases: Vec<AppError> = vec![
+            AppError::NotFoundCause(PathBuf::from("/tmp/x"), BoxedCause::new(io())),
+            AppError::PermissionDeniedCause(PathBuf::from("/tmp/x"), BoxedCause::new(io())),
+            AppError::AlreadyExistsCause(PathBuf::from("/tmp/x"), BoxedCause::new(io())),
+            AppError::InvalidTargetCause("理由".to_string(), BoxedCause::new(io())),
+            AppError::UnsupportedCause("理由".to_string(), BoxedCause::new(io())),
+            AppError::IoCause {
+                path: PathBuf::from("/tmp/x"),
+                message: io().to_string(),
+                cause: BoxedCause::new(io()),
+            },
+        ];
+        for error in cases {
+            assert_eq!(error.raw_os_error(), Some(code), "variant {error:?}");
+        }
+
+        // FsCause keeps the code in its slot even though its boxed cause is
+        // reconstructed from kind+text.
+        let fs = AppError::from_io(PathBuf::from("/tmp/x"), &io());
+        assert_eq!(fs.raw_os_error(), Some(code));
+        assert_eq!(fs.raw_os_error(), fs.fs_raw_os_error());
+
+        // Plain variants have no cause and therefore no errno.
+        assert_eq!(AppError::Cancelled.raw_os_error(), None);
+        assert_eq!(
+            AppError::NotFound(PathBuf::from("/tmp/x")).raw_os_error(),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cloned_boxed_cause_keeps_raw_os_error() {
+        // AV09: cloning a cause used to collapse it to text and lose errno.
+        let io = std::io::Error::from_raw_os_error(2);
+        let original = AppError::IoCause {
+            path: PathBuf::from("/tmp/clone"),
+            message: io.to_string(),
+            cause: BoxedCause::new(io),
+        };
+        let cloned = original.clone();
+        assert_eq!(original.raw_os_error(), Some(2));
+        assert_eq!(cloned.raw_os_error(), Some(2), "clone must keep errno");
+        // AV10: the message survives the clone; IoCause already renders the OS
+        // text as its `message`, so it is not appended a second time.
+        assert_eq!(cloned.message_ja(), original.message_ja());
+        assert!(cloned.message_ja().starts_with("/tmp/clone: "));
+
+        // Text-only causes keep the original rendered-text fallback.
+        let text = AppError::NotFoundCause(
+            PathBuf::from("/tmp/gone"),
+            BoxedCause::text("underlying detail"),
+        );
+        let cloned = text.clone();
+        assert_eq!(cloned.raw_os_error(), None);
+        assert_eq!(
+            cloned.source().map(ToString::to_string),
+            Some("underlying detail".to_string())
+        );
     }
 }

@@ -73,6 +73,7 @@ use gpui_kit::{bounds, point, px, size, Window, WindowBounds};
 
 use crate::history::{retain_last_n, History, HistorySnapshot};
 use crate::model::{SortDir, SortKey, SortSpec};
+use crate::strings::STATUS_SETTINGS_RESET_PREFIX;
 use crate::tabs::Tab;
 // Personalization types live in `model` (GPUI-free) but are re-exported here
 // so the UI layer has a single import site for persisted settings state. The
@@ -263,6 +264,144 @@ fn detect_unknown_persisted_enum(raw: &serde_json::Value) -> bool {
         }
     }
     false
+}
+
+/// Find an unknown key *inside* a nested object. Top-level unknown keys are
+/// preserved verbatim by [`Settings::extra_fields`], so they are deliberately
+/// not treated as read-only here. Nested structs cannot carry a flattened
+/// catch-all without widening their public `Copy` contracts, so a nested key
+/// written by a newer build must make the load read-only to keep the original
+/// file intact (AV21).
+fn detect_unknown_nested_keys(raw: &serde_json::Value) -> Option<String> {
+    fn first_unknown(
+        object: &serde_json::Map<String, serde_json::Value>,
+        known: &[&str],
+        prefix: &str,
+    ) -> Option<String> {
+        object
+            .keys()
+            .find(|key| !known.iter().any(|name| name == key))
+            .map(|key| format!("{prefix}{key}"))
+    }
+    fn each_object<'a>(
+        values: &'a [serde_json::Value],
+        known: &'a [&'a str],
+        field: &'a str,
+    ) -> impl Iterator<Item = String> + 'a {
+        values.iter().enumerate().filter_map(move |(index, value)| {
+            value
+                .as_object()
+                .and_then(|object| first_unknown(object, known, &format!("{field}[{index}].")))
+        })
+    }
+
+    let object = raw.as_object()?;
+    if let Some(sort) = object.get("sort").and_then(serde_json::Value::as_object) {
+        if let Some(key) = first_unknown(sort, &["key", "dir", "dirs_first"], "sort.") {
+            return Some(key);
+        }
+    }
+    if let Some(prefs) = object
+        .get("column_prefs")
+        .and_then(serde_json::Value::as_object)
+    {
+        if let Some(key) = first_unknown(prefs, &["visible", "widths"], "column_prefs.") {
+            return Some(key);
+        }
+    }
+    if let Some(windows) = object.get("windows").and_then(serde_json::Value::as_array) {
+        for (index, window) in windows.iter().enumerate() {
+            let Some(window) = window.as_object() else {
+                continue;
+            };
+            if let Some(key) = first_unknown(
+                window,
+                &["bounds", "tabs", "active_tab"],
+                &format!("windows[{index}]."),
+            ) {
+                return Some(key);
+            }
+            if let Some(bounds) = window.get("bounds").and_then(serde_json::Value::as_object) {
+                if let Some(key) = first_unknown(
+                    bounds,
+                    &["x", "y", "width", "height", "mode"],
+                    &format!("windows[{index}].bounds."),
+                ) {
+                    return Some(key);
+                }
+            }
+            if let Some(tabs) = window.get("tabs").and_then(serde_json::Value::as_array) {
+                if let Some(key) = each_object(tabs, &["cwd", "back", "forward"], "tabs")
+                    .map(|key| format!("windows[{index}].{key}"))
+                    .next()
+                {
+                    return Some(key);
+                }
+            }
+        }
+    }
+    for (field, known) in [
+        ("bookmark_labels", &["path", "label"][..]),
+        ("saved_searches", &["name", "query"][..]),
+    ] {
+        if let Some(values) = object.get(field).and_then(serde_json::Value::as_array) {
+            if let Some(key) = each_object(values, known, field).next() {
+                return Some(key);
+            }
+        }
+    }
+    None
+}
+
+/// Rebuild a settings object from a file where one field has the wrong JSON
+/// type. Serde rejects the whole struct on a single mismatch (e.g. a string
+/// `version`) and the old loader backed the file up, losing every unrelated
+/// bookmark and preference (AV03). Each known field is type-checked on its own;
+/// only the mistyped ones fall back to their serde default. Unknown keys are
+/// kept so [`Settings::extra_fields`] can carry them to the next save.
+fn salvage_settings(
+    raw: &serde_json::Value,
+) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
+    let mut kept = serde_json::Map::new();
+    let mut dropped = Vec::new();
+    let Some(object) = raw.as_object() else {
+        return (kept, dropped);
+    };
+    for (key, value) in object {
+        let usable = match key.as_str() {
+            "version" => serde_json::from_value::<u32>(value.clone()).is_ok(),
+            "last_dir" => serde_json::from_value::<Option<PathBuf>>(value.clone()).is_ok(),
+            "sort" => serde_json::from_value::<SortSpec>(value.clone()).is_ok(),
+            "show_hidden" | "show_thumbnails" => {
+                serde_json::from_value::<bool>(value.clone()).is_ok()
+            }
+            "column_prefs" => serde_json::from_value::<ColumnPrefs>(value.clone()).is_ok(),
+            // Enum deserializers always accept a string and substitute a
+            // fallback; the raw cross-check makes that load read-only.
+            "view" | "theme" | "theme_choice" => value.is_string(),
+            "terminal_command" => serde_json::from_value::<String>(value.clone()).is_ok(),
+            "keymap" => serde_json::from_value::<Vec<(String, String)>>(value.clone()).is_ok(),
+            "recent_dirs" | "bookmarks" | "tabs" => {
+                serde_json::from_value::<Vec<PathBuf>>(value.clone()).is_ok()
+            }
+            "bookmark_labels" => {
+                serde_json::from_value::<Vec<BookmarkLabel>>(value.clone()).is_ok()
+            }
+            "active_tab" => serde_json::from_value::<usize>(value.clone()).is_ok(),
+            "windows" => serde_json::from_value::<Vec<WindowSession>>(value.clone()).is_ok(),
+            "recent_searches" => serde_json::from_value::<Vec<String>>(value.clone()).is_ok(),
+            "saved_searches" => serde_json::from_value::<Vec<SavedSearch>>(value.clone()).is_ok(),
+            // A key this build does not know is not a type error: keep it so
+            // a later save does not erase it.
+            _ => true,
+        };
+        if usable {
+            kept.insert(key.clone(), value.clone());
+        } else {
+            dropped.push(key.clone());
+        }
+    }
+    (kept, dropped)
 }
 
 /// The user's persisted theme preference: follow the desktop (`System`) or
@@ -545,6 +684,19 @@ fn dedupe_paths(paths: &mut Vec<PathBuf>) {
 fn dedupe_strings(values: &mut Vec<String>) {
     let mut seen = HashSet::with_capacity(values.len());
     values.retain(|value| seen.insert(value.clone()));
+}
+
+/// Loading never truncates a persisted list to its runtime cap: startup saves
+/// the loaded settings, so a shortened list would silently destroy the tail
+/// (AV02). Mirror the `tabs` rule instead — log the excess and keep every
+/// usable entry; the runtime cap is enforced when new entries are added.
+fn warn_over_cap(field: &str, count: usize, limit: usize) {
+    if count > limit {
+        warn!(
+            field,
+            count, limit, "settings exceed the runtime cap; keeping all entries on load"
+        );
+    }
 }
 
 /// List view mode: the detailed list or the icon grid. Persisted in
@@ -938,6 +1090,12 @@ pub struct Settings {
     /// added in F6-38, optional in older schema files).
     #[serde(default)]
     pub saved_searches: Vec<SavedSearch>,
+    /// Keys written by a newer build that this build does not understand.
+    /// Serde would otherwise drop them on the next save; flattening keeps the
+    /// raw JSON so an older build never destroys a newer build's settings
+    /// (AV21/AV25). Not surfaced in the UI.
+    #[serde(flatten)]
+    pub extra_fields: HashMap<String, serde_json::Value>,
     /// Set when a corrupt settings file could not be backed up, the schema is
     /// newer than this build, or an enum value is unrecognized. Prevents a
     /// subsequent `save()` from overwriting the retained original (with
@@ -949,6 +1107,12 @@ pub struct Settings {
     /// shown in the status bar.
     #[serde(skip)]
     pub load_error: Option<String>,
+    /// Non-fatal load notice shown once at startup (e.g. a corrupt file was
+    /// moved aside and defaults were loaded, or one mistyped field was
+    /// discarded while the rest was salvaged). Deliberately separate from
+    /// `load_error`: writing must stay enabled after a successful backup.
+    #[serde(skip)]
+    pub settings_reset_notice: Option<String>,
     /// When set (debug hooks active), never write to disk. Not persisted.
     #[serde(skip)]
     pub ephemeral: bool,
@@ -982,8 +1146,10 @@ impl Default for Settings {
             windows: Vec::new(),
             recent_searches: Vec::new(),
             saved_searches: Vec::new(),
+            extra_fields: HashMap::new(),
             read_only: false,
             load_error: None,
+            settings_reset_notice: None,
             ephemeral: false,
         }
     }
@@ -1294,6 +1460,12 @@ impl Settings {
     /// Move an unusable settings file aside and return defaults. If the rename
     /// fails, stay read-only so a later `save()` cannot overwrite the original
     /// that had to be retained.
+    ///
+    /// A *successful* backup must stay writable (there is no original left at
+    /// `path` to protect), but the user has to be told where the old file went:
+    /// without a notice the startup `save()` silently replaces it with defaults
+    /// and bookmarks/history look lost (AV01). `load_error` cannot carry this
+    /// message because `ui_is_read_only()` would then disable every write.
     fn back_up_unusable(path: &Path, backup: &Path) -> Self {
         if let Err(error) = std::fs::rename(path, backup) {
             let reason = format!(
@@ -1307,7 +1479,12 @@ impl Settings {
                 ..Self::default()
             };
         }
-        Self::default()
+        let notice = format!("{STATUS_SETTINGS_RESET_PREFIX}: {}", backup.display());
+        warn!(%notice, "corrupt settings backed up; starting from defaults");
+        Self {
+            settings_reset_notice: Some(notice),
+            ..Self::default()
+        }
     }
 
     /// Load settings, falling back to defaults for a missing/corrupt file.
@@ -1393,19 +1570,37 @@ impl Settings {
                 return Self::back_up_unusable(path, &backup);
             }
         };
-        // Serde rejects wrong field types outright; `#[serde(default)]` only
-        // fills in fields that are absent, so a mistyped `version` or
-        // `show_hidden` lands in the backup-and-defaults branch below.
-        // Unknown enum names are derived from this file's own JSON: a shared
-        // signal would leak between concurrent loads. Parse the raw Value once
-        // and reuse it for the legacy `theme_choice` reconciliation below.
+        // Unknown enum names / nested keys are derived from this file's own
+        // JSON: a shared signal would leak between concurrent loads. Parse the
+        // raw Value once and reuse it for the legacy `theme_choice`
+        // reconciliation and the field-level salvage below.
         let raw = serde_json::from_str::<serde_json::Value>(&text);
         let unknown_enum = raw.as_ref().is_ok_and(detect_unknown_persisted_enum);
-        let Ok(mut settings) = serde_json::from_str::<Settings>(&text) else {
-            // Keep the broken file for debugging (DESIGN.md §8.1) instead of
-            // failing to start. If the backup rename fails, stay read-only so
-            // a later save() cannot overwrite the retained original.
-            return Self::back_up_unusable(path, &backup);
+        let unknown_key = raw.as_ref().ok().and_then(detect_unknown_nested_keys);
+        let mut settings = match serde_json::from_str::<Settings>(&text) {
+            Ok(settings) => settings,
+            Err(_) => {
+                // A single mistyped field used to back up the whole file and
+                // lose every unrelated setting (AV03). Try field-level
+                // salvage before falling back to that destructive path.
+                let Ok(value) = raw.as_ref() else {
+                    return Self::back_up_unusable(path, &backup);
+                };
+                let (kept, dropped) = salvage_settings(value);
+                match serde_json::from_value::<Settings>(serde_json::Value::Object(kept)) {
+                    Ok(mut settings) if !dropped.is_empty() => {
+                        let notice = format!(
+                            "設定の一部フィールドを既定値に戻しました（{}）",
+                            dropped.join(", ")
+                        );
+                        warn!(%notice, "salvaged mistyped settings fields");
+                        settings.settings_reset_notice = Some(notice);
+                        settings
+                    }
+                    Ok(settings) => settings,
+                    Err(_) => return Self::back_up_unusable(path, &backup),
+                }
+            }
         };
         // Backward compatibility: files written before `theme_choice` existed
         // store the preference only in `theme`. Mirror that legacy key into the
@@ -1431,16 +1626,19 @@ impl Settings {
         let loaded_version = settings.version;
         settings.migrate(loaded_version);
         settings.validate();
-        if unknown_enum && !settings.read_only {
-            // An unknown enum was replaced by a fallback in memory. Writing
-            // that fallback would permanently destroy the original string,
-            // which a newer build may still understand. Reuse the existing
-            // read-only mechanism so every save() becomes a no-op and the
-            // status bar can explain why via `load_error`.
-            let reason = "設定にこのバージョンでは解釈できない値が含まれています。元の値を保持するため書き込みは行いません";
-            warn!(%reason, "unknown persisted enum; settings are read-only");
+        if (unknown_enum || unknown_key.is_some()) && !settings.read_only {
+            // An unknown enum was replaced by a fallback in memory, or a
+            // nested key from a newer build cannot be represented here.
+            // Writing would permanently destroy the original value, so reuse
+            // the existing read-only mechanism: save() becomes a no-op and
+            // the status bar names the cause via `load_error` (AV07/AV21).
+            let detail = unknown_key.unwrap_or_else(|| "列挙値".to_string());
+            let reason = format!(
+                "設定にこのバージョンでは解釈できない値が含まれています（{detail}）。元の値を保持するため書き込みは行いません"
+            );
+            warn!(%reason, "unknown persisted value; settings are read-only");
             settings.read_only = true;
-            settings.load_error = Some(reason.to_string());
+            settings.load_error = Some(reason);
         }
         settings
     }
@@ -1508,11 +1706,11 @@ impl Settings {
         // by a unique path, truncating first would discard the unique entry.
         self.recent_dirs.retain(|path| sane_path(path));
         dedupe_paths(&mut self.recent_dirs);
-        self.recent_dirs.truncate(MAX_RECENT_DIRS);
+        warn_over_cap("recent_dirs", self.recent_dirs.len(), MAX_RECENT_DIRS);
 
         self.bookmarks.retain(|path| sane_path(path));
         dedupe_paths(&mut self.bookmarks);
-        self.bookmarks.truncate(MAX_BOOKMARKS);
+        warn_over_cap("bookmarks", self.bookmarks.len(), MAX_BOOKMARKS);
 
         // Normalize persisted personalization text *before* validating it.
         // `is_valid()` (via `sane_personal_text`) checks the raw byte length, so
@@ -1542,7 +1740,11 @@ impl Settings {
         let mut seen_labels = HashSet::with_capacity(self.bookmark_labels.len());
         self.bookmark_labels
             .retain(|entry| seen_labels.insert(entry.path.clone()));
-        self.bookmark_labels.truncate(MAX_BOOKMARK_LABELS);
+        warn_over_cap(
+            "bookmark_labels",
+            self.bookmark_labels.len(),
+            MAX_BOOKMARK_LABELS,
+        );
 
         // Keep every path as-is. The runtime allows several tabs with the same
         // cwd, each with its own back/forward history, so de-duplicating by
@@ -1563,7 +1765,10 @@ impl Settings {
         // Window-scoped sessions get the same hardening as the legacy fields.
         // A bogus frame is dropped (the caller falls back to a centered window)
         // instead of reaching GPUI's window creation path.
-        self.windows.truncate(MAX_WINDOW_SESSIONS);
+        // A ninth window session is real user data, not junk: truncating here
+        // would erase it on the very first save after launch (AV02). Keep it
+        // and warn, exactly as the top-level `tabs` list does.
+        warn_over_cap("windows", self.windows.len(), MAX_WINDOW_SESSIONS);
         for session in &mut self.windows {
             if session.bounds.is_none_or(|bounds| !bounds.is_valid()) {
                 session.bounds = None;
@@ -1595,13 +1800,21 @@ impl Settings {
             .filter(|query| sane_query(query))
             .collect();
         dedupe_strings(&mut self.recent_searches);
-        self.recent_searches.truncate(MAX_RECENT_SEARCHES);
+        warn_over_cap(
+            "recent_searches",
+            self.recent_searches.len(),
+            MAX_RECENT_SEARCHES,
+        );
 
         self.saved_searches.retain(|search| search.is_valid());
         let mut seen_names = HashSet::with_capacity(self.saved_searches.len());
         self.saved_searches
             .retain(|search| seen_names.insert(search.name_key()));
-        self.saved_searches.truncate(MAX_SAVED_SEARCHES);
+        warn_over_cap(
+            "saved_searches",
+            self.saved_searches.len(),
+            MAX_SAVED_SEARCHES,
+        );
 
         // Terminal command: normalize outer whitespace, then disable the
         // action when the value is blank or unsafe to pass through argv. An
@@ -1970,6 +2183,23 @@ mod tests {
     use gpui_kit::component::ThemeMode;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    /// Poll `predicate` every 10ms until it holds or `deadline` elapses.
+    /// Avoids a single fixed sleep that can expire before a busy CI worker
+    /// schedules the heartbeat thread, while keeping the wait bounded.
+    fn poll_until(deadline: Duration, predicate: impl Fn() -> bool) -> bool {
+        let start = Instant::now();
+        loop {
+            if predicate() {
+                return true;
+            }
+            if start.elapsed() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("gpui-fe-settings-{tag}-{}", std::process::id()))
@@ -2591,7 +2821,21 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
         fs::write(&path, b"{ not json").unwrap();
-        assert_eq!(Settings::load_from(&path), Settings::default());
+        let loaded = Settings::load_from(&path);
+        // AV01: a successful backup is reported but never makes the session
+        // read-only — the startup save must still be able to write defaults.
+        let notice = loaded
+            .settings_reset_notice
+            .as_deref()
+            .expect("backup notice");
+        assert!(
+            notice.contains("broken"),
+            "notice must name the backup: {notice}"
+        );
+        assert!(!loaded.read_only && loaded.load_error.is_none());
+        let mut comparable = loaded;
+        comparable.settings_reset_notice = None;
+        assert_eq!(comparable, Settings::default());
         // Broken file is preserved under a .broken-* name, not deleted.
         let backups: Vec<_> = fs::read_dir(&dir)
             .unwrap()
@@ -2705,15 +2949,74 @@ mod tests {
     }
 
     #[test]
-    fn unknown_fields_are_ignored() {
+    fn unknown_top_level_fields_survive_a_save() {
         let dir = scratch("unknown");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
-        fs::write(&path, br#"{ "future_field": 42, "view": "icons" }"#).unwrap();
+        fs::write(
+            &path,
+            br#"{ "future_field": 42, "future_object": {"enabled": true}, "view": "icons" }"#,
+        )
+        .unwrap();
         let loaded = Settings::load_from(&path);
         assert_eq!(loaded.view, ViewLayout::Icons);
         assert_eq!(loaded.sort, SortSpec::default());
+        // AV25: ignoring a key at load is not enough — a later save must not
+        // erase it. Top-level extras are flattened back into the JSON.
+        assert_eq!(
+            loaded.extra_fields.get("future_field"),
+            Some(&serde_json::json!(42))
+        );
+        assert_eq!(
+            loaded.extra_fields.get("future_object"),
+            Some(&serde_json::json!({"enabled": true}))
+        );
+        assert!(
+            !loaded.read_only,
+            "unknown top-level keys are preserved on save"
+        );
+        let saved = dir.join("saved.json");
+        loaded.save_to(&saved).unwrap();
+        let text = fs::read_to_string(&saved).unwrap();
+        let saved_value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            saved_value.get("future_field"),
+            Some(&serde_json::json!(42))
+        );
+        assert_eq!(
+            saved_value.get("future_object"),
+            Some(&serde_json::json!({"enabled": true}))
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_nested_field_keeps_the_original_file_read_only() {
+        // AV21: a nested key written by a newer build cannot be represented
+        // here, so save() must stay a no-op instead of silently dropping it.
+        let dir = scratch("unknown-nested");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": SCHEMA_VERSION,
+                "sort": { "key": "name", "dir": "asc", "dirs_first": true, "future_sort": 1 },
+                "windows": [{ "tabs": [], "active_tab": 0, "future_window": true }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(loaded.read_only);
+        assert!(loaded
+            .load_error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("sort.future_sort")));
+        loaded.save_to(&path).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("future_sort"));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2837,9 +3140,8 @@ mod tests {
             token.to_string(),
             std::time::Duration::from_millis(20),
         );
-        std::thread::sleep(std::time::Duration::from_millis(120));
         assert!(
-            !Settings::lock_is_stale(&lock),
+            poll_until(Duration::from_secs(2), || !Settings::lock_is_stale(&lock)),
             "the heartbeat must keep an in-progress save's lock fresh"
         );
         heartbeat.stop();
@@ -2851,11 +3153,16 @@ mod tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        assert!(
-            Settings::lock_is_stale(&lock),
-            "the heartbeat must stop on request"
-        );
+        // Observe for longer than the 20ms heartbeat interval: the lock must
+        // stay stale at every sample now that the heartbeat has been stopped.
+        let quiet = Instant::now();
+        while quiet.elapsed() < Duration::from_millis(120) {
+            assert!(
+                Settings::lock_is_stale(&lock),
+                "the heartbeat must stop on request"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         // A foreign token is never refreshed, even while a heartbeat runs.
         fs::write(&lock, b"foreign").unwrap();
@@ -2870,11 +3177,14 @@ mod tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        assert!(
-            Settings::lock_is_stale(&lock),
-            "a lock that no longer carries our token must be left alone"
-        );
+        let quiet = Instant::now();
+        while quiet.elapsed() < Duration::from_millis(120) {
+            assert!(
+                Settings::lock_is_stale(&lock),
+                "a lock that no longer carries our token must be left alone"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         heartbeat.stop();
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -3329,7 +3639,11 @@ mod schema_validation_tests {
         )
         .unwrap();
         let loaded = Settings::load_from(&path);
-        assert_eq!(loaded, Settings::default());
+        assert!(loaded.settings_reset_notice.is_some());
+        assert!(!loaded.read_only && loaded.load_error.is_none());
+        let mut comparable = loaded;
+        comparable.settings_reset_notice = None;
+        assert_eq!(comparable, Settings::default());
         assert!(!path.exists(), "oversized file must be moved aside");
         assert_eq!(backup_names(&dir).len(), 1);
         fs::remove_dir_all(&dir).unwrap();
@@ -3392,14 +3706,18 @@ mod schema_validation_tests {
         let (dir, path) = setup("invalid-utf8");
         fs::write(&path, [b'{', b'"', 0xff, b'"', b':', b'1', b'}']).unwrap();
         let loaded = Settings::load_from(&path);
-        assert_eq!(loaded, Settings::default());
+        assert!(loaded.settings_reset_notice.is_some());
+        assert!(!loaded.read_only && loaded.load_error.is_none());
+        let mut comparable = loaded;
+        comparable.settings_reset_notice = None;
+        assert_eq!(comparable, Settings::default());
         assert!(!path.exists(), "corrupt file must be moved aside");
         assert_eq!(backup_names(&dir).len(), 1);
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn all_persisted_arrays_are_bounded_on_load() {
+    fn over_cap_persisted_arrays_are_kept_on_load() {
         let (dir, path) = setup("array-caps");
         let json = serde_json::json!({
             "version": 1,
@@ -3418,13 +3736,59 @@ mod schema_validation_tests {
         });
         fs::write(&path, json.to_string()).unwrap();
         let loaded = Settings::load_from(&path);
-        assert_eq!(loaded.recent_dirs.len(), MAX_RECENT_DIRS);
-        assert_eq!(loaded.bookmarks.len(), MAX_BOOKMARKS);
-        assert_eq!(loaded.recent_searches.len(), MAX_RECENT_SEARCHES);
-        // Tabs are intentionally not capped on load: the runtime owns that
-        // cap, and truncating here would silently destroy tab history.
+        // AV02: every list follows the tabs rule — a load-time cap would be
+        // written back by the startup save and silently destroy the tail.
+        assert_eq!(loaded.recent_dirs.len(), MAX_RECENT_DIRS + 5);
+        assert_eq!(loaded.bookmarks.len(), MAX_BOOKMARKS + 5);
+        assert_eq!(loaded.recent_searches.len(), MAX_RECENT_SEARCHES + 5);
         assert_eq!(loaded.tabs.len(), MAX_TABS + 5);
         assert_eq!(loaded.active_tab, 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn over_cap_lists_and_windows_survive_a_save_load_roundtrip() {
+        // AV02 regression: nine windows and one entry past every list cap must
+        // come back unchanged — the old load-time truncate lost them on the
+        // very first startup save.
+        let (dir, path) = setup("over-cap-roundtrip");
+        let raw = serde_json::json!({
+            "version": SCHEMA_VERSION,
+            "recent_dirs": (0..MAX_RECENT_DIRS + 1)
+                .map(|index| format!("/recent-{index}"))
+                .collect::<Vec<_>>(),
+            "bookmarks": (0..MAX_BOOKMARKS + 1)
+                .map(|index| format!("/bookmark-{index}"))
+                .collect::<Vec<_>>(),
+            "recent_searches": (0..MAX_RECENT_SEARCHES + 1)
+                .map(|index| format!("query-{index}"))
+                .collect::<Vec<_>>(),
+            "windows": (0..MAX_WINDOW_SESSIONS + 1)
+                .map(|index| {
+                    serde_json::json!({
+                        "bounds": { "x": 80.0, "y": 60.0, "width": 900.0,
+                                    "height": 600.0, "mode": "windowed" },
+                        "tabs": [{ "cwd": format!("/win-{index}"), "back": [], "forward": [] }],
+                        "active_tab": 0,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        })
+        .to_string();
+        fs::write(&path, &raw).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.windows.len(), MAX_WINDOW_SESSIONS + 1);
+        assert_eq!(loaded.recent_dirs.len(), MAX_RECENT_DIRS + 1);
+        assert_eq!(loaded.bookmarks.len(), MAX_BOOKMARKS + 1);
+        assert_eq!(loaded.recent_searches.len(), MAX_RECENT_SEARCHES + 1);
+
+        let saved = dir.join("saved.json");
+        loaded.save_to(&saved).unwrap();
+        let reloaded = Settings::load_from(&saved);
+        assert_eq!(
+            reloaded, loaded,
+            "round-trip must not drop over-cap entries"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -3486,19 +3850,62 @@ mod schema_validation_tests {
     }
 
     #[test]
-    fn mistyped_fields_are_rejected_and_backed_up() {
-        for (tag, text) in [
-            ("version-string", r#"{"version":"1","show_hidden":true}"#),
-            ("version-float", r#"{"version":1.5}"#),
-            ("bool-string", r#"{"version":1,"show_hidden":"yes"}"#),
-            ("negative-tab", r#"{"version":1,"active_tab":-1}"#),
+    fn mistyped_field_discards_only_that_field_and_keeps_the_rest() {
+        // AV03: one wrong-typed field used to back up the entire file, taking
+        // bookmarks and every other preference with it. Now only the broken
+        // field falls back and the rest survives in memory and on disk.
+        for (tag, text, bad_key, expect_hidden) in [
+            (
+                "version-string",
+                r#"{"version":"1","show_hidden":true,"bookmarks":["/home/koppe"]}"#,
+                "version",
+                true,
+            ),
+            (
+                "version-float",
+                r#"{"version":1.5,"show_hidden":true,"bookmarks":["/home/koppe"]}"#,
+                "version",
+                true,
+            ),
+            (
+                "bool-string",
+                r#"{"version":1,"show_hidden":"yes","bookmarks":["/home/koppe"]}"#,
+                "show_hidden",
+                false,
+            ),
+            (
+                "negative-tab",
+                r#"{"version":1,"active_tab":-1,"show_hidden":true,"bookmarks":["/home/koppe"]}"#,
+                "active_tab",
+                true,
+            ),
         ] {
             let (dir, path) = setup(tag);
             fs::write(&path, text).unwrap();
             let loaded = Settings::load_from(&path);
-            assert_eq!(loaded, Settings::default(), "accepted {text}");
-            assert!(!path.exists());
-            assert_eq!(backup_names(&dir).len(), 1);
+            assert!(path.exists(), "{text} must not be backed up");
+            assert!(
+                backup_names(&dir).is_empty(),
+                "{text} must not be backed up"
+            );
+            assert!(!loaded.read_only && loaded.load_error.is_none(), "{text}");
+            assert!(
+                loaded
+                    .settings_reset_notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.contains(bad_key)),
+                "{text}: notice must name the discarded field"
+            );
+            assert_eq!(loaded.version, SCHEMA_VERSION);
+            assert_eq!(
+                loaded.show_hidden, expect_hidden,
+                "{text}: the other bool must survive"
+            );
+            assert_eq!(
+                loaded.bookmarks,
+                vec![PathBuf::from("/home/koppe")],
+                "{text}"
+            );
             fs::remove_dir_all(&dir).unwrap();
         }
     }
@@ -4254,7 +4661,7 @@ mod window_session_tests {
     }
 
     #[test]
-    fn window_sessions_are_bounded_and_history_is_capped() {
+    fn window_sessions_are_kept_over_cap_and_history_is_capped() {
         let mut settings = Settings::default();
         for index in 0..(MAX_WINDOW_SESSIONS + 3) {
             settings.windows.push(WindowSession {
@@ -4270,7 +4677,9 @@ mod window_session_tests {
             });
         }
         settings.validate();
-        assert_eq!(settings.windows.len(), MAX_WINDOW_SESSIONS);
+        // AV02: an existing ninth session is preserved; only new windows are
+        // bounded by MAX_WINDOW_SESSIONS at runtime.
+        assert_eq!(settings.windows.len(), MAX_WINDOW_SESSIONS + 3);
         assert_eq!(settings.primary_window().unwrap().active_tab, 0);
 
         let mut settings = Settings::default();
@@ -4535,8 +4944,10 @@ mod personalization_settings_tests {
                 .push(BookmarkLabel::new(&path, "label").unwrap());
         }
         settings.validate();
-        assert_eq!(settings.saved_searches.len(), MAX_SAVED_SEARCHES);
-        assert_eq!(settings.bookmark_labels.len(), MAX_BOOKMARK_LABELS);
+        // AV02: the runtime caps these lists when adding new entries; a
+        // validation call must not silently discard existing ones.
+        assert_eq!(settings.saved_searches.len(), MAX_SAVED_SEARCHES + 5);
+        assert_eq!(settings.bookmark_labels.len(), MAX_BOOKMARK_LABELS + 5);
     }
 
     #[test]
@@ -4780,10 +5191,26 @@ mod terminal_command_tests {
     }
 
     #[test]
-    fn mistyped_command_is_rejected_like_other_wrong_types() {
+    fn mistyped_command_is_discarded_without_backing_up_the_file() {
         let (dir, path) = setup("mistyped");
         fs::write(&path, br#"{"version":1,"terminal_command":42}"#).unwrap();
-        assert_eq!(Settings::load_from(&path), Settings::default());
+        let loaded = Settings::load_from(&path);
+        assert!(loaded
+            .settings_reset_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("terminal_command")));
+        assert!(!loaded.read_only && loaded.load_error.is_none());
+        assert!(path.exists());
+        assert!(fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .all(|entry| !entry.file_name().to_string_lossy().contains("broken")));
+        let mut comparable = loaded;
+        comparable.settings_reset_notice = None;
+        // A discarded `terminal_command` reverts to the serde "unset" value
+        // (empty), not `Settings::default()`'s platform prefill ("konsole").
+        assert_eq!(comparable.terminal_command, "");
+        assert_eq!(comparable.version, SCHEMA_VERSION);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

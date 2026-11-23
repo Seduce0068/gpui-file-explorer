@@ -14,7 +14,10 @@ const SWIPE_MIN_DX = 80;
 const SWIPE_EDGE_GUARD = 24;
 const CLICK_SUPPRESS_MS = 700;
 
-const els = {
+// Node's `node --test` imports this module to exercise the pure helpers.
+// Only the browser has `document`; skip DOM wiring there.
+const hasDom = typeof document !== 'undefined';
+const els = hasDom ? {
   status: document.getElementById('status'),
   search: document.getElementById('search'),
   pickDir: document.getElementById('pick-dir'),
@@ -22,7 +25,7 @@ const els = {
   list: document.getElementById('entry-list'),
   title: document.getElementById('list-title'),
   count: document.getElementById('list-count'),
-};
+} : {};
 
 const state = {
   module: null,
@@ -39,6 +42,12 @@ const state = {
 };
 
 // --- 小さなユーティリティ -------------------------------------------------
+
+// Pure clock comparison: no `performance.now()` call, so it can be verified
+// with a fixed `now` from node --test.
+function isClickSuppressed(now, until) {
+  return now < until;
+}
 
 function setStatus(message, level = 'info') {
   els.status.textContent = message;
@@ -246,7 +255,7 @@ function entryFromEvent(event) {
 }
 
 function onListClick(event) {
-  if (performance.now() < state.suppressClickUntil) return;
+  if (isClickSuppressed(performance.now(), state.suppressClickUntil)) return;
   const { li, entry } = entryFromEvent(event);
   if (li && entry) selectIndex(Number(li.dataset.index));
 }
@@ -311,7 +320,7 @@ function onListTouchEnd(event) {
   state.touch = null;
   if (current.moved || !current.swipeEnabled) return;
   if (document.activeElement === els.search) return;
-  if (performance.now() < state.suppressClickUntil) return;
+  if (isClickSuppressed(performance.now(), state.suppressClickUntil)) return;
   const touch = event.changedTouches[0];
   if (!touch) return;
   const dx = touch.clientX - current.startX;
@@ -559,4 +568,8 @@ async function boot() {
   }
 }
 
-boot();
+if (hasDom) boot();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { isClickSuppressed };
+}

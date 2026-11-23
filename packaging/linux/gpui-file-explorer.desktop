@@ -8,6 +8,7 @@ GenericName[ja]=ファイルマネージャー
 Comment=A fast cross-platform file explorer built with GPUI
 Comment[ja]=GPUI で作られた高速なファイルエクスプローラー
 Exec=gpui-file-explorer %f
+TryExec=gpui-file-explorer
 Icon=gpui-file-explorer
 Terminal=false
 MimeType=inode/directory;

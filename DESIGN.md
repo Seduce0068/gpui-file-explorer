@@ -1070,10 +1070,12 @@ app/
   リポジトリ直下の `deny.toml` を正本とし、ここでは重複列挙しない
   （`app/` と `poc/` が同じ設定を共有する）。P0 では `cargo tree` で直接依存の
   ライセンス確認を README に記録した。**自動化は as-built で完了済み**:
-  `.github/workflows/ci.yml` の `supply-chain` ジョブが `app/` と `poc/` の
-  両方に `cargo deny check`（全チェック）と `cargo vet check`
-  （store 存在時のみ）を実行し、`gates` ジョブが `cargo audit` を実行する。
-  ローカルは `scripts/check.sh`（`--no-release` / `--strict` 対応）で再現可
+  `.github/workflows/ci.yml` の `supply-chain` ジョブが `cargo deny check`
+  （全チェック）を `app/` と `poc/` の両方に、`cargo vet check`
+  （`app/supply-chain/config.toml` 存在時のみ）を **`app/` のみ**に実行し、
+  `gates` ジョブが `cargo audit` を実行する。ローカルの `scripts/check.sh`
+  （`--no-release` / `--strict` 対応）は両プロジェクトで `cargo vet` の
+  store 有無を試行するが、CI のゲートは `app/` のみである
   （[`README.md`](README.md)「CI の検証範囲」）。
 
 ---

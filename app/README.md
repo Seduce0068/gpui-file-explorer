@@ -604,6 +604,31 @@ dpkg-deb -x "${deb}" "${verify_dir}"
 "${verify_dir}/usr/bin/gpui-file-explorer" --version # 配布バイナリの確認
 ```
 
+### インストール / 検証 / アンインストール
+
+作成した DEB は次の 3 段で扱います（Kubuntu 向け）。
+
+```bash
+deb="packaging/linux/build/gpui-file-explorer_0.1.0-1_amd64.deb"
+
+# 1. インストール（root 権限が必要）
+sudo dpkg -i "${deb}"
+
+# 2. 検証（ステージ照合は読み取り専用、バイナリは配布物を確認）
+bash packaging/linux/build-deb.sh --verify
+dpkg-deb --info "${deb}"
+dpkg-deb --contents "${deb}"
+gpui-file-explorer --version
+
+# 3. アンインストール
+sudo dpkg -r gpui-file-explorer
+```
+
+`dpkg -r` は `/usr` 配下の配布ファイルのみを削除し、
+**`$HOME` のデータは残します**
+（`~/.config/gpui-file-explorer/settings.json`）。完全に消す場合は手動で
+削除してください。再インストール時は同じ設定が読み込まれます。
+
 ## エラーが出たら
 
 エラー時は F5 再読込 / 親フォルダへ移動 / 名前変更で対処します。

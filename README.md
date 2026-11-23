@@ -139,6 +139,31 @@ bash packaging/linux/build-deb.sh --skip-build
   `apt-get -s install ./...deb` の依存解決が通ること
 - 署名・リポジトリ公開・タグ付けは未実施（リリースはユーザー指示があるまで行いません）
 
+### インストール / 検証 / アンインストール
+
+ビルドした DEB は次の 3 段で扱います（Kubuntu 向け）。
+
+```bash
+deb="packaging/linux/build/gpui-file-explorer_0.1.0-1_amd64.deb"
+
+# 1. インストール（root 権限が必要）
+sudo dpkg -i "${deb}"
+
+# 2. 検証（ビルド成果物とステージの照合は読み取り専用）
+bash packaging/linux/build-deb.sh --verify
+dpkg-deb --info "${deb}"
+dpkg-deb --contents "${deb}"
+gpui-file-explorer --version
+
+# 3. アンインストール
+sudo dpkg -r gpui-file-explorer
+```
+
+`dpkg -r` はパッケージが配布した `/usr` 配下のファイルだけを削除します。
+設定などの **`$HOME` データは残ります**
+（`~/.config/gpui-file-explorer/settings.json`）。完全に消す場合は必要に応じて
+手動で削除してください。再インストール時はこの設定が再利用されます。
+
 ## 既知の制限
 
 - キーボード / 右クリック / 削除確認ダイアログの**実押下 E2E は未検証**。
@@ -251,7 +276,9 @@ bash scripts/check.sh --fast       # audit と vet を省略。deny は advisori
 bash scripts/check.sh --no-release # app の release check/test のみ省略。
 bash scripts/check.sh --strict     # 監査ツール未導入時に失敗（既定は SKIPPED）。
 bash scripts/check.sh --app        # app/ のみ（release 検証を含む）。
-bash scripts/check.sh --poc        # poc/ のみ。
+bash scripts/check.sh --poc        # poc/ に加え、workspace member の core / win32 の
+                                   # test+clippy と wasm32 / windows-gnu の
+                                   # クロスターゲット check も実行（app/ は省略）。
 ```
 
 - 検証（Runtime Proof）: 完全ループが **exit 0**（clippy 警告 0 /
