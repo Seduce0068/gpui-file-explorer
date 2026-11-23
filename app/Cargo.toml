@@ -36,3 +36,9 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 [target.'cfg(any(target_os = "windows", all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))'.dependencies]
 trash = "5.3"
 
+# NF02: Win32 FFI は gfe-win32 crate に隔離する。app 側の
+# `#![forbid(unsafe_code)]` は維持したまま、Windows のみで依存を追加する。
+# Windows 以外の cross-compile ではクレート自体がビルド対象にならない。
+[target.'cfg(target_os = "windows")'.dependencies]
+gfe-win32 = { version = "0.1.0", path = "../win32" }
+

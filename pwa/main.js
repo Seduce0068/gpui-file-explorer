@@ -10,6 +10,10 @@
 
 const WASM_MODULE = './pkg/gfe_core.js';
 const SEARCH_DEBOUNCE_MS = 150;
+const LONG_PRESS_MS = 500;
+const SWIPE_MIN_DX = 80;
+const SWIPE_EDGE_GUARD = 24;
+const CLICK_SUPPRESS_MS = 700;
 
 const els = {
   status: document.getElementById('status'),
@@ -28,6 +32,11 @@ const state = {
   entries: [],
   debounce: 0,
   rootName: '.',
+  // 現在描画中の一覧と選択状態（タップ / 長押し / スワイプ / キーボードで共有）。
+  renderedEntries: [],
+  selected: null,
+  touch: null,
+  suppressClickUntil: 0,
 };
 
 // --- 小さなユーティリティ -------------------------------------------------
@@ -135,6 +144,9 @@ function render(entries, { heading }) {
   els.title.textContent = heading;
   els.count.textContent = `${entries.length} 件`;
   els.list.replaceChildren();
+  // 再描画時は選択をリセットし、以降の操作はこの配列を基準にする。
+  state.renderedEntries = entries;
+  state.selected = null;
 
   if (entries.length === 0) {
     const li = document.createElement('li');
@@ -145,8 +157,12 @@ function render(entries, { heading }) {
   }
 
   const fragment = document.createDocumentFragment();
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     const li = document.createElement('li');
+    li.dataset.index = String(index);
+    li.setAttribute('role', 'option');
+    li.setAttribute('aria-selected', 'false');
+    li.tabIndex = index === 0 ? 0 : -1;
 
     const name = document.createElement('span');
     name.className = 'entry-name';
@@ -166,6 +182,175 @@ function render(entries, { heading }) {
     fragment.append(li);
   }
   els.list.append(fragment);
+}
+
+// --- 選択 / タッチ / マウス / キーボード操作 -------------------------------
+// 一覧は差し替わるため、リスナーは els.list への委譲で 1 回だけ登録する。
+
+function entryAt(index) {
+  const i = Number(index);
+  return Number.isInteger(i) && i >= 0 && i < state.renderedEntries.length
+    ? state.renderedEntries[i]
+    : null;
+}
+
+function selectedIndex() {
+  return state.selected ? state.renderedEntries.indexOf(state.selected) : -1;
+}
+
+function applySelection(index) {
+  for (const li of els.list.querySelectorAll('li[data-index]')) {
+    const isSelected = Number(li.dataset.index) === index;
+    li.setAttribute('aria-selected', String(isSelected));
+    li.tabIndex = isSelected ? 0 : -1;
+  }
+}
+
+function selectIndex(index) {
+  const entry = entryAt(index);
+  if (!entry) return;
+  state.selected = entry;
+  applySelection(index);
+  setStatus(`選択: ${entry.name}`);
+  const li = els.list.querySelector(`li[data-index="${index}"]`);
+  if (li) li.focus({ preventScroll: true });
+}
+
+function moveSelection(delta) {
+  const length = state.renderedEntries.length;
+  if (length === 0) return;
+  const current = selectedIndex();
+  const start = current < 0 ? (delta > 0 ? -1 : 0) : current;
+  selectIndex(Math.min(length - 1, Math.max(0, start + delta)));
+}
+
+function showEntryMeta(entry) {
+  if (!entry) return;
+  const kind = entry.isDir ? 'フォルダ' : 'ファイル';
+  // textContent 経由（setStatus）なので path に HTML が入っていても実行されない。
+  setStatus(
+    `詳細: ${entry.path} · size: ${entry.size} B (${humanSize(entry.size)}) · isDir: ${entry.isDir} · ${kind}`,
+  );
+  // 長押し / 右クリック後の click が選択として誤処理されないようにする。
+  state.suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
+}
+
+function entryFromEvent(event) {
+  const li = event.target instanceof Element
+    ? event.target.closest('li[data-index]')
+    : null;
+  return { li, entry: li ? entryAt(li.dataset.index) : null };
+}
+
+function onListClick(event) {
+  if (performance.now() < state.suppressClickUntil) return;
+  const { li, entry } = entryFromEvent(event);
+  if (li && entry) selectIndex(Number(li.dataset.index));
+}
+
+function onListContextMenu(event) {
+  // ブラウザ標準のコンテキストメニューを抑制し、デスクトップ右クリックも
+  // タッチの長押しと同じメタ表示として扱う。
+  event.preventDefault();
+  const { entry } = entryFromEvent(event);
+  if (entry) showEntryMeta(entry);
+}
+
+function clearLongPress() {
+  if (state.touch && state.touch.timer) {
+    window.clearTimeout(state.touch.timer);
+    state.touch.timer = 0;
+  }
+}
+
+function onListTouchStart(event) {
+  // 検索入力中は無効化（iOS Safari の標準スワイプバックとの競合を避ける）。
+  if (document.activeElement === els.search || event.touches.length !== 1) {
+    state.touch = null;
+    return;
+  }
+  const touch = event.touches[0];
+  const { entry } = entryFromEvent(event);
+  state.touch = {
+    startX: touch.clientX,
+    startY: touch.clientY,
+    entry,
+    moved: false,
+    // 画面左端から始まるジェスチャは OS の戻る操作へ譲る。
+    swipeEnabled: touch.clientX > SWIPE_EDGE_GUARD,
+    timer: 0,
+  };
+  if (entry) {
+    state.touch.timer = window.setTimeout(() => {
+      state.touch = null;
+      showEntryMeta(entry);
+    }, LONG_PRESS_MS);
+  }
+}
+
+function onListTouchMove(event) {
+  const current = state.touch;
+  if (!current || event.touches.length !== 1) return;
+  const touch = event.touches[0];
+  if (Math.hypot(touch.clientX - current.startX, touch.clientY - current.startY) > 10) {
+    current.moved = true;
+    clearLongPress();
+  }
+}
+
+function onListTouchEnd(event) {
+  const current = state.touch;
+  if (!current) return;
+  clearLongPress();
+  state.touch = null;
+  if (current.moved || !current.swipeEnabled) return;
+  if (document.activeElement === els.search) return;
+  if (performance.now() < state.suppressClickUntil) return;
+  const touch = event.changedTouches[0];
+  if (!touch) return;
+  const dx = touch.clientX - current.startX;
+  const dy = touch.clientY - current.startY;
+  if (dx > SWIPE_MIN_DX && Math.abs(dx) > Math.abs(dy) * 1.2) {
+    onSwipeBack().catch((error) =>
+      setStatus(`一覧へ戻る処理に失敗: ${errorMessage(error)}`, 'error'));
+  }
+}
+
+function onListTouchCancel() {
+  clearLongPress();
+  state.touch = null;
+}
+
+async function onSwipeBack() {
+  state.suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
+  window.clearTimeout(state.debounce);
+  els.search.value = '';
+  state.selected = null;
+  setStatus('検索をクリアして一覧へ戻りました');
+  await runSearch('');
+}
+
+function onListKeyDown(event) {
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    moveSelection(1);
+    return;
+  }
+  if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveSelection(-1);
+    return;
+  }
+  if (event.key === 'Enter') {
+    const { li, entry } = entryFromEvent(event);
+    if (li && entry) {
+      selectIndex(Number(li.dataset.index));
+    } else if (!state.selected) {
+      return;
+    }
+    event.preventDefault();
+    setStatus(`選択確定: ${state.selected.name}`);
+  }
 }
 
 // --- コア API 呼び出し（主要経路） ----------------------------------------
@@ -332,6 +517,16 @@ async function boot() {
     window.clearTimeout(state.debounce);
     state.debounce = window.setTimeout(() => runSearch(els.search.value), SEARCH_DEBOUNCE_MS);
   });
+
+  // ここでは検索 input の Enter には触れず、一覧内の操作だけを扱う。
+  els.list.setAttribute('role', 'listbox');
+  els.list.addEventListener('click', onListClick);
+  els.list.addEventListener('contextmenu', onListContextMenu);
+  els.list.addEventListener('keydown', onListKeyDown);
+  els.list.addEventListener('touchstart', onListTouchStart, { passive: true });
+  els.list.addEventListener('touchmove', onListTouchMove, { passive: true });
+  els.list.addEventListener('touchend', onListTouchEnd, { passive: true });
+  els.list.addEventListener('touchcancel', onListTouchCancel, { passive: true });
 
   if (supportsFileSystemAccess()) {
     els.pickDir.hidden = false;

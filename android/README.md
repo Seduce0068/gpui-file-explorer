@@ -15,11 +15,32 @@ Android は **Compose アプリ + PWA** の両方に対応する方針のうち�
 依存の解決やコンパイルは試していない。Gradle / AGP / Kotlin / Compose のバージョンは
 scaffold 用の例示であり、実機ビルド時に利用可能なツールチェーンへ合わせること。
 
+選択状態・long-press 詳細表示の UI テストも、SDK / JDK が無いこの環境では実行できない。
+よってソースコードのみを作成し、`./gradlew build` も UI テストも未実施である
+（上記「ビルド検証不可」の記述を維持）。実機 / CI 環境でビルド・UI テストを実行して確認すること。
+
 ## 受け入れ基準
 
 **Phase 1 spike の受け入れは外観ではなくコア API 経由の一覧・検索表示。**
 現状の `MainActivity.kt` は検索フィールドと `LazyColumn` の骨格だけで、
 一覧データはサンプル。`TODO(P1-04)` をコア API 呼び出しに置き換えるまで受け入れではない。
+
+## タッチ操作（R2 / NW11）
+
+`EntryRow` に `androidx.compose.foundation.combinedClickable` を適用し、次を実装した
+（`combinedClickable` は experimental なため `@OptIn(ExperimentalFoundationApi::class)` を付与）。
+
+- **tap（単押し）**: `onClick` で `onSelect(entry)` を呼び、1 画面の
+  `remember { mutableStateOf<EntryUiModel?>(null) }` に選択行を保持する。
+  選択行は `Modifier.background(MaterialTheme.colorScheme.primaryContainer)` で強調する。
+- **long-press（長押し）**: `onLongClick` で `onDetails(entry)` を呼び、
+  `path` / `size` / `isDir` を Material3 の `SnackbarHost` で表示する（最小構成）。
+  tap と long-press を 1 つの `combinedClickable` で捌くため、単体の `clickable` は併用しない。
+
+### スワイプで戻る（戻るジェスチャ）
+
+Compose 側では戻るスワイプを実装しない。Android のシステム back gesture
+（画面端からのスワイプ）に委ねる。アプリ固有のスワイプ戻る処理を追加する必要はない。
 
 ## 構成
 
@@ -30,7 +51,7 @@ scaffold 用の例示であり、実機ビルド時に利用可能なツール�
 | `app/build.gradle.kts` | Compose BOM + `activity-compose` + `material3`、namespace `com.example.gfe` |
 | `app/src/main/AndroidManifest.xml` | `MainActivity` をランチャー Activity として登録 |
 | `app/src/main/res/values/themes.xml` | Compose 用の NoActionBar テーマ |
-| `app/src/main/java/com/example/gfe/MainActivity.kt` | 検索ボックス + `LazyColumn` の 1 画面骨格 |
+| `app/src/main/java/com/example/gfe/MainActivity.kt` | 検索ボックス + `LazyColumn` の 1 画面骨格（tap 選択 / long-press 詳細を追加済み） |
 
 `android/` と `pwa/` はルート `Cargo.toml` の workspace members には入れず、
 既存のデスクトップ用ビルドを壊さない。

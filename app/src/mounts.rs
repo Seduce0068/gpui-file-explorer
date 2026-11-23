@@ -6,12 +6,11 @@
 //! are collapsed. Other platforms return an empty list for now (documented in
 //! the README); they can be added later without changing the UI.
 //!
-//! Windows drive discovery is split in two: the projection from the Win32
-//! `GetLogicalDrives` mask / `GetVolumeInformationW` data into `MountPoint`s is
-//! a pure, headlessly testable function, while the actual FFI call is kept in a
-//! documented stub. The stub is intentionally empty because `windows-sys` is
-//! only a *transitive* dependency (it cannot be `use`d directly) and this crate
-//! sets `#![forbid(unsafe_code)]`; see the note on [`list_mounts`] below.
+//! Windows drive discovery now lives in the `gfe-win32` crate: every `unsafe`
+//! Win32 call (`GetLogicalDrives`, `GetVolumeInformationW`) is isolated there so
+//! this crate keeps `#![forbid(unsafe_code)]`. The pure projection helpers below
+//! remain as headless tests of the `MountPoint` shape that `gfe-win32` mirrors;
+//! the real [`list_mounts`] only maps the returned `MountInfo`s into `MountPoint`s.
 //!
 //! This module is GPUI-free so the parser can be unit tested headlessly.
 
@@ -32,9 +31,9 @@ pub struct MountPoint {
 /// Pure: expand a Win32 `GetLogicalDrives` bitmask into drive letters `A`..`Z`.
 ///
 /// Bit *i* (0-based) corresponds to `b'A' + i`; the remaining bits of the
-/// `u32` are ignored. Keeping this conversion pure makes the Windows drive
-/// layout regression-testable on Linux as well.
-#[cfg(any(target_os = "windows", test))]
+/// `u32` are ignored. Production Windows code now lives in `gfe-win32`; this
+/// helper is kept as a headless regression test of the same drive-letter layout.
+#[cfg(test)]
 pub fn drive_letters_from_mask(mask: u32) -> Vec<char> {
     (0..26u32)
         .filter_map(|index| (mask & (1u32 << index) != 0).then_some(char::from(b'A' + index as u8)))
@@ -47,8 +46,10 @@ pub fn drive_letters_from_mask(mask: u32) -> Vec<char> {
 ///
 /// The volume label is folded into `source` because the sidebar tooltip already
 /// renders `path · fs_type · source`; this keeps the platform-neutral
-/// `MountPoint` shape unchanged for the Linux parser.
-#[cfg(any(target_os = "windows", test))]
+/// `MountPoint` shape unchanged for the Linux parser. `gfe-win32`'s
+/// `MountInfo` follows the same rules, so mapping it into `MountPoint` is a
+/// field-for-field copy.
+#[cfg(test)]
 pub fn mount_points_from_drive_mask(
     mask: u32,
     mut volume_for: impl FnMut(char) -> (String, String),
@@ -207,33 +208,23 @@ pub fn list_mounts() -> Vec<MountPoint> {
     parse_mounts(&read_mounts_file("/proc/mounts"))
 }
 
-/// Windows: drive-letter discovery through the Win32 volume APIs.
+/// Windows: real drive-letter discovery through the `gfe-win32` FFI boundary.
 ///
-/// STATUS — documented stub. `windows-sys` exists in `Cargo.lock` only as a
-/// *transitive* dependency (0.48.0 / 0.52.0 / 0.60.2 / 0.61.2), so this crate
-/// cannot `use` it without a direct dependency declaration in `Cargo.toml`.
-/// `main.rs` also sets `#![forbid(unsafe_code)]`, whereas the Win32 entry points
-/// are `unsafe extern "system"` functions. Once a direct dependency plus a
-/// narrowly scoped, reviewed FFI module exist, replace the zero mask and empty
-/// lookup below with the real calls:
-///
-/// ```text
-/// let mask = unsafe { GetLogicalDrives() };
-/// let volume_for = |letter: char| {
-///     let root: Vec<u16> = format!("{}:\\\0", letter).encode_utf16().collect();
-///     // unsafe GetVolumeInformationW(root.as_ptr(), ...) -> (label, fs_type)
-/// };
-/// mount_points_from_drive_mask(mask, volume_for)
-/// ```
-///
-/// Signatures were verified from the locally cached `windows-sys 0.61.2`
-/// source (feature `Win32_Storage_FileSystem`): `GetLogicalDrives() -> u32` and
-/// `GetVolumeInformationW(PCWSTR, PWSTR, u32, *mut u32, *mut u32, *mut u32,
-/// PWSTR, u32) -> BOOL`. `GetDiskFreeSpaceExW` would additionally provide the
-/// total/free byte counts.
+/// All `unsafe` Win32 calls are confined to that crate (documented invariants:
+/// NUL-terminated UTF-16 buffers, fixed WCHAR capacities, no HWND ownership).
+/// Here we only convert its neutral `MountInfo` values into `MountPoint`s; the
+/// field meanings (`source` = `C: (Label)`, `path` = `C:\`, `fs_type`) are the
+/// same projection that the pure test helpers above exercise.
 #[cfg(target_os = "windows")]
 pub fn list_mounts() -> Vec<MountPoint> {
-    mount_points_from_drive_mask(0, |_| (String::new(), String::new()))
+    gfe_win32::logical_drives()
+        .into_iter()
+        .map(|info| MountPoint {
+            source: info.source,
+            path: PathBuf::from(info.path),
+            fs_type: info.fs_type,
+        })
+        .collect()
 }
 
 /// Other non-Linux/non-Windows platforms: no volume discovery yet (the sidebar

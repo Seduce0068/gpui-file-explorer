@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "gfe-win32"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license = "AGPL-3.0-or-later"
+description = "Narrowly scoped Win32 FFI boundary: logical drive enumeration and shell icon lookup."
+repository = "https://github.com/Seduce0068/gpui-file-explorer"
+
+[lib]
+path = "src/lib.rs"
+
+# FFI 依存は Windows ターゲットにだけ付与する。Linux / Android / wasm の
+# cross-compile では windows-sys 自体がビルド対象にすら入らない。
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

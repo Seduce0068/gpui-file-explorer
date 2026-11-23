@@ -14,10 +14,12 @@
 //!
 //! The platform-neutral [`OsIconProvider`] abstraction at the bottom of this
 //! file only decides *which name* an entry maps to. It is FFI-free by design:
-//! native OS icon extraction (Windows `SHGetFileInfo`) needs the NF02 approval
-//! because the crate enforces `#![forbid(unsafe_code)]`. Until then every
-//! platform uses either the Breeze/freedesktop names or the bundled gpui-kit
-//! (Lucide) names via [`BundledIconProvider`].
+//! native OS icon extraction (Windows `SHGetFileInfo`) was approved under NF02
+//! and now lives in the `gfe-win32` crate, but the trait returns a `&'static
+//! str` asset name and cannot carry an HICON / image-list index. Wiring that
+//! result into rendering would require changes to `main.rs` (out of scope for
+//! this round), so every platform keeps the Breeze/freedesktop names or the
+//! bundled gpui-kit (Lucide) names via [`BundledIconProvider`] for now.
 
 // `main.rs` resolves icons via `icon_path_for_entry`. The optional
 // `icon_path_for_name` / `roots` helpers are test-only, so the allow stays
@@ -345,13 +347,15 @@ impl OsIconProvider for FreedesktopIconProvider {
     }
 }
 
-/// Stub provider for platforms without an OS icon API (mobile targets, and
-/// Windows until NF02 is approved). It reports the same gpui-kit (Lucide) names
-/// already used as the monochrome fallback in [`crate::icons::icon_for_kind`].
+/// Stub provider for platforms without a wired-up OS icon API (mobile targets,
+/// and Windows until an ImageList-backed renderer exists). It reports the same
+/// gpui-kit (Lucide) names already used as the monochrome fallback in
+/// [`crate::icons::icon_for_kind`].
 ///
-/// NOTE: real bundled *full-colour* assets are a follow-up. This provider only
-/// names the existing gpui-kit icons; it extracts no OS-native artwork and
-/// makes no FFI calls, so it is safe under `#![forbid(unsafe_code)]`.
+/// NOTE: `gfe-win32` can now obtain a shell image-list index / RAII-managed
+/// HICON, but this trait only returns a bundled asset name, so this provider
+/// still extracts no OS-native artwork and makes no FFI calls. That keeps it
+/// safe under `#![forbid(unsafe_code)]` and the existing tests unchanged.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BundledIconProvider;
 
@@ -414,9 +418,10 @@ const DEFAULT_PROVIDER: IconProviderKind = IconProviderKind::Freedesktop;
 /// Pure target-OS → provider selection (pass `std::env::consts::OS`).
 ///
 /// * `linux` keeps Breeze/freedesktop resolution.
-/// * `windows` deliberately uses [`IconProviderKind::Bundled`]: native
-///   `SHGetFileInfo` extraction requires an FFI call and therefore the NF02
-///   approval, which is not granted while `#![forbid(unsafe_code)]` is on.
+/// * `windows` still uses [`IconProviderKind::Bundled`]: NF02 approved the FFI
+///   itself (`gfe-win32`), but this name-based trait has no way to carry the
+///   returned HICON / image-list index, and changing the renderer is out of
+///   scope for this round.
 /// * `android` / `ios` and any unknown target use the bundled fallback too —
 ///   there is no OS-native file-icon API available in this FFI-free round.
 pub fn choose_icon_provider(target_os: &str) -> IconProviderKind {

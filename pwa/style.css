@@ -165,6 +165,25 @@ button:disabled {
   border-bottom: 0;
 }
 
+/* タップ / 矢印キーで選択された行。ARIA の aria-selected と同じ状態を反映する。 */
+.entry-list li[aria-selected="true"] {
+  background: var(--surface);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.entry-list li[role="option"] {
+  cursor: pointer;
+  /* 縦スクロールは許可しつつ、横スワイプを JS のジェスチャとして扱う。 */
+  touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.entry-list li[role="option"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .entry-name {
   flex: 1 1 auto;
   min-width: 0;

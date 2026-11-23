@@ -1339,8 +1339,10 @@ status: current
 - [x] **NW10** OS クリップボード調査と ADR — 対応: research-clipboard
   — Win/mac は読み取り実装済み・未接続、Linux は未対応
   — main.rs:2300 / R1-PRD01
-- [ ] **NW11** タッチ入力層（tap/long-press/swipe）と platform 修飾子（Cmd）対応
-  — main.rs:1246 / R1-ARCH01
+- [x] **NW11** タッチ入力層（tap 選択 / long-press 詳細 / swipe 戻る）— 対応: nw11-pwa + nw11-android
+  — PWA は Playwright で実動作確認（選択・長押し・スワイプ・キーボード）
+  — Android は Compose combinedClickable + Snackbar（SDK/JDK 不在でビルド検証不可）
+  — platform 修飾子（Cmd）は macOS 実機検証なしの方針により対象外
 - [x] **NW12** ICU4X 五十音順調査と ADR（draft） — 対応: research-icu
   — icu_collator 2.4.0 未取得、実装は Phase 0 以降
   — strings.rs:25 / R1-PRD01
@@ -1375,7 +1377,9 @@ status: current
 
 - [x] **NF01** 列カスタマイズ時にヘッダと行の列を整列させる（行描画を列ベースへ） — 対応: fix-columns
   — NW07 の残作業 / impl-columns 報告
-- [ ] **NF02** Windows 実ドライブ列挙の FFI 実装（windows-sys 直接依存＋unsafe  Narrow scope のレビュー合意が必要）
+- [x] **NF02** Windows 実ドライブ列挙を gfe-win32 へ隔離実装
+  — 対応: nf02-win32（2026-11-23 ユーザー承認）
+  — unsafe は win32 crate のみ、app/core は forbid 維持。Windows target check/clippy pass
   — NW05 の documented stub を実装へ / AGENTS.md §15
 - [x] **NF03** サムネイル設定の Switch を設定UIへ配線 + docs 更新
   — 対応: fix-thumbsettings + 親（main.rs 配線）
