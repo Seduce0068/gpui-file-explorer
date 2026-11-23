@@ -13,9 +13,9 @@ generated:
   by: "adr-mobile"
   at: "2026-11-22T22:45:26+09:00"
 verified:
-  by: "adr-mobile"
-  at: "2026-11-22T22:45:26+09:00"
-status: draft
+  by: "lead"
+  at: "2026-11-23T14:14:46+09:00"
+status: approved
 ---
 
 ## コンテキスト
@@ -188,11 +188,11 @@ iOS は SwiftUI、Android は Jetpack Compose（または KMP で共有）のUI�
 モバイルの目標アーキテクチャとして B を Phase 1 のspike（検証）で確認する**
 という二段構えである。
 
-ただし、これは**推奨（RECOMMENDATION）であり確定決定ではない**。
-モバイル対応は大きな工数、ライセンス判断（Apache-2.0 のforkとAGPL結合の扱い）、
-およびUIアーキテクチャの方向転換を伴うため、
-**ユーザーの明示的な承認を得てから status を accepted に変更する**。
-現状の status は `draft`（未承認）とする。
+**ユーザーにより 2026-11-23 に推奨が承認され、status を `approved` に変更した。**
+承認内容: D（Windows先行）を直ちに実行し、モバイルの目標アーキテクチャは
+B（Rustコア共有＋SwiftUI / Jetpack Compose）として Phase 1 の spike で検証する。
+選択肢A（GPUI fork）は採用しないため、そのライセンス方針の承認は不要。
+Phase 1 の具体的な着手は、この ADR の承認をもってゲートを満たしたものとする。
 
 理由:
 
@@ -240,9 +240,10 @@ iOS は SwiftUI、Android は Jetpack Compose（または KMP で共有）のUI�
 
 ## 確認が必要な事項（ユーザー判断）
 
-- [ ] モバイル対応の目標アーキテクチャを B（コア共有＋ネイティブUI）で承認するか。
-- [ ] 選択肢A（GPUI維持・fork）を追求する場合のライセンス方針を承認するか。
-- [ ] Phase 0 を先にリリースし、Phase 1 以降を別途承認として扱うことを承認するか。
+- [x] モバイル対応の目標アーキテクチャを B（コア共有＋ネイティブUI）で承認
+  （2026-11-23、ユーザー承認）。
+- [x] 選択肢A（GPUI維持・fork）は不採用としたためライセンス方針の承認は不要。
+- [x] Phase 0 を先にリリースし、Phase 1 以降をこの ADR 承認のもとで進めることを承認。
 
 ## 参照
 
