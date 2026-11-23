@@ -2636,6 +2636,29 @@ fn should_apply_reconcile(view: ViewSource, generation_ok: bool, loading: bool) 
     view == ViewSource::Directory && generation_ok && !loading
 }
 
+/// Whether a reconcile read is still based on the newest listing.
+///
+/// Watch incrementals mutate `all_entries` directly and deliberately leave
+/// `generation` untouched (advancing it there would discard the deferred
+/// reload flag from finding 2). A read dispatched before such an incremental
+/// therefore passes the generation guard yet re-applies a snapshot missing the
+/// watcher's row. Comparing the revision captured at dispatch with the current
+/// one closes that gap. Kept pure for a focused test.
+fn listing_revision_is_current(current: u64, captured: u64) -> bool {
+    current == captured
+}
+
+/// Whether a watch event deferred during an in-flight load still needs a
+/// follow-up reload for the load now applying.
+///
+/// The flag carries the generation of the load whose snapshot predates the
+/// watch edit. A later load already sees that edit, so a flag from any other
+/// generation must not be consumed (and is dropped when generation advances).
+/// Kept pure so the rule is unit-testable without a live GPUI `Context`.
+fn should_reload_after_load(flag: Option<u64>, generation: u64) -> bool {
+    flag == Some(generation)
+}
+
 /// Whether the 10s timer may dispatch a new directory reconcile.
 ///
 /// A slow `read_entries` can outlive the timer interval. Starting another read
@@ -2931,6 +2954,11 @@ struct Explorer {
     status: String,
     /// Monotonic id of the latest load request; stale results are dropped.
     generation: u64,
+    /// Monotonic id of the latest `all_entries` mutation. Watch incrementals
+    /// edit the listing without advancing `generation` (a bump there would
+    /// defeat the deferred-reload flag), so a reconcile read must verify this
+    /// revision as well before applying its snapshot (AS02).
+    listing_revision: u64,
     /// Fingerprint of `all_entries`, used by the 10s reconciliation timer.
     fingerprint: u64,
     /// Path to select once the next load finishes (new folder, etc.).
@@ -2954,11 +2982,13 @@ struct Explorer {
     reconcile_in_flight: bool,
     /// Foreground waiter of the latest load. Dropping it cancels the wait.
     load_task: Option<Task<()>>,
-    /// A watcher event landed while a reload was in flight. Its incremental
-    /// edit cannot be applied to `all_entries` (the in-flight read may predate
-    /// it and would be overwritten by `apply_loaded`), so the load re-issues a
-    /// fresh reload once it completes (finding 2).
-    needs_reload_after_load: bool,
+    /// A watcher event landed while the load of this generation was in flight.
+    /// Its incremental edit cannot be applied to `all_entries` (the in-flight
+    /// read may predate it and would be overwritten by `apply_loaded`), so that
+    /// exact load re-issues a fresh reload once it completes (finding 2).
+    /// Cleared whenever `generation` advances: a newer read already sees the
+    /// edit, so a flag from a superseded load must never be consumed (AS17).
+    needs_reload_after_load: Option<u64>,
     watcher: DirWatcher,
     /// Self-triggered FS operations suppress the watcher for a short window.
     suppress_until: Option<Instant>,
@@ -3558,6 +3588,7 @@ impl Explorer {
             load: LoadState::Loading { generation: 0 },
             status: String::new(),
             generation: 0,
+            listing_revision: 0,
             fingerprint: 0,
             pending_select: None,
             pending_rename: None,
@@ -3566,7 +3597,7 @@ impl Explorer {
             props_read_task: None,
             reconcile_in_flight: false,
             load_task: None,
-            needs_reload_after_load: false,
+            needs_reload_after_load: None,
             watcher,
             suppress_until: None,
             places,
@@ -3647,6 +3678,9 @@ impl Explorer {
             return;
         }
         self.generation = self.generation.wrapping_add(1);
+        // AS17: the superseded load's deferred flag is obsolete — the read
+        // about to start already includes the watcher's edit.
+        self.needs_reload_after_load = None;
         let generation = self.generation;
         self.load = LoadState::Loading { generation };
         self.refresh_places();
@@ -3672,7 +3706,7 @@ impl Explorer {
                 this.load = LoadState::Ready;
                 match result {
                     Ok(entries) => {
-                        let needs_reload = this.apply_loaded(entries);
+                        let needs_reload = this.apply_loaded(entries, generation);
                         // AA01(a): F5 is a fresh read as well. End the F6-36
                         // RESCAN_FAILED hold here too, not only on reconcile;
                         // the helper leaves other success notices untouched.
@@ -3689,6 +3723,7 @@ impl Explorer {
                     }
                     Err(error) => {
                         this.all_entries.clear();
+                        this.bump_listing_revision();
                         this.entries.clear();
                         // Keep the fingerprint in sync with the cleared listing.
                         // Otherwise it still describes the last successful load,
@@ -3720,6 +3755,9 @@ impl Explorer {
     /// deliberately not routed through this helper.
     fn set_load_error(&mut self, error: String) {
         self.load = error_state_with_fresh_generation(&mut self.generation, error);
+        // AS17: that helper advances `generation`, so any flag deferred for a
+        // now-superseded load must be dropped here as well.
+        self.needs_reload_after_load = None;
     }
 
     /// Load the system trash into the virtual listing (background executor).
@@ -3747,6 +3785,7 @@ impl Explorer {
                     Err(error) => {
                         this.trash_items.clear();
                         this.all_entries.clear();
+                        this.bump_listing_revision();
                         this.entries.clear();
                         this.selected = 0;
                         this.selection.clear();
@@ -3783,6 +3822,7 @@ impl Explorer {
             })
             .unwrap_or(0);
         self.all_entries = entries.clone();
+        self.bump_listing_revision();
         self.entries = entries;
         self.fingerprint = fingerprint(&self.all_entries);
         self.selected = clamp_index(focused, self.entries.len());
@@ -3825,21 +3865,32 @@ impl Explorer {
         self.reload(cx);
     }
 
+    /// Record that `all_entries` was replaced or edited. Every mutation site
+    /// calls this so a reconcile dispatched earlier can detect a newer listing.
+    fn bump_listing_revision(&mut self) {
+        self.listing_revision = self.listing_revision.wrapping_add(1);
+    }
+
     /// Apply a freshly loaded listing, keeping the selection on the same path
     /// when possible and honouring `pending_select` (new folder).
     ///
-    /// Returns `true` when a watcher event was deferred because this load was
-    /// already in flight; the caller must then trigger a fresh reload so those
-    /// events are not lost to this snapshot (finding 2).
-    fn apply_loaded(&mut self, entries: Vec<Entry>) -> bool {
+    /// Returns `true` when a watcher event was deferred for this exact load;
+    /// the caller must then trigger a fresh reload so it is not lost to this
+    /// snapshot (finding 2). A flag from a superseded generation is ignored.
+    fn apply_loaded(&mut self, entries: Vec<Entry>, generation: u64) -> bool {
         let keep = self
             .pending_select
             .take()
             .or_else(|| self.selected_entry().map(|entry| entry.path.clone()));
         self.all_entries = entries;
+        self.bump_listing_revision();
         self.fingerprint = fingerprint(&self.all_entries);
         self.rebuild_view(keep);
-        std::mem::take(&mut self.needs_reload_after_load)
+        let needs_reload = should_reload_after_load(self.needs_reload_after_load, generation);
+        if needs_reload {
+            self.needs_reload_after_load = None;
+        }
+        needs_reload
     }
 
     /// Re-filter and re-sort the cached listing.
@@ -4161,6 +4212,10 @@ impl Explorer {
         }
         self.reconcile_in_flight = true;
         let generation = self.generation;
+        // Watch incrementals can rewrite `all_entries` while this read is in
+        // flight without touching `generation`. Capture the listing revision
+        // now so a stale snapshot is not re-applied over their edits (AS02).
+        let listing_revision = self.listing_revision;
         let dir = self.cwd.clone();
         let task = cx.background_spawn(async move { read_entries(&dir) });
         cx.spawn(async move |this, cx| {
@@ -4174,7 +4229,16 @@ impl Explorer {
                         // Release the in-flight guard on every completion path,
                         // errors included, so a later tick is never blocked.
                         this.reconcile_in_flight = false;
-                        if this.generation == generation {
+                        // AS03: the failure notice is a status write, but it is
+                        // still a directory-reconcile result. Ctrl+F while the
+                        // read is in flight must not let it overwrite the
+                        // Search view's status, so use the same guard as the
+                        // success branch (generation, loading and view).
+                        if should_apply_reconcile(
+                            this.view,
+                            this.generation == generation,
+                            this.load.is_loading(),
+                        ) {
                             this.status = format!("{STATUS_RESCAN_FAILED}: {error}");
                             cx.notify();
                         }
@@ -4207,20 +4271,31 @@ impl Explorer {
                 // still wins.
                 let clear_error = should_clear_error_on_reconcile(&this.load);
                 let changed = fingerprint(&entries) != this.fingerprint;
-                let applied = should_apply_loaded_on_reconcile(changed, clear_error);
+                // A watch incremental that landed after this read started
+                // rewrote `all_entries` without advancing `generation`. Its
+                // edit must survive: do not re-apply the older snapshot.
+                let listing_current =
+                    listing_revision_is_current(this.listing_revision, listing_revision);
+                let applied =
+                    listing_current && should_apply_loaded_on_reconcile(changed, clear_error);
                 if applied {
                     // `apply_loaded` rebuilds the view and recomputes the
                     // fingerprint itself, but does not touch `load`; the
                     // explicit transition below is still needed to drop the
                     // error overlay. Calling it once here covers both paths
                     // without a double-apply when both flags are true.
-                    let needs_reload = this.apply_loaded(entries);
+                    let needs_reload = this.apply_loaded(entries, generation);
                     if clear_error {
                         this.load = LoadState::Ready;
                     }
                     if needs_reload {
                         this.reload(cx);
                     }
+                } else if clear_error && !listing_current {
+                    // The stale error overlay still needs a fresh listing, but
+                    // this read predates a watch edit. Re-read instead of
+                    // applying a snapshot that would drop that edit.
+                    this.reload(cx);
                 }
                 // AA01(b): this is a successful read even when the fingerprint
                 // did not change (changed=false, clear_error=false), so the
@@ -4294,6 +4369,7 @@ impl Explorer {
                         if this.all_entries.len() == before {
                             return;
                         }
+                        this.bump_listing_revision();
                         let remaining: Vec<PathBuf> = this
                             .all_entries
                             .iter()
@@ -4319,8 +4395,10 @@ impl Explorer {
                         // A reload's snapshot may predate these events. Mutating
                         // `all_entries` here would be undone when its callback
                         // replaces the vec with the stale snapshot (finding 2).
-                        // Defer: the load will re-issue itself on completion.
-                        this.needs_reload_after_load = true;
+                        // Defer: that exact load re-issues itself on completion.
+                        // Tying the flag to its generation (AS17) prevents a
+                        // later load from consuming a stale watch event.
+                        this.needs_reload_after_load = this.load.generation();
                         return;
                     }
                     if batch
@@ -4374,6 +4452,7 @@ impl Explorer {
                         }
                     }
                     if changed {
+                        this.bump_listing_revision();
                         this.fingerprint = fingerprint(&this.all_entries);
                         this.rebuild_view(keep);
                         // Z02: an incremental update is not a successful
@@ -8729,6 +8808,7 @@ impl Explorer {
                         if view_unchanged {
                             this.all_entries
                                 .retain(|entry| !trashed.contains(&entry.path));
+                            this.bump_listing_revision();
                             this.fingerprint = fingerprint(&this.all_entries);
                             if this.view == ViewSource::Search {
                                 // Preserve kind/extension/name filters: the
@@ -8974,6 +9054,11 @@ impl Explorer {
                     return;
                 }
                 this.load = LoadState::Ready;
+                // AS04: re-running a query from the Search view (F5) is a
+                // successful read too. Clear a held RESCAN_FAILED before
+                // `apply_search_filter` composes the new result summary,
+                // otherwise its guard would deliberately keep the red notice.
+                clear_rescan_failure_after_successful_read(&mut this.status);
                 this.search.task = None;
                 this.search.cancel = None;
                 this.search_lines = entries
@@ -8985,6 +9070,7 @@ impl Explorer {
                     })
                     .collect();
                 this.all_entries = entries.into_iter().map(|result| result.entry).collect();
+                this.bump_listing_revision();
                 this.apply_search_filter(cx);
                 this.settings.record_search(&this.search.query);
                 // `write_was_skipped()` covers read-only and ephemeral sessions,
@@ -12857,6 +12943,36 @@ mod tests {
         assert_eq!(status, "");
     }
 
+    // AS04: F5 in the Search view re-runs the query instead of reloading the
+    // directory. That success is a successful read too, so it must end the
+    // F6-36 hold before `apply_search_filter` builds the new result summary.
+    #[test]
+    fn search_completion_clears_the_held_rescan_failure() {
+        let source = include_str!("main.rs");
+        let run_search = source_region(
+            source,
+            "    fn run_search(&mut self, cx: &mut Context<Self>) {",
+            "    fn apply_search_filter(",
+        );
+        let ok = run_search
+            .find("if this.search.generation != generation {")
+            .expect("run_search generation guard missing");
+        let clear = run_search[ok..]
+            .find(concat!("clear_rescan_failure_", "after_successful_read"))
+            .expect("run_search success must clear the held failure");
+        let filter = run_search[ok..]
+            .find("this.apply_search_filter(cx);")
+            .expect("run_search must apply the search filter");
+        assert!(
+            clear < filter,
+            "the clear must precede apply_search_filter, whose guard would keep the failure"
+        );
+
+        let mut status = format!("{STATUS_RESCAN_FAILED}: permission denied");
+        assert!(clear_rescan_failure_after_successful_read(&mut status));
+        assert_eq!(status, "");
+    }
+
     #[test]
     fn dynamic_refusal_statuses_are_not_green() {
         // M05: 「解除する設定はありません」は操作拒否なので warning(amber)。
@@ -14323,6 +14439,102 @@ mod tests {
         assert!(!should_apply_reconcile(ViewSource::Directory, false, false));
         assert!(!should_apply_reconcile(ViewSource::Directory, true, true));
         assert!(!should_apply_reconcile(ViewSource::Directory, false, true));
+    }
+
+    // AS02: a watch incremental rewrites `all_entries` without advancing
+    // `generation`, so the generation guard alone lets a stale reconcile
+    // snapshot erase the watcher's row. Pin both the capture and the re-check.
+    #[test]
+    fn reconcile_snapshot_requires_an_unchanged_listing_revision() {
+        use super::listing_revision_is_current;
+
+        assert!(listing_revision_is_current(4, 4));
+        assert!(!listing_revision_is_current(5, 4));
+        assert!(!listing_revision_is_current(4, 5));
+
+        let source = include_str!("main.rs");
+        let reconcile = source_region(
+            source,
+            "    fn reconcile(&mut self, cx: &mut Context<Self>) {",
+            "    fn spawn_watch_loop(",
+        );
+        assert!(
+            reconcile.contains("let listing_revision = self.listing_revision;"),
+            "reconcile must capture the listing revision when it dispatches"
+        );
+        assert!(
+            reconcile
+                .contains("listing_revision_is_current(this.listing_revision, listing_revision)"),
+            "reconcile must re-check the revision before applying its snapshot"
+        );
+        // Advancing `generation` on a watch incremental would break the AS17
+        // deferred-reload flag, so the watch loop must not do it.
+        let watch = source_region(
+            source,
+            "    fn spawn_watch_loop(",
+            "    fn spawn_reconcile_loop(",
+        );
+        assert!(
+            !watch.contains("this.generation = "),
+            "watch incrementals must not advance generation"
+        );
+    }
+
+    // AS17: a deferred reload belongs to the generation that was loading when
+    // the watch event landed; a later load must not consume a stale flag.
+    #[test]
+    fn deferred_reload_is_consumed_only_by_its_own_generation() {
+        use super::should_reload_after_load;
+
+        assert!(should_reload_after_load(Some(7), 7));
+        assert!(!should_reload_after_load(None, 7));
+        assert!(!should_reload_after_load(Some(6), 7));
+        assert!(!should_reload_after_load(Some(8), 7));
+
+        let source = include_str!("main.rs");
+        let reload = source_region(
+            source,
+            "    fn reload(&mut self, cx: &mut Context<Self>) {",
+            "    fn set_load_error(",
+        );
+        assert!(
+            reload.contains("self.needs_reload_after_load = None;"),
+            "bumping generation in reload must drop a stale deferred flag"
+        );
+        let set_error = source_region(source, "    fn set_load_error(", "    fn reload_trash(");
+        assert!(
+            set_error.contains("self.needs_reload_after_load = None;"),
+            "error_state_with_fresh_generation also advances generation"
+        );
+    }
+
+    // AS03: the error branch writes a status, but it is still a directory
+    // reconcile result. Without the success branch's view guard, Ctrl+F during
+    // the read lets RESCAN_FAILED overwrite the Search view's status.
+    #[test]
+    fn reconcile_error_branch_uses_the_same_view_guard() {
+        let source = include_str!("main.rs");
+        let reconcile = source_region(
+            source,
+            "    fn reconcile(&mut self, cx: &mut Context<Self>) {",
+            "    fn spawn_watch_loop(",
+        );
+        let err = reconcile
+            .find("Err(error) => {")
+            .expect("reconcile error branch missing");
+        let open = err
+            + reconcile[err..]
+                .find('{')
+                .expect("reconcile error branch body missing");
+        let err_branch = &reconcile[err..braced_block_end(reconcile, open)];
+        assert!(
+            err_branch.contains("should_apply_reconcile"),
+            "error branch must check the view before writing RESCAN_FAILED"
+        );
+        assert!(
+            err_branch.contains("this.reconcile_in_flight = false;"),
+            "the in-flight guard must still be released unconditionally"
+        );
     }
 
     #[test]

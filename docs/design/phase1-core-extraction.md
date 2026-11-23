@@ -44,12 +44,17 @@ Rust の sysroot に `core` クレートが存在するため、package/lib を�
 `core::{model, ops, search}` という参照形を維持する（`app/src/model.rs:897-898` の
 「crate ルートが `gpui_kit::*` を glob import する」問題からも分離できる）。
 
-### workspace Cargo.toml（ルート新規追加案）
+### workspace Cargo.toml（as-built 2026-11-23）
+
+旧本文は「ルート新規追加案」だったが、仮想 workspace は**実装済み**である。
+現行の正本はルート `Cargo.toml`。下記スニペットは旧案の構成に
+win32（`gfe-win32`）の member 追加だけを反映した参考値であり、
+`[workspace.dependencies]` 等の採用状況を含む正確な内容は正本を参照する。
 
 ```toml
 [workspace]
 resolver = "2"
-members = ["core", "app", "poc"]
+members = ["core", "app", "poc", "win32"]
 default-members = ["core", "app"]
 
 [workspace.package]
@@ -160,6 +165,30 @@ core が app（ひいては GPUI）を参照するため解消が必須。
 - 案2は最終形として正しいが、settings の大規模テスト改修を Phase 1 に載せるのはリスクが高い。
 - 案3の乖離リスクは `PersistedSortSpec` に `TryFrom<&str>` / `From<SortSpec>` を実装し、
    対応表を一箇所へ集約して緩和する。
+
+### as-built: Phase 2 案2へ収束済み（2026-11-23）
+
+R2-SIGNAL の並列ロード検証で、案3の thread_local `Cell` + process-global
+`AtomicBool` の二段シグナルは N 個の独立ロードを1ビットで表現しようとしており
+構造的に破綻していることが確定した。T_A の note 後に T_B の事前クリア
+`swap(false)` が走ると T_A のシグナルが失われ未知 enum の元値が
+フォールバック値で上書きされる。逆に T_B が T_A の note を拾うと正常ファイルが
+read_only になる。memory order や `AtomicBool` 延命では解消しないため、
+計画より前倒しで案2（load 結果に bool / LoadReport）へ収束済み。
+
+- `core/src/model.rs` の `UNKNOWN_PERSISTED_ENUM_LOCAL` / `_SEEN`、
+  `note_unknown_persisted_enum` / `take_unknown_persisted_enum` と
+  `persisted_enum_signal_tests` を削除。`deserialize_sort_key` /
+  `deserialize_sort_dir` は素の fallback のみ（シグナルは立てない）。
+- `app/src/settings.rs` の純関数 `detect_unknown_persisted_enum(&Value)` が、
+  既にパース済みの生 JSON の `sort.key` / `sort.dir` / `view` / `theme` /
+  `theme_choice` / `windows[].bounds.mode` / `column_prefs.visible|widths` を照合し、
+  `load_from_with_backup` が当該ロード単位で `read_only` を決定する。
+  既知値は各 enum の `Deserialize` 実装と `COLUMN_KEYS` /
+  `is_known_column_key` を再利用し、重複定義しない。
+- 回帰テスト `parallel_loads_keep_read_only_scoped_to_each_file` が
+  32スレッド × 4ラウンドの正常／未知 enum 混在ロードで、
+  各ロードの `read_only` が自ファイル入力と一致することを検証する。
 
 ## 4. ポート（トレイト）定義草案
 

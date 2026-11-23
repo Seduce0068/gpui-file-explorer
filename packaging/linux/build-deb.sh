@@ -18,8 +18,11 @@
 # --skip-build reuses the existing release binary. To avoid shipping a stale
 # binary that still reports the same version, the script additionally rejects a
 # binary that is older than any of app/src, app/build.rs, app/native-libs/,
-# app/Cargo.toml or app/Cargo.lock (i.e. files newer than the binary are
-# detected with `find -newer`).
+# app/Cargo.toml or the workspace-root Cargo.lock (i.e. files newer than the
+# binary are detected with `find -newer`).
+# The workspace-profile output normally lands in the root target/; the explicit
+# `--target-dir "${app_dir}/target"` on `cargo build` keeps the binary at the
+# path consumed below (app/target/release/).
 set -euo pipefail
 
 usage() {
@@ -29,7 +32,7 @@ usage() {
 オプション:
   -o, --output-dir DIR  出力先（既定: packaging/linux/build）
       --skip-build      release バイナリを再ビルドせず既存のものを使う
-                        （app/src・build.rs・native-libs/・Cargo.toml・Cargo.lock より古い場合は拒否し再ビルドを促す）
+                        （app/src・build.rs・native-libs/・Cargo.toml・ルート Cargo.lock より古い場合は拒否し再ビルドを促す）
   -h, --help            このヘルプを表示
 
 root では実行できません（dpkg-deb --root-owner-group が所有権を設定します）。
@@ -79,6 +82,8 @@ arch="$(dpkg --print-architecture)"
 deb_version="${version}-1"
 stage="${out_dir}/${pkg}_${deb_version}_${arch}"
 deb="${stage}.deb"
+# `cargo build` は workspace 化で既定の target/ がルートへ移ったため、
+# 下のビルドで --target-dir "${app_dir}/target" を明示してここへ出力する。
 binary="${app_dir}/target/release/${pkg}"
 
 # Guard: never delete anything outside the chosen output directory. Normalize
@@ -112,7 +117,8 @@ mkdir -p "${stage}/DEBIAN" "${stage}/usr/bin" "${stage}/usr/share/applications"
 
 if [ "${skip_build}" -eq 0 ]; then
   echo "release ビルド中…"
-  cargo build --release --locked --manifest-path "${app_dir}/Cargo.toml"
+  cargo build --release --locked --manifest-path "${app_dir}/Cargo.toml" \
+    --target-dir "${app_dir}/target"
 fi
 [ -x "${binary}" ] || die "release バイナリがありません: ${binary}（--skip-build を外して再実行してください）"
 
@@ -131,10 +137,15 @@ esac
 # any source/build/native-lib/Cargo file newer than the binary and refuse to
 # package it: build.rs links native-libs/, so both affect the linked binary.
 if [ "${skip_build}" -eq 1 ]; then
+  # app/Cargo.lock は workspace 化前の残骸で未使用（正本はルート Cargo.lock）。
+  # 指示により削除はしないが、個別ビルド等で更新されていたら警告する。
+  if [ -f "${app_dir}/Cargo.lock" ] && [ "${app_dir}/Cargo.lock" -nt "${repo_root}/Cargo.lock" ]; then
+    echo "警告: ${app_dir}/Cargo.lock は workspace では未使用です（正本: ${repo_root}/Cargo.lock）。" >&2
+  fi
   # `-print -quit` stops at the first match; `|| true` keeps `set -e` from
   # aborting on a missing search path before our own error message is shown.
   stale_source="$(find "${app_dir}/src" "${app_dir}/build.rs" "${app_dir}/native-libs" \
-    "${app_dir}/Cargo.toml" "${app_dir}/Cargo.lock" \
+    "${app_dir}/Cargo.toml" "${repo_root}/Cargo.lock" \
     -newer "${binary}" -print -quit || true)"
   if [ -n "${stale_source}" ]; then
     die "release バイナリがソースより古いです: ${stale_source}（--skip-build を外して再ビルドしてください）"

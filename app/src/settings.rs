@@ -53,11 +53,12 @@
 //!
 //! An unrecognized persisted enum string (e.g. `"view": "list"` from a newer
 //! build) is likewise kept read-only: the field deserializers substitute the
-//! default so loading never fails, but [`Settings::load_from`] then marks the
-//! session read-only with a [`Settings::load_error`] reason. Saving is a no-op
-//! in that state, so the original string is never overwritten by the fallback
-//! (which a newer build may understand). The one deliberate exception is the
-//! theme: `"system"` is a recognized preference even though `ThemeMode` cannot
+//! default so loading never fails, but [`Settings::load_from`] cross-checks the
+//! raw JSON with [`detect_unknown_persisted_enum`] and marks that load
+//! read-only with a [`Settings::load_error`] reason. Saving is a no-op in that
+//! state, so the original string is never overwritten by the fallback (which a
+//! newer build may understand). The one deliberate exception is the theme:
+//! `"system"` is a recognized preference even though `ThemeMode` cannot
 //! represent it. It is persisted in [`ThemeChoice`] and resolved against the
 //! observed system appearance by the UI ([`resolve_theme`]).
 
@@ -71,7 +72,7 @@ use gpui_kit::component::ThemeMode;
 use gpui_kit::{bounds, point, px, size, Window, WindowBounds};
 
 use crate::history::{retain_last_n, History, HistorySnapshot};
-use crate::model::SortSpec;
+use crate::model::{SortDir, SortKey, SortSpec};
 use crate::tabs::Tab;
 // Personalization types live in `model` (GPUI-free) but are re-exported here
 // so the UI layer has a single import site for persisted settings state. The
@@ -201,19 +202,67 @@ fn default_theme() -> ThemeMode {
     ThemeMode::Dark
 }
 
-/// Record that a persisted enum string is not recognized by this build.
+/// Return `true` when any persisted enum field in `raw` holds a name this
+/// build does not recognize.
 ///
-/// The signal lives in `gfe_core::model` so both the app-side and core-side
-/// field deserializers report through the same port.
-/// [`Settings::load_from_with_backup`] clears it before parsing and consumes
-/// it afterwards so the loaded session can be kept read-only.
-pub(crate) fn note_unknown_persisted_enum() {
-    gfe_core::model::note_unknown_persisted_enum();
-}
+/// This is a pure cross-check of the already-parsed JSON: the field
+/// deserializers only substitute safe fallbacks, so they cannot say *which*
+/// load they belonged to. A process-global signal would leak between
+/// concurrent loads (one load's note could be consumed by another load's
+/// take), so the decision is derived from each file's own bytes instead.
+/// Each enum's `Deserialize` impl is the single source of truth for its known
+/// names; the column fields reuse [`COLUMN_KEYS`] / [`is_known_column_key`].
+fn detect_unknown_persisted_enum(raw: &serde_json::Value) -> bool {
+    /// A present field is known when it deserializes into `T`; an absent field
+    /// is fine because serde's field-level default applies.
+    fn is_known<T>(field: Option<&serde_json::Value>) -> bool
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        field.is_none_or(|value| serde_json::from_value::<T>(value.clone()).is_ok())
+    }
 
-/// Clear and return the signal for the current load.
-fn take_unknown_persisted_enum() -> bool {
-    gfe_core::model::take_unknown_persisted_enum()
+    let sort = raw.get("sort");
+    if !is_known::<SortKey>(sort.and_then(|value| value.get("key")))
+        || !is_known::<SortDir>(sort.and_then(|value| value.get("dir")))
+    {
+        return true;
+    }
+    if !is_known::<ViewLayout>(raw.get("view")) {
+        return true;
+    }
+    // `theme` accepts the same three names as `ThemeChoice`, including the
+    // legacy "system" that `ThemeMode` itself cannot represent.
+    if !is_known::<ThemeChoice>(raw.get("theme"))
+        || !is_known::<ThemeChoice>(raw.get("theme_choice"))
+    {
+        return true;
+    }
+    if let Some(windows) = raw.get("windows").and_then(serde_json::Value::as_array) {
+        for window in windows {
+            if let Some(bounds) = window.get("bounds") {
+                if !is_known::<WindowMode>(bounds.get("mode")) {
+                    return true;
+                }
+            }
+        }
+    }
+    if let Some(prefs) = raw.get("column_prefs") {
+        if let Some(visible) = prefs.get("visible").and_then(serde_json::Value::as_array) {
+            if visible
+                .iter()
+                .any(|key| key.as_str().is_none_or(|key| !is_known_column_key(key)))
+            {
+                return true;
+            }
+        }
+        if let Some(widths) = prefs.get("widths").and_then(serde_json::Value::as_object) {
+            if widths.keys().any(|key| !is_known_column_key(key)) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The user's persisted theme preference: follow the desktop (`System`) or
@@ -246,9 +295,9 @@ fn default_theme_choice() -> ThemeChoice {
 /// Deserialize the persisted theme preference.
 ///
 /// All three known names (`light` / `dark` / `system`) are accepted; only a
-/// genuinely unknown string falls back to [`default_theme_choice`] and reports
-/// [`note_unknown_persisted_enum`], which makes the load read-only so the
-/// original value survives on disk.
+/// genuinely unknown string falls back to [`default_theme_choice`]. The loader
+/// detects it from the raw JSON and keeps that load read-only so the original
+/// value survives on disk.
 fn deserialize_theme_choice<'de, D>(deserializer: D) -> Result<ThemeChoice, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -258,10 +307,7 @@ where
         "light" => ThemeChoice::Light,
         "dark" => ThemeChoice::Dark,
         "system" => ThemeChoice::System,
-        _ => {
-            note_unknown_persisted_enum();
-            default_theme_choice()
-        }
+        _ => default_theme_choice(),
     })
 }
 
@@ -272,9 +318,9 @@ where
 /// value written by a newer build that is *not* a known theme choice (e.g.
 /// `"sepia"`) must not cause [`Settings::back_up_unusable`] to discard every
 /// other setting. This mirrors the `#[serde(other)]` fallback used for
-/// locally-defined enums without touching the external crate. The fallback
-/// also marks the load read-only via [`note_unknown_persisted_enum`], so the
-/// unknown string is never rewritten.
+/// locally-defined enums without touching the external crate. The loader
+/// detects the unknown string from the raw JSON and keeps the load read-only,
+/// so it is never rewritten.
 ///
 /// `"system"` is a **known** legacy value: it maps to the dark placeholder
 /// because `ThemeMode` has no system variant, and the actual preference is
@@ -288,10 +334,7 @@ where
         "dark" => ThemeMode::Dark,
         "light" => ThemeMode::Light,
         "system" => default_theme(),
-        _ => {
-            note_unknown_persisted_enum();
-            default_theme()
-        }
+        _ => default_theme(),
     })
 }
 
@@ -516,8 +559,8 @@ pub enum ViewLayout {
 
 /// Deserialize a persisted view layout, mapping unknown names (e.g. a future
 /// `"list"`) to the default instead of backing up the entire settings file.
-/// Known values are matched explicitly so only a genuinely unknown string
-/// triggers [`note_unknown_persisted_enum`] and makes the load read-only.
+/// The loader detects genuinely unknown strings from the raw JSON and makes
+/// that load read-only.
 fn deserialize_view_layout<'de, D>(deserializer: D) -> Result<ViewLayout, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -526,10 +569,7 @@ where
     Ok(match value.as_str() {
         "details" => ViewLayout::Details,
         "icons" => ViewLayout::Icons,
-        _ => {
-            note_unknown_persisted_enum();
-            ViewLayout::default()
-        }
+        _ => ViewLayout::default(),
     })
 }
 
@@ -545,8 +585,8 @@ pub enum WindowMode {
 
 /// Unknown persisted mode falls back to Windowed so one bad enum value cannot
 /// back up the whole settings file. As with the other enum deserializers, the
-/// unknown string is reported via [`note_unknown_persisted_enum`] so the
-/// session stays read-only and the original value survives on disk.
+/// loader detects the unknown string from the raw JSON so the session stays
+/// read-only and the original value survives on disk.
 fn deserialize_window_mode<'de, D>(deserializer: D) -> Result<WindowMode, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -556,10 +596,7 @@ where
         "windowed" => WindowMode::Windowed,
         "maximized" => WindowMode::Maximized,
         "fullscreen" => WindowMode::Fullscreen,
-        _ => {
-            note_unknown_persisted_enum();
-            WindowMode::default()
-        }
+        _ => WindowMode::default(),
     })
 }
 
@@ -736,31 +773,23 @@ pub fn default_column_width(key: &str) -> f32 {
     }
 }
 
-/// Deserialize the visible-column list. Unknown keys are reported through the
-/// shared persisted-enum signal *during parsing*, so a newer build's column
-/// name makes the load read-only instead of being silently dropped and then
-/// overwritten on the next save. `validate()` still removes them in memory.
+/// Deserialize the visible-column list. Unknown keys are detected by the
+/// loader from the raw JSON, so a newer build's column name makes the load
+/// read-only instead of being silently dropped and then overwritten on the
+/// next save. `validate()` still removes them in memory.
 fn deserialize_column_visible<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let values = Vec::<String>::deserialize(deserializer)?;
-    if values.iter().any(|key| !is_known_column_key(key)) {
-        note_unknown_persisted_enum();
-    }
-    Ok(values)
+    Vec::<String>::deserialize(deserializer)
 }
 
-/// Same reporting rule as [`deserialize_column_visible`], for width keys.
+/// Same fallback rule as [`deserialize_column_visible`], for width keys.
 fn deserialize_column_widths<'de, D>(deserializer: D) -> Result<HashMap<String, f32>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let widths = HashMap::<String, f32>::deserialize(deserializer)?;
-    if widths.keys().any(|key| !is_known_column_key(key)) {
-        note_unknown_persisted_enum();
-    }
-    Ok(widths)
+    HashMap::<String, f32>::deserialize(deserializer)
 }
 
 /// Persisted visibility, order and width of the details-view columns.
@@ -1329,18 +1358,17 @@ impl Settings {
         // Serde rejects wrong field types outright; `#[serde(default)]` only
         // fills in fields that are absent, so a mistyped `version` or
         // `show_hidden` lands in the backup-and-defaults branch below.
-        // The enum field deserializers report unknown strings through a
-        // thread-local signal. Clear any stale value first (a direct
-        // `serde_json::from_str::<Settings>` elsewhere on this thread may have
-        // set it) and consume the result immediately after parsing.
-        let _ = take_unknown_persisted_enum();
+        // Unknown enum names are derived from this file's own JSON: a shared
+        // signal would leak between concurrent loads. Parse the raw Value once
+        // and reuse it for the legacy `theme_choice` reconciliation below.
+        let raw = serde_json::from_str::<serde_json::Value>(&text);
+        let unknown_enum = raw.as_ref().is_ok_and(detect_unknown_persisted_enum);
         let Ok(mut settings) = serde_json::from_str::<Settings>(&text) else {
             // Keep the broken file for debugging (DESIGN.md §8.1) instead of
             // failing to start. If the backup rename fails, stay read-only so
             // a later save() cannot overwrite the retained original.
             return Self::back_up_unusable(path, &backup);
         };
-        let unknown_enum = take_unknown_persisted_enum();
         // Backward compatibility: files written before `theme_choice` existed
         // store the preference only in `theme`. Mirror that legacy key into the
         // new field when the new key is absent, so an old file that explicitly
@@ -1348,15 +1376,15 @@ impl Settings {
         // An explicit `theme_choice` key always wins over the legacy one.
         // This is done after deserialization because a field deserializer
         // cannot see its sibling fields.
-        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Ok(raw) = &raw {
             if raw.get("theme_choice").is_none() {
                 if let Some(legacy) = raw.get("theme").and_then(serde_json::Value::as_str) {
                     settings.theme_choice = match legacy {
                         "light" => ThemeChoice::Light,
                         "dark" => ThemeChoice::Dark,
                         "system" => ThemeChoice::System,
-                        // A genuinely unknown string was already reported by
-                        // `deserialize_theme`; keep its safe fallback choice.
+                        // A genuinely unknown string was detected above; keep
+                        // its safe fallback choice.
                         _ => settings.theme_choice,
                     };
                 }
@@ -3629,6 +3657,58 @@ mod schema_validation_tests {
         assert!(reloaded.load_error.is_some());
         assert_eq!(reloaded.view, ViewLayout::Details);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parallel_loads_keep_read_only_scoped_to_each_file() {
+        // R2-SIGNAL regression: the old process-global AtomicBool let one
+        // load's note be consumed by another load's take, so a clean file
+        // could become read-only (or an unknown one lose the flag). Every
+        // thread writes its own file and must observe only its own input.
+        use std::sync::{Arc, Barrier, Mutex};
+
+        const LOADERS: usize = 32;
+        for round in 0..4 {
+            let barrier = Arc::new(Barrier::new(LOADERS));
+            let mismatches: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            std::thread::scope(|scope| {
+                for index in 0..LOADERS {
+                    let barrier = Arc::clone(&barrier);
+                    let mismatches = Arc::clone(&mismatches);
+                    scope.spawn(move || {
+                        let expect_unknown = index % 2 == 0;
+                        let (dir, path) = setup(&format!("parallel-{round}-{index}"));
+                        let mut doc = serde_json::json!({
+                            "version": 1,
+                            "view": "details",
+                            "theme": "dark",
+                            "sort": { "key": "name", "dir": "asc", "dirs_first": true },
+                            "show_hidden": true,
+                            "bookmarks": ["/home/koppe"],
+                        });
+                        if expect_unknown {
+                            doc["view"] = serde_json::json!("list");
+                            doc["sort"]["key"] = serde_json::json!("date");
+                        }
+                        fs::write(&path, doc.to_string()).unwrap();
+                        barrier.wait();
+                        let loaded = Settings::load_from(&path);
+                        if loaded.read_only != expect_unknown {
+                            mismatches.lock().unwrap().push(format!(
+                                "round {round} loader {index}: expected read_only={expect_unknown}, got {}",
+                                loaded.read_only
+                            ));
+                        }
+                        fs::remove_dir_all(&dir).unwrap();
+                    });
+                }
+            });
+            let mismatches = mismatches.lock().unwrap();
+            assert!(
+                mismatches.is_empty(),
+                "read_only leaked across concurrent loads: {mismatches:?}"
+            );
+        }
     }
 }
 

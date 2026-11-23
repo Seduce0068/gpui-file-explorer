@@ -849,8 +849,8 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
 ];
 
 /// Placeholder of the settings-page search field. Chord names such as `Alt+K`
-/// are searchable too, so the wording must advertise that (R07).
-const SETTINGS_SEARCH_PLACEHOLDER: &str = "設定・キー名で検索…";
+/// are searchable too, so the wording must advertise that (R07 / AS14).
+const SETTINGS_SEARCH_PLACEHOLDER: &str = "設定・キー名・ショートカットキーで検索…";
 
 /// Shortcuts-tab keymap hint. Unlike the Alt+K dialog this field replaces the
 /// whole override list on Save, so that consequence must be spelled out where
@@ -1126,10 +1126,11 @@ pub fn tabs_matching_query(query: &str) -> Vec<SettingsTab> {
 pub fn no_match_hint(matching_tabs: &[SettingsTab]) -> String {
     if matching_tabs.is_empty() {
         // M14: a dead end must still offer a way out. With zero hits there is
-        // no tab to jump to, so point at the header × clear button (AR01).
-        // Esc is deliberately NOT offered here: it closes the dialog and
-        // discards unsaved edits, which is unsafe as a zero-hit recovery.
-        "該当する設定がありません。検索欄右端の × で検索をクリアしてください".to_string()
+        // no tab to jump to, so point at the header × clear button (AR01) and
+        // its keyboard equivalent (Ctrl+A → Delete, AS15). Esc is deliberately
+        // NOT offered here: it closes the dialog and discards unsaved edits,
+        // which is unsafe as a zero-hit recovery.
+        "該当する設定がありません。検索欄右端の × で検索をクリアしてください（キーボードでは Ctrl+A → Delete でもクリアできます）".to_string()
     } else {
         let labels: Vec<String> = matching_tabs
             .iter()
@@ -2449,14 +2450,16 @@ mod tests {
             assert!(!hint.contains("Alt+数字"), "generic hint: {hint}");
         }
         // With no hits at all there is no page to jump to, so M14 requires a
-        // recovery route instead. AR01: point at the header × clear button;
-        // Esc is deliberately absent because it discards unsaved edits.
+        // recovery route instead. AR01/AS15: point at the header × clear button
+        // and its keyboard equivalent (Ctrl+A → Delete); Esc is deliberately
+        // absent because it discards unsaved edits.
         let none = no_match_hint(&[]);
         assert_eq!(
             none,
-            "該当する設定がありません。検索欄右端の × で検索をクリアしてください"
+            "該当する設定がありません。検索欄右端の × で検索をクリアしてください（キーボードでは Ctrl+A → Delete でもクリアできます）"
         );
         assert!(none.contains("× で検索をクリア"));
+        assert!(none.contains("Ctrl+A → Delete"));
         assert!(!none.contains("Esc"));
         assert!(!none.contains("Alt+"));
     }
@@ -2716,10 +2719,15 @@ mod tests {
 
     #[test]
     fn settings_search_placeholder_advertises_key_name_search() {
-        // R07: chord names such as Alt+K are searchable, so the placeholder
-        // must say so rather than promising only setting-label search.
-        assert_eq!(SETTINGS_SEARCH_PLACEHOLDER, "設定・キー名で検索…");
+        // R07/AS14: chord names such as Alt+K are searchable, so the placeholder
+        // must advertise both setting keys and shortcut keys rather than
+        // promising only setting-label search.
+        assert_eq!(
+            SETTINGS_SEARCH_PLACEHOLDER,
+            "設定・キー名・ショートカットキーで検索…"
+        );
         assert!(SETTINGS_SEARCH_PLACEHOLDER.contains("キー名"));
+        assert!(SETTINGS_SEARCH_PLACEHOLDER.contains("ショートカットキー"));
     }
 
     #[test]

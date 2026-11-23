@@ -4,12 +4,14 @@
 # Runs the local verification loop for this repository.
 #
 #   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
-#   poc: fmt -> check -> test -> clippy -> (optional) cargo deny (advisories/bans/sources)
+#   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
 #
 # The repository is a virtual Cargo workspace with members core, app, poc
 # and win32 (root Cargo.toml). The shared CI workflow
 # (Seduce0068/workflows rust-gates@v1) covers `app/` and runs the other
 # members through `extra_gates`; this script reproduces those gates locally.
+# Cross-target checks (core/wasm32-unknown-unknown, win32/x86_64-pc-windows-gnu)
+# are `cargo check` only (no linker) and require the rustup targets installed.
 #
 # Release verification (app/ only):
 #   Debug builds always enable `debug_assertions`, so `#[cfg(not(debug_assertions))]`
@@ -39,12 +41,14 @@ usage() {
 Runs the local verification loop for this repository.
 
   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
-  poc: fmt -> check -> test -> clippy -> (optional) cargo deny (advisories/bans/sources)
+  poc: fmt -> check -> test -> clippy -> (optional) cargo deny
 
-The repository has no root Cargo.toml: `app/` and `poc/` are independent
-Cargo projects. The shared CI workflow (Seduce0068/workflows rust-gates@v1)
-covers `app/` and runs the `poc/` half through `extra_gates`; this script
-reproduces both halves locally.
+The repository is a virtual Cargo workspace with members core, app, poc
+and win32 (root Cargo.toml). The shared CI workflow
+(Seduce0068/workflows rust-gates@v1) covers `app/` and runs the other
+members through `extra_gates`; this script reproduces those gates locally.
+Cross-target checks: core (wasm32-unknown-unknown) and win32
+(x86_64-pc-windows-gnu) via `cargo check`; install with `rustup target add`.
 
 Release verification (app/ only):
   Compiles `#[cfg(not(debug_assertions))]` branches that debug builds never see.
@@ -52,8 +56,7 @@ Release verification (app/ only):
 
 Supply-chain gates:
   - cargo audit: RustSec advisory check for app/ and poc/
-  - cargo deny check: full check for app/; for poc/ the licenses check is
-    omitted because its Cargo.toml has no license field (out of scope here)
+  - cargo deny check: full check for app/ and poc/ (both declare a license)
     - see deny.toml
   - cargo vet check: only when <project>/supply-chain/config.toml exists
     (run `cargo vet init` in that project to opt in)
@@ -159,7 +162,6 @@ run_audit_check() {
 
 run_deny_check() {
 	local project_dir="$1"
-	local project="$2"
 	if ! command -v cargo-deny >/dev/null 2>&1; then
 		echo "cargo-deny is not installed; skipping the deny check (CI runs it)."
 		record_missing_tool cargo-deny
@@ -167,23 +169,15 @@ run_deny_check() {
 	fi
 
 	if [ "${fast_mode}" = true ]; then
-		if [ "${project}" = "app" ]; then
-			echo "==> ${project_dir}: cargo deny check (offline: licenses/bans/sources)"
-			(cd "${project_dir}" && cargo deny --offline check licenses bans sources)
-		else
-			echo "==> ${project_dir}: cargo deny check (offline: bans/sources)"
-			(cd "${project_dir}" && cargo deny --offline check bans sources)
-		fi
+		# Both projects declare a license, so --fast keeps the offline
+		# licenses/bans/sources set identical for app/ and poc/.
+		echo "==> ${project_dir}: cargo deny check (offline: licenses/bans/sources)"
+		(cd "${project_dir}" && cargo deny --offline check licenses bans sources)
 		return
 	fi
 
-	if [ "${project}" = "app" ]; then
-		echo "==> ${project_dir}: cargo deny check"
-		(cd "${project_dir}" && cargo deny check)
-	else
-		echo "==> ${project_dir}: cargo deny check (advisories/bans/sources; licenses skipped, see deny.toml)"
-		(cd "${project_dir}" && cargo deny check advisories bans sources)
-	fi
+	echo "==> ${project_dir}: cargo deny check"
+	(cd "${project_dir}" && cargo deny check)
 }
 
 run_vet_check() {
@@ -226,7 +220,7 @@ if [ "${run_app}" = true ]; then
 		run_audit_check app
 	fi
 	if [ "${run_deny}" = true ]; then
-		run_deny_check app app
+		run_deny_check app
 	fi
 	if [ "${run_vet}" = true ]; then
 		run_vet_check app
@@ -249,6 +243,15 @@ if [ "${run_poc}" = true ]; then
 			(cd "${member}" && cargo clippy --all-targets --locked -- -D warnings)
 		fi
 	done
+
+	# クロスコンパイル ゲート（CI の extra_gates と同一コマンド）。
+	# `cargo check` はリンカを要さず、Windows GNU / wasm32 ターゲットを
+	# rustup target add 済みなら Linux ホストでも実行できる。
+	echo '==> core: cargo check --target wasm32-unknown-unknown --lib --locked'
+	cargo check -p gpui-file-explorer-core --target wasm32-unknown-unknown --lib --locked
+
+	echo '==> win32: cargo check --target x86_64-pc-windows-gnu --locked'
+	cargo check -p gfe-win32 --target x86_64-pc-windows-gnu --locked
 fi
 
 
@@ -269,7 +272,7 @@ if [ "${run_poc}" = true ]; then
 		run_audit_check poc
 	fi
 	if [ "${run_deny}" = true ]; then
-		run_deny_check poc poc
+		run_deny_check poc
 	fi
 	if [ "${run_vet}" = true ]; then
 		run_vet_check poc

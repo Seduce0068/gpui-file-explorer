@@ -63,8 +63,11 @@ status: draft
   `Explorer::on_key_down` の `match action`。
   アクティブペインを切替える列挙は存在しない。
 - コンテキストメニューは `ContextMenuExt` を `Explorer::render` の row / cell
-  要素へ適用（`.context_menu(...)`）。マウス起点の UI であり、
-  キー操作の代替ではない。
+  要素へ適用（`.context_menu(...)`）。**as-built（2026-11-23）**: 旧本文の
+  「マウス起点の UI であり、キー操作の代替ではない」という記述は古い。
+  `Shift+F10` / `Menu` で同じメニューをキーボードから開ける実装済みであり、
+  F1 ヘルプと設定「ショートカット」タブにも掲載されている
+  （`app/src/settings_ui.rs` の `SHORTCUTS_DEFAULT_LINES`）。
 
 ### ライセンス
 

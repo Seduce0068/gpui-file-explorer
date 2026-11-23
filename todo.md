@@ -1687,12 +1687,41 @@ status: current
 - [x] **AR21** NOTICE.md の app/NOTICE.md リンクが deb 内で切れる — 対応: loop6
 - [x] **AR22** PWA リストボックスに Home/End が無い — 対応: loop6
 
-### 既知リスク（ループ6で記録）
+### 既知リスク（ループ6で記録、ループ7で解消）
 
-- 未知 persisted enum シグナルは `AtomicBool` + thread_local の併用。
-  32 スレッド並列実行時に他テストの note を拾う低頻度レースが残る
-  （12 スレッドでは 12 連続成功、core 169 tests pass）。
-  根本解消には settings ロードのスコープ明示受け渡しが必要。
+- 旧: persisted enum シグナルの AtomicBool + thread_local 併用によるレース。
+  AS01 で生 JSON クロスチェックの純関数へ収束し完全解消（32 スレッド × 4 ラウンド回帰 green）。
+
+## 進行中（ループ7 バックログ）
+
+### 優先度: 高（ループ7・confirmed）
+
+- [x] **AS01** persisted enum シグナルを案2（LoadReport）へ収束（根本解消） — 対応: loop7
+- [x] **AS02** reconcile の古いスナップショットが watch 増分を上書き — 対応: loop7
+- [x] **AS03** reconcile エラー経路に view ガードが無い — 対応: loop7
+- [x] **AS04** run_search 成功が RESCAN_FAILED ホールドを解除しない — 対応: loop7
+- [x] **AS05** DEB ビルドが workspace 化後の target パス変更に未追従 — 対応: loop7
+- [x] **AS06** win32 の SAFETY 注記ゲートが Linux で空振り（cross-target 必要） — 対応: loop7
+- [x] **AS07** 設定「一覧の列」エディタがキーボード到達不能＋「↑↓」表記が誤り — 対応: loop7
+
+### 優先度: 中（ループ7・confirmed）
+
+- [x] **AS08** wasm32 バインディングがどのゲートでもコンパイルされていない — 対応: loop7
+- [x] **AS09** poc licenses 監査が陳腐化した前提でスキップされている — 対応: loop7
+- [x] **AS10** docs/design の Windows スタブ / アイコン provider 記述が古い — 対応: loop7
+- [x] **AS11** README の CI 検証範囲が core/win32 ゲート追加を未反映 — 対応: loop7
+- [x] **AS12** dual-pane ADR のキーボード代替不在記述が古い — 対応: loop7
+- [x] **AS13** phase1-core-extraction の workspace「案」が実装済みを未反映 — 対応: loop7
+- [x] **AS14** 設定検索プレースホルダが chord 検索を案内しない — 対応: loop7
+- [x] **AS15** 零命中ヒントにキーボード代替が無い — 対応: loop7
+- [x] **AS16** PWA listbox の aria-live が重複通知を誘発 — 対応: loop7
+
+### 優先度: 低（ループ7・confirmed）
+
+- [x] **AS17** needs_reload_after_load が発生元 generation と紐付かない — 対応: loop7
+- [x] **AS18** 3つの Cargo.lock と古い workspace 記述が並存 — 対応: loop7
+- [x] **AS19** PWA 空状態 li が option セマンティクスを持たない — 対応: loop7
+- [x] **AS20** DeserializeSeed 代替案の却下理由を記録（案2採用時） — 対応: loop7
 
 ## メモ
 

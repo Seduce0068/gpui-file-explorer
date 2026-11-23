@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # 個人リポジトリ共通の再利用可能ワークフロー（rust-gates.yml）へ委譲する。
-# ゲート: fmt → check → test → clippy → cargo audit → poc/ の追加ゲート。
+# ゲート: fmt → check → test → clippy → cargo audit → core/win32/poc と
+# クロスターゲット（wasm32 / windows-gnu）の追加ゲート。
 # GPUI 系のビルドに必要な Linux 開発パッケージのみ導入する。
 #
 # 共有ワークフローには cargo-deny / cargo-vet 用の入力が無いため
@@ -37,6 +38,10 @@ jobs:
         libwayland-dev
         libx11-xcb-dev
       audit: true
+      # 共有ワークフローの wasm_targets 入力は `rustup target add` の
+      # カンマ区切りリスト（wasm32 等）。win32 の Windows GNU ターゲットも
+      # ここで導入し、下の extra_gates のクロスチェックで使う。
+      wasm_targets: wasm32-unknown-unknown,x86_64-pc-windows-gnu
       # virtual workspace（core/app/poc/win32）のうち、共有ワークフローの
       # gates は app/ のみ。残りは extra_gates で明示的に回す。
       extra_gates: |
@@ -49,6 +54,9 @@ jobs:
         cargo test -p gfe-win32 --all-targets --locked
         # FFI 境界の unsafe ブロックには必ず SAFETY 注記を要求する
         cargo clippy -p gfe-win32 --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks
+        # クロスコンパイル gate（cargo check のみ・linker 不要）
+        cargo check -p gpui-file-explorer-core --target wasm32-unknown-unknown --lib --locked
+        cargo check -p gfe-win32 --target x86_64-pc-windows-gnu --locked
         (cd ../poc && cargo fmt --all -- --check)
         (cd ../poc && cargo check --all-targets --locked)
         (cd ../poc && cargo test --all-targets --locked)
@@ -78,7 +86,7 @@ jobs:
 
       - name: 依存監査（cargo deny / poc）
         working-directory: poc
-        # poc/ のルートクレートは Cargo.toml に license が無いため licenses は除外（deny.toml 参照）。
+        # app/ と同じく全チェックを実行（poc/ も Cargo.toml に license を宣言済み）。
         run: cargo deny check
 
       # poc/ の脆弱性監査は上の cargo deny advisories で実施。cargo-audit は

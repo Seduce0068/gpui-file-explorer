@@ -149,6 +149,10 @@ function render(entries, { heading }) {
 
   if (entries.length === 0) {
     const li = document.createElement('li');
+    // 空状態の li は listbox の選択肢ではないため、支援技術へ選択肢として
+    // 読み上げられないよう role=presentation を付与する（状態通知は #status の
+    // aria-live に一本化済み）。
+    li.setAttribute('role', 'presentation');
     li.className = 'empty';
     li.textContent = '該当する項目はありません';
     els.list.append(li);

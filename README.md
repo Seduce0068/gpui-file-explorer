@@ -104,7 +104,7 @@ Rust の 1.92 は [`app/Cargo.toml`](app/Cargo.toml) の `rust-version` に宣�
 | [scripts/dev-setup.sh](scripts/dev-setup.sh) | `libxkbcommon-x11` 開発ファイル欠如時のローカル symlink 作成（システム変更なし） |
 | [scripts/setup-e2e-input.sh](scripts/setup-e2e-input.sh) | E2E 入力ツール（`wtype` / `xdotool` / `ydotool`）を sudo なしでユーザー空間へ導入 |
 | [packaging/linux/](packaging/linux/) | Linux DEB ビルド（`build-deb.sh`、`.desktop`、hicolor アイコン）。root 不要・ホストへインストールしない |
-| [.github/workflows/ci.yml](.github/workflows/ci.yml) | 個人リポジトリ共通の Rust ゲート（`Seduce0068/workflows@v1`）へ委譲。`app/` に加え `extra_gates` で独立プロジェクト `poc/` も fmt/check/test/clippy を検証 |
+| [.github/workflows/ci.yml](.github/workflows/ci.yml) | 個人リポジトリ共通の Rust ゲート（`Seduce0068/workflows@v1`）へ委譲。`app/` に加え `extra_gates` で workspace member の `core/` / `win32/` / `poc/` とクロスターゲット（wasm32 / windows-gnu）の `cargo check` を検証 |
 
 > `notes/` は元の開発ワークスペース（`work/gpui-file-explorer/`）で作成した調査記録です。
 > 一部に `work/gpui-file-explorer/...` や `security-review/Argus`（リポジトリ外）への参照が残っています。
@@ -201,21 +201,31 @@ bash packaging/linux/build-deb.sh --skip-build
 （gpui 系 Apache-2.0、Lucide ISC、notify CC0-1.0 ほか）。詳細は
 [NOTICE.md](NOTICE.md) と [app/NOTICE.md](app/NOTICE.md) を参照してください。
 
-## CI の検証範囲（2026-11-21 更新）
+## CI の検証範囲（2026-11-23 更新）
 
 `.github/workflows/ci.yml` は
 `Seduce0068/workflows/.github/workflows/rust-gates.yml@v1` に委譲し、`app/` で
-fmt → check → test → clippy → `cargo audit` を実行する。
-`poc/` はルート `Cargo.toml` を持たない別プロジェクトのため共有ワークフローの
-対象外だったので、`extra_gates` で `poc/` の fmt / check(`--locked`) /
-test(`--locked`) / clippy(`-D warnings`) と、`app/` の release check/test
-（`#[cfg(not(debug_assertions))]` 分岐の検証）を追加した。
+fmt → check → test → clippy → `cargo audit` を実行する。リポジトリは
+`core` / `app` / `poc` / `win32` を member とする virtual workspace であり、
+共有ワークフローの固定ゲートは `app/` のみなので、残りは `extra_gates` で
+明示的に回す。
+
+`extra_gates` の内容（2026-11-23 時点）:
+
+- `app/` の release check/test（`#[cfg(not(debug_assertions))]` 分岐の検証）。
+- workspace member の `core` / `win32` の test と clippy。
+  `win32` は FFI 境界なので `-D clippy::undocumented_unsafe_blocks` を付与。
+- クロスターゲットの `cargo check`（リンカ不要）:
+  `gpui-file-explorer-core` を `wasm32-unknown-unknown`、
+  `gfe-win32` を `x86_64-pc-windows-gnu` に対して検査する。
+  ターゲットは共有ワークフローの `wasm_targets` 入力で `rustup target add` する。
+- `poc/` の fmt / check(`--locked`) / test(`--locked`) / clippy(`-D warnings`)。
 
 サプライチェーン監査は別ジョブ `supply-chain` で実行する（共有ワークフローに
-`cargo deny` / `cargo vet` の入力が無いため）。`app/` には `cargo deny check`
-（全チェック）、`poc/` には `cargo deny check advisories bans sources`
-（licenses は Cargo.toml に license が無いため除外）を実行し、`cargo vet check`
-は `app/supply-chain/config.toml` が存在する場合のみ実行する。
+`cargo deny` / `cargo vet` の入力が無いため）。`app/` と `poc/` の両方に
+`cargo deny check`（全チェック）を実行する。`poc/` も Cargo.toml に license を
+宣言済みであり、licenses を除外する前提は解消された。`cargo vet check` は
+`app/supply-chain/config.toml` が存在する場合のみ実行する。
 
 - 検証（Runtime Proof）: 追加ゲートを含む CI が **success**
   （run 43734742786、12分22秒）— 2026-11-16 時点のスナップショット。

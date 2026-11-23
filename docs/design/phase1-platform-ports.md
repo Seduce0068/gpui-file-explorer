@@ -49,9 +49,17 @@ R1 で確認済みの事実を、本設計の前提として引用する。
    `app/src/trash_view.rs:31-39` がゲートをミラーし、同 `:78-125` が no-op fallback を
    提供する。リスト取得はブロッキングで、
    UI は `cx.background_spawn` で退避するよう同 `:46-48` に明記されている。
-- `mounts.rs` は Linux の `/proc/mounts` 固定で、
-   Windows は文書化されたスタブ（`app/src/mounts.rs:234-237`）。
-   OS アイコンも `BundledIconProvider`（`app/src/system_icons.rs:15-20,348-350`）である。
+- `mounts.rs` は Linux の `/proc/mounts` 解析に加え、Windows は
+   `gfe-win32::logical_drives()` によるネイティブ列挙へ接続済み
+   （`app/src/mounts.rs:220-227`、`win32/src/lib.rs:154,206`）。
+   **as-built（2026-11-23）**: 旧本文の「Windows は文書化されたスタブ」
+   （`app/src/mounts.rs:234-237`）は解消済みである。
+   OS アイコンの既定プロバイダは Linux が `FreedesktopIconProvider`、
+   Windows / モバイルが `BundledIconProvider`
+   （`app/src/system_icons.rs:416,427-433`、`win32/src/lib.rs:306,355`）。
+   `gfe-win32` の `file_icon_index` / `file_icon_handle` は FFI 側で得られるが、
+   名前ベースの `OsIconProvider` は HICON を描画側へ渡せないため、
+   Windows のネイティブアイコン描画への配線は未実施である。
 - `gpui-pre-windows` 0.3.12 は `prompt_for_paths`（`:782`）、`reveal_path`（`:816`）、
    `open_with_system`（`:830`）を安全な `Platform` メソッドとして提供する。
    内部の `unsafe` 88 箇所は依存クレート内に閉じこもる。
@@ -129,8 +137,9 @@ pub trait VolumeSource: Send + Sync {
 }
 ```
 
-Linux は `/proc/mounts` 解析を維持し、Windows は既存スタブ
-（`app/src/mounts.rs:234-237`）、Android / PWA は空ベクトルを返す。
+Linux は `/proc/mounts` 解析、Windows は `gfe-win32::logical_drives()`
+（as-built 2026-11-23: 旧スタブ `app/src/mounts.rs:234-237` は置換済み）、
+Android / PWA は空ベクトルを返す。
 サイドバーの「ドライブ」節は空配列で自然に非表示になる
 （同 `:239-240` のコメントと整合）。
 
@@ -427,7 +436,8 @@ B と同じ UI 倍増が生じるため、本見積もりには含めない
 - `app/src/main.rs`: 2481, 2962, 3503-3504, 3625, 3709, 4111, 4226,
   4813, 4826, 6200-6240, 8555
 - `app/src/settings.rs:71-72`、`app/src/trash_view.rs:1,31-39,49-53,81-125`
-- `app/src/mounts.rs:234-237`、`app/src/system_icons.rs:15-20,348-350`
+- `app/src/mounts.rs:220-227`、`app/src/system_icons.rs:416,427-433`、
+  `win32/src/lib.rs:154,206,306,355`
 - `app/src/model.rs:92`、`app/src/search.rs:46,104,343`
 - `app/src/preview.rs:24,27,72,79,150`
 - `app/Cargo.toml:1,28-34`、`deny.toml:1,16-24,29-36,39-60`

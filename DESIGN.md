@@ -1239,6 +1239,10 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 - 実装: `packaging/linux/build-deb.sh`（root 不要、`dpkg-deb --root-owner-group`）。
   `app/target/release/gpui-file-explorer`、`.desktop`、hicolor アイコン（16〜512px + scalable）、
   `README` / `copyright` / `NOTICE` を FHS 準拠の配置で収録する。
+  as-built（2026-11-23）: virtual workspace 化で既定のビルド成果物はルート
+  `target/release/` へ出るため、同スクリプトは `cargo build` に
+  `--target-dir app/target` を付けて既定パスを `app/target/release/` に固定する
+  （鮮度チェックの監視対象はルート `Cargo.lock`）。
 - `Depends` は `ldd` + `dpkg -S` から自動生成（ローカライズされた diversion 行を除外）。
   Vulkan ローダは dlopen のため `libvulkan1` を明示追加する。
 - 検証: `dpkg-deb -x` 展開後のバイナリで `--version` と Wayland GUI 起動、`apt-get -s install` の

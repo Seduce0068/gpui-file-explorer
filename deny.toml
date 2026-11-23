@@ -5,9 +5,8 @@
 # 下記 allow は既存 dependency graph に対して `cargo deny check` が通る
 # 最小限のライセンス集合を基準にしている（新規ライセンスは明示的に追加する）。
 #
-# 注: poc/ のルートクレートは Cargo.toml に license フィールドが無く
-# （本タスクの書き込み対象外）、licenses check は unlicensed で失敗する。
-# poc/ では advisories / bans / sources のみを実行する（check.sh を参照）。
+# 注: poc/ も Cargo.toml に AGPL-3.0-or-later を宣言済みのため、
+# licenses check を含む完全な `cargo deny check` を実行する（check.sh を参照）。
 
 [advisories]
 # yanked crate は検出しても警告に留める（既存ロックファイルの更新を強制しない）。
