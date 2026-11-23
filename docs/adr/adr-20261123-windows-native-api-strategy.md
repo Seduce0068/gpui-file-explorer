@@ -45,7 +45,7 @@ status: draft
   Windows の `SHGetFileInfo` は NF02 承認待ちとして明示的に先送り。
   同 `:348-350`: 現状は `BundledIconProvider` が使われる。
 - `app/Cargo.toml:13-34`: 直接依存に `windows-sys` / `windows` はない。
-  `app/Cargo.lock` の `windows` 系クレートはすべて推移依存。
+  ルート `Cargo.lock` の `windows` 系クレートはすべて推移依存。
 
 ### forbid はモジュールの allow で上書きできない
 
@@ -137,7 +137,7 @@ mod ffi { pub unsafe fn f() {} }
 ### A: windows-sys を直接依存に追加し、狭い FFI 層を作る
 
 `windows-sys 0.61.2` は既にロックファイル内にあり、
-新しいバージョンを導入するわけではない（`app/Cargo.lock:7785`）。
+新しいバージョンを導入するわけではない（ルート `Cargo.lock:7812-7813`）。
 
 - A1: クレート直下を `forbid` から `deny` に変更し、
   モジュールへ `#[allow(unsafe_code)]` を付与する。
@@ -300,7 +300,7 @@ OS アイコン抽出（`SHGetFileInfo`）は依然として bundled アイコ�
 
 - `app/src/main.rs:8`, `app/src/mounts.rs:229-237`
 - `app/src/system_icons.rs:15-20,348-350`
-- `app/Cargo.toml:13-34`, `app/Cargo.lock:7416-8001`
+- `app/Cargo.toml:13-34`, ルート `Cargo.lock:7443-8028`（`windows` 系クレート）
 - `gpui-pre-windows-0.3.12/src/platform.rs:522,782,795,816,830`
 - 同 `:1524,1572,1824`
 - `windows-sys-0.61.2/src/Windows/Win32/Storage/FileSystem/mod.rs`

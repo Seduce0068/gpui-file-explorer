@@ -74,12 +74,12 @@ crates.io / docs.rs / GitHub の一次情報だけを根拠に、
   `poc/Cargo.lock` は workspace 化前の未使用残骸（README.md の「Cargo.lock」節を参照）。
 - ルート `Cargo.lock` には ICU4X の推移依存が既に入っている。
   すべてバージョン `2.4.0` で、
-  `icu_collections`（:2930）、`icu_locale_core`（:2944）、
-  `icu_locale_fallback`（:2958）、`icu_locale_fallback_data`（:2972）、
-  `icu_normalizer`（:2978）、`icu_normalizer_data`（:2992）、
-  `icu_properties`（:2998）、`icu_properties_data`（:3013）、
-  `icu_provider`（:3019）、`icu_segmenter`（:3036）、
-  `icu_segmenter_data`（:3053）。
+  `icu_collections`（:2957）、`icu_locale_core`（:2971）、
+  `icu_locale_fallback`（:2985）、`icu_locale_fallback_data`（:2999）、
+  `icu_normalizer`（:3005）、`icu_normalizer_data`（:3019）、
+  `icu_properties`（:3025）、`icu_properties_data`（:3040）、
+  `icu_provider`（:3046）、`icu_segmenter`（:3063）、
+  `icu_segmenter_data`（:3080）。
   `icu_segmenter` は `app/Cargo.lock:2175` で GPUI 系クレートの依存として引かれている。
 - **`icu_collator` は `app/Cargo.lock` / `poc/Cargo.lock` の双方に存在しない。**
   いずれの `Cargo.toml` にも直接依存として載っていない。

@@ -56,15 +56,17 @@ use crate::tabs::{Tab, Tabs};
 use crate::undo::{UndoAction, UndoStack};
 use crate::watcher::{removed_paths, DirWatcher, FsEvent};
 use gfe_core::model::{
-    breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
-    grid_columns, grid_row_count, human_age, human_datetime, human_size, last_index, parent_dir,
-    read_entries, read_entries_with_failures, resolve_location_input, sort_entries, step_selection,
-    visible_entries, Entry, FsError, FsErrorKind, ReadEntriesOutcome, Selection, SortKey, SortSpec,
+    breadcrumb_segments, clamp_index, create_unique_folder, display_path, entry_for_path,
+    fingerprint, first_index, grid_columns, grid_row_count, human_age, human_datetime, human_size,
+    last_index, parent_dir, read_entries, read_entries_with_failures, resolve_location_input,
+    sort_entries, step_selection, visible_entries, Entry, FsError, FsErrorKind, ReadEntriesOutcome,
+    Selection, SortKey, SortSpec,
 };
 use gfe_core::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use gfe_core::search::{
-    filter_results, merge_search_results, search_by_name, search_contents, search_roots,
-    ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchResult, SearchScope,
+    filter_results, merge_search_results_capped, name_matches, normalized_query, search_by_name,
+    search_contents, search_roots, ContentSearchOptions, SearchKind, SearchMode, SearchOptions,
+    SearchResult, SearchScope,
 };
 use gfe_core::trash_view::{
     missing_restore_ids, partition_restore_ids, partition_restore_outcome, redo_trash_targets,
@@ -469,6 +471,10 @@ fn search_view_key_allowed(key: &str, ctrl: bool, shift: bool, alt: bool) -> boo
 /// in this set. Reload (F5) belongs here so the "F5 で再読込" recovery hint on
 /// `STATUS_RESCAN_FAILED` is advertised by a key that is actually reachable
 /// while browsing results; `reload` keeps the search query untouched (AC03).
+/// BF10: Undo/Redo/ToggleUndoHistory are history actions, not destructive
+/// filesystem actions, so browsing results must be able to reach them. The
+/// text-input focus guard still eats those chords while typing, so they only
+/// fire when the result list (or root) owns focus.
 fn search_view_action_allowed(action: KeyAction) -> bool {
     matches!(
         action,
@@ -485,6 +491,9 @@ fn search_view_action_allowed(action: KeyAction) -> bool {
             | KeyAction::Copy
             | KeyAction::Quit
             | KeyAction::Reload
+            | KeyAction::Undo
+            | KeyAction::Redo
+            | KeyAction::ToggleUndoHistory
     )
 }
 
@@ -690,6 +699,7 @@ const STATUS_ERROR_MARKERS: &[&str] = &[
     // なので、明示的なマーカーとして登録して回帰を防ぐ。
     STATUS_SETTINGS_SAVE_TOO_LARGE,
     STATUS_SETTINGS_SAVE_LOCKED,
+    STATUS_SETTINGS_SAVE_CHANGED_ON_DISK,
     STATUS_RESCAN_FAILED,
     STATUS_TRASH_ALL_FAILED,
     STATUS_RESTORE_FAILED,
@@ -887,12 +897,22 @@ fn display_name_for(
 ) -> String {
     if view == ViewSource::Search {
         if let Ok(relative) = entry.path.strip_prefix(root) {
-            return relative.display().to_string();
+            // BF19: a root path itself strips to "", which rendered as a blank
+            // row label. The entry's own name is the meaningful fallback.
+            return if relative.as_os_str().is_empty() {
+                entry.name_text.clone()
+            } else {
+                relative.display().to_string()
+            };
         }
         let mut best: Option<String> = None;
         for search_root in search_roots {
             if let Ok(relative) = entry.path.strip_prefix(search_root) {
-                let text = relative.display().to_string();
+                let text = if relative.as_os_str().is_empty() {
+                    entry.name_text.clone()
+                } else {
+                    relative.display().to_string()
+                };
                 if best
                     .as_ref()
                     .is_none_or(|current| text.len() < current.len())
@@ -999,12 +1019,23 @@ fn settings_save_error_status(error: Option<SettingsSaveError>) -> Option<String
     }
 }
 
+/// BF04: `ChangedOnDisk` is represented as a downcastable `Io` payload so the
+/// exhaustive match above stays intact, but the user must see why the write
+/// was rejected and how to recover.
+fn settings_changed_on_disk_status(settings: &Settings) -> Option<String> {
+    settings
+        .changed_on_disk
+        .get()
+        .then(|| STATUS_SETTINGS_SAVE_CHANGED_ON_DISK.to_string())
+}
+
 /// Start-up writes call `save_settings()` before any status bar is live, so the
 /// failure must be turned into a notice here (V01). Use the concrete reason
 /// recorded in `settings.last_save_error` when there is one; only fall back to
 /// the generic notice for plain I/O failures / unknown causes.
 fn startup_save_failure_status(settings: &Settings) -> String {
-    settings_save_error_status(settings.last_save_error.get())
+    settings_changed_on_disk_status(settings)
+        .or_else(|| settings_save_error_status(settings.last_save_error.get()))
         .unwrap_or_else(|| STATUS_SETTINGS_SAVE_FAILED.to_string())
 }
 
@@ -1057,7 +1088,8 @@ fn settings_write_status(
         settings_read_only_status(settings)
     } else if !saved {
         // U03: prefer the concrete reason recorded by `save_with_reason`.
-        settings_save_error_status(settings.last_save_error.get())
+        settings_changed_on_disk_status(settings)
+            .or_else(|| settings_save_error_status(settings.last_save_error.get()))
             .unwrap_or_else(|| settings_save_status(saved, success))
     } else {
         settings_save_status(saved, success)
@@ -2574,23 +2606,23 @@ use crate::strings::{
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
     STATUS_SEARCH_PROMPT, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
     STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_RESET_PREFIX,
-    STATUS_SETTINGS_SAVED, STATUS_SETTINGS_SAVE_FAILED, STATUS_SETTINGS_SAVE_LOCKED,
-    STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SKIPPED_PREFIX, STATUS_SKIPPED_SUFFIX,
-    STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
-    STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY,
-    STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY,
-    STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_DISABLED,
-    STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
-    STATUS_THEME_CHANGED_PREFIX, STATUS_TRANSFER_VERIFY_SUFFIX, STATUS_TRASH_ALL_FAILED,
-    STATUS_TRASH_LOADING, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON,
-    STATUS_TRASH_NO_AUTO_REFRESH, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
-    STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
-    STATUS_TRASH_NO_SORT, STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED,
-    STATUS_TRASH_RESTORE_OCCUPIED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX,
-    STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT, STATUS_UNDO_MISSING_SUFFIX,
-    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
-    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, TERMINAL_COMMAND_DESCRIPTION, THEME_LABEL_DARK,
-    THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+    STATUS_SETTINGS_SAVED, STATUS_SETTINGS_SAVE_CHANGED_ON_DISK, STATUS_SETTINGS_SAVE_FAILED,
+    STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SKIPPED_PREFIX,
+    STATUS_SKIPPED_SUFFIX, STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY,
+    STATUS_SKIP_REASON_SPECIAL, STATUS_SPECIAL_FILE_NO_COPY, STATUS_SYMLINK_NO_PREVIEW,
+    STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED,
+    STATUS_TAB_RESTORE_EMPTY, STATUS_TARGET_GONE, STATUS_TARGET_MISSING,
+    STATUS_TERMINAL_COMMAND_DISABLED, STATUS_TERMINAL_COMMAND_INVALID,
+    STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
+    STATUS_TRANSFER_VERIFY_SUFFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
+    STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_AUTO_REFRESH,
+    STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE,
+    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_TRASH_RESTORE_OCCUPIED,
+    STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
+    STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED,
+    STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
+    TERMINAL_COMMAND_DESCRIPTION, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -7732,6 +7764,9 @@ impl Explorer {
             cx.notify();
             return;
         }
+        // BF05: remember where the operation started so its completion can
+        // repair the Search snapshot instead of calling a no-op `reload()`.
+        let view_at_start = self.view;
         let Some(action) = self.undo.pop_undo() else {
             self.status = STATUS_UNDO_EMPTY.to_string();
             cx.notify();
@@ -7776,6 +7811,8 @@ impl Explorer {
                         Some(ops::rename_entry(&rename_source, &name))
                     }
                 });
+                // BF05: keep the old path for the Search-snapshot patch below.
+                let removed_path = current.clone();
                 let action_for_redo = UndoAction::Rename { from, to: current };
                 let task = cx.spawn(async move |this, cx| {
                     let result = background.await;
@@ -7795,8 +7832,16 @@ impl Explorer {
                                     "{label}を元に戻しました（{affected} 件）: {}",
                                     display_path(&restored)
                                 );
-                                this.pending_select = Some(restored);
-                                this.reload(cx);
+                                this.pending_select = Some(restored.clone());
+                                // BF05: `reload()` is a no-op in Search; patch
+                                // its cached result set instead of leaving a
+                                // pre-undo snapshot on screen.
+                                this.refresh_search_after_undo_redo(
+                                    cx,
+                                    view_at_start,
+                                    &[removed_path],
+                                    &[restored],
+                                );
                             }
                             None => {
                                 this.undo.push_undo(action_for_redo);
@@ -7843,6 +7888,11 @@ impl Explorer {
                                 // attempt, so neither side is recorded when it
                                 // has no ids.
                                 let (restored, pending) = split_undo_trash_items(&items, &outcome);
+                                // BF05: capture paths before `restored` moves
+                                // into the redo entry; the Search snapshot
+                                // patch needs them after the bookkeeping.
+                                let restored_paths: Vec<PathBuf> =
+                                    restored.iter().map(|(path, _)| path.clone()).collect();
                                 if !restored.is_empty() {
                                     this.undo.push_redo(UndoAction::Trash { items: restored });
                                 }
@@ -7856,7 +7906,12 @@ impl Explorer {
                                     outcome.failed.len()
                                 );
                                 this.status = trash_undo_outcome_status(label, &outcome);
-                                this.reload(cx);
+                                this.refresh_search_after_undo_redo(
+                                    cx,
+                                    view_at_start,
+                                    &[],
+                                    &restored_paths,
+                                );
                             }
                             None => {
                                 this.undo.push_undo(retry);
@@ -7879,6 +7934,9 @@ impl Explorer {
             cx.notify();
             return;
         }
+        // BF05: see `undo_last` — the completion needs the starting view to
+        // decide between patching the Search listing and flagging it stale.
+        let view_at_start = self.view;
         let Some(action) = self.undo.pop_redo() else {
             // AI09: Undo の空通知と同じ「記録対象」の補足を共有する。
             self.status = format!("{STATUS_REDO_EMPTY}{STATUS_UNDO_HISTORY_HINT}");
@@ -7923,6 +7981,8 @@ impl Explorer {
                 self.status = format!("{label}をやり直しています…{STATUS_CANCEL_HINT}");
                 cx.notify();
                 let cancel = token.cancel.clone();
+                // BF05: keep the old path for the Search-snapshot patch below.
+                let removed_path = current.clone();
                 let background = cx.background_spawn(async move {
                     if cancel.is_cancelled() {
                         None
@@ -7948,8 +8008,15 @@ impl Explorer {
                                 );
                                 this.status =
                                     format!("{label}をやり直しました: {}", display_path(&redone));
-                                this.pending_select = Some(redone);
-                                this.reload(cx);
+                                this.pending_select = Some(redone.clone());
+                                // BF05: patch the Search snapshot rather than
+                                // relying on a no-op `reload()` in that view.
+                                this.refresh_search_after_undo_redo(
+                                    cx,
+                                    view_at_start,
+                                    &[removed_path],
+                                    &[redone],
+                                );
                             }
                             None => {
                                 this.undo.push_redo(action_for_undo);
@@ -8122,7 +8189,14 @@ impl Explorer {
                                     reason
                                 )
                             };
-                            this.reload(cx);
+                            // BF05: the Search view needs its cached result
+                            // set patched; `reload()` returns early there.
+                            this.refresh_search_after_undo_redo(
+                                cx,
+                                view_at_start,
+                                &trashed,
+                                &[],
+                            );
                         }
                         cx.notify();
                     });
@@ -9955,6 +10029,15 @@ impl Explorer {
         self.search.active_roots.clear();
         self.search.fell_back_to_cwd = false;
         self.search.last_stats = SearchRunStats::default();
+        // BF06/BD18: advancing the generation alone does not stop an earlier
+        // walk. Stop and drop it first so its cancellation flag, task and
+        // running flag cannot outlive the generation they belonged to; the
+        // same cleanup lives at the start of `run_search`.
+        if let Some(cancel) = self.search.cancel.take() {
+            cancel.store(true, Ordering::SeqCst);
+        }
+        self.search.task.take();
+        self.search.running = false;
         self.search.generation = self.search.generation.wrapping_add(1);
         self.view = ViewSource::Search;
         self.selection.clear();
@@ -10061,6 +10144,11 @@ impl Explorer {
             // and fold the totals into the summary afterwards.
             let rescan_skipped_large = Arc::new(AtomicUsize::new(0));
             let rescan_non_utf8 = Arc::new(AtomicUsize::new(0));
+            // BD15/BC: one shared flag folds the truncation status of every
+            // root walk (first pass + re-scans); the global merge has its own
+            // flag because it is a separate cap path. The summary ORs both.
+            let limit = Arc::new(AtomicBool::new(false));
+            let merge_limit = AtomicBool::new(false);
             // One walker invocation. A non-zero `skip` means "continue a root
             // that already hit its fair share": the re-scan must return *new*
             // matches, not the ones already in `batches`.
@@ -10072,6 +10160,7 @@ impl Explorer {
                         include_hidden,
                         max_results: cap,
                         skip,
+                        limit_reached: limit.clone(),
                         ..Default::default()
                     },
                     &cancel_for_task,
@@ -10093,6 +10182,7 @@ impl Explorer {
                         } else {
                             rescan_non_utf8.clone()
                         },
+                        limit_reached: limit.clone(),
                         ..Default::default()
                     },
                     &cancel_for_task,
@@ -10126,9 +10216,11 @@ impl Explorer {
                     batches.push(extra);
                 }
             }
-            let merged = merge_search_results(batches, SEARCH_GLOBAL_CAP);
+            let merged = merge_search_results_capped(batches, SEARCH_GLOBAL_CAP, &merge_limit);
             let stats = SearchRunStats {
-                limit_reached: merged.len() >= SEARCH_GLOBAL_CAP,
+                // BD15: `merged.len() >= cap` could not tell a full result set
+                // from a truncated one; both cap paths now report explicitly.
+                limit_reached: limit.load(Ordering::SeqCst) || merge_limit.load(Ordering::SeqCst),
                 skipped_large_files: skipped_large.load(Ordering::SeqCst)
                     + rescan_skipped_large.load(Ordering::SeqCst),
                 non_utf8_files: non_utf8.load(Ordering::SeqCst)
@@ -10140,6 +10232,13 @@ impl Explorer {
             let (entries, stats) = background.await;
             let _ = this.update(cx, |this, cx| {
                 if this.search.generation != generation {
+                    // BF22: no cleanup here, on purpose. A newer `run_search`
+                    // has already bumped the generation, installed a fresh
+                    // cancel/task and set `running = true`; clearing any of
+                    // those from this superseded callback would drop the NEW
+                    // search. Cleanup belongs at the start of the new run
+                    // (`run_search`, and `open_search` per BF06), never on a
+                    // generation-mismatch early return.
                     return;
                 }
                 this.search.last_stats = stats;
@@ -10210,6 +10309,9 @@ impl Explorer {
         // comparator so the sort headers actually reorder search results,
         // keeping Directory and Search views consistent.
         sort_entries(&mut filtered, self.settings.sort.order());
+        // BF08: capture the focused row *before* replacing `entries`, so the
+        // same keep priority as `rebuild_view` is available afterwards.
+        let keep = self.selected_entry().map(|entry| entry.path.clone());
         let paths: Vec<PathBuf> = filtered.iter().map(|entry| entry.path.clone()).collect();
         self.selection.retain(&paths);
         self.entries = filtered;
@@ -10221,13 +10323,18 @@ impl Explorer {
                 self.selection.select_single(entry.path.clone());
             }
         }
-        // Keep the focused row in sync with the surviving selection instead of
-        // always resetting to 0 (third cross-review F6-08).
-        self.selected = self
-            .selection
-            .paths()
-            .first()
-            .and_then(|path| self.entries.iter().position(|entry| &entry.path == path))
+        // BF08/F6-08: mirror `rebuild_view`'s priority — the row that had
+        // focus, then the surviving selection's first path, then row 0. Using
+        // only `selection.paths().first()` dropped the focused row whenever
+        // the selection held a different (still surviving) path.
+        self.selected = keep
+            .and_then(|path| self.entries.iter().position(|entry| entry.path == path))
+            .or_else(|| {
+                self.selection
+                    .paths()
+                    .first()
+                    .and_then(|path| self.entries.iter().position(|entry| &entry.path == path))
+            })
             .unwrap_or(0);
         self.scroll_to_entry(self.selected);
         let mode_label = if self.search.mode == SearchMode::Content {
@@ -10265,6 +10372,65 @@ impl Explorer {
         self.status =
             search_filter_status(&self.status, reconcile_aware_status(&self.status, &summary));
         cx.notify();
+    }
+
+    /// BF05: repair the search snapshot after a successful undo/redo.
+    ///
+    /// `reload()` is a no-op in the Search view, so finishing an operation
+    /// there otherwise leaves `all_entries` (and the summary built from it)
+    /// describing the pre-operation tree. Mirror the trash-completion path:
+    /// when the operation started in Search, patch the cached result set and
+    /// recompute the visible rows with `apply_search_filter`; when the user
+    /// switched to Search while it ran, flag the snapshot stale instead of
+    /// guessing what the new result set should be (finding 3).
+    fn refresh_search_after_undo_redo(
+        &mut self,
+        cx: &mut Context<Self>,
+        view_at_start: ViewSource,
+        removed: &[PathBuf],
+        restored: &[PathBuf],
+    ) {
+        if self.view != ViewSource::Search {
+            self.reload(cx);
+            return;
+        }
+        if view_at_start != ViewSource::Search {
+            self.status = STATUS_SEARCH_STALE.to_string();
+            cx.notify();
+            return;
+        }
+
+        if !removed.is_empty() {
+            self.all_entries
+                .retain(|entry| !removed.contains(&entry.path));
+        }
+        // A restored path re-enters a name-mode result set only when it still
+        // matches the query. Content-mode hits are left to the flagged
+        // re-search: re-reading file contents here would be another walk.
+        let needle = if self.search.mode == SearchMode::Name {
+            normalized_query(&self.search.query)
+        } else {
+            None
+        };
+        for path in restored {
+            if !path_present(path) || self.all_entries.iter().any(|entry| &entry.path == path) {
+                continue;
+            }
+            if let Some(entry) = entry_for_path(path) {
+                if needle
+                    .as_deref()
+                    .is_some_and(|needle| name_matches(&entry.name_text, needle))
+                {
+                    self.all_entries.push(entry);
+                }
+            }
+        }
+        self.bump_listing_revision();
+        self.fingerprint = fingerprint(&self.all_entries);
+        // The patch is not a fresh walk: keep the stale notice beside the
+        // recomputed summary so the user knows to re-run the query.
+        self.status = STATUS_SEARCH_STALE.to_string();
+        self.apply_search_filter(cx);
     }
 
     /// Drop search state without touching the current view (used when
@@ -10488,6 +10654,9 @@ impl Explorer {
                             });
                         }
                         this.run_search(cx);
+                        // BF09: the click leaves focus on the chip; return it
+                        // to the result list so keyboard navigation resumes.
+                        this.restore_focus_next_frame();
                     })),
             );
         }
@@ -10542,6 +10711,9 @@ impl Explorer {
             input.update(cx, |state, cx| state.set_value(query, window, cx));
         }
         self.run_search(cx);
+        // BF09: recalling from a saved-search chip must restore list focus as
+        // the history chip does, otherwise arrow keys stay with the chip.
+        self.restore_focus_next_frame();
     }
 
     /// Delete a saved search by name (F6-49).
@@ -14336,6 +14508,35 @@ mod tests {
         assert_eq!(status, "");
     }
 
+    /// BF22: a superseded completion must not touch the *new* search's task,
+    /// cancel flag or running flag — that cleanup belongs at the start of the
+    /// newer run (and in `open_search`), never on the mismatch early return.
+    #[test]
+    fn stale_search_completion_does_not_clean_up_the_new_search() {
+        let source = include_str!("main.rs");
+        let stale = source_region(
+            source,
+            "if this.search.generation != generation {",
+            "this.search.last_stats = stats;",
+        );
+        for marker in [
+            "task = None",
+            "task.take()",
+            "running = false",
+            "cancel.take()",
+        ] {
+            assert!(
+                !stale.contains(marker),
+                "the generation-mismatch early return must not clear the newer search's {marker}"
+            );
+        }
+        let stale_lower = stale.to_lowercase();
+        assert!(
+            stale_lower.contains("drop the new") && stale_lower.contains("bf22"),
+            "the early return must explain that cleanup would drop the new task"
+        );
+    }
+
     #[test]
     fn dynamic_refusal_statuses_are_not_green() {
         // M05: 「解除する設定はありません」は操作拒否なので warning(amber)。
@@ -15992,6 +16193,48 @@ mod tests {
     }
 
     #[test]
+    fn display_name_for_root_path_falls_back_to_entry_name() {
+        // BF19: stripping a root from itself yields "", which used to render
+        // a blank label for a directory that matched the query.
+        use super::{display_name_for, ViewSource};
+        use crate::model::Entry;
+        use std::ffi::OsString;
+        use std::path::PathBuf;
+
+        let root = PathBuf::from("/work/project");
+        let other_root = PathBuf::from("/data/other");
+        let make = |path: PathBuf, name: &str| Entry {
+            name: OsString::from(name),
+            name_text: name.to_string(),
+            sort_key: name.to_lowercase(),
+            path,
+            is_dir: true,
+            is_symlink: false,
+            size: 0,
+            modified: None,
+        };
+
+        assert_eq!(
+            display_name_for(
+                &make(root.clone(), "project"),
+                ViewSource::Search,
+                &root,
+                &[root.clone(), other_root.clone()]
+            ),
+            "project"
+        );
+        assert_eq!(
+            display_name_for(
+                &make(other_root.clone(), "other"),
+                ViewSource::Search,
+                &root,
+                &[root.clone(), other_root]
+            ),
+            "other"
+        );
+    }
+
+    #[test]
     fn per_root_cap_is_fair_across_roots() {
         assert_eq!(Explorer::per_root_cap(2000, 0), 2000);
         assert_eq!(Explorer::per_root_cap(2000, 1), 2000);
@@ -16066,7 +16309,7 @@ mod tests {
             concat!("let skipped_large", " = Arc::new(AtomicUsize::new(0));"),
             concat!(
                 "let merged",
-                " = merge_search_results(batches, SEARCH_GLOBAL_CAP);"
+                " = merge_search_results_capped(batches, SEARCH_GLOBAL_CAP, &merge_limit);"
             ),
         );
         assert!(
@@ -17262,8 +17505,12 @@ mod tests {
             (KeyAction::Copy, "k"),
             (KeyAction::Quit, "l"),
             (KeyAction::Reload, "b"),
+            // BF10: history actions are reachable while browsing results too.
+            (KeyAction::Undo, "h"),
+            (KeyAction::Redo, "g"),
+            (KeyAction::ToggleUndoHistory, "t"),
         ];
-        assert_eq!(cases.len() + 1, 12, "all allowed actions must be covered");
+        assert_eq!(cases.len() + 1, 15, "all allowed actions must be covered");
         for &(action, key) in cases {
             assert!(
                 search_view_action_allowed(action),
@@ -17285,8 +17532,8 @@ mod tests {
             );
         }
 
-        // The eleventh allowed action is deliberately not rebindable; its
-        // shipped chord must still reach normal dispatch (L04).
+        // OpenSettings is deliberately not rebindable; its shipped chord must
+        // still reach normal dispatch (L04).
         assert!(search_view_action_allowed(KeyAction::OpenSettings));
         let mut settings_keymap = KeyMap::default_keymap();
         assert!(!settings_keymap.rebind(KeyAction::OpenSettings, "y", false, false, false));
@@ -17798,6 +18045,23 @@ mod tests {
 
     // L01: a discarded settings-write result must never be reported as a
     // successful UI action. The pure selector is shared by every fixed path.
+    #[test]
+    fn changed_on_disk_reason_reaches_the_user() {
+        // BF04: a stale snapshot must not be silently rejected as a generic
+        // I/O failure; the notice must explain the reload recovery path.
+        let settings = Settings::default();
+        assert_eq!(super::settings_changed_on_disk_status(&settings), None);
+        settings.changed_on_disk.set(true);
+        assert_eq!(
+            super::settings_changed_on_disk_status(&settings).as_deref(),
+            Some(super::STATUS_SETTINGS_SAVE_CHANGED_ON_DISK)
+        );
+        assert_eq!(
+            super::startup_save_failure_status(&settings),
+            super::STATUS_SETTINGS_SAVE_CHANGED_ON_DISK
+        );
+    }
+
     #[test]
     fn settings_save_status_replaces_success_on_failed_write() {
         let success = "ブックマークに追加しました".to_string();

@@ -72,7 +72,10 @@ Compose 側では戻るスワイプを実装しない。Android のシステム 
 事前に理由・影響範囲・安全性の根拠を文書化しレビュー合意を得るまで使用しない。
 null ポインタや所有権の受け渡しを安易に `unsafe` で済ませないこと。
 
-## ビルド手順（SDK / JDK を用意した環境で実行）
+## ビルド手順（未整備: gradlew 未同梱）
+
+本 scaffold には `gradlew` と CMake 設定が含まれていない（`gradlew` は追加しない方針）。
+下記は SDK / JDK を用意した環境で実行する手順の骨格であり、そのまま実行できない。
 
 ```bash
 echo '--- Rust staticlib ---'
@@ -81,8 +84,8 @@ cargo build --release --target aarch64-linux-android --manifest-path core/Cargo.
 echo '--- JNI 共有ライブラリを CMake でビルド ---'
 # TODO(P1-04): CMakeLists.txt と jni/ crate を追加する
 
-echo '--- Gradle ---'
-cd android && ./gradlew assembleDebug
+echo '--- Gradle（未整備） ---'
+# gradlew 未同梱: JNI 実装時に追加するまで ./gradlew assembleDebug は実行できない
 ```
 
-`gradlew` / CMake 設定は JNI 実装と同時に追加する予定で、この scaffold には含まない。
+CMake 設定は JNI 実装と同時に追加する予定で、この scaffold には含まない。

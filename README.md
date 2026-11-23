@@ -288,8 +288,9 @@ fmt → check → test → clippy → `cargo audit` を実行する。リポジ�
 ### ローカル検証ループ
 
 CI と同じ範囲を手元で回すスクリプトを用意しています（差分: ローカルは poc/ にも
-`cargo audit` と `cargo vet` を実行します。CI の `supply-chain` ジョブは
-`cargo vet check` を `app/supply-chain/config.toml` が存在する場合のみ実行します）。
+`cargo audit` を実行します。`cargo vet check` は各プロジェクトに
+`supply-chain/config.toml` が存在する場合のみ実行し、CI の `supply-chain` ジョブも
+`app/supply-chain/config.toml` が存在する場合のみ実行します）。
 既定では release 検証も
 実行します。
 

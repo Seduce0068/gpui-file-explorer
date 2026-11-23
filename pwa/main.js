@@ -941,7 +941,8 @@ function onListKeyDown(event) {
 
 // --- コア API 呼び出し（主要経路） ----------------------------------------
 
-// 実在する core API（list_entries(dir) / search(query, dir)）だけを呼ぶ。
+// 受け入れ経路は in-memory API（listEntriesFromJson / searchInJson）。
+// std::fs を使う list_entries(dir) / search(query, dir) はフォールバック専用。
 // wasm-bindgen の Err(JsValue) は文字列例外として throw されるため、呼び出し側へ委譲する。
 async function callCore(viewer, name, args) {
   if (typeof viewer[name] !== 'function') {
@@ -1067,7 +1068,8 @@ async function onPickDirectory() {
     state.rootName = handle.name;
     setStatus(`選択: ${handle.name}`);
     // TODO(P1-04): FileSystemDirectoryHandle を core の FileSystem ポートへ橋渡しする。
-    // 現状はルート名だけを CoreViewer に渡す。実ツリーの走査には OPFS 側の移植が必要
+    // 現状はルート名を状態に保持するだけ。一覧・検索は demoJson() の in-memory API
+    // 経路で表示し、ルート名は core へ渡さない。実ツリーの走査には OPFS 側の移植が必要
     // （notes/wasm-browser-notes.md §2「ファイルシステム抽象化」を参照）。
     if (state.wasmReady) await refreshList();
   } catch (error) {

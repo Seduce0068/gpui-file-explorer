@@ -228,6 +228,49 @@ test('本番 clearSearch は await より前に世代を進め古い結果を無
   assert.ok(bump < awaited, 'clear は await の前に世代を進め、実行中の検索を無効化する');
 });
 
+// --- Phase 1 受け入れ経路（in-memory API）の配線 ----------------------------
+// 受け入れは「listEntriesFromJson / searchInJson を通した core API 経由の表示」。
+// pure helper の再実装ではなく main.js の本番配線を sourceRegion で固定する。
+
+test('本番 refreshList は in-memory API を主経路とし core API 経由を通知する', () => {
+  const refreshList = sourceRegion(
+    mainSource, 'async function refreshList() {', 'async function runSearch(query) {');
+  const tokens = {
+    guard: "typeof state.module?.listEntriesFromJson === 'function'",
+    call: 'state.module.listEntriesFromJson(demoJson())',
+    fallback: "callCore(state.viewer, 'list_entries'",
+    status: 'setStatus(`core API 経由で ${state.entries.length} 件を表示`)',
+  };
+  for (const [label, token] of Object.entries(tokens)) {
+    assert.ok(refreshList.includes(token), `refreshList に ${label} の配線が必要`);
+  }
+  assert.ok(refreshList.indexOf(tokens.call) < refreshList.indexOf(tokens.fallback),
+    'in-memory API が std::fs フォールバックより先に呼ばれる');
+});
+
+test('本番 runSearch は searchInJson を主経路とし core API の検索結果を通知する', () => {
+  const runSearch = sourceRegion(
+    mainSource, 'async function runSearch(query) {', '// --- File System Access API');
+  const tokens = {
+    guard: "typeof state.module?.searchInJson === 'function'",
+    call: 'state.module.searchInJson(q, demoJson())',
+    fallback: "callCore(state.viewer, 'search'",
+    status: 'setStatus(`core API の検索で ${results.length} 件`)',
+  };
+  for (const [label, token] of Object.entries(tokens)) {
+    assert.ok(runSearch.includes(token), `runSearch に ${label} の配線が必要`);
+  }
+  assert.ok(runSearch.indexOf(tokens.call) < runSearch.indexOf(tokens.fallback),
+    'searchInJson が std::fs フォールバックより先に呼ばれる');
+});
+
+test('demoJson はルート名を参照せず in-memory API 渡し用 JSON だけを作る', () => {
+  const demo = sourceRegion(mainSource, 'function demoJson() {', 'function fillDemoIfEmpty() {');
+  assert.ok(!demo.includes('rootName'), 'demoJson は state.rootName を使わない');
+  assert.ok(demo.includes('JSON.stringify(DEMO_ENTRIES.map('),
+    'DEMO_ENTRIES を JSON 化して core へ渡す');
+});
+
 // --- 長押し対象の path 再解決（BD12） --------------------------------------
 
 test('longPressTargetIndex follows the touched path when the indices shift', () => {

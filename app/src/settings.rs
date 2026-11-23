@@ -73,7 +73,7 @@ use gpui_kit::{bounds, point, px, size, Window, WindowBounds};
 
 use crate::history::{retain_last_n, History, HistorySnapshot};
 use crate::model::{SortDir, SortKey, SortSpec};
-use crate::strings::STATUS_SETTINGS_RESET_PREFIX;
+use crate::strings::{STATUS_SETTINGS_RESET_PREFIX, STATUS_SETTINGS_SAVE_CHANGED_ON_DISK};
 use crate::tabs::Tab;
 // Personalization types live in `model` (GPUI-free) but are re-exported here
 // so the UI layer has a single import site for persisted settings state. The
@@ -625,55 +625,223 @@ fn detect_unknown_nested_keys(raw: &serde_json::Value) -> Option<String> {
     })
 }
 
+/// Outcome of [`salvage_settings`]. `dropped` names whole top-level fields that
+/// had to fall back to their serde default. `nested_dropped` names concrete
+/// user-data *elements* (a window, a tab, a history path, a bookmark label, a
+/// saved search, ...) that were unusable and therefore removed.
+///
+/// The distinction matters for durability: a mistyped scalar preference can be
+/// repaired in place, but silently losing a session element must leave the
+/// untouched original available under a `.broken-*` name (BF03).
+struct SalvageResult {
+    kept: serde_json::Map<String, serde_json::Value>,
+    dropped: Vec<String>,
+    nested_dropped: Vec<String>,
+}
+
+/// Keep `value` when it deserializes into `T`; otherwise the field falls back.
+fn salvage_scalar<T>(value: &serde_json::Value) -> Option<serde_json::Value>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value::<T>(value.clone())
+        .ok()
+        .map(|_| value.clone())
+}
+
+/// Salvage an array field **element by element** instead of dropping the whole
+/// field when a single entry has the wrong type (BF03). Valid siblings stay;
+/// the concrete paths of removed entries are reported for the backup notice.
+fn salvage_element_array<T>(
+    value: &serde_json::Value,
+    field: &str,
+    nested_dropped: &mut Vec<String>,
+) -> Option<serde_json::Value>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let elements = value.as_array()?;
+    let mut kept = Vec::with_capacity(elements.len());
+    for (index, element) in elements.iter().enumerate() {
+        if serde_json::from_value::<T>(element.clone()).is_ok() {
+            kept.push(element.clone());
+        } else {
+            nested_dropped.push(format!("{field}[{index}]"));
+        }
+    }
+    Some(serde_json::Value::Array(kept))
+}
+
+/// Repair one tab. `cwd` is required by [`TabSession`], so a broken one makes
+/// the tab unsalvageable; the optional history stacks can be filtered per path
+/// while the tab (and its other stack) survives.
+fn salvage_tab(
+    value: &serde_json::Value,
+    path: &str,
+    nested_dropped: &mut Vec<String>,
+) -> Option<serde_json::Value> {
+    let object = value.as_object()?;
+    if !object
+        .get("cwd")
+        .is_some_and(|cwd| serde_json::from_value::<PathBuf>(cwd.clone()).is_ok())
+    {
+        return None;
+    }
+    let mut repaired = object.clone();
+    for key in ["back", "forward"] {
+        let Some(history) = repaired.get(key) else {
+            continue;
+        };
+        match history.as_array() {
+            Some(entries) => {
+                let mut kept = Vec::with_capacity(entries.len());
+                for (index, entry) in entries.iter().enumerate() {
+                    if serde_json::from_value::<PathBuf>(entry.clone()).is_ok() {
+                        kept.push(entry.clone());
+                    } else {
+                        nested_dropped.push(format!("{path}.{key}[{index}]"));
+                    }
+                }
+                repaired.insert(key.to_string(), serde_json::Value::Array(kept));
+            }
+            None => {
+                repaired.remove(key);
+                nested_dropped.push(format!("{path}.{key}"));
+            }
+        }
+    }
+    serde_json::from_value::<TabSession>(serde_json::Value::Object(repaired.clone())).ok()?;
+    Some(serde_json::Value::Object(repaired))
+}
+
+/// Repair one window. `bounds` is optional and all-or-nothing (every field in
+/// [`WindowBoundsState`] is required), `tabs` and `active_tab` have serde
+/// defaults, so a single bad child never costs the whole window session.
+fn salvage_window(
+    value: &serde_json::Value,
+    index: usize,
+    nested_dropped: &mut Vec<String>,
+) -> Option<serde_json::Value> {
+    let object = value.as_object()?;
+    let path = format!("windows[{index}]");
+    let mut repaired = object.clone();
+    if let Some(bounds) = repaired.get("bounds") {
+        if serde_json::from_value::<WindowBoundsState>(bounds.clone()).is_err() {
+            repaired.remove("bounds");
+            nested_dropped.push(format!("{path}.bounds"));
+        }
+    }
+    if let Some(tabs) = repaired.get("tabs").cloned() {
+        match salvage_tabs(&tabs, &path, nested_dropped) {
+            Some(clean) => {
+                repaired.insert("tabs".to_string(), clean);
+            }
+            None => {
+                repaired.remove("tabs");
+                nested_dropped.push(format!("{path}.tabs"));
+            }
+        }
+    }
+    if let Some(active) = repaired.get("active_tab") {
+        if serde_json::from_value::<usize>(active.clone()).is_err() {
+            repaired.remove("active_tab");
+            nested_dropped.push(format!("{path}.active_tab"));
+        }
+    }
+    serde_json::from_value::<WindowSession>(serde_json::Value::Object(repaired.clone())).ok()?;
+    Some(serde_json::Value::Object(repaired))
+}
+
+fn salvage_tabs(
+    value: &serde_json::Value,
+    window_path: &str,
+    nested_dropped: &mut Vec<String>,
+) -> Option<serde_json::Value> {
+    let tabs = value.as_array()?;
+    let mut kept = Vec::with_capacity(tabs.len());
+    for (index, tab) in tabs.iter().enumerate() {
+        let path = format!("{window_path}.tabs[{index}]");
+        match salvage_tab(tab, &path, nested_dropped) {
+            Some(clean) => kept.push(clean),
+            None => nested_dropped.push(path),
+        }
+    }
+    Some(serde_json::Value::Array(kept))
+}
+
+fn salvage_windows(
+    value: &serde_json::Value,
+    nested_dropped: &mut Vec<String>,
+) -> Option<serde_json::Value> {
+    let windows = value.as_array()?;
+    let mut kept = Vec::with_capacity(windows.len());
+    for (index, window) in windows.iter().enumerate() {
+        match salvage_window(window, index, nested_dropped) {
+            Some(clean) => kept.push(clean),
+            None => nested_dropped.push(format!("windows[{index}]")),
+        }
+    }
+    Some(serde_json::Value::Array(kept))
+}
+
 /// Rebuild a settings object from a file where one field has the wrong JSON
 /// type. Serde rejects the whole struct on a single mismatch (e.g. a string
 /// `version`) and the old loader backed the file up, losing every unrelated
-/// bookmark and preference (AV03). Each known field is type-checked on its own;
-/// only the mistyped ones fall back to their serde default. Unknown keys are
-/// kept so [`Settings::extra_fields`] can carry them to the next save.
-fn salvage_settings(
-    raw: &serde_json::Value,
-) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
+/// bookmark and preference (AV03). Each known field is type-checked on its own
+/// and array-backed session data is checked per element; only the unusable
+/// parts fall back to their serde default. Unknown keys are kept so
+/// [`Settings::extra_fields`] can carry them to the next save.
+fn salvage_settings(raw: &serde_json::Value) -> SalvageResult {
     let mut kept = serde_json::Map::new();
     let mut dropped = Vec::new();
+    let mut nested_dropped = Vec::new();
     let Some(object) = raw.as_object() else {
-        return (kept, dropped);
+        return SalvageResult {
+            kept,
+            dropped,
+            nested_dropped,
+        };
     };
     for (key, value) in object {
-        let usable = match key.as_str() {
-            "version" => serde_json::from_value::<u32>(value.clone()).is_ok(),
-            "last_dir" => serde_json::from_value::<Option<PathBuf>>(value.clone()).is_ok(),
-            "sort" => serde_json::from_value::<SortSpec>(value.clone()).is_ok(),
-            "show_hidden" | "show_thumbnails" => {
-                serde_json::from_value::<bool>(value.clone()).is_ok()
-            }
-            "column_prefs" => serde_json::from_value::<ColumnPrefs>(value.clone()).is_ok(),
+        let salvaged = match key.as_str() {
+            "version" => salvage_scalar::<u32>(value),
+            "last_dir" => salvage_scalar::<Option<PathBuf>>(value),
+            "sort" => salvage_scalar::<SortSpec>(value),
+            "show_hidden" | "show_thumbnails" => salvage_scalar::<bool>(value),
+            "column_prefs" => salvage_scalar::<ColumnPrefs>(value),
             // Enum deserializers always accept a string and substitute a
             // fallback; the raw cross-check makes that load read-only.
-            "view" | "theme" | "theme_choice" => value.is_string(),
-            "terminal_command" => serde_json::from_value::<String>(value.clone()).is_ok(),
-            "keymap" => serde_json::from_value::<Vec<(String, String)>>(value.clone()).is_ok(),
+            "view" | "theme" | "theme_choice" => value.is_string().then(|| value.clone()),
+            "terminal_command" => salvage_scalar::<String>(value),
+            "keymap" => salvage_element_array::<(String, String)>(value, key, &mut nested_dropped),
             "recent_dirs" | "bookmarks" | "tabs" => {
-                serde_json::from_value::<Vec<PathBuf>>(value.clone()).is_ok()
+                salvage_element_array::<PathBuf>(value, key, &mut nested_dropped)
             }
             "bookmark_labels" => {
-                serde_json::from_value::<Vec<BookmarkLabel>>(value.clone()).is_ok()
+                salvage_element_array::<BookmarkLabel>(value, key, &mut nested_dropped)
             }
-            "active_tab" => serde_json::from_value::<usize>(value.clone()).is_ok(),
-            "windows" => serde_json::from_value::<Vec<WindowSession>>(value.clone()).is_ok(),
-            "recent_searches" => serde_json::from_value::<Vec<String>>(value.clone()).is_ok(),
-            "saved_searches" => serde_json::from_value::<Vec<SavedSearch>>(value.clone()).is_ok(),
+            "recent_searches" => salvage_element_array::<String>(value, key, &mut nested_dropped),
+            "saved_searches" => {
+                salvage_element_array::<SavedSearch>(value, key, &mut nested_dropped)
+            }
+            "active_tab" => salvage_scalar::<usize>(value),
+            "windows" => salvage_windows(value, &mut nested_dropped),
             // A key this build does not know is not a type error: keep it so
             // a later save does not erase it.
-            _ => true,
+            _ => Some(value.clone()),
         };
-        if usable {
-            kept.insert(key.clone(), value.clone());
-        } else {
-            dropped.push(key.clone());
+        match salvaged {
+            Some(clean) => {
+                kept.insert(key.clone(), clean);
+            }
+            None => dropped.push(key.clone()),
         }
     }
-    (kept, dropped)
+    SalvageResult {
+        kept,
+        dropped,
+        nested_dropped,
+    }
 }
 
 /// The user's persisted theme preference: follow the desktop (`System`) or
@@ -1172,6 +1340,81 @@ pub enum SettingsSaveError {
     Io,
 }
 
+impl SettingsSaveError {
+    /// Named refusal for "the file changed on disk since this snapshot was
+    /// loaded" (BF04). It is an alias of the generic `Io` discriminant so the
+    /// exhaustive status mapper in `main.rs` keeps compiling; the concrete,
+    /// downcastable signal is [`ChangedOnDisk`] and
+    /// [`Settings::changed_on_disk`].
+    #[allow(non_upper_case_globals)]
+    pub const ChangedOnDisk: Self = Self::Io;
+}
+
+/// Payload attached to the `std::io::Error` returned by [`Settings::save_to`]
+/// when the on-disk file no longer matches the state this snapshot loaded
+/// from. A dedicated error (rather than a bare `Io`) lets callers tell a
+/// lost-update race from a permission or disk-space failure (BF04).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChangedOnDisk;
+
+impl std::fmt::Display for ChangedOnDisk {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(STATUS_SETTINGS_SAVE_CHANGED_ON_DISK)
+    }
+}
+
+impl std::error::Error for ChangedOnDisk {}
+
+/// A snapshot of the on-disk settings file: length, mtime and a content hash.
+/// `std` only — FNV-1a over bytes the loader already read is enough to detect
+/// any rewrite (including one with an unchanged length).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DiskFingerprint {
+    len: u64,
+    modified_ns: Option<u128>,
+    hash: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct FingerprintState {
+    path: Option<PathBuf>,
+    fingerprint: Option<DiskFingerprint>,
+}
+
+/// Remembers which file a [`Settings`] snapshot came from and what that file
+/// looked like. `PartialEq` deliberately ignores this value: two snapshots
+/// with the same preferences compare equal even when loaded from different
+/// revisions. Path-scoping matters because `save_to` is also used with
+/// injectable alternative paths in tests and tooling.
+#[derive(Clone, Debug, Default)]
+pub struct LoadFingerprint(std::cell::RefCell<FingerprintState>);
+
+impl PartialEq for LoadFingerprint {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl LoadFingerprint {
+    fn capture(&self, path: &Path, fingerprint: Option<DiskFingerprint>) {
+        *self.0.borrow_mut() = FingerprintState {
+            path: Some(path.to_path_buf()),
+            fingerprint,
+        };
+    }
+
+    /// Whether writing `path` would overwrite a file that changed since this
+    /// snapshot was loaded. No baseline (fresh install, backup already taken,
+    /// or a different injectable path) means no conflict to report.
+    fn conflicts_with(&self, path: &Path, current: Option<DiskFingerprint>) -> bool {
+        let state = self.0.borrow();
+        matches!(
+            (state.path.as_deref(), state.fingerprint),
+            (Some(loaded_from), Some(base)) if loaded_from == path && current != Some(base)
+        )
+    }
+}
+
 /// Canonical persisted keys of the four details-view columns, in the order
 /// they are rendered by default. The strings match `SortKey`'s serde names so
 /// the settings UI and the header can share one vocabulary.
@@ -1393,6 +1636,15 @@ pub struct Settings {
     /// the UI to show an accurate recovery hint (U03). Not persisted.
     #[serde(skip)]
     pub last_save_error: std::cell::Cell<Option<SettingsSaveError>>,
+    /// On-disk state this snapshot was loaded from (or last wrote). Guards
+    /// against a stale snapshot overwriting another instance's changes (BF04).
+    /// Not persisted and excluded from `PartialEq`.
+    #[serde(skip)]
+    pub load_fingerprint: LoadFingerprint,
+    /// Set for the duration of a save attempt that was refused because the
+    /// file changed on disk; `save_with_reason` clears it on each attempt.
+    #[serde(skip)]
+    pub changed_on_disk: std::cell::Cell<bool>,
 }
 
 impl Default for Settings {
@@ -1400,6 +1652,8 @@ impl Default for Settings {
         Self {
             version: SCHEMA_VERSION,
             last_save_error: std::cell::Cell::new(None),
+            load_fingerprint: LoadFingerprint::default(),
+            changed_on_disk: std::cell::Cell::new(false),
             last_dir: None,
             sort: SortSpec::default(),
             show_hidden: false,
@@ -1678,6 +1932,9 @@ impl Settings {
 struct LockHeartbeat {
     stop: std::sync::mpsc::Sender<()>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Set when the lock no longer carries our token, so the save can abandon
+    /// its critical section before committing (BF07).
+    token_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LockHeartbeat {
@@ -1689,12 +1946,16 @@ impl LockHeartbeat {
     /// for the production tick.
     fn with_interval(lock: PathBuf, token: String, interval: std::time::Duration) -> Self {
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let token_lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lost = std::sync::Arc::clone(&token_lost);
         let thread = std::thread::spawn(move || {
             while stopped.recv_timeout(interval).is_err() {
                 // Only touch a lock that still carries our unique token; after
                 // a crash-reclaim and re-acquire the path belongs to someone
-                // else and must be left untouched.
+                // else and must be left untouched. Report the loss to the
+                // saving thread so it can fence itself before the rename.
                 if std::fs::read_to_string(&lock).ok().as_deref() != Some(token.as_str()) {
+                    lost.store(true, std::sync::atomic::Ordering::SeqCst);
                     continue;
                 }
                 if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&lock) {
@@ -1705,7 +1966,12 @@ impl LockHeartbeat {
         Self {
             stop,
             thread: Some(thread),
+            token_lost,
         }
+    }
+
+    fn token_lost(&self) -> bool {
+        self.token_lost.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn stop(mut self) {
@@ -1739,11 +2005,7 @@ impl Settings {
     /// and bookmarks/history look lost (AV01). `load_error` cannot carry this
     /// message because `ui_is_read_only()` would then disable every write.
     fn back_up_unusable(path: &Path, backup: &Path) -> Self {
-        if let Err(error) = std::fs::rename(path, backup) {
-            let reason = format!(
-                "壊れた設定の退避に失敗しました（{}: {error}）。元ファイルは保持されます",
-                backup.display()
-            );
+        if let Err(reason) = Self::preserve_original(path, backup) {
             error!(%reason, "corrupt settings backup failed");
             return Self {
                 read_only: true,
@@ -1757,6 +2019,20 @@ impl Settings {
             settings_reset_notice: Some(notice),
             ..Self::default()
         }
+    }
+
+    /// Move the original file aside before a repaired copy can be written over
+    /// it. Used both for wholly unusable files and for salvage that discarded
+    /// concrete session elements (BF03): those entries are gone from memory,
+    /// so the untouched bytes must remain recoverable under `.broken-*`.
+    /// Returns a user-facing reason when the rename failed.
+    fn preserve_original(path: &Path, backup: &Path) -> Result<(), String> {
+        std::fs::rename(path, backup).map_err(|error| {
+            format!(
+                "壊れた設定の退避に失敗しました（{}: {error}）。元ファイルは保持されます",
+                backup.display()
+            )
+        })
     }
 
     /// Load settings, falling back to defaults for a missing/corrupt file.
@@ -1809,7 +2085,11 @@ impl Settings {
             }
         };
         let mut bytes = Vec::new();
+        let mut loaded_meta = None;
         let read = std::fs::File::open(path).and_then(|file| {
+            // Capture mtime from the very handle we read, before the bytes are
+            // consumed; the save-time conflict check compares it (BF04).
+            loaded_meta = file.metadata().ok();
             use std::io::Read;
             file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)
         });
@@ -1833,6 +2113,9 @@ impl Settings {
             );
             return Self::back_up_unusable(path, &backup);
         }
+        let loaded_fingerprint = loaded_meta
+            .as_ref()
+            .map(|meta| Self::disk_fingerprint(meta, &bytes));
         // Invalid UTF-8 is corruption, not a transient read error: preserve the
         // original under a backup name and start from defaults.
         let text = match String::from_utf8(bytes) {
@@ -1858,20 +2141,48 @@ impl Settings {
                 let Ok(value) = raw.as_ref() else {
                     return Self::back_up_unusable(path, &backup);
                 };
-                let (kept, dropped) = salvage_settings(value);
-                match serde_json::from_value::<Settings>(serde_json::Value::Object(kept)) {
-                    Ok(mut settings) if !dropped.is_empty() => {
-                        let notice = format!(
-                            "設定の一部フィールドを既定値に戻しました（{}）",
-                            dropped.join(", ")
-                        );
-                        warn!(%notice, "salvaged mistyped settings fields");
-                        settings.settings_reset_notice = Some(notice);
-                        settings
+                let SalvageResult {
+                    kept,
+                    dropped,
+                    nested_dropped,
+                } = salvage_settings(value);
+                let mut settings =
+                    match serde_json::from_value::<Settings>(serde_json::Value::Object(kept)) {
+                        Ok(settings) => settings,
+                        Err(_) => return Self::back_up_unusable(path, &backup),
+                    };
+                let mut notices = Vec::new();
+                // BF03: a discarded window/tab/history/label/search is real user
+                // data. Keep every valid sibling in memory, but preserve the
+                // untouched original before a later save can overwrite it.
+                if !nested_dropped.is_empty() {
+                    match Self::preserve_original(path, &backup) {
+                        Ok(()) => notices.push(format!(
+                            "設定の一部セッション情報を破棄しました（{}）。元ファイルを {} に退避しました",
+                            nested_dropped.join(", "),
+                            backup.display()
+                        )),
+                        Err(reason) => {
+                            // The original is still at `path`; a later save must
+                            // not replace it with the thinned-out session.
+                            error!(%reason, "salvaged settings backup failed");
+                            settings.read_only = true;
+                            settings.load_error = Some(reason);
+                        }
                     }
-                    Ok(settings) => settings,
-                    Err(_) => return Self::back_up_unusable(path, &backup),
                 }
+                if !dropped.is_empty() {
+                    notices.push(format!(
+                        "設定の一部フィールドを既定値に戻しました（{}）",
+                        dropped.join(", ")
+                    ));
+                }
+                if !notices.is_empty() {
+                    let notice = notices.join(" ");
+                    warn!(%notice, "salvaged mistyped settings fields");
+                    settings.settings_reset_notice = Some(notice);
+                }
+                settings
             }
         };
         // Backward compatibility: files written before `theme_choice` existed
@@ -1911,6 +2222,12 @@ impl Settings {
             warn!(%reason, "unknown persisted value; settings are read-only");
             settings.read_only = true;
             settings.load_error = Some(reason);
+        }
+        // BF04: remember what we actually read so a later save can detect a
+        // concurrent rewrite. When salvage moved the original to `.broken-*`
+        // there is no file at `path` to compare against, so leave no baseline.
+        if path.exists() {
+            settings.load_fingerprint.capture(path, loaded_fingerprint);
         }
         settings
     }
@@ -2194,12 +2511,22 @@ impl Settings {
                 error!("設定ディレクトリを特定できないため、設定を保存できません");
                 return Err(SettingsSaveError::Io);
             };
-            self.save_to(path).map_err(|error| match error.kind() {
-                std::io::ErrorKind::InvalidData => SettingsSaveError::TooLarge,
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AlreadyExists => {
-                    SettingsSaveError::Locked
+            self.save_to(path).map_err(|error| {
+                // A lost-update refusal carries a dedicated payload so the UI
+                // can distinguish it from a generic I/O failure (BF04).
+                if error
+                    .get_ref()
+                    .is_some_and(|source| source.is::<ChangedOnDisk>())
+                {
+                    return SettingsSaveError::ChangedOnDisk;
                 }
-                _ => SettingsSaveError::Io,
+                match error.kind() {
+                    std::io::ErrorKind::InvalidData => SettingsSaveError::TooLarge,
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AlreadyExists => {
+                        SettingsSaveError::Locked
+                    }
+                    _ => SettingsSaveError::Io,
+                }
             })
         })();
         self.last_save_error.set(result.as_ref().err().copied());
@@ -2307,6 +2634,57 @@ impl Settings {
         std::fs::remove_file(lock)
     }
 
+    /// Hash the bytes the loader already read and pair them with the file's
+    /// mtime/length. Any one of the three changing means a rewrite happened.
+    fn disk_fingerprint(meta: &std::fs::Metadata, bytes: &[u8]) -> DiskFingerprint {
+        let modified_ns = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos());
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for byte in bytes {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        DiskFingerprint {
+            len: bytes.len() as u64,
+            modified_ns,
+            hash,
+        }
+    }
+
+    /// Re-read the settings file while holding the save lock. Returns `None`
+    /// when it is missing or unreadable; a missing file differs from any
+    /// non-empty baseline and is therefore treated as a conflict (BF04).
+    fn current_fingerprint(path: &Path) -> Option<DiskFingerprint> {
+        use std::io::Read;
+        let file = std::fs::File::open(path).ok()?;
+        let meta = file.metadata().ok()?;
+        let mut bytes = Vec::new();
+        file.take(MAX_SETTINGS_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        Some(Self::disk_fingerprint(&meta, &bytes))
+    }
+
+    /// Whether the lock still belongs to this save at commit time (BF07).
+    /// Both the raw token and the heartbeat's loss signal are checked: a stale
+    /// lock may have been reclaimed and re-acquired after our write started.
+    fn lock_ownership_intact(lock: &Path, token: &str, heartbeat: &LockHeartbeat) -> bool {
+        std::fs::read_to_string(lock).ok().as_deref() == Some(token) && !heartbeat.token_lost()
+    }
+
+    /// Whether the last `save_with_reason()` was refused because the file had
+    /// changed since this snapshot was loaded. The UI status mapper should
+    /// use this to show [`STATUS_SETTINGS_SAVE_CHANGED_ON_DISK`].
+    // Consumed by the UI layer once the reason-specific status arm is wired;
+    // the flag itself is already set and exercised inside this module.
+    #[allow(dead_code)]
+    pub fn changed_on_disk(&self) -> bool {
+        self.changed_on_disk.get()
+    }
+
     /// Drop paths serde cannot serialize from a *copy* of the settings before
     /// writing. `sane_path()` already guards the setters and `validate()` on
     /// load, but live paths can enter unchecked: `TabSession::from_tab()`
@@ -2347,7 +2725,15 @@ impl Settings {
 
     /// Atomic write (tmp file + rename) so a crash never leaves a truncated
     /// settings file behind. The tmp file is flushed with `sync_all()` before
-    /// the rename; a directory fsync is not performed (best-effort).
+    /// the rename, and the parent directory is fsynced afterwards so the rename
+    /// itself is durable on crash (BF16). A directory fsync failure is logged
+    /// as a warning rather than failing an otherwise complete write.
+    ///
+    /// While holding the save lock the file is re-read: if it changed since
+    /// this snapshot was loaded, the write is refused with a [`ChangedOnDisk`]
+    /// signal instead of clobbering another instance's newer settings (BF04).
+    /// Before the rename the lock token is checked again so a reclaimed lock
+    /// cannot be overwritten by its fenced former owner (BF07).
     ///
     /// Read-only / ephemeral sessions are a successful no-op. If serialization
     /// would exceed [`MAX_SETTINGS_BYTES`], this returns an error without
@@ -2363,6 +2749,7 @@ impl Settings {
             }
             return Ok(());
         }
+        self.changed_on_disk.set(false);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -2371,6 +2758,16 @@ impl Settings {
         // instance never mistakes a slow save for an abandoned lock.
         let heartbeat = LockHeartbeat::start(lock.clone(), token.clone());
         let result = (|| -> std::io::Result<()> {
+            // BF04: re-read under the lock. A→B saves from the same loaded
+            // snapshot would otherwise let B silently erase A's changes.
+            if self
+                .load_fingerprint
+                .conflicts_with(path, Self::current_fingerprint(path))
+            {
+                self.changed_on_disk.set(true);
+                warn!(path = %path.display(), "settings changed on disk since load; refusing to overwrite");
+                return Err(std::io::Error::other(ChangedOnDisk));
+            }
             // Stamp the current schema version on the persisted copy even if
             // the in-memory struct was built with a stale/absent version.
             let mut snapshot = self.clone();
@@ -2428,13 +2825,46 @@ impl Settings {
                 file.sync_all()
             })();
             drop(file);
-            // A failed write AND a failed rename share the same cleanup
-            // branch: a leftover tmp file would block later saves because
-            // the reservation uses `create_new(true)`.
-            if let Err(error) = written.and_then(|()| std::fs::rename(&tmp, path)) {
+            // BF07: a stale lock may have been reclaimed while we wrote the
+            // tmp file. Fence the former owner immediately before the rename:
+            // the lock must still carry our unique token and the heartbeat
+            // must not have noticed a foreign owner.
+            let commit = written.and_then(|()| {
+                if !Self::lock_ownership_intact(&lock, &token, &heartbeat) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "settings save lock was lost before commit",
+                    ));
+                }
+                std::fs::rename(&tmp, path)
+            });
+            // A failed write, a lost lock AND a failed rename share the same
+            // cleanup branch: a leftover tmp file would block later saves
+            // because the reservation uses `create_new(true)`.
+            if let Err(error) = commit {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(error);
             }
+            // BF16: fsync the parent directory so the rename itself survives a
+            // crash. Failure is reported but does not invalidate the write.
+            if let Some(parent) = path.parent() {
+                match std::fs::File::open(parent) {
+                    Ok(dir) => {
+                        if let Err(error) = dir.sync_all() {
+                            warn!(path = %parent.display(), %error, "failed to fsync settings directory after save");
+                        }
+                    }
+                    Err(error) => {
+                        warn!(path = %parent.display(), %error, "failed to open settings directory for fsync");
+                    }
+                }
+            }
+            // BF04: our own write becomes the baseline for later saves.
+            let new_fingerprint = std::fs::File::open(path).ok().and_then(|saved| {
+                let meta = saved.metadata().ok()?;
+                Some(Self::disk_fingerprint(&meta, text.as_bytes()))
+            });
+            self.load_fingerprint.capture(path, new_fingerprint);
             Ok(())
         })();
         heartbeat.stop();
@@ -2453,9 +2883,9 @@ mod tests {
     // proc-macro which would shadow the built-in `#[test]`.
     use super::{
         detect_unknown_nested_keys, detect_unknown_persisted_enum, next_theme, next_theme_choice,
-        persisted_default_json, resolve_theme, salvage_settings, Settings, SettingsSaveError,
-        ThemeChoice, ViewLayout, APP_DIR, ENUM_SITES, LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES,
-        NESTED_SITES, SCHEMA_VERSION,
+        persisted_default_json, resolve_theme, salvage_settings, SalvageResult, Settings,
+        SettingsSaveError, ThemeChoice, ViewLayout, APP_DIR, ENUM_SITES, LEGACY_SCHEMA_VERSION,
+        MAX_SETTINGS_BYTES, NESTED_SITES, SCHEMA_VERSION,
     };
     use crate::model::{SortDir, SortKey, SortSpec};
     use gpui_kit::component::ThemeMode;
@@ -2820,6 +3250,111 @@ mod tests {
         );
         assert_eq!(settings.last_save_error.get(), None);
         assert!(path.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stale_snapshot_refuses_to_overwrite_a_changed_file() {
+        // BF04: A and B load the same file; A saves first, B must not replay
+        // its old snapshot over A's newer settings.
+        let dir = scratch("changed-on-disk");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(&path, r#"{"version":1,"show_hidden":false}"#).unwrap();
+
+        let mut a = Settings::load_from(&path);
+        let b = Settings::load_from(&path);
+        a.show_hidden = true;
+        a.save_to(&path).unwrap();
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("\"show_hidden\": true"));
+
+        assert_eq!(
+            b.save_to_optional_path_with_reason(Some(&path)),
+            Err(SettingsSaveError::ChangedOnDisk)
+        );
+        assert!(b.changed_on_disk());
+        assert_eq!(
+            b.last_save_error.get(),
+            Some(SettingsSaveError::ChangedOnDisk)
+        );
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"show_hidden\": true"),
+            "A's write must survive B's refused save"
+        );
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec!["settings.json"],
+            "a refused save must leave no tmp/lock file: {leftovers:?}"
+        );
+
+        // A fresh load accepts the new baseline and can save normally.
+        let fresh = Settings::load_from(&path);
+        assert!(!fresh.changed_on_disk());
+        fresh.save_to(&path).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_successful_save_refreshes_the_disk_baseline() {
+        let dir = scratch("fingerprint-refresh");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        settings.save_to(&path).unwrap();
+        settings.show_hidden = true;
+        // Our own previous write is the baseline, not a foreign change.
+        settings.save_to(&path).unwrap();
+        assert!(!settings.changed_on_disk());
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("\"show_hidden\": true"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_ownership_check_fences_a_reclaimed_owner() {
+        let dir = scratch("lock-fencing");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("settings.json.lock");
+        let token = "1234:ours";
+        fs::write(&lock, token).unwrap();
+        let heartbeat = super::LockHeartbeat::with_interval(
+            lock.clone(),
+            token.to_string(),
+            Duration::from_millis(20),
+        );
+        assert!(Settings::lock_ownership_intact(&lock, token, &heartbeat));
+        fs::write(&lock, b"foreign").unwrap();
+        assert!(!Settings::lock_ownership_intact(&lock, token, &heartbeat));
+        heartbeat.stop();
+
+        // A heartbeat that sees a foreign token also reports the loss, so the
+        // saving thread can abandon the critical section before the rename.
+        fs::write(&lock, token).unwrap();
+        let heartbeat = super::LockHeartbeat::with_interval(
+            lock.clone(),
+            token.to_string(),
+            Duration::from_millis(20),
+        );
+        fs::write(&lock, b"foreign").unwrap();
+        assert!(
+            poll_until(Duration::from_secs(2), || heartbeat.token_lost()),
+            "the heartbeat must report a lost lock"
+        );
+        assert!(!Settings::lock_ownership_intact(&lock, token, &heartbeat));
+        heartbeat.stop();
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -3572,7 +4107,8 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.clone(), wrong_type(value)))
             .collect();
-        let (kept, dropped) = salvage_settings(&serde_json::Value::Object(mistyped));
+        let SalvageResult { kept, dropped, .. } =
+            salvage_settings(&serde_json::Value::Object(mistyped));
 
         for key in fields.keys() {
             assert!(
@@ -3586,7 +4122,7 @@ mod tests {
     #[test]
     fn salvage_settings_keeps_valid_defaults_and_unknown_enum_strings() {
         let default = persisted_default_json();
-        let (kept, dropped) = salvage_settings(&default);
+        let SalvageResult { kept, dropped, .. } = salvage_settings(&default);
         assert!(
             dropped.is_empty(),
             "every shipped default must survive salvage: {dropped:?}"
@@ -3607,7 +4143,7 @@ mod tests {
         raw["sort"]["key"] = serde_json::json!("__future_enum_value__");
         raw["column_prefs"]["widths"]["__future_key__"] = serde_json::json!(80);
         raw["terminal_command"] = serde_json::json!("__future_enum_value__");
-        let (kept, dropped) = salvage_settings(&raw);
+        let SalvageResult { kept, dropped, .. } = salvage_settings(&raw);
         assert!(dropped.is_empty(), "unknown enum names are not type errors");
         assert_eq!(kept["view"], raw["view"]);
         assert_eq!(kept["sort"], raw["sort"]);
@@ -3621,9 +4157,129 @@ mod tests {
         // BC18: a genuinely mistyped sibling is dropped without taking the
         // preserved enum string with it.
         raw["show_hidden"] = serde_json::json!("not-a-bool");
-        let (kept, dropped) = salvage_settings(&raw);
+        let SalvageResult { kept, dropped, .. } = salvage_settings(&raw);
         assert_eq!(dropped, vec!["show_hidden"]);
         assert_eq!(kept["view"], raw["view"]);
+    }
+
+    #[test]
+    fn salvage_keeps_sibling_windows_tabs_and_history_when_one_element_is_mistyped() {
+        // BF03: a single bad array element must not cost its valid siblings —
+        // or the entire `windows` field.
+        let raw = serde_json::json!({
+            "windows": [
+                {
+                    "bounds": 5,
+                    "tabs": [
+                        { "cwd": "/tmp/bad", "back": ["/tmp/ok", 7], "forward": [3] },
+                        { "cwd": "/tmp/good", "back": [], "forward": [] },
+                        9,
+                    ],
+                    "active_tab": "not-usize",
+                },
+                { "tabs": [{ "cwd": "/home/koppe", "back": [], "forward": [] }] },
+                "not-a-window",
+            ],
+            "saved_searches": [{ "name": "ok", "query": "TODO" }, "not-a-search"],
+            "bookmark_labels": [
+                { "path": "/home/koppe", "label": "home" },
+                { "path": 7, "label": "broken" },
+            ],
+            "bookmarks": ["/home/koppe", 42, "/tmp"],
+        });
+        let SalvageResult {
+            kept,
+            dropped,
+            nested_dropped,
+        } = salvage_settings(&raw);
+        assert!(
+            dropped.is_empty(),
+            "no whole field should be lost: {dropped:?}"
+        );
+        assert!(nested_dropped.iter().any(|p| p == "windows[0].bounds"));
+        assert!(nested_dropped
+            .iter()
+            .any(|p| p == "windows[0].tabs[0].back[1]"));
+        assert!(nested_dropped.iter().any(|p| p == "windows[2]"));
+        let settings: Settings =
+            serde_json::from_value(serde_json::Value::Object(kept)).expect("salvaged settings");
+        assert_eq!(
+            settings.windows.len(),
+            2,
+            "the valid second window must survive"
+        );
+        assert_eq!(
+            settings.windows[0].tabs.len(),
+            2,
+            "only the mistyped tab should be dropped"
+        );
+        assert_eq!(settings.windows[0].tabs[0].cwd, PathBuf::from("/tmp/bad"));
+        assert_eq!(
+            settings.windows[0].tabs[0].back,
+            vec![PathBuf::from("/tmp/ok")]
+        );
+        assert!(settings.windows[0].tabs[0].forward.is_empty());
+        assert_eq!(settings.windows[0].bounds, None);
+        assert_eq!(
+            settings.windows[1].tabs[0].cwd,
+            PathBuf::from("/home/koppe")
+        );
+        assert_eq!(settings.saved_searches.len(), 1);
+        assert_eq!(settings.bookmark_labels.len(), 1);
+        assert_eq!(
+            settings.bookmarks,
+            vec![PathBuf::from("/home/koppe"), PathBuf::from("/tmp")]
+        );
+    }
+
+    #[test]
+    fn salvaged_nested_user_data_keeps_valid_siblings_and_backs_up_original() {
+        let dir = scratch("nested-salvage-backup");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let original = serde_json::json!({
+            "version": SCHEMA_VERSION,
+            "show_hidden": true,
+            "bookmarks": ["/home/koppe"],
+            "windows": [
+                {
+                    "tabs": [
+                        { "cwd": "/tmp/bad", "back": ["/tmp/kept"], "forward": [] },
+                        7,
+                    ],
+                    "active_tab": 0,
+                },
+                { "tabs": [{ "cwd": "/home/koppe", "back": [], "forward": [] }] },
+            ],
+        });
+        fs::write(&path, original.to_string()).unwrap();
+        let backup = Settings::backup_path_for(&path);
+        let loaded = Settings::load_from_with_backup(&path, backup.clone());
+
+        assert_eq!(loaded.windows.len(), 2, "both valid windows survive");
+        assert_eq!(loaded.windows[0].tabs.len(), 1);
+        assert_eq!(
+            loaded.windows[0].tabs[0].back,
+            vec![PathBuf::from("/tmp/kept")]
+        );
+        assert_eq!(loaded.windows[1].tabs[0].cwd, PathBuf::from("/home/koppe"));
+        assert!(loaded.show_hidden);
+        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
+        assert!(!loaded.read_only && loaded.load_error.is_none());
+
+        // The discarded session element is real user data: the original bytes
+        // must stay recoverable under a .broken-* name.
+        assert!(
+            backup.exists(),
+            "original must be preserved under .broken-*"
+        );
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original.to_string());
+        assert!(loaded
+            .settings_reset_notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("broken")));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

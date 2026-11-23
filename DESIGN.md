@@ -949,9 +949,10 @@ pub fn confirm_and_trash(
     UNIX epoch からのナノ秒とプロセス ID を付与して衝突を避ける。退避に失敗した
     場合は読み取り専用で起動し、元ファイルを上書きしない。
   - `last_dir` が存在しない/ディレクトリでない場合は `$HOME`（`dirs::home_dir()`）へフォールバック。
-  - 保存は**原子的**（as-built: `app/src/settings.rs` の `Settings::save` が
+  - 保存は**原子的**（as-built: `app/src/settings.rs` の `Settings::save_to` が
     `settings.json.tmp-<epochナノ秒>-<PID>` を `create_new(true)` で予約し、
-    `write_all` → `sync_all()` → `fs::rename` の順で反映する）。固定名の tmp を
+    `write_all` → `sync_all()` → `fs::rename` の順で反映する。本番は
+    `Settings::save_with_reason` 経由で `save_to` を呼ぶ）。固定名の tmp を
     `create(true)` で使うと事前に置かれた symlink を追うため（CWE-59）、
     衝突しない一時名と `O_EXCL` 予約が必須。書き込みまたは rename が失敗した
     場合は tmp を削除して元ファイルを保持する。保存タイミング: ナビゲーション・

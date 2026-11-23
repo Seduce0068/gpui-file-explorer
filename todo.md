@@ -2073,6 +2073,39 @@ status: current
 - R1-KNOWN の最初の finding（title="テスト"、evidence=["a"] 等）は
   内容がなく検証不能なため却下。既知残存2件の解消案は別途検討。
 
+## 進行中（ループ19 バックログ）
+
+### 優先度: 高（ループ19・confirmed）
+
+- [x] **BF01** BD15 解消: walker に cap 到達フラグを追加 — 対応: loop19
+- [x] **BF02** BD15 派生: merge の cap 切り詰めもフラグで通知 — 対応: loop19
+- [x] **BF03** salvage が入れ子1要素の誤型で兄弟データ全部を失う — 対応: loop19
+- [x] **BF04** 保存ロックが load→save 全体を覆わず last-write-wins — 対応: loop19
+- [x] **BF05** Search で undo/redo がスナップショットを無警告で古くする — 対応: loop19
+
+### 優先度: 中（ループ19・confirmed）
+
+- [x] **BF06** BD18 派生: open_search が generation 進行のみで旧 task を清扫しない — 対応: loop19
+- [x] **BF07** stale ロック回収後に旧オーナーを fencing しない — 対応: loop19
+- [x] **BF08** 検索フィルタが複数選択のカーソル行を尊重しない — 対応: loop19
+- [x] **BF09** 検索履歴チップがリストへフォーカスを戻さない — 対応: loop19
+- [x] **BF10** Search キー許可リストが Undo/Redo/履歴を除外 — 対応: loop19
+- [x] **BF11** japanese-collation ADR が未使用 lock の行番号を正本と偽る — 対応: loop19
+- [x] **BF12** windows-native ADR が app/Cargo.lock を根拠にする — 対応: loop19
+- [x] **BF13** pwa/README の API 列挙が in-memory 主経路を欠く — 対応: loop19
+- [x] **BF14** PWA フォルダ選択がデータに反映されない旨の記述が不正確 — 対応: loop19
+- [x] **BF15** PWA 受け入れ経路に自動回帰が無く URL も不一致 — 対応: loop19
+
+### 優先度: 低（ループ19・confirmed）
+
+- [x] **BF16** 親ディレクトリ fsync が無く保存直後の電源断で設定消失 — 対応: loop19
+- [x] **BF17** README の cargo vet 記述が config 不在によるスキップを漏らす — 対応: loop19
+- [x] **BF18** DESIGN 原子保存のメソッド名が save_to でなく save — 対応: loop19
+- [x] **BF19** 検索結果の表示名が空文字になる（マルチルート） — 対応: loop19
+- [x] **BF20** Android README のビルド手順が未同梱の gradlew を前提 — 対応: loop19
+- [x] **BF21** pwa/pkg/.gitignore が親と重複する不要ファイル — 対応: loop19
+- [x] **BF22** BD18 意图コメントと source-guard（誤修正防止） — 対応: loop19
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

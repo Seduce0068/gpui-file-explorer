@@ -75,7 +75,11 @@ pub fn filter_results(
 }
 
 /// Limits and filtering options for [`search_by_name`].
-#[derive(Clone, Copy, Debug)]
+///
+/// Not `Copy` any more: [`Self::limit_reached`] is a shared `Arc` so several
+/// root walks can fold their truncation status into one summary. Existing
+/// callers that used `..Default::default()` are unaffected.
+#[derive(Clone, Debug)]
 pub struct SearchOptions {
     pub max_results: usize,
     pub max_depth: usize,
@@ -85,6 +89,12 @@ pub struct SearchOptions {
     /// past the results it already collected (`max_results` still applies to
     /// the *returned* matches).
     pub skip: usize,
+    /// Set when a further *collectable* match is detected after `max_results`
+    /// are already in hand. A caller reading this flag can tell a genuinely
+    /// truncated result set from one that happened to contain exactly the cap.
+    /// Defaults to `false` and is never set by existing tests that use
+    /// `..Default::default()`.
+    pub limit_reached: Arc<AtomicBool>,
 }
 
 impl Default for SearchOptions {
@@ -94,6 +104,7 @@ impl Default for SearchOptions {
             max_depth: 24,
             include_hidden: false,
             skip: 0,
+            limit_reached: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -140,10 +151,15 @@ pub fn search_by_name(
 
     let mut matches: Vec<SearchResult> = Vec::new();
     let mut skipped = 0usize;
+    // BD15: stop *this* walk only after a further collectable match has been
+    // seen past the cap. The shared flag is an accumulator across roots, so it
+    // must never be used as a walk guard: a capped first root must not starve a
+    // later root of its still-unused global budget.
+    let mut extra_match_found = false;
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
 
     while let Some((dir, depth)) = stack.pop() {
-        if cancel.load(Ordering::SeqCst) || matches.len() >= options.max_results {
+        if cancel.load(Ordering::SeqCst) || extra_match_found {
             break;
         }
         let Ok(reader) = std::fs::read_dir(&dir) else {
@@ -156,7 +172,7 @@ pub fn search_by_name(
         children.sort();
 
         for path in children {
-            if cancel.load(Ordering::SeqCst) || matches.len() >= options.max_results {
+            if cancel.load(Ordering::SeqCst) || extra_match_found {
                 break;
             }
             let name = path
@@ -176,15 +192,18 @@ pub fn search_by_name(
             if name_matches(&name, &needle) {
                 if let Some(entry) = entry_for_path(&path) {
                     if skipped < options.skip {
+                        // A skip target is not a collectable match: it must not
+                        // report truncation even when the cap is already full.
                         skipped += 1;
-                    } else {
+                    } else if matches.len() < options.max_results {
                         matches.push(SearchResult {
                             entry,
                             match_line: None,
                         });
-                        if matches.len() >= options.max_results {
-                            break;
-                        }
+                    } else {
+                        options.limit_reached.store(true, Ordering::SeqCst);
+                        extra_match_found = true;
+                        break;
                     }
                 }
             }
@@ -277,9 +296,24 @@ pub fn search_roots(
 
 /// Merge per-root search results into one list, de-duplicated by path and
 /// capped globally. Input batches are assumed to be sorted by path.
+///
+/// Kept as a thin wrapper for callers that do not care whether the cap was
+/// actually hit; use [`merge_search_results_capped`] to learn that.
 pub fn merge_search_results(
     batches: Vec<Vec<SearchResult>>,
     max_total: usize,
+) -> Vec<SearchResult> {
+    merge_search_results_capped(batches, max_total, &AtomicBool::new(false))
+}
+
+/// Same merge as [`merge_search_results`], but reports a truncated merge on
+/// `limit_reached`. The flag is set immediately before the cap-driven `break`,
+/// so a merge that lands exactly on `max_total` with nothing left over stays
+/// `false`. Callers can OR this with the per-root walk flag.
+pub fn merge_search_results_capped(
+    batches: Vec<Vec<SearchResult>>,
+    max_total: usize,
+    limit_reached: &AtomicBool,
 ) -> Vec<SearchResult> {
     use std::collections::HashSet;
     let mut seen = HashSet::new();
@@ -287,6 +321,7 @@ pub fn merge_search_results(
     for batch in batches {
         for result in batch {
             if merged.len() >= max_total {
+                limit_reached.store(true, Ordering::SeqCst);
                 break;
             }
             if seen.insert(result.entry.path.clone()) {
@@ -314,6 +349,9 @@ pub struct ContentSearchOptions {
     /// Files that could not be searched exactly because they are not valid
     /// UTF-8 (e.g. CP932). Shared with the caller for the same reason.
     pub non_utf8_files: Arc<AtomicUsize>,
+    /// Set when a further collectable content match is detected after
+    /// `max_results` are already in hand (see [`SearchOptions::limit_reached`]).
+    pub limit_reached: Arc<AtomicBool>,
 }
 
 impl Default for ContentSearchOptions {
@@ -326,6 +364,7 @@ impl Default for ContentSearchOptions {
             skip: 0,
             skipped_large_files: Arc::new(AtomicUsize::new(0)),
             non_utf8_files: Arc::new(AtomicUsize::new(0)),
+            limit_reached: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -528,10 +567,14 @@ pub fn search_contents(
 
     let mut matches: Vec<SearchResult> = Vec::new();
     let mut skipped = 0usize;
+    // BD15: as in the name walk, keep probing after the cap until one more
+    // collectable match is seen. The shared flag is only an accumulator, never
+    // a walk guard (a later root may still have unused global budget).
+    let mut extra_match_found = false;
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
 
     while let Some((dir, depth)) = stack.pop() {
-        if cancel.load(Ordering::SeqCst) || matches.len() >= options.max_results {
+        if cancel.load(Ordering::SeqCst) || extra_match_found {
             break;
         }
         let Ok(reader) = std::fs::read_dir(&dir) else {
@@ -544,7 +587,7 @@ pub fn search_contents(
         children.sort();
 
         for path in children {
-            if cancel.load(Ordering::SeqCst) || matches.len() >= options.max_results {
+            if cancel.load(Ordering::SeqCst) || extra_match_found {
                 break;
             }
             let name = path
@@ -593,14 +636,15 @@ pub fn search_contents(
                 if let Some(entry) = entry_for_path(&path) {
                     if skipped < options.skip {
                         skipped += 1;
-                    } else {
+                    } else if matches.len() < options.max_results {
                         matches.push(SearchResult {
                             entry,
                             match_line: Some(line),
                         });
-                        if matches.len() >= options.max_results {
-                            break;
-                        }
+                    } else {
+                        options.limit_reached.store(true, Ordering::SeqCst);
+                        extra_match_found = true;
+                        break;
                     }
                 }
             }
@@ -885,6 +929,108 @@ mod tests {
         );
         assert_eq!(names(&rest), vec!["match-2.txt", "match-3.txt"]);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// BD15: the cap notice distinguishes "exactly the cap" from "more
+    /// collectable matches existed", and a skip target is not collectable.
+    #[test]
+    fn limit_reached_flags_only_a_collectable_match_past_the_cap() {
+        let cancel = AtomicBool::new(false);
+
+        // Exactly three matches: full, but nothing was dropped.
+        let exact = scratch("limit-flag-exact");
+        for index in 0..3 {
+            write(&exact.join(format!("match-{index}.txt")));
+        }
+        let exact_flag = Arc::new(AtomicBool::new(false));
+        let found = search_by_name(
+            &exact,
+            "match",
+            SearchOptions {
+                max_results: 3,
+                limit_reached: exact_flag.clone(),
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert_eq!(found.len(), 3);
+        assert!(
+            !exact_flag.load(Ordering::SeqCst),
+            "exactly at the cap must not report truncation"
+        );
+
+        // Four matches with a cap of three: the fourth is a real, collectable
+        // match that the cap discards, so the flag must be raised.
+        let over = scratch("limit-flag-over");
+        for index in 0..4 {
+            write(&over.join(format!("match-{index}.txt")));
+        }
+        let over_flag = Arc::new(AtomicBool::new(false));
+        let found = search_by_name(
+            &over,
+            "match",
+            SearchOptions {
+                max_results: 3,
+                limit_reached: over_flag.clone(),
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert_eq!(found.len(), 3);
+        assert!(
+            over_flag.load(Ordering::SeqCst),
+            "a fourth collectable match must report truncation"
+        );
+
+        // Only skip targets: nothing was collected and nothing was dropped.
+        let skipped = scratch("limit-flag-skip");
+        for index in 0..3 {
+            write(&skipped.join(format!("match-{index}.txt")));
+        }
+        let skipped_flag = Arc::new(AtomicBool::new(false));
+        let found = search_by_name(
+            &skipped,
+            "match",
+            SearchOptions {
+                max_results: 3,
+                skip: 3,
+                limit_reached: skipped_flag.clone(),
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert!(found.is_empty());
+        assert!(
+            !skipped_flag.load(Ordering::SeqCst),
+            "matches consumed by `skip` are not collectable and cannot truncate"
+        );
+
+        // Three skipped, three collected, nothing left: still not truncated.
+        let skipped_then_full = scratch("limit-flag-skip-then-full");
+        for index in 0..6 {
+            write(&skipped_then_full.join(format!("match-{index}.txt")));
+        }
+        let full_flag = Arc::new(AtomicBool::new(false));
+        let found = search_by_name(
+            &skipped_then_full,
+            "match",
+            SearchOptions {
+                max_results: 3,
+                skip: 3,
+                limit_reached: full_flag.clone(),
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert_eq!(found.len(), 3);
+        assert!(
+            !full_flag.load(Ordering::SeqCst),
+            "skip targets after the cap do not count as dropped results"
+        );
+
+        for dir in [exact, over, skipped, skipped_then_full] {
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 }
 
@@ -1243,6 +1389,75 @@ mod content_tests {
         let found = search_contents(&dir, "target", options, &AtomicBool::new(false));
         assert_eq!(found.len(), 2);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// BD15: content search uses the same "collectable match past the cap"
+    /// rule as the name walk, including the skip target exclusion.
+    #[test]
+    fn content_limit_reached_flags_only_a_dropped_match() {
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let cancel = AtomicBool::new(false);
+
+        let exact = scratch("content-limit-exact");
+        for index in 0..2 {
+            write(&exact.join(format!("f{index}.txt")), b"TARGET");
+        }
+        let exact_flag = Arc::new(AtomicBool::new(false));
+        let found = search_contents(
+            &exact,
+            "target",
+            ContentSearchOptions {
+                max_results: 2,
+                limit_reached: exact_flag.clone(),
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert_eq!(found.len(), 2);
+        assert!(!exact_flag.load(Ordering::SeqCst));
+
+        let over = scratch("content-limit-over");
+        for index in 0..3 {
+            write(&over.join(format!("f{index}.txt")), b"TARGET");
+        }
+        let over_flag = Arc::new(AtomicBool::new(false));
+        let found = search_contents(
+            &over,
+            "target",
+            ContentSearchOptions {
+                max_results: 2,
+                limit_reached: over_flag.clone(),
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert_eq!(found.len(), 2);
+        assert!(over_flag.load(Ordering::SeqCst));
+
+        let skipped = scratch("content-limit-skip");
+        for index in 0..2 {
+            write(&skipped.join(format!("f{index}.txt")), b"TARGET");
+        }
+        let skipped_flag = Arc::new(AtomicBool::new(false));
+        let found = search_contents(
+            &skipped,
+            "target",
+            ContentSearchOptions {
+                max_results: 2,
+                skip: 2,
+                limit_reached: skipped_flag.clone(),
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert!(found.is_empty());
+        assert!(!skipped_flag.load(Ordering::SeqCst));
+
+        for dir in [exact, over, skipped] {
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
@@ -1655,5 +1870,45 @@ mod scope_tests {
             .map(|result| result.entry.path.clone())
             .collect();
         assert_eq!(paths, vec![p1, p2]);
+    }
+
+    /// BD15/BC: a merge that actually dropped a result reports it, while an
+    /// exact-fit merge stays quiet. The wrapper must keep the old behaviour.
+    #[test]
+    fn merge_search_results_capped_reports_a_truncated_merge() {
+        use super::merge_search_results_capped;
+        use std::sync::atomic::Ordering;
+
+        let p1 = PathBuf::from("/tmp/a");
+        let p2 = PathBuf::from("/tmp/b");
+        let e = |path: &PathBuf| {
+            let name = path.file_name().unwrap_or_default().to_os_string();
+            SearchResult {
+                match_line: None,
+                entry: Entry {
+                    name_text: name.to_string_lossy().into_owned(),
+                    sort_key: name.to_string_lossy().to_lowercase(),
+                    name,
+                    path: path.clone(),
+                    is_dir: false,
+                    is_symlink: false,
+                    size: 0,
+                    modified: None,
+                },
+            }
+        };
+
+        let exact_flag = AtomicBool::new(false);
+        let exact = merge_search_results_capped(vec![vec![e(&p1)]], 1, &exact_flag);
+        assert_eq!(exact.len(), 1);
+        assert!(!exact_flag.load(Ordering::SeqCst));
+
+        let over_flag = AtomicBool::new(false);
+        let over = merge_search_results_capped(vec![vec![e(&p1), e(&p2)]], 1, &over_flag);
+        assert_eq!(over.len(), 1);
+        assert!(
+            over_flag.load(Ordering::SeqCst),
+            "the merge dropped a result, so the flag must be set before its break"
+        );
     }
 }

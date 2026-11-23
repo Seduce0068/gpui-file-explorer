@@ -36,15 +36,24 @@ wasm は `pkg/gfe_core_bg.wasm` になる（`main.js` の `WASM_MODULE` で指�
 
 実装済みの API は次のとおり（`core/src/wasm.rs` を実読）:
 
-- `CoreViewer.new()` — 引数なし（wasm-bindgen の private constructor のため `new CoreViewer()` は不可）
-- `list_entries(dir: string)` — JSON 文字列（camelCase の配列）を返す
-- `search(query: string, dir: string)` — `{ entry, matchLine }[]` の JSON 文字列を返す
 - `set_panic_hook()` — panic を `console.error` に流す（初期化時に呼ぶ）
+- `listEntriesFromJson(json)` — JSON 化したエントリ配列をコアの並び順で整列し、
+  camelCase の JSON 文字列を返す（**Phase 1 の受け入れ経路**）
+- `searchInJson(query, json)` — 同じ配列へコアの名前検索をかけ、
+  `{ entry, matchLine }[]` の JSON 文字列を返す（受け入れ経路）
+- `CoreViewer.new()` — 引数なし（wasm-bindgen の private constructor のため
+  `new CoreViewer()` は不可）
+- `CoreViewer.list_entries(dir)` / `CoreViewer.search(query, dir)` — `std::fs` を
+  呼ぶレガシー API。wasm32 では実ファイルを読めずエラー文言の文字列が返るため、
+  in-memory API が無いときのフォールバックとしてのみ使う。
 
-**既知の制約**: 両メソッドは `std::fs` を呼ぶため、ブラウザの wasm では実ファイルを
-読めずエラー文言の文字列が返る。`main.js` はその文言をステータスに表示し、
-scaffold 確認用の読み取り専用デモへ退避する。コア API 経由の実データ表示には
-FileSystem ポート（OPFS 等）が必要で、デモ表示は受け入れではない。
+**主経路は in-memory API**: `main.js` は `listEntriesFromJson` / `searchInJson` に
+JS 側のサンプル JSON（`demoJson()`）を渡し、コアの `visible_entries` / 名前検索を
+実際に通す。一覧は `core API 経由`、検索は `core API の検索で N 件` の
+ステータスで表示され、これが Phase 1 の受け入れ条件を満たす。
+`std::fs` 経路が失敗したときの読み取り専用デモへの退避はフォールバックであり
+受け入れではない。実ファイルの走査には OPFS / FileSystem ポートが必要
+（Phase 2 以降）。
 
 ## ビルドと起動
 
@@ -59,8 +68,8 @@ ls -la pwa/pkg
 # gfe_core.js / gfe_core_bg.wasm / gfe_core.d.ts が並ぶこと
 
 echo '--- ローカル配信 ---'
-python3 -m http.server 8000 --directory pwa
-# ブラウザで http://localhost:8000/ を開く
+python3 -m http.server 8765 --directory pwa
+# ブラウザで http://127.0.0.1:8765/index.html を開く
 ```
 
 `--out-dir` は相対パス指定。配置先が `pwa/pkg` 以外になった場合は
@@ -79,8 +88,10 @@ python3 -m http.server 8000 --directory pwa
 **iOS Safari は File System Access API に非対応。** Apple Developer Program の
 年会費が必ずかかるため iOS はアプリ版を出さず PWA のみ対応する方針に沿い、
 ホーム画面への追加（PWA インストール）までは可能だが、実ファイルの選択はできない。
-現状はルート名だけを core へ渡しており、実ツリーの走査には OPFS 等の
-FileSystem ポートが必要（`notes/wasm-browser-notes.md` §2 を参照）。
+現状は選択したフォルダ名を `state.rootName` に保持するだけで、一覧・検索は
+`demoJson()` の in-memory API 経路で表示する（ルート名は core へ渡さない）。
+実ツリーの走査には OPFS 等の FileSystem ポートが必要
+（`notes/wasm-browser-notes.md` §2 を参照）。
 
 ## キーボード操作とアクセシビリティ
 
