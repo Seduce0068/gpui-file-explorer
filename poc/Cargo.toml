@@ -11,13 +11,3 @@ homepage = "https://github.com/Seduce0068/gpui-file-explorer"
 [dependencies]
 gpui-kit = "=0.9.1"
 
-[profile.dev]
-# GPUI + wgpu の debuginfo は巨大（target/ が 12GiB に膨張）。
-# バックトレースは残しつつ行テーブルのみに抑制する。
-debug = "line-tables-only"
-
-[profile.dev.package."*"]
-debug = false
-
-[profile.release]
-strip = true

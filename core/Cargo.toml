@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "gpui-file-explorer-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "GPUI-free core logic for gpui-file-explorer"
+repository = "https://github.com/Seduce0068/gpui-file-explorer"
+
+[lib]
+name = "gfe_core"
+path = "src/lib.rs"
+
+[dependencies]

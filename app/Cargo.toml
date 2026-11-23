@@ -33,13 +33,3 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 [target.'cfg(any(target_os = "windows", all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))))'.dependencies]
 trash = "5.3"
 
-[profile.dev]
-# GPUI + wgpu の debuginfo は巨大（debug=1 で 1.76GiB のバイナリ、target/ は 21GiB）。
-# バックトレースは残しつつ行テーブルのみに抑制する。
-debug = "line-tables-only"
-
-[profile.dev.package."*"]
-debug = false
-
-[profile.release]
-strip = true

@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[workspace]
+resolver = "2"
+members = ["core", "app", "poc"]
+default-members = ["core", "app"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.92"
+license = "AGPL-3.0-or-later"
+
+[profile.dev]
+# GPUI + wgpu の debuginfo は巨大（debug=1 で 1.76GiB のバイナリ、target/ は 21GiB）。
+# バックトレースは残しつつ行テーブルのみに抑制する。
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+strip = true
