@@ -9,4 +9,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod error;
+pub mod model;
+pub mod ops;
 pub mod ports;
+pub mod search;
+pub mod strings;
+pub mod trash_view;

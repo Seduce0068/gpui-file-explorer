@@ -1353,12 +1353,15 @@ status: current
 > iOS は PWA のみ（Apple Developer Program の年会費が必ずかかるため）、
 > Android は Compose アプリ＋PWA、Windows は評価版で検証、macOS は実機検証なし。
 
-- [ ] **P1-00** workspace 準備: ルート Cargo.toml に [workspace] と members/power を追加
+- [x] **P1-00** workspace 準備: ルート Cargo.toml に [workspace] と members を追加
+  — 対応: p1-core-move + 親
   — app/poc の profile を集約。挙動不変
-- [ ] **P1-01** core 骨格: `core/`（package gpui-file-explorer-core / lib gfe_core）を作成
+- [x] **P1-01** core 骨格: `core/`（gpui-file-explorer-core / gfe_core）を作成
+  — 対応: p1-core-move + 親
   — `#![forbid(unsafe_code)]`、error/strings/ports を配置
-- [ ] **P1-02** 純粋ロジック移動: model/search/ops/trash_view 純関数群を core へ
-  — model→settings 逆参照は deserialize hook を app 側へ移す案3で解消
+- [x] **P1-02** 純粋ロジック移動: model/search/ops/trash_view 純関数群を core へ
+  — 対応: p1-core-move + 親
+  — model→settings 逆参照は core 内のシグナル port で解消（案3の代替）
 - [ ] **P1-03** app 側 re-export: `pub use gfe_core as core;` で参照を一本化
   — デスクトップ全テスト green を維持
 - [ ] **P1-04** 1画面ビューア試作: Android Compose アプリ＋iOS/Android 共通 PWA

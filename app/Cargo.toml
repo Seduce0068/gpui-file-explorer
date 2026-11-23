@@ -11,6 +11,9 @@ homepage = "https://github.com/Seduce0068/gpui-file-explorer"
 readme = "README.md"
 
 [dependencies]
+# GPUI 非依存ロジックは core crate へ移動済み。既存の `crate::model` 等は
+# app 側の薄い re-export モジュール経由で参照する。
+gpui-file-explorer-core = { version = "0.1.0", path = "../core" }
 gpui-kit = "=0.9.1"
 alphanumeric-sort = "1.5"
 notify = "8.2"

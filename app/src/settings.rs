@@ -61,7 +61,6 @@
 //! represent it. It is persisted in [`ThemeChoice`] and resolved against the
 //! observed system appearance by the UI ([`resolve_theme`]).
 
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -202,32 +201,19 @@ fn default_theme() -> ThemeMode {
     ThemeMode::Dark
 }
 
-std::thread_local! {
-    /// Cross-deserializer signal that an unrecognized persisted enum string
-    /// was replaced by a fallback on this thread. Every field-level enum
-    /// deserializer (here and in `model`) reports through
-    /// [`note_unknown_persisted_enum`]; [`Settings::load_from_with_backup`]
-    /// clears it before parsing and consumes it afterwards so the loaded
-    /// session can be kept read-only. Not persisted and never shared across
-    /// threads.
-    static UNKNOWN_ENUM_SEEN: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Record that a persisted enum string is not recognized by this build.
 ///
-/// The field deserializers still substitute a safe default so one bad value
-/// cannot back up the whole file, but [`Settings::load_from_with_backup`] uses
-/// this signal to make the session read-only: writing the fallback back would
-/// silently destroy the original value.
+/// The signal lives in `gfe_core::model` so both the app-side and core-side
+/// field deserializers report through the same port.
+/// [`Settings::load_from_with_backup`] clears it before parsing and consumes
+/// it afterwards so the loaded session can be kept read-only.
 pub(crate) fn note_unknown_persisted_enum() {
-    UNKNOWN_ENUM_SEEN.with(|seen| seen.set(true));
+    gfe_core::model::note_unknown_persisted_enum();
 }
 
-/// Clear and return the signal for the current load. Called once before
-/// deserialization (to drop any stray signal from a direct `from_str` call)
-/// and once after it.
+/// Clear and return the signal for the current load.
 fn take_unknown_persisted_enum() -> bool {
-    UNKNOWN_ENUM_SEEN.with(|seen| seen.replace(false))
+    gfe_core::model::take_unknown_persisted_enum()
 }
 
 /// The user's persisted theme preference: follow the desktop (`System`) or

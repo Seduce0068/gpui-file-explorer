@@ -1859,7 +1859,8 @@ pub const OP_RESULT_PRIORITY: &[&str] = &["キャンセル", "一部失敗", "�
 
 // 呼び出し側（model.rs）への適用済み。単語を変更するときは下の整合性テストと
 // 実際の表示（`種類` 列・ステータスバーの相対時刻）を併せて確認する。
-/// Placeholder for unavailable metadata (`model::human_age` / `human_datetime`).
+/// Placeholder for unavailable metadata（P1-02 で core へ移動、既存テスト用に保持）。
+#[allow(dead_code)]
 pub const VALUE_UNKNOWN: &str = "-";
 /// Canonical cancel label. Do not use the English `cancel` in prompt buttons.
 pub const LABEL_CANCEL: &str = "キャンセル";
@@ -1890,9 +1891,12 @@ pub const DIALOG_FOOTER_DELETE_SUFFIX: &str = "空にして確定すると削除
 const _: () = assert!(DIALOG_FOOTER_HINT.len() == dialog_footer_hint!().len());
 const _: () = assert!(!DIALOG_FOOTER_HINT_READ_ONLY.is_empty());
 
-/// `種類` 列のラベル（`model::kind_label` で使用）。
+/// `種類` 列のラベル（P1-02 で core へ移動、既存テスト用に保持）。
+#[allow(dead_code)]
 pub const KIND_FOLDER: &str = "フォルダ";
+#[allow(dead_code)]
 pub const KIND_LINK: &str = "リンク";
+#[allow(dead_code)]
 pub const KIND_NONE: &str = "—";
 
 /// AJ02: `ops::validate_file_name` の入力エラー文言。
@@ -1900,6 +1904,7 @@ pub const KIND_NONE: &str = "—";
 /// ため、ここで定義する 6 定数へ集約する（`STATUS_ERROR_MARKERS` と
 /// 非空在庫にも登録済み）。動的な名前が入る Windows 予約名だけは接頭辞と
 /// 接尾に分け、呼び出し側が `format!` で組み立てる。
+/// リネーム入力検証の文言（P1-02: core と同じ値を維持）。
 pub const STATUS_RENAME_INVALID_EMPTY: &str = "名前が空です";
 pub const STATUS_RENAME_INVALID_DOT: &str = "`.` と `..` は名前として使えません";
 pub const STATUS_RENAME_INVALID_SEPARATOR: &str = "名前にパス区切り文字は使えません";
@@ -1907,13 +1912,13 @@ pub const STATUS_RENAME_INVALID_NUL: &str = "名前に NUL 文字は使えませ
 pub const STATUS_RENAME_INVALID_RESERVED_PREFIX: &str = "Windows の予約名は使えません: ";
 pub const STATUS_RENAME_INVALID_CHAR: &str = "Windows で使えない文字が含まれています";
 
-/// 相対時刻の単語（`model::human_age` で使用）。
-pub const AGE_FUTURE: &str = "未来";
-pub const AGE_JUST_NOW: &str = "たった今";
-pub const AGE_MINUTES_SUFFIX: &str = "分前";
-pub const AGE_HOURS_SUFFIX: &str = "時間前";
-pub const AGE_DAYS_SUFFIX: &str = "日前";
-pub const AGE_YEARS_SUFFIX: &str = "年前";
+/// 相対時刻の単語。`gfe_core::strings` が正規定義（P1-02）。
+/// app 側の既存テストが参照するため re-export する。
+#[allow(unused_imports)]
+pub use gfe_core::strings::{
+    AGE_DAYS_SUFFIX, AGE_FUTURE, AGE_HOURS_SUFFIX, AGE_JUST_NOW, AGE_MINUTES_SUFFIX,
+    AGE_YEARS_SUFFIX,
+};
 
 #[cfg(test)]
 mod tests {

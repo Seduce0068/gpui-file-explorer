@@ -2105,6 +2105,7 @@ dependencies = [
  "async-channel",
  "chrono",
  "dirs 6.0.0",
+ "gpui-file-explorer-core",
  "gpui-kit",
  "notify",
  "notify-debouncer-full",
@@ -2118,6 +2119,12 @@ dependencies = [
 [[package]]
 name = "gpui-file-explorer-core"
 version = "0.1.0"
+dependencies = [
+ "alphanumeric-sort",
+ "chrono",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "gpui-file-explorer-poc"
