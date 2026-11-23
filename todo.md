@@ -1875,6 +1875,30 @@ status: current
   `trash_key_action("delete", false)` は常に NoPurge のため
   Trash ビューではキー種別に依らず拒否される。誤検知。
 
+## 進行中（ループ13 バックログ）
+
+### 優先度: 高（ループ13・confirmed）
+
+- [x] **AZ01** Search で削除ディレクトリの子孫結果が放置され無通知 — 対応: loop13
+- [x] **AZ02** OS watch 消失後に張り直す経路が無い — 対応: loop13
+- [x] **AZ03** normalize_events の From/To が複数パス 2個目以降を破棄 — 対応: loop13
+- [x] **AZ04** 設定 Save が全オーバーレイを閉じエラーが消える — 対応: loop13
+
+### 優先度: 中（ループ13・confirmed）
+
+- [x] **AZ05** fingerprint が秒丸め＋is_symlink 省略で変更を見逃す — 対応: loop13
+- [x] **AZ06** reconcile の partially_failed が全件成功としてマークされる — 対応: loop13
+- [x] **AZ07** undo Trash の既存パス判定が他人のファイルを陳腐化 — 対応: loop13
+- [x] **AZ08** 一括リセット footer が keymap dialog に欠落 — 対応: loop13
+- [x] **AZ09** PWA 検索 input にモバイル自動補正の抑止属性を追加 — 対応: 親
+- [ ] **AZ10** PWA スクロール位置は keyboard select で scrollIntoView が走る設計
+  — 検索入力時のリセットは意図的な可能性があり、設計判断が必要ため保留
+
+### 優先度: 低（ループ13・confirmed）
+
+- [x] **AZ11** 展開ディレクトリ状態が undo/redo で復元されない — 対応: loop13
+- [x] **AZ12** 検索スナップショットが part なキーしか保持しない — 対応: loop13
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

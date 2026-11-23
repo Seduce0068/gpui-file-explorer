@@ -58,8 +58,8 @@ use crate::watcher::{removed_paths, DirWatcher, FsEvent};
 use gfe_core::model::{
     breadcrumb_segments, clamp_index, create_unique_folder, display_path, fingerprint, first_index,
     grid_columns, grid_row_count, human_age, human_datetime, human_size, last_index, parent_dir,
-    read_entries, resolve_location_input, sort_entries, step_selection, visible_entries, Entry,
-    FsError, FsErrorKind, Selection, SortKey, SortSpec,
+    read_entries, read_entries_with_failures, resolve_location_input, sort_entries, step_selection,
+    visible_entries, Entry, FsError, FsErrorKind, ReadEntriesOutcome, Selection, SortKey, SortSpec,
 };
 use gfe_core::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use gfe_core::search::{
@@ -1007,6 +1007,21 @@ fn set_view_status(settings: &Settings, saved: bool, mode: ViewLayout) -> String
 /// sync (D13/H01).
 fn settings_write_needs_rollback(saved: bool) -> bool {
     !saved
+}
+
+/// AZ04: reason shown inside a settings editor dialog (Alt+T / Alt+K) when the
+/// write failed. `rollback_settings` puts the persisted value back in memory,
+/// so closing the dialog would throw away the user's input with no way to
+/// retry: the caller keeps it open and copies this text into its `error` slot.
+/// Pure so the exact reason (concrete `last_save_error` first, generic notice
+/// as fallback) can be pinned without a GPUI `Context`.
+fn settings_editor_write_failure_reason(settings: &Settings, saved: bool) -> String {
+    settings_write_status(
+        settings,
+        saved,
+        true,
+        STATUS_SETTINGS_SAVE_FAILED.to_string(),
+    )
 }
 
 /// AX19: whether a settings Save changed something that affects the visible
@@ -2374,35 +2389,36 @@ fn empty_state_message(
 use crate::strings::{
     DIALOG_FOOTER_DELETE_SUFFIX, DIALOG_FOOTER_HINT, DIALOG_FOOTER_HINT_READ_ONLY, EMPTY_DIRECTORY,
     EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL,
-    FUZZY_JUMP_OVERLAY_FOOTER_HINT, HELP_SECTIONS, KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT,
-    LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH,
-    LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX,
-    PARENT_FOLDER_LABEL, PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD, SEARCH_IN_PROGRESS_LABEL,
-    STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
-    STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
-    STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
-    STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
-    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CORE_INVALID_TARGET_PREFIX,
-    STATUS_CORE_IO_FAILED, STATUS_CORE_IS_A_DIRECTORY, STATUS_CORE_NOT_FOUND_PREFIX,
-    STATUS_CORE_READ_ONLY_FS, STATUS_CORE_STORAGE_FULL, STATUS_CORE_UNKNOWN_ERROR,
-    STATUS_CORE_UNSUPPORTED_PREFIX, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-    STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED,
-    STATUS_FOLDER_CREATED_ELSEWHERE_HINT, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
-    STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID,
-    STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX,
-    STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
-    STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MAX_TABS_SUFFIX,
-    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
-    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
-    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
-    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PLACE_GONE_HINT,
-    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
-    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_EXISTS_PREFIX,
-    STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR, STATUS_RENAME_INVALID_DOT,
-    STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL, STATUS_RENAME_INVALID_RESERVED_PREFIX,
-    STATUS_RENAME_INVALID_SEPARATOR, STATUS_RENAME_NO_PARENT, STATUS_RENAME_SAVED_PREFIX,
-    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
+    FUZZY_JUMP_OVERLAY_FOOTER_HINT, HELP_SECTIONS, KEYMAP_DIALOG_FOOTER_GUIDANCE,
+    KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY,
+    LOAD_ERROR_HINT_SEARCH, LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX,
+    OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL, PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD,
+    SEARCH_IN_PROGRESS_LABEL, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+    STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+    STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+    STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+    STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
+    STATUS_CORE_INVALID_TARGET_PREFIX, STATUS_CORE_IO_FAILED, STATUS_CORE_IS_A_DIRECTORY,
+    STATUS_CORE_NOT_FOUND_PREFIX, STATUS_CORE_READ_ONLY_FS, STATUS_CORE_STORAGE_FULL,
+    STATUS_CORE_UNKNOWN_ERROR, STATUS_CORE_UNSUPPORTED_PREFIX, STATUS_DROP_EMPTY,
+    STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
+    STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
+    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATED_ELSEWHERE_HINT, STATUS_FOLDER_CREATING,
+    STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
+    STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX,
+    STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX,
+    STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
+    STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
+    STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
+    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
+    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
+    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
+    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
+    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR,
+    STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL,
+    STATUS_RENAME_INVALID_RESERVED_PREFIX, STATUS_RENAME_INVALID_SEPARATOR,
+    STATUS_RENAME_NO_PARENT, STATUS_RENAME_SAVED_PREFIX, STATUS_RESCAN_FAILED,
+    STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
     STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
@@ -2419,8 +2435,8 @@ use crate::strings::{
     STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_AUTO_REFRESH,
     STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE,
     STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EMPTY,
-    STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
+    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_TRASH_RESTORE_OCCUPIED,
+    STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
     STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED,
     STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
     TERMINAL_COMMAND_DESCRIPTION, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
@@ -2766,6 +2782,25 @@ fn should_apply_loaded_on_reconcile(changed: bool, clear_error: bool) -> bool {
     changed || clear_error
 }
 
+/// Status for a reconcile read that skipped one or more entries.
+///
+/// `read_entries_with_failures` can return a usable listing together with
+/// `failed` paths. Applying that listing is still useful, but reporting it as a
+/// fully successful scan hides the gap; append the shared partial-failure
+/// fragment so the status bar stays honest (AZ06). Kept pure for a focused test.
+fn reconcile_partial_failure_status(failed: &[PathBuf]) -> String {
+    if failed.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{}{}{} 件）",
+            RELOAD_WORD,
+            STATUS_PARTIAL_FAILURE_SUFFIX,
+            failed.len()
+        )
+    }
+}
+
 /// Whether an in-flight directory reconcile may apply its freshly read listing.
 ///
 /// `reconcile` is dispatched only from the directory view, but the user can
@@ -2826,6 +2861,31 @@ fn search_view_watch_needs_stale(events: &[FsEvent]) -> bool {
     events
         .iter()
         .any(|event| !matches!(event, FsEvent::Removed(_)))
+}
+
+/// Whether a removed path covers a cached Search result.
+///
+/// Pruning results by exact path leaves the descendants of a deleted
+/// directory behind (`sub/a.txt` after `sub/` vanished) while the batch holds
+/// only `Removed`, so `search_view_watch_needs_stale` would report no staleness.
+/// `Path::starts_with` compares whole components, so `/a/b` does not cover
+/// `/a/bc`. Kept pure for a focused test (AZ01).
+fn removed_path_covers_result(removed: &Path, result: &Path) -> bool {
+    result == removed || result.starts_with(removed)
+}
+
+/// Whether a `Removed` event names one of the roots the OS watcher tracks.
+///
+/// The kernel can drop a watch (deleted / unmounted directory) while
+/// `DirWatcher` still records it, so the manager must invalidate its set and
+/// re-register before any later event can arrive (AZ02). Kept pure for a test.
+fn removed_hits_watched(events: &[FsEvent], watched: &[PathBuf]) -> bool {
+    watched.iter().any(|path| {
+        events.iter().any(|event| match event {
+            FsEvent::Removed(paths) => paths.contains(path),
+            _ => false,
+        })
+    })
 }
 
 /// Whether the stored reconcile guard still describes the read that finished.
@@ -3079,36 +3139,44 @@ fn core_trash_items(items: &[trash_view::TrashItem]) -> Vec<gfe_core::trash_view
         .collect()
 }
 
+/// AZ07: fold per-id destination-occupancy facts into an AY02 restore outcome.
+///
+/// An id still present in the trash whose original path is already occupied
+/// must stay in the trash and be reported as a *failed* restore (kept in undo
+/// for a retry after the user clears the collision) — never as `missing`,
+/// which would claim the item left the trash, and never as restored, which
+/// would let a later redo trash the foreign file at that path. Ids already
+/// confirmed restored are left untouched. Pure: both inputs are supplied by
+/// the caller, so the id-level split is testable without a trash directory.
+fn restore_outcome_with_occupied_paths(
+    mut outcome: RestoreByIdOutcome,
+    occupied: &[(OsString, String)],
+) -> RestoreByIdOutcome {
+    for (id, reason) in occupied {
+        outcome.missing_ids.retain(|missing| missing != id);
+        if !outcome.restored_ids.iter().any(|restored| restored == id)
+            && !outcome.failed.iter().any(|(failed, _)| failed == id)
+        {
+            outcome.failed.push((id.clone(), reason.clone()));
+        }
+    }
+    outcome
+}
+
 /// Blocking (call from the background executor): restore each recorded id on
 /// its own and return a per-item outcome.
 ///
-/// `trash_view::restore_by_id` hands the whole resolved set to one
-/// `restore_all`; a `RestoreCollision` after a few successes then becomes a
-/// single `Err`, so the UI treats every id as missing and re-queues ids that
-/// were already restored. Restoring one item per call keeps each result
-/// separate, and the pure core fold classifies restored / missing / failed ids
-/// (AY02) without any filesystem access in the test path.
+/// For more than one id, `trash_view::restore_by_id` would hand the whole
+/// resolved set to one `restore_all`; a `RestoreCollision` after a few successes
+/// then becomes a single `Err`, so the UI treats every id as missing and
+/// re-queues ids that were already restored. Restoring one item per call keeps
+/// each result separate, and the pure core fold classifies restored / missing /
+/// failed ids (AY02) without any filesystem access in the test path. A single
+/// id uses the id-addressed wrapper (no partial success is possible) but still
+/// passes through the same destination-occupancy guard and pure fold (AZ07).
 fn restore_trash_ids(entries: &[(PathBuf, OsString)]) -> RestoreByIdOutcome {
-    // With exactly one id there is no hidden partial success for the
-    // all-or-nothing wrapper to swallow, so keep using it for that case.
-    if let [entry] = entries {
-        let id = entry.1.clone();
-        return match trash_view::restore_by_id(std::slice::from_ref(entry)) {
-            Ok((restored, missing)) => RestoreByIdOutcome {
-                restored_ids: if restored > 0 {
-                    vec![id.clone()]
-                } else {
-                    vec![]
-                },
-                missing_ids: if missing > 0 { vec![id] } else { vec![] },
-                failed: Vec::new(),
-            },
-            Err(reason) => RestoreByIdOutcome {
-                failed: vec![(id, reason)],
-                ..RestoreByIdOutcome::default()
-            },
-        };
-    }
+    // AZ07: resolve the trash listing once so both the single-id and multi-id
+    // branches share the same id-level occupancy facts and pure outcome fold.
     let items = match trash_view::list() {
         Ok(items) => items,
         Err(_) => {
@@ -3125,24 +3193,89 @@ fn restore_trash_ids(entries: &[(PathBuf, OsString)]) -> RestoreByIdOutcome {
     let ids: Vec<OsString> = entries.iter().map(|(_, id)| id.clone()).collect();
     let (to_restore, _) = partition_restore_ids(&core_items, &ids);
     let missing = missing_restore_ids(&core_items, &ids);
-    let attempts: Vec<(OsString, Result<(), String>)> = to_restore
-        .iter()
-        .map(|item| {
-            let id = item.id.clone();
-            let result = match items
-                .iter()
-                .find(|candidate| candidate.id.as_os_str() == id.as_os_str())
-            {
-                Some(platform_item) => trash_view::restore(vec![platform_item.clone()]),
-                None => Err(format!(
-                    "ゴミ箱一覧から id を再解決できませんでした: {}",
-                    id.to_string_lossy()
-                )),
-            };
-            (id, result)
-        })
-        .collect();
-    partition_restore_outcome(&missing, &attempts)
+    // AZ07: one id is already an id-level operation — `restore_by_id` resolves
+    // exactly that id, so there is no partial success to swallow. Keep the
+    // adapter's id-addressed path exercised for this case, but apply the same
+    // occupancy guard and pure fold as the multi-id branch below.
+    if let [entry] = entries {
+        let id = entry.1.clone();
+        let mut single_occupied = Vec::new();
+        if let Some(item) = items
+            .iter()
+            .find(|item| item.id.as_os_str() == id.as_os_str())
+        {
+            let original = item.original_path();
+            if path_present(&original) {
+                single_occupied.push((
+                    id.clone(),
+                    format!(
+                        "{STATUS_TRASH_RESTORE_OCCUPIED}: {}",
+                        display_path(&original)
+                    ),
+                ));
+            }
+        }
+        if !single_occupied.is_empty() {
+            return restore_outcome_with_occupied_paths(
+                partition_restore_outcome(&missing, &[]),
+                &single_occupied,
+            );
+        }
+        return match trash_view::restore_by_id(std::slice::from_ref(entry)) {
+            Ok((restored, missing_in_trash)) => restore_outcome_with_occupied_paths(
+                RestoreByIdOutcome {
+                    restored_ids: if restored > 0 {
+                        vec![id.clone()]
+                    } else {
+                        vec![]
+                    },
+                    missing_ids: if missing_in_trash > 0 {
+                        vec![id]
+                    } else {
+                        vec![]
+                    },
+                    failed: Vec::new(),
+                },
+                &[],
+            ),
+            Err(reason) => RestoreByIdOutcome {
+                failed: vec![(id, reason)],
+                ..RestoreByIdOutcome::default()
+            },
+        };
+    }
+    let mut occupied: Vec<(OsString, String)> = Vec::new();
+    let mut attempts: Vec<(OsString, Result<(), String>)> = Vec::new();
+    for item in &to_restore {
+        let id = item.id.clone();
+        let original = item.original_path();
+        // AZ07: never restore over a file that now sits at the original path.
+        // It may be a foreign file; skipping this id keeps it in the trash and
+        // the pure fold below records a collision failure instead of a bogus
+        // "missing" or a successful restore of somebody else's data.
+        if path_present(&original) {
+            occupied.push((
+                id,
+                format!(
+                    "{STATUS_TRASH_RESTORE_OCCUPIED}: {}",
+                    display_path(&original)
+                ),
+            ));
+            continue;
+        }
+        let result = match items
+            .iter()
+            .find(|candidate| candidate.id.as_os_str() == id.as_os_str())
+        {
+            Some(platform_item) => trash_view::restore(vec![platform_item.clone()]),
+            None => Err(format!(
+                "ゴミ箱一覧から id を再解決できませんでした: {}",
+                id.to_string_lossy()
+            )),
+        };
+        attempts.push((id, result));
+    }
+    restore_outcome_with_occupied_paths(partition_restore_outcome(&missing, &attempts), &occupied)
 }
 
 /// Paths carried by an internal row drag that may be copied into
@@ -4229,6 +4362,28 @@ impl Explorer {
         self.watcher.watch(&dirs);
     }
 
+    /// Re-arm the OS watcher when a watched root was reported as removed.
+    ///
+    /// Without invalidation `DirWatcher::watch` short-circuits on its stale
+    /// `watched` set and the lost OS watch is never restored. Invalidate first,
+    /// re-register the current dirs, then reload once so the vanished path is
+    /// reflected in the listing immediately (AZ02). Returns whether a rearm
+    /// happened so the caller can skip the rest of the batch.
+    fn rearm_watcher_after_removed_root(
+        &mut self,
+        events: &[FsEvent],
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let watched = self.watcher.watched_paths().to_vec();
+        if !removed_hits_watched(events, &watched) {
+            return false;
+        }
+        self.watcher.invalidate();
+        self.update_watcher();
+        self.reload(cx);
+        true
+    }
+
     /// Re-check whether the cached sidebar places exist. Called from `reload`
     /// only — never from `render`.
     fn refresh_places(&mut self) {
@@ -4507,10 +4662,10 @@ impl Explorer {
         // now so a stale snapshot is not re-applied over their edits (AS02).
         let listing_revision = self.listing_revision;
         let read_dir = token.1.clone();
-        let task = cx.background_spawn(async move { read_entries(&read_dir) });
+        let task = cx.background_spawn(async move { read_entries_with_failures(&read_dir) });
         cx.spawn(async move |this, cx| {
-            let entries = match task.await {
-                Ok(entries) => entries,
+            let outcome = match task.await {
+                Ok(outcome) => outcome,
                 Err(error) => {
                     // The reconcile is the fallback for watcher events we
                     // missed; surface its failure instead of silently losing
@@ -4558,6 +4713,9 @@ impl Explorer {
                 ) {
                     return;
                 }
+                // AZ06: keep the skipped-entry set alongside the usable
+                // listing so a partial read is not reported as a full success.
+                let ReadEntriesOutcome { entries, failed } = outcome;
                 // A changed fingerprint, or a stale error overlay that must
                 // be dropped, re-applies the freshly read listing. When both
                 // flags are false there is nothing to rebuild, but the read
@@ -4609,6 +4767,14 @@ impl Explorer {
                 // ends the F6-36 hold on every successful reconcile read while
                 // leaving `load`/`entries` handling to the guarded branch.
                 let status_cleared = clear_rescan_failure_after_successful_read(&mut this.status);
+                // AZ06: a read that skipped entries is only partially
+                // successful. Applying the usable listing is still right, but
+                // the status must not claim a clean full success.
+                let partial = reconcile_partial_failure_status(&failed);
+                if !partial.is_empty() {
+                    this.status = partial;
+                    cx.notify();
+                }
                 // A no-change/no-clear tick still has nothing to render; avoid
                 // adding a 10s repaint just to run the status check.
                 if applied || status_cleared {
@@ -4646,20 +4812,39 @@ impl Explorer {
                         return;
                     }
                     let batch: Vec<FsEvent> = batch.into_iter().flatten().collect();
+                    // AZ02: a Removed event for a watched root means the OS
+                    // watch may be gone; re-arm before processing the batch.
+                    if !search_view && this.rearm_watcher_after_removed_root(&batch, cx) {
+                        return;
+                    }
                     if search_view {
                         // A search result set is a snapshot: removals can be
                         // pruned by path, but any other event may have added
                         // or moved results the snapshot cannot represent.
                         // Search forbids reconcile/reload, so a stale notice
                         // is the only recovery (AU05).
-                        let needs_stale = search_view_watch_needs_stale(&batch);
                         let removed = removed_paths(&batch);
+                        // AZ01: a removed directory also invalidates every
+                        // cached result beneath it. Exact-match pruning would
+                        // leave `sub/a.txt` behind with no stale notice.
+                        let covered: Vec<PathBuf> = this
+                            .all_entries
+                            .iter()
+                            .filter(|entry| {
+                                removed
+                                    .iter()
+                                    .any(|path| removed_path_covers_result(path, &entry.path))
+                            })
+                            .map(|entry| entry.path.clone())
+                            .collect();
+                        let needs_stale =
+                            search_view_watch_needs_stale(&batch) || !covered.is_empty();
                         let mut pruned = false;
-                        if !removed.is_empty() {
+                        if !covered.is_empty() {
                             let before = this.all_entries.len();
                             this.all_entries
-                                .retain(|entry| !removed.contains(&entry.path));
-                            for path in &removed {
+                                .retain(|entry| !covered.contains(&entry.path));
+                            for path in &covered {
                                 this.search_lines.remove(path);
                             }
                             if this.all_entries.len() != before {
@@ -5478,6 +5663,12 @@ impl Explorer {
         let saved = self.save_settings();
         if settings_write_needs_rollback(saved) {
             self.rollback_settings(snapshot, cx);
+            // AZ04: keep the dialog open and show why the write failed. The
+            // rolled-back settings no longer hold the typed command, so a bare
+            // status-bar notice with a closed dialog would silently discard it.
+            let reason = settings_editor_write_failure_reason(&self.settings, saved);
+            self.set_terminal_command_error(&reason, cx);
+            return;
         }
         self.terminal_command_editor = None;
         self.focus_list_on_next_render = true;
@@ -5684,6 +5875,12 @@ impl Explorer {
         };
         if settings_write_needs_rollback(saved) {
             self.rollback_settings(snapshot, cx);
+            // AZ04: same retry path as the terminal-command dialog and the
+            // settings card: the concrete reason lives in `editor.error` while
+            // the dialog stays open, instead of being lost on close.
+            let reason = settings_editor_write_failure_reason(&self.settings, saved);
+            self.set_keymap_error(&reason, cx);
+            return;
         }
         self.keymap_editor = None;
         self.focus_list_on_next_render = true;
@@ -5774,6 +5971,15 @@ impl Explorer {
                     .child(dialog_footer_hint_for_session(
                         self.settings.ui_is_read_only(),
                     )),
+            )
+            // AZ08: the settings card already carries the bulk-reset notice;
+            // F1 is blocked inside this dialog, so without this footer line
+            // there is no in-app guidance left while Alt+K is open.
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(p.muted))
+                    .child(KEYMAP_DIALOG_FOOTER_GUIDANCE),
             );
 
         Some(
@@ -12905,9 +13111,10 @@ mod tests {
         parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
         read_properties_snapshot, reconcile_aware_status, redo_exists_status, redo_missing_status,
         redo_trash_failed_status, redo_trash_should_record_undo, remove_keymap_override,
-        resolved_sidebar_width, saved_search_caption, saved_search_save_status,
-        search_filter_status, set_view_status, settings_change_affects_list,
-        settings_discard_status, settings_read_only_status, settings_reset_status,
+        resolved_sidebar_width, restore_outcome_with_occupied_paths, saved_search_caption,
+        saved_search_save_status, search_filter_status, set_view_status,
+        settings_change_affects_list, settings_discard_status,
+        settings_editor_write_failure_reason, settings_read_only_status, settings_reset_status,
         settings_row_key_is_bare, settings_save_error_status, settings_save_status,
         settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
         settings_validation_status, settings_with_live_save_error, settings_write_needs_rollback,
@@ -12947,8 +13154,8 @@ mod tests {
         STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_INVALID,
         STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX, STATUS_THEME_CHANGED_PREFIX,
         STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_TERMINAL_PREFIX,
-        STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED, STATUS_WARNING_MARKERS, THEME_LABEL_DARK,
-        THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+        STATUS_TRASH_RESTORE_OCCUPIED, STATUS_UNDO_EMPTY, STATUS_UNDO_FAILED,
+        STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
     use crate::model::{Entry, FsError};
@@ -13264,6 +13471,24 @@ mod tests {
                 "dialog footer must follow ui_is_read_only(): {region}"
             );
         }
+    }
+
+    // AZ08: the settings Shortcuts card carries the bulk-reset guidance, but
+    // F1 is blocked while Alt+K owns the keyboard. Guard the dialog footer so
+    // the same shared constant is rendered there too.
+    #[test]
+    fn keymap_dialog_footer_carries_the_shared_reset_guidance() {
+        let source = include_str!("main.rs");
+        let region = source_region(source, "    fn keymap_dialog(", "    fn on_key_down(");
+        assert!(
+            region.contains("KEYMAP_DIALOG_FOOTER_GUIDANCE"),
+            "Alt+K footer must render the shared keymap-reset guidance: {region}"
+        );
+        assert_eq!(
+            crate::strings::KEYMAP_DIALOG_FOOTER_GUIDANCE,
+            crate::strings::KEYMAP_RESET_GUIDANCE,
+            "the dialog constant must stay identical to the shared macro output"
+        );
     }
 
     #[test]
@@ -15053,6 +15278,32 @@ mod tests {
         // in the pure predicate above instead.
     }
 
+    // AZ06: a partially failed reconcile must not be reported as a clean
+    // success; the shared suffix is appended with the skipped-entry count.
+    #[test]
+    fn reconcile_partial_failure_keeps_status_when_entries_were_skipped() {
+        use super::reconcile_partial_failure_status;
+        use crate::strings::{RELOAD_WORD, STATUS_PARTIAL_FAILURE_SUFFIX};
+        use std::path::PathBuf;
+
+        assert_eq!(reconcile_partial_failure_status(&[]), "");
+        let one = reconcile_partial_failure_status(&[PathBuf::from("/tmp/a")]);
+        assert!(one.starts_with(RELOAD_WORD), "{one}");
+        assert!(one.contains(STATUS_PARTIAL_FAILURE_SUFFIX), "{one}");
+        assert!(one.contains("1 件"), "{one}");
+        let two =
+            reconcile_partial_failure_status(&[PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]);
+        assert!(two.contains("2 件"), "{two}");
+        assert_ne!(one, two, "the skipped count must be part of the status");
+
+        let source = include_str!("main.rs");
+        let reconcile = source_region(source, "    fn reconcile(", "    fn spawn_watch_loop(");
+        assert!(
+            reconcile.contains("reconcile_partial_failure_status(&failed)"),
+            "the reconcile success branch must keep a partial-failure status"
+        );
+    }
+
     #[test]
     fn reconcile_result_is_applied_only_in_directory_view() {
         use super::{should_apply_reconcile, ViewSource};
@@ -15227,6 +15478,86 @@ mod tests {
         );
     }
 
+    // AZ01: a deleted directory must invalidate cached results below it, not
+    // only results whose path matches the Removed event exactly.
+    #[test]
+    fn removed_path_covers_result_exact_ancestor_and_unrelated() {
+        use super::removed_path_covers_result;
+        use std::path::Path;
+
+        let cases = [
+            // label, removed, result, expected
+            ("exact", "/tmp/sub/a.txt", "/tmp/sub/a.txt", true),
+            ("ancestor", "/tmp/sub", "/tmp/sub/a.txt", true),
+            ("unrelated sibling", "/tmp/sub", "/tmp/other/a.txt", false),
+            ("component prefix", "/tmp/sub", "/tmp/sub2/a.txt", false),
+            (
+                "child cannot cover parent",
+                "/tmp/sub/a.txt",
+                "/tmp/sub",
+                false,
+            ),
+        ];
+        for (label, removed, result, expected) in cases {
+            assert_eq!(
+                removed_path_covers_result(Path::new(removed), Path::new(result)),
+                expected,
+                "{label}: removed={removed} result={result}"
+            );
+        }
+
+        let source = include_str!("main.rs");
+        let watch = source_region(
+            source,
+            "    fn spawn_watch_loop(",
+            "    fn spawn_reconcile_loop(",
+        );
+        assert!(
+            watch.contains("removed_path_covers_result(path, &entry.path)"),
+            "the Search branch must prune descendant results via the pure helper"
+        );
+    }
+
+    // AZ02: only a Removed event naming a watched root may invalidate the
+    // watcher; unrelated removals and other event kinds must not re-arm it.
+    #[test]
+    fn removed_hits_watched_matches_only_watched_roots() {
+        use super::removed_hits_watched;
+        use crate::watcher::FsEvent;
+
+        let cwd = PathBuf::from("/tmp/work");
+        let parent = PathBuf::from("/tmp");
+        let watched = vec![cwd.clone(), parent.clone()];
+        assert!(removed_hits_watched(
+            &[FsEvent::Removed(vec![cwd.clone()])],
+            &watched
+        ));
+        assert!(removed_hits_watched(
+            &[FsEvent::Removed(vec![parent.clone()])],
+            &watched
+        ));
+        assert!(!removed_hits_watched(&[], &watched));
+        assert!(!removed_hits_watched(
+            &[FsEvent::Removed(vec![PathBuf::from("/tmp/other")])],
+            &watched
+        ));
+        assert!(!removed_hits_watched(
+            &[FsEvent::Modified(vec![cwd.clone()])],
+            &watched
+        ));
+
+        let source = include_str!("main.rs");
+        let watch = source_region(
+            source,
+            "    fn spawn_watch_loop(",
+            "    fn spawn_reconcile_loop(",
+        );
+        assert!(
+            watch.contains("this.rearm_watcher_after_removed_root(&batch, cx)"),
+            "the watch loop must re-arm on a removed watched root"
+        );
+    }
+
     // AU08: a bool guard survives reload/navigation and blocks later ticks,
     // while its late completion can clear a newer read's guard.
     #[test]
@@ -15383,7 +15714,7 @@ mod tests {
                 "    fn spawn_watch_loop(",
                 "    fn spawn_reconcile_loop(",
                 &[
-                    ".retain(|entry| !removed.contains(&entry.path));",
+                    ".retain(|entry| !covered.contains(&entry.path));",
                     "this.all_entries.retain(|entry| entry.path != path);",
                     "this.all_entries.push(entry);",
                 ],
@@ -16643,6 +16974,77 @@ mod tests {
         assert!(success_tail.contains("self.run_search(cx);"));
     }
 
+    // AZ04: the dialog failure reason is pure, so the concrete save cause wins
+    // over the generic notice without needing a GPUI context.
+    #[test]
+    fn settings_editor_write_failure_reason_prefers_recorded_cause() {
+        let locked = Settings {
+            last_save_error: std::cell::Cell::new(Some(SettingsSaveError::Locked)),
+            ..Settings::default()
+        };
+        let reason = settings_editor_write_failure_reason(&locked, false);
+        assert_eq!(reason, STATUS_SETTINGS_SAVE_LOCKED);
+        assert_eq!(status_color(&reason), C_RED);
+
+        let plain = Settings::default();
+        assert_eq!(
+            settings_editor_write_failure_reason(&plain, false),
+            STATUS_SETTINGS_SAVE_FAILED
+        );
+    }
+
+    // AZ04: a pure helper cannot prove that the two editor dialogs actually use
+    // it. Guard the close/keep decision in the source so a failed write can no
+    // longer silently discard the typed command or keymap entry.
+    #[test]
+    fn settings_editor_dialogs_keep_open_on_write_failure() {
+        let source = include_str!("main.rs");
+        for (start, end, set_error, close) in [
+            (
+                "    fn confirm_terminal_command(&mut self, cx: &mut Context<Self>) {",
+                "    fn set_terminal_command_error(",
+                "self.set_terminal_command_error(&reason, cx);",
+                "self.terminal_command_editor = None;",
+            ),
+            (
+                "    fn confirm_keymap(&mut self, cx: &mut Context<Self>) {",
+                "    fn set_keymap_error(",
+                "self.set_keymap_error(&reason, cx);",
+                "self.keymap_editor = None;",
+            ),
+        ] {
+            let body = source_region(source, start, end);
+            let guard = "if settings_write_needs_rollback(saved) {";
+            let at = body
+                .find(guard)
+                .unwrap_or_else(|| panic!("missing write guard in {start}"));
+            let open = at + guard.len() - 1;
+            let block_end = braced_block_end(body, open);
+            let failure = &body[open..block_end];
+            assert!(
+                failure.contains(concat!("self", ".rollback_settings(snapshot, cx);")),
+                "{start}: the failed preview must still roll back"
+            );
+            assert!(
+                failure.contains(set_error),
+                "{start}: the failure reason must reach the dialog"
+            );
+            assert!(
+                failure.contains("return;"),
+                "{start}: a failed write must keep the dialog open"
+            );
+            let after = &body[block_end..];
+            assert!(
+                after.contains(close),
+                "{start}: a successful write must close the dialog"
+            );
+            assert!(
+                !failure.contains(close),
+                "{start}: a failed write must not close the dialog"
+            );
+        }
+    }
+
     // F04: `save()` reports success without writing for read-only / ephemeral
     // sessions. Every write path must then show the read-only notice instead of
     // its success caption, just as the settings overlay already did.
@@ -17148,7 +17550,14 @@ mod tests {
         let source = include_str!("main.rs");
         let needle = concat!("self", ".rollback_settings(");
         let rollback_call = concat!("self", ".rollback_settings(snapshot, cx);");
-        let call_sites = source.matches(needle).count();
+        // Count only production sites: a test may quote the call as a literal
+        // (e.g. to assert a failure branch still rolls back), which would
+        // otherwise inflate the count without adding a write path.
+        let production = source
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap_or(source);
+        let call_sites = production.matches(needle).count();
         assert_eq!(
             call_sites, 7,
             "each preview-then-write path must call rollback_settings"
@@ -17391,6 +17800,75 @@ mod tests {
         );
         assert!(status.contains("collision"), "{status}");
         assert_eq!(status_color(&status), C_RED, "{status}");
+    }
+
+    // AZ07: an occupied original path is an id-level collision, not a missing
+    // trash item and never a successful restore of a foreign file.
+    #[test]
+    fn restore_outcome_with_occupied_paths_keeps_the_id_in_undo() {
+        let id_a = OsString::from("id-a");
+        let id_b = OsString::from("id-b");
+        let occupied = vec![(id_b.clone(), STATUS_TRASH_RESTORE_OCCUPIED.to_string())];
+        let outcome = restore_outcome_with_occupied_paths(
+            gfe_core::trash_view::RestoreByIdOutcome {
+                restored_ids: vec![id_a.clone()],
+                missing_ids: vec![id_b.clone()],
+                failed: Vec::new(),
+            },
+            &occupied,
+        );
+        assert_eq!(outcome.restored_ids, vec![id_a]);
+        assert!(
+            outcome.missing_ids.is_empty(),
+            "an occupied id must not be reported as 行方不明"
+        );
+        assert_eq!(outcome.failed, occupied);
+
+        let recorded = vec![
+            (PathBuf::from("/tmp/a.txt"), OsString::from("id-a")),
+            (PathBuf::from("/tmp/b.txt"), id_b.clone()),
+        ];
+        let (redo, undo) = split_undo_trash_items(&recorded, &outcome);
+        assert_eq!(redo, vec![recorded[0].clone()]);
+        assert_eq!(undo, vec![recorded[1].clone()]);
+
+        // Re-applying the same facts must not duplicate the failure entry.
+        let again = restore_outcome_with_occupied_paths(outcome.clone(), &occupied);
+        assert_eq!(again, outcome);
+    }
+
+    // AZ07: a pure helper cannot prove the blocking path actually uses it.
+    // Guard the wiring so a single-id shortcut cannot reintroduce the
+    // all-or-nothing restore that swallowed per-id results.
+    #[test]
+    fn trash_restore_uses_per_id_occupancy_fold() {
+        let source = include_str!("main.rs");
+        let region = source_region(
+            source,
+            "fn restore_trash_ids(",
+            "/// Paths carried by an internal row drag",
+        );
+        assert!(
+            region.contains("STATUS_TRASH_RESTORE_OCCUPIED"),
+            "the occupancy reason must be shared with strings.rs"
+        );
+        let single = source_region(source, "if let [entry] = entries {", "let mut occupied:");
+        assert!(
+            single.contains("trash_view::restore_by_id("),
+            "the single-id branch keeps the id-addressed adapter exercised"
+        );
+        let multi = source_region(
+            source,
+            "let mut occupied: Vec<(OsString, String)>",
+            "/// Paths carried by an internal row drag",
+        );
+        assert!(
+            !multi.contains("trash_view::restore_by_id("),
+            "a batch must not fold a partial restore into one Err"
+        );
+        assert!(multi.contains("path_present(&original)"));
+        assert!(multi.contains("restore_outcome_with_occupied_paths("));
+        assert!(multi.contains("partition_restore_outcome(&missing, &attempts)"));
     }
 
     #[test]

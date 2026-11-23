@@ -80,17 +80,29 @@ pub fn normalize_events(result: &DebounceEventResult) -> Vec<FsEvent> {
                     }
                 }
             }
-            EventKind::Modify(ModifyKind::Name(RenameMode::From)) if !paths.is_empty() => {
-                out.push(FsEvent::Renamed {
-                    from: paths.first().cloned(),
-                    to: None,
-                });
+            EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
+                // A lone source path is still a useful `Renamed { from, to: None }`.
+                // A batch of unpaired sources cannot be matched to destinations,
+                // so emit exactly one Rescan instead of dropping paths[1..] or
+                // spamming one reload per path (AZ03).
+                if paths.len() == 1 {
+                    out.push(FsEvent::Renamed {
+                        from: paths.first().cloned(),
+                        to: None,
+                    });
+                } else {
+                    out.push(FsEvent::Rescan);
+                }
             }
-            EventKind::Modify(ModifyKind::Name(RenameMode::To)) if !paths.is_empty() => {
-                out.push(FsEvent::Renamed {
-                    from: None,
-                    to: paths.first().cloned(),
-                });
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
+                if paths.len() == 1 {
+                    out.push(FsEvent::Renamed {
+                        from: None,
+                        to: paths.first().cloned(),
+                    });
+                } else {
+                    out.push(FsEvent::Rescan);
+                }
             }
             EventKind::Modify(ModifyKind::Name(_)) => out.push(FsEvent::Rescan),
             EventKind::Modify(_) if !paths.is_empty() => out.push(FsEvent::Modified(paths)),
@@ -258,6 +270,17 @@ impl DirWatcher {
     /// Watched root paths (for the status bar / debugging).
     pub fn watched_paths(&self) -> &[PathBuf] {
         &self.watched
+    }
+
+    /// Forget the tracked watches after the OS dropped them behind our back.
+    ///
+    /// A `Removed` event for a watched root can mean the kernel watch itself
+    /// vanished (directory deleted / unmounted) while `watched` still lists
+    /// the path; the next `watch()` would then short-circuit and never re-arm
+    /// it. Clearing both sets forces a full re-registration (AZ02).
+    pub fn invalidate(&mut self) {
+        self.watched.clear();
+        self.pending_unwatch.clear();
     }
 
     /// Replace the watched set. Non-recursive watches of the listed
@@ -537,6 +560,55 @@ mod tests {
             normalize_events(&Ok(vec![debounced(vec![path("a"), path("b"), path("c"),])])),
             vec![renamed("a", "b"), FsEvent::Rescan]
         );
+    }
+
+    #[test]
+    fn rename_from_and_to_with_multiple_paths_issue_one_rescan() {
+        use notify_debouncer_full::notify::event::{Event, EventKind, ModifyKind, RenameMode};
+        use notify_debouncer_full::DebouncedEvent;
+        use std::time::Instant;
+
+        let debounced = |mode: RenameMode, paths: Vec<PathBuf>| DebouncedEvent {
+            event: Event {
+                kind: EventKind::Modify(ModifyKind::Name(mode)),
+                paths,
+                attrs: Default::default(),
+            },
+            time: Instant::now(),
+        };
+        let path = |name: &str| PathBuf::from(format!("/tmp/{name}"));
+
+        // AZ03: `paths.first()` used to drop paths[1..] without any Rescan.
+        // Three and four unpaired endpoints must produce one Rescan each —
+        // enough to reload everything, without duplicate reloads.
+        for mode in [RenameMode::From, RenameMode::To] {
+            for paths in [
+                vec![path("a"), path("b"), path("c")],
+                vec![path("a"), path("b"), path("c"), path("d")],
+            ] {
+                assert_eq!(
+                    normalize_events(&Ok(vec![debounced(mode, paths)])),
+                    vec![FsEvent::Rescan],
+                    "multiple unpaired rename endpoints must become a single Rescan"
+                );
+            }
+            // The single-path form keeps its precise from/to event.
+            let single = if mode == RenameMode::From {
+                FsEvent::Renamed {
+                    from: Some(path("a")),
+                    to: None,
+                }
+            } else {
+                FsEvent::Renamed {
+                    from: None,
+                    to: Some(path("a")),
+                }
+            };
+            assert_eq!(
+                normalize_events(&Ok(vec![debounced(mode, vec![path("a")])])),
+                vec![single]
+            );
+        }
     }
 
     #[test]
@@ -890,6 +962,60 @@ mod tests {
             watcher.last_error()
         );
         assert_eq!(watcher.watched_paths(), std::slice::from_ref(&after));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalidate_rearms_a_lost_os_watch() {
+        // AZ02: use the existing debouncer.unwatch seam to drop only the OS
+        // watch while `DirWatcher` still records the path as watched. Without
+        // invalidation the next `watch()` would short-circuit and no event
+        // would ever arrive again.
+        let dir = scratch("rearm-lost-watch");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let (tx, rx) = mpsc::channel::<Vec<FsEvent>>();
+        let mut watcher = DirWatcher::new(move |events| {
+            let _ = tx.send(events);
+        });
+        if !watcher.is_supported() {
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        watcher.watch(std::slice::from_ref(&dir));
+        assert_eq!(watcher.watched_paths(), std::slice::from_ref(&dir));
+
+        watcher
+            .debouncer
+            .as_mut()
+            .expect("supported watcher")
+            .unwatch(&dir)
+            .expect("seed watch exists");
+
+        watcher.invalidate();
+        assert!(watcher.watched_paths().is_empty());
+        assert!(watcher.last_error().is_none());
+
+        watcher.watch(std::slice::from_ref(&dir));
+        assert_eq!(watcher.watched_paths(), std::slice::from_ref(&dir));
+        assert!(
+            watcher.last_error().is_none(),
+            "re-registration must succeed: {:?}",
+            watcher.last_error()
+        );
+
+        fs::write(dir.join("after-rearm.txt"), b"ok").unwrap();
+        let events = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("rearmed watch must deliver events");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, FsEvent::Created(_))),
+            "expected a Created event after rearm: {events:?}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

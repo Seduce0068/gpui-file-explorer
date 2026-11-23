@@ -503,6 +503,13 @@ macro_rules! keymap_reset_guidance {
 pub(crate) use keymap_reset_guidance;
 pub const KEYMAP_RESET_GUIDANCE: &str = keymap_reset_guidance!();
 
+/// AZ08: Alt+K ダイアログの脚文にも同じ一括リセット未配線の案内を出す。
+/// 設定カード側の入力ヒントとこの定数は共通マクロから生成されるため、
+/// 文言が片方だけ古くなることはない。F1 はダイアログ内で無効なので、
+/// ダイアログ内の脚文が唯一の手掛かりになる。
+pub const KEYMAP_DIALOG_FOOTER_GUIDANCE: &str = keymap_reset_guidance!();
+const _: () = assert!(KEYMAP_DIALOG_FOOTER_GUIDANCE.len() == KEYMAP_RESET_GUIDANCE.len());
+
 /// ターミナル設定欄の説明（AI07）。
 ///
 /// この欄が F4 で起動するコマンドを設定するものであることを明示する。
@@ -757,6 +764,10 @@ mod view_hint_and_keymap_format_tests {
             readme.contains(KEYMAP_RESET_GUIDANCE),
             "README must embed the canonical reset guidance"
         );
+        // AZ08: the dialog footer is generated from the same shared macro, so
+        // the Alt+K dialog cannot drift from the card / F1 / README wording.
+        assert_eq!(KEYMAP_DIALOG_FOOTER_GUIDANCE, KEYMAP_RESET_GUIDANCE);
+        assert_eq!(KEYMAP_DIALOG_FOOTER_GUIDANCE, keymap_reset_guidance!());
     }
 
     #[test]
@@ -1849,6 +1860,11 @@ pub const STATUS_RESTORE_FAILED: &str = "復元できません";
 /// `main.rs::trash_undo_status` の全件失敗（「項目が…」）と一部失敗
 /// （「{n} 件は…」）の両方で共有し、理由の文言を一箇所に固定する。
 pub const STATUS_TRASH_MISSING_REASON: &str = "ゴミ箱にありません";
+/// AZ07: 復元先に他人のファイルがあるため復元を見送った理由。
+/// 元パスの占有は単純な失敗ではなく id 単位の衝突として扱い、undo に残して
+/// 再試行可能にする。上書きは絶対に行わない。
+pub const STATUS_TRASH_RESTORE_OCCUPIED: &str =
+    "元の場所に同名のファイルがあるため復元しませんでした";
 /// 復元対象が空のときの拒否通知（N08）。`STATUS_TAB_RESTORE_EMPTY` と異なり
 /// 「できません / ありません」のどちらもマーカーに登録されていなかった。
 pub const STATUS_RESTORE_EMPTY: &str = "復元対象がありません";

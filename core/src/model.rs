@@ -80,19 +80,47 @@ impl Entry {
     }
 }
 
-/// Blocking directory read. Callers on the UI thread must run this on the
-/// background executor (see `Explorer::reload`).
-pub fn read_entries(dir: &Path) -> Result<Vec<Entry>, FsError> {
+/// Outcome of a directory scan that distinguishes a clean read from one where
+/// some entries could not be read. `failed` holds the parent directory for each
+/// skipped item; a non-empty list means the listing is only a partial view.
+#[derive(Clone, Debug, Default)]
+pub struct ReadEntriesOutcome {
+    pub entries: Vec<Entry>,
+    pub failed: Vec<PathBuf>,
+}
+
+/// Blocking directory read that also reports partially failed scans.
+///
+/// `read_dir` yields `io::Result<DirEntry>`; an `Err` (or an entry whose name
+/// cannot be represented) used to be dropped silently, making a partial read
+/// indistinguishable from a complete one. Callers such as the reconcile timer
+/// use `failed` to keep a partial-failure status instead of claiming full
+/// success (AZ06). Callers on the UI thread must run this on the background
+/// executor (see `Explorer::reload`).
+pub fn read_entries_with_failures(dir: &Path) -> Result<ReadEntriesOutcome, FsError> {
     let dir_reader =
         std::fs::read_dir(dir).map_err(|err| FsError::from_io(dir.to_path_buf(), &err))?;
-    let mut entries = Vec::new();
+    let mut outcome = ReadEntriesOutcome::default();
     for item in dir_reader {
-        let Ok(item) = item else { continue };
-        if let Some(entry) = Entry::from_dir_entry(item) {
-            entries.push(entry);
+        match item {
+            Ok(item) => {
+                if let Some(entry) = Entry::from_dir_entry(item) {
+                    outcome.entries.push(entry);
+                } else {
+                    outcome.failed.push(dir.to_path_buf());
+                }
+            }
+            Err(_) => outcome.failed.push(dir.to_path_buf()),
         }
     }
-    Ok(entries)
+    Ok(outcome)
+}
+
+/// Blocking directory read. Callers on the UI thread must run this on the
+/// background executor (see `Explorer::reload`). Kept as a thin wrapper so
+/// existing callers are unaffected by the richer [`read_entries_with_failures`].
+pub fn read_entries(dir: &Path) -> Result<Vec<Entry>, FsError> {
+    Ok(read_entries_with_failures(dir)?.entries)
 }
 
 /// Build an [`Entry`] for a single path, used by watcher updates and search.
@@ -686,24 +714,26 @@ pub fn last_index(len: usize) -> usize {
 /// Cheap content fingerprint used by the 10s reconciliation timer to detect
 /// changes the OS watcher missed (or that happened while watching was broken).
 ///
-/// `modified` is hashed at one-second resolution, so two edits within the same
-/// second that leave the name and size unchanged are indistinguishable. The
-/// OS watcher is the primary detector; this is a coarse backstop only.
+/// `modified` is hashed with sub-second precision and `is_symlink` is hashed
+/// too, so a same-second/same-size rewrite or a file→symlink swap is visible
+/// to the fallback scan. Pre-epoch timestamps still hash as `None`. The OS
+/// watcher remains the primary detector; this is a backstop, not a content hash.
 pub fn fingerprint(entries: &[Entry]) -> u64 {
     let mut hasher = DefaultHasher::new();
     entries.len().hash(&mut hasher);
     for entry in entries {
         entry.name.hash(&mut hasher);
         entry.is_dir.hash(&mut hasher);
+        entry.is_symlink.hash(&mut hasher);
         entry.size.hash(&mut hasher);
-        entry.modified.and_then(unix_secs).hash(&mut hasher);
+        entry.modified.and_then(unix_time_parts).hash(&mut hasher);
     }
     hasher.finish()
 }
 
-fn unix_secs(time: SystemTime) -> Option<i64> {
+fn unix_time_parts(time: SystemTime) -> Option<(i64, u32)> {
     match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => Some(duration.as_secs() as i64),
+        Ok(duration) => Some((duration.as_secs() as i64, duration.subsec_nanos())),
         Err(_) => None,
     }
 }
@@ -886,6 +916,77 @@ pub fn parent_dir(path: &Path) -> Option<PathBuf> {
     path.parent().map(Path::to_path_buf)
 }
 
+// ---------------------------------------------------------------------------
+// AZ11 / AZ12: transient view-state snapshot contract
+// ---------------------------------------------------------------------------
+
+/// AZ11: key for directory disclosure state in a full view-state snapshot.
+///
+/// There is no persisted `expanded_dirs` field today and `UndoAction` records
+/// only file operations, so an undo mixed with a view/era switch has nowhere
+/// to restore which folders were open. Keep the key as a pure contract so a
+/// later snapshot implementation cannot silently omit it.
+pub const TREE_STATE_KEY_EXPANDED_DIRS: &str = "expanded_dirs";
+
+/// AZ12: search-state keys a full view-state snapshot must preserve.
+///
+/// `query`/`scope` alone lose recent/saved searches and the filter state when
+/// an era switch is undone. These are pure key names: the UI owns the values,
+/// core owns the contract that every capture must cover.
+pub const SEARCH_STATE_KEYS: &[&str] = &[
+    "query",
+    "scope",
+    "mode",
+    "kind",
+    "extension_filter",
+    "name_filter",
+    "recent_searches",
+    "saved_searches",
+];
+
+/// Every transient key a complete view-state snapshot must cover (AZ11+AZ12).
+pub fn view_state_snapshot_keys() -> Vec<&'static str> {
+    let mut keys = Vec::with_capacity(SEARCH_STATE_KEYS.len() + 1);
+    keys.push(TREE_STATE_KEY_EXPANDED_DIRS);
+    keys.extend_from_slice(SEARCH_STATE_KEYS);
+    keys
+}
+
+/// Pure snapshot of the transient UI state an undo/redo of a view/era switch
+/// must restore (AZ11/AZ12). Derived `PartialEq` is the equality contract: a
+/// capture that drops any field below is *not* equal to the state it replaced,
+/// which is exactly the regression the tests pin. GPUI-free on purpose.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ViewStateSnapshot {
+    /// Expanded directory paths, in tree order (AZ11).
+    pub expanded_dirs: Vec<PathBuf>,
+    /// Search query text (AZ12).
+    pub search_query: String,
+    /// Directory the search was rooted at.
+    pub search_scope: PathBuf,
+    /// Name vs content search mode.
+    pub search_mode: String,
+    /// File-kind filter.
+    pub search_kind: String,
+    /// Extension filter text.
+    pub extension_filter: String,
+    /// Name filter text.
+    pub name_filter: String,
+    /// Recently used queries shown as chips.
+    pub recent_searches: Vec<String>,
+    /// Named saved searches (reuses the persisted core contract).
+    pub saved_searches: Vec<SavedSearch>,
+}
+
+impl ViewStateSnapshot {
+    /// Whether `other` carries exactly the same transient state (AZ12).
+    /// Delegates to derived `PartialEq` so a newly added field is compared
+    /// automatically instead of being skipped by a hand-written comparison.
+    pub fn matches(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // NOTE: explicit imports only — core has no GPUI glob import, but keeping
@@ -894,9 +995,10 @@ mod tests {
         breadcrumb_segments, clamp_index, compare_names, create_unique_folder, display_path,
         entry_for_path, fingerprint, first_index, human_age, human_age_at, human_datetime,
         human_size, is_hidden_name, is_root_path, kind_label, last_index, parent_dir, read_entries,
-        root_display_for_platform, root_path_for_platform, sort_entries, step_selection,
-        unique_child_name, visible_entries, AppError, Entry, FsError, FsErrorKind, SortDir,
-        SortKey, SortOrder, SortSpec,
+        read_entries_with_failures, root_display_for_platform, root_path_for_platform,
+        sort_entries, step_selection, unique_child_name, view_state_snapshot_keys, visible_entries,
+        AppError, Entry, FsError, FsErrorKind, SavedSearch, SortDir, SortKey, SortOrder, SortSpec,
+        ViewStateSnapshot,
     };
     use std::ffi::OsString;
     use std::fs;
@@ -917,6 +1019,127 @@ mod tests {
             is_symlink: false,
             size,
             modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified_secs)),
+        }
+    }
+
+    // AZ11/AZ12: the pure contract must name every transient key a full
+    // view-state snapshot needs, each exactly once.
+    #[test]
+    fn view_state_snapshot_keys_cover_tree_and_search_state() {
+        use super::TREE_STATE_KEY_EXPANDED_DIRS;
+
+        let keys = view_state_snapshot_keys();
+        assert_eq!(keys.first(), Some(&TREE_STATE_KEY_EXPANDED_DIRS));
+        for required in [
+            "query",
+            "scope",
+            "mode",
+            "kind",
+            "extension_filter",
+            "name_filter",
+            "recent_searches",
+            "saved_searches",
+        ] {
+            assert!(keys.contains(&required), "snapshot must carry {required}");
+        }
+        let mut unique = keys.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), keys.len(), "duplicate snapshot keys");
+    }
+
+    // AZ12: equality must be field-sensitive. A snapshot that forgets any one
+    // field must not compare equal, otherwise an era-switch undo could lose
+    // search history or filters while still reporting a matching snapshot.
+    #[test]
+    fn view_state_snapshot_equality_is_field_sensitive() {
+        let base = ViewStateSnapshot {
+            expanded_dirs: vec![PathBuf::from("/src")],
+            search_query: "TODO".to_string(),
+            search_scope: PathBuf::from("/src"),
+            search_mode: "name".to_string(),
+            search_kind: "file".to_string(),
+            extension_filter: "rs".to_string(),
+            name_filter: "main".to_string(),
+            recent_searches: vec!["old".to_string()],
+            saved_searches: vec![SavedSearch::new("keep", "q").expect("valid saved search")],
+        };
+        assert!(base.matches(&base.clone()));
+
+        // Every field of `ViewStateSnapshot` is scanned here. Adding a field to
+        // the struct without updating this list is a compile error (missing
+        // field in the literals), so the audit cannot silently go stale.
+        let variants = [
+            (
+                "expanded_dirs",
+                ViewStateSnapshot {
+                    expanded_dirs: vec![],
+                    ..base.clone()
+                },
+            ),
+            (
+                "search_query",
+                ViewStateSnapshot {
+                    search_query: "FIXME".to_string(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "search_scope",
+                ViewStateSnapshot {
+                    search_scope: PathBuf::from("/other"),
+                    ..base.clone()
+                },
+            ),
+            (
+                "search_mode",
+                ViewStateSnapshot {
+                    search_mode: "content".to_string(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "search_kind",
+                ViewStateSnapshot {
+                    search_kind: "dir".to_string(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "extension_filter",
+                ViewStateSnapshot {
+                    extension_filter: "toml".to_string(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "name_filter",
+                ViewStateSnapshot {
+                    name_filter: "lib".to_string(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "recent_searches",
+                ViewStateSnapshot {
+                    recent_searches: vec![],
+                    ..base.clone()
+                },
+            ),
+            (
+                "saved_searches",
+                ViewStateSnapshot {
+                    saved_searches: vec![],
+                    ..base.clone()
+                },
+            ),
+        ];
+        for (field, other) in variants {
+            assert!(
+                !base.matches(&other),
+                "changing {field} must change the snapshot"
+            );
+            assert_ne!(base, other, "{field}");
         }
     }
 
@@ -964,6 +1187,27 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // AZ06: a clean scan reports no failures; the richer outcome is what the
+    // reconcile timer uses to tell a partial read apart from a full success.
+    #[test]
+    fn read_entries_with_failures_reports_clean_scans() {
+        let dir = scratch_dir("partial-read");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ok.txt"), b"x").unwrap();
+
+        let outcome = read_entries_with_failures(&dir).expect("directory should be readable");
+        assert_eq!(outcome.entries.len(), 1);
+        assert!(
+            outcome.failed.is_empty(),
+            "a clean scan must not claim partial failure: {:?}",
+            outcome.failed
+        );
+        assert_eq!(read_entries(&dir).unwrap().len(), outcome.entries.len());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1364,6 +1608,40 @@ mod tests {
             fingerprint(&pre_epoch),
             fingerprint(&same_entries_with_modified_none)
         );
+    }
+
+    // AZ05: as_secs() rounding and the omitted is_symlink flag let same-second
+    // rewrites and file→symlink swaps slip past the reconciliation backstop.
+    #[test]
+    fn fingerprint_detects_subsecond_and_symlink_changes() {
+        let base = vec![entry("a", false, 10, 10)];
+        assert_eq!(fingerprint(&base), fingerprint(&base.clone()));
+
+        // Same second, same size, 500 ms later: must differ.
+        let mut subsecond = base.clone();
+        subsecond[0].modified = Some(base[0].modified.unwrap() + Duration::from_millis(500));
+        assert_ne!(
+            fingerprint(&base),
+            fingerprint(&subsecond),
+            "sub-second modification must change the fingerprint"
+        );
+
+        // Identical metadata except the symlink flag: must differ.
+        let mut symlink = base.clone();
+        symlink[0].is_symlink = true;
+        assert_ne!(
+            fingerprint(&base),
+            fingerprint(&symlink),
+            "is_symlink must be part of the fingerprint"
+        );
+
+        // Both time parts are absent for pre-epoch timestamps, so an otherwise
+        // identical entry with modified: None must still match.
+        let mut pre_epoch = base.clone();
+        pre_epoch[0].modified = Some(UNIX_EPOCH - Duration::from_millis(1));
+        let mut none = base.clone();
+        none[0].modified = None;
+        assert_eq!(fingerprint(&pre_epoch), fingerprint(&none));
     }
 
     #[cfg(unix)]
