@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::Level;
@@ -64,7 +64,7 @@ use gfe_core::model::{
 use gfe_core::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use gfe_core::search::{
     filter_results, merge_search_results, search_by_name, search_contents, search_roots,
-    ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchScope,
+    ContentSearchOptions, SearchKind, SearchMode, SearchOptions, SearchResult, SearchScope,
 };
 use gfe_core::trash_view::{
     missing_restore_ids, partition_restore_ids, partition_restore_outcome, redo_trash_targets,
@@ -473,6 +473,26 @@ fn search_view_key_reaches_dispatch(
     reaches_keymap: bool,
 ) -> bool {
     reaches_keymap && (!input_focused || matches!(action, KeyAction::Reload))
+}
+
+/// Actions that dismiss the undo-history dialog through the keymap route.
+/// Escape is handled literally before this helper is reached; the toggle
+/// chord that opened the dialog must also close it, while Undo/Redo keep
+/// their execute-and-dismiss behaviour (BC07). `KeyAction::None` is not a
+/// close action, so ordinary typing inside the dialog stays inert.
+fn undo_history_key_closes(action: KeyAction) -> bool {
+    matches!(
+        action,
+        KeyAction::Undo | KeyAction::Redo | KeyAction::ToggleUndoHistory
+    )
+}
+
+/// Search-view early route for `FocusSearchName`, which must reach the name
+/// filter even while the query input owns focus. AB01 rejects every Alt chord
+/// before consulting the keymap; this bypass used to skip that check, so an
+/// Alt rebind of FocusSearchName stole keys from the query field (BC17).
+fn focus_search_name_key_reaches_dispatch(alt: bool, action: KeyAction) -> bool {
+    !alt && action == KeyAction::FocusSearchName
 }
 
 /// Pick the point at which a keyboard-opened context menu is anchored.
@@ -2334,12 +2354,15 @@ enum ViewSource {
 /// symlink refusal from `preview.rs` cannot drift between them. `gpui_kit::img`
 /// loads path resources with an unbounded `fs::read`, so the size cap must stay
 /// ahead of the extension check; trash ids are not real image paths at all.
+/// The metadata stat (`Entry::is_file`) runs last so only image-like rows pay
+/// for it: a FIFO/socket named `*.png` reports size 0 and must still be refused
+/// before the unbounded path read.
 fn thumbnail_eligible(show_thumbnails: bool, view: ViewSource, entry: &Entry) -> bool {
     show_thumbnails
         && view != ViewSource::Trash
         && !entry.is_dir
         && entry.size <= preview::MAX_IMAGE_BYTES
-        && preview::is_thumbnailable(&entry.name_text, entry.is_symlink)
+        && preview::is_thumbnailable(&entry.name_text, entry.is_symlink, entry.is_file())
 }
 
 /// Keyboard intent while the trash view owns the key events. Permanent
@@ -2434,32 +2457,34 @@ use crate::strings::{
     KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY,
     LOAD_ERROR_HINT_SEARCH, LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX,
     OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL, PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD,
-    SEARCH_IN_PROGRESS_LABEL, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
-    STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
-    STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
-    STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-    STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
-    STATUS_CORE_INVALID_TARGET_PREFIX, STATUS_CORE_IO_FAILED, STATUS_CORE_IS_A_DIRECTORY,
-    STATUS_CORE_NOT_FOUND_PREFIX, STATUS_CORE_READ_ONLY_FS, STATUS_CORE_STORAGE_FULL,
-    STATUS_CORE_UNKNOWN_ERROR, STATUS_CORE_UNSUPPORTED_PREFIX, STATUS_DROP_EMPTY,
-    STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
-    STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
-    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATED_ELSEWHERE_HINT, STATUS_FOLDER_CREATING,
-    STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
-    STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX,
-    STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX,
-    STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
-    STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
-    STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
-    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
-    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
-    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
-    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
-    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR,
-    STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL,
-    STATUS_RENAME_INVALID_RESERVED_PREFIX, STATUS_RENAME_INVALID_SEPARATOR,
-    STATUS_RENAME_NO_PARENT, STATUS_RENAME_SAVED_PREFIX, STATUS_RESCAN_FAILED,
-    STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
+    SEARCH_IN_PROGRESS_LABEL, SEARCH_SUMMARY_LIMIT_PREFIX, SEARCH_SUMMARY_LIMIT_SUFFIX,
+    SEARCH_SUMMARY_NON_UTF8_PREFIX, SEARCH_SUMMARY_NON_UTF8_SUFFIX,
+    SEARCH_SUMMARY_SKIPPED_LARGE_PREFIX, SEARCH_SUMMARY_SKIPPED_LARGE_SUFFIX, STATUS_ACCESS_DENIED,
+    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
+    STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
+    STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
+    STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
+    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CORE_INVALID_TARGET_PREFIX,
+    STATUS_CORE_IO_FAILED, STATUS_CORE_IS_A_DIRECTORY, STATUS_CORE_NOT_FOUND_PREFIX,
+    STATUS_CORE_READ_ONLY_FS, STATUS_CORE_STORAGE_FULL, STATUS_CORE_UNKNOWN_ERROR,
+    STATUS_CORE_UNSUPPORTED_PREFIX, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+    STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED,
+    STATUS_FOLDER_CREATED_ELSEWHERE_HINT, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
+    STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID,
+    STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX,
+    STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
+    STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MAX_TABS_SUFFIX,
+    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
+    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
+    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
+    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PLACE_GONE_HINT,
+    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
+    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_EXISTS_PREFIX,
+    STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR, STATUS_RENAME_INVALID_DOT,
+    STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL, STATUS_RENAME_INVALID_RESERVED_PREFIX,
+    STATUS_RENAME_INVALID_SEPARATOR, STATUS_RENAME_NO_PARENT, STATUS_RENAME_SAVED_PREFIX,
+    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
     STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
@@ -2661,12 +2686,27 @@ struct PreviewState {
     title: String,
     loading: bool,
     text: Option<String>,
-    /// Ready-to-render image (content-sniffed format + bytes).
-    image: Option<preview::ImageBytes>,
+    /// The single `Arc<Image>` registered with GPUI's asset cache for this
+    /// preview. Reused on every render; released on replace/close (BC04).
+    image_asset: Option<Arc<gpui_kit::Image>>,
     error: Option<String>,
     truncated: bool,
     size: u64,
     task: Option<Task<()>>,
+}
+
+/// Release the GPUI image asset held by a preview before replacing it.
+///
+/// `Image::from_bytes` is an `Asset` source: once a render has registered it,
+/// GPUI keeps the decoded `RenderImage` alive until `remove_asset` is called.
+/// Every replacement path (new preview, new image, close) goes through here so
+/// navigating a folder of images cannot grow the asset cache without bound.
+fn release_preview_image_asset(preview: &mut Option<PreviewState>, cx: &mut App) {
+    if let Some(state) = preview.as_mut() {
+        if let Some(image) = state.image_asset.take() {
+            image.remove_asset(cx);
+        }
+    }
 }
 
 /// Snapshot of a file/directory for the read-only properties dialog.
@@ -2701,6 +2741,46 @@ struct ClipboardSlot {
     cut: bool,
 }
 
+/// Global result cap shared by every search root (the per-root fair share and
+/// the summary's 「上限 … 件に達しました」 notice both derive from this).
+const SEARCH_GLOBAL_CAP: usize = 2_000;
+
+/// Incomplete-search counters collected by the background walk and shown in
+/// the result summary (BC09 / BC10).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SearchRunStats {
+    /// The merged result set reached `SEARCH_GLOBAL_CAP`.
+    limit_reached: bool,
+    /// Files skipped because they exceeded 1 MiB.
+    skipped_large_files: usize,
+    /// Files that could not be searched exactly because they are not UTF-8.
+    non_utf8_files: usize,
+}
+
+/// Build the incomplete-search part of the result summary. Kept as a pure
+/// function so the exact wording is unit-testable without a GPUI context.
+fn search_summary_notices(stats: SearchRunStats) -> String {
+    let mut notices = String::new();
+    if stats.limit_reached {
+        notices.push_str(&format!(
+            "{SEARCH_SUMMARY_LIMIT_PREFIX}{SEARCH_GLOBAL_CAP}{SEARCH_SUMMARY_LIMIT_SUFFIX}"
+        ));
+    }
+    if stats.skipped_large_files > 0 {
+        notices.push_str(&format!(
+            "{SEARCH_SUMMARY_SKIPPED_LARGE_PREFIX}{}{SEARCH_SUMMARY_SKIPPED_LARGE_SUFFIX}",
+            stats.skipped_large_files
+        ));
+    }
+    if stats.non_utf8_files > 0 {
+        notices.push_str(&format!(
+            "{SEARCH_SUMMARY_NON_UTF8_PREFIX}{}{SEARCH_SUMMARY_NON_UTF8_SUFFIX}",
+            stats.non_utf8_files
+        ));
+    }
+    notices
+}
+
 /// Recursive search state, grouped so `Explorer` keeps a manageable field list.
 #[derive(Default)]
 struct SearchState {
@@ -2731,6 +2811,9 @@ struct SearchState {
     /// effects and is set/cleared exactly with the search task.
     running: bool,
     generation: u64,
+    /// Stats from the last completed search, reused when a filter changes the
+    /// visible row count without re-running the walk.
+    last_stats: SearchRunStats,
 }
 
 /// Development-only screenshot / deterministic smoke-test hooks.
@@ -6225,24 +6308,23 @@ impl Explorer {
                 }
                 return;
             }
-            // AW25/AX07: keep the keyboard path inside the dialog equivalent to
-            // its buttons. The keymap is consulted so rebound Undo/Redo chords
-            // keep working here; Escape stays literal and is handled above.
-            match self
-                .keymap
-                .resolve(key, modifiers.control, modifiers.shift, modifiers.alt)
-            {
-                KeyAction::Undo => {
-                    self.undo_history_open = false;
-                    self.undo_last(cx);
-                    return;
+            // AW25/AX07/BC07: keep the keyboard path inside the dialog
+            // equivalent to its buttons. The keymap is consulted so rebound
+            // Undo/Redo chords keep working here; Escape stays literal and is
+            // handled above. The toggle chord that opened the dialog must also
+            // close it — it used to fall through `_ => {}` while the footer
+            // advertised Ctrl+Shift+U as a dismiss key.
+            let action =
+                self.keymap
+                    .resolve(key, modifiers.control, modifiers.shift, modifiers.alt);
+            if undo_history_key_closes(action) {
+                self.undo_history_open = false;
+                match action {
+                    KeyAction::Undo => self.undo_last(cx),
+                    KeyAction::Redo => self.redo_last(cx),
+                    // ToggleUndoHistory: dismissing the dialog is the action.
+                    _ => cx.notify(),
                 }
-                KeyAction::Redo => {
-                    self.undo_history_open = false;
-                    self.redo_last(cx);
-                    return;
-                }
-                _ => {}
             }
             return;
         }
@@ -6290,12 +6372,13 @@ impl Explorer {
             // while a search text input owns the keyboard. Handle it before
             // the input-focus guard below, which swallows every other key
             // typed into the query field except Reload. Using the keymap keeps
-            // rebindings.
-            if self
-                .keymap
-                .resolve(key, modifiers.control, modifiers.shift, modifiers.alt)
-                == KeyAction::FocusSearchName
-            {
+            // rebindings; the pure helper also enforces AB01's Alt exclusion,
+            // so an Alt rebind cannot bypass the normal Search-view routing.
+            if focus_search_name_key_reaches_dispatch(
+                modifiers.alt,
+                self.keymap
+                    .resolve(key, modifiers.control, modifiers.shift, modifiers.alt),
+            ) {
                 self.focus_search_name(window, cx);
                 return;
             }
@@ -7895,13 +7978,16 @@ impl Explorer {
         let serial = self.preview_serial.wrapping_add(1);
         self.preview_serial = serial;
         let expected_path = path.clone();
+        // The previous preview's decoded image must be evicted before its
+        // PreviewState (and the Arc<Image>) is dropped (BC04).
+        release_preview_image_asset(&mut self.preview, cx);
         self.preview = Some(PreviewState {
             path: path.clone(),
             serial,
             title,
             loading: true,
             text: None,
-            image: None,
+            image_asset: None,
             error: None,
             truncated: false,
             size: 0,
@@ -7954,10 +8040,22 @@ impl Explorer {
                 }
                 match result {
                     Ok((image, text)) => {
+                        // Create the asset exactly once and keep it in the
+                        // PreviewState so subsequent renders reuse the same
+                        // decoded image instead of allocating a new source.
+                        let new_asset = image.as_ref().map(|image| {
+                            Arc::new(gpui_kit::Image::from_bytes(
+                                image.format,
+                                image.bytes.clone(),
+                            ))
+                        });
                         if let Some(image) = &image {
                             preview.size = image.bytes.len() as u64;
                         }
-                        preview.image = image;
+                        if let Some(old) = preview.image_asset.take() {
+                            old.remove_asset(cx);
+                        }
+                        preview.image_asset = new_asset;
                         if let Some(read) = text {
                             preview.truncated = read.truncated;
                             preview.size = read.size;
@@ -7975,6 +8073,7 @@ impl Explorer {
     }
 
     fn close_preview(&mut self, cx: &mut Context<Self>) {
+        release_preview_image_asset(&mut self.preview, cx);
         self.preview = None;
         self.focus_list_on_next_render = true;
         cx.notify();
@@ -8111,7 +8210,7 @@ impl Explorer {
                             .child(meta),
                     ),
             );
-        if let Some(image) = &preview.image {
+        if let Some(image) = &preview.image_asset {
             panel = panel.child(
                 div()
                     .id("preview-image")
@@ -8123,12 +8222,29 @@ impl Explorer {
                     .rounded_md()
                     .p_3()
                     .child(
-                        gpui_kit::img(std::sync::Arc::new(gpui_kit::Image::from_bytes(
-                            image.format,
-                            image.bytes.clone(),
-                        )))
-                        .max_h(px(440.0))
-                        .max_w(px(740.0)),
+                        gpui_kit::img(image.clone())
+                            .max_h(px(440.0))
+                            .max_w(px(740.0))
+                            // BC03: a truncated/ corrupt image passes the magic
+                            // sniffer but fails GPUI's async decode. Without a
+                            // fallback the element renders an empty box and
+                            // `preview.error` stays None.
+                            .with_fallback(move || {
+                                div()
+                                    .id("preview-image-fallback")
+                                    .max_h(px(440.0))
+                                    .max_w(px(740.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(rgb(p.base))
+                                    .rounded_md()
+                                    .p_3()
+                                    .text_sm()
+                                    .text_color(rgb(p.muted))
+                                    .child(crate::strings::PREVIEW_IMAGE_FALLBACK_LABEL)
+                                    .into_any_element()
+                            }),
                     ),
             );
         } else if preview.text.is_some() {
@@ -9646,6 +9762,7 @@ impl Explorer {
         self.search.query.clear();
         self.search.active_roots.clear();
         self.search.fell_back_to_cwd = false;
+        self.search.last_stats = SearchRunStats::default();
         self.search.generation = self.search.generation.wrapping_add(1);
         self.view = ViewSource::Search;
         self.selection.clear();
@@ -9671,6 +9788,27 @@ impl Explorer {
         }
     }
 
+    /// Roots that should be re-walked with the leftover global budget (BC08).
+    /// Returns `(root_index, already_collected)`: the re-walk must start after
+    /// `already_collected` matches, otherwise dedupe would drop every result
+    /// and the unused budget would remain unused.
+    fn plan_root_rescans(
+        batch_sizes: &[usize],
+        per_root_cap: usize,
+        global_cap: usize,
+    ) -> Vec<(usize, usize)> {
+        let total: usize = batch_sizes.iter().sum();
+        if total >= global_cap {
+            return Vec::new();
+        }
+        batch_sizes
+            .iter()
+            .enumerate()
+            .filter(|(_, size)| **size >= per_root_cap)
+            .map(|(index, size)| (index, *size))
+            .collect()
+    }
+
     /// Recursive search on the background executor (Enter in the search bar).
     fn run_search(&mut self, cx: &mut Context<Self>) {
         let Some(input) = self.search.input.clone() else {
@@ -9683,6 +9821,7 @@ impl Explorer {
             return;
         }
         self.search.query = query.clone();
+        self.search.last_stats = SearchRunStats::default();
         self.search.generation = self.search.generation.wrapping_add(1);
         let generation = self.search.generation;
         // Three layers guard against a stale result: the cooperative flag
@@ -9721,48 +9860,90 @@ impl Explorer {
         cx.notify();
         let cancel_for_task = cancel.clone();
         let background = cx.background_spawn(async move {
-            let global_cap = 2_000usize;
-            let mut batches = Vec::with_capacity(roots.len());
+            let per_root_cap = Self::per_root_cap(SEARCH_GLOBAL_CAP, roots.len());
+            let skipped_large = Arc::new(AtomicUsize::new(0));
+            let non_utf8 = Arc::new(AtomicUsize::new(0));
+            // One walker invocation. A non-zero `skip` means "continue a root
+            // that already hit its fair share": the re-scan must return *new*
+            // matches, not the ones already in `batches`. Re-scans use fresh
+            // counters so skipped/lossy files are not counted twice.
+            let run_root = |root: &PathBuf, cap: usize, skip: usize| match mode {
+                SearchMode::Name => search_by_name(
+                    root,
+                    &query,
+                    SearchOptions {
+                        include_hidden,
+                        max_results: cap,
+                        skip,
+                        ..Default::default()
+                    },
+                    &cancel_for_task,
+                ),
+                SearchMode::Content => search_contents(
+                    root,
+                    &query,
+                    ContentSearchOptions {
+                        include_hidden,
+                        max_results: cap,
+                        skip,
+                        skipped_large_files: if skip == 0 {
+                            skipped_large.clone()
+                        } else {
+                            Arc::new(AtomicUsize::new(0))
+                        },
+                        non_utf8_files: if skip == 0 {
+                            non_utf8.clone()
+                        } else {
+                            Arc::new(AtomicUsize::new(0))
+                        },
+                        ..Default::default()
+                    },
+                    &cancel_for_task,
+                ),
+            };
+
+            let mut batches: Vec<Vec<SearchResult>> = Vec::with_capacity(roots.len());
             let mut total = 0usize;
             for root in &roots {
-                if cancel_for_task.load(std::sync::atomic::Ordering::SeqCst) || total >= global_cap
-                {
+                if cancel_for_task.load(Ordering::SeqCst) || total >= SEARCH_GLOBAL_CAP {
                     break;
                 }
-                let per_root_cap = Self::per_root_cap(global_cap, roots.len());
-                let batch = match mode {
-                    SearchMode::Name => search_by_name(
-                        root,
-                        &query,
-                        SearchOptions {
-                            include_hidden,
-                            max_results: per_root_cap,
-                            ..Default::default()
-                        },
-                        &cancel_for_task,
-                    ),
-                    SearchMode::Content => search_contents(
-                        root,
-                        &query,
-                        ContentSearchOptions {
-                            include_hidden,
-                            max_results: per_root_cap,
-                            ..Default::default()
-                        },
-                        &cancel_for_task,
-                    ),
-                };
+                let batch = run_root(root, per_root_cap, 0);
                 total += batch.len();
                 batches.push(batch);
             }
-            merge_search_results(batches, global_cap)
+            // BC08: hand the unused budget to roots that hit their fair share.
+            // Without this, a 2-root search with 5 and 5000 matches stops at
+            // 1005 instead of 2000. Same cancel flag / generation as the walk.
+            if total < SEARCH_GLOBAL_CAP {
+                let batch_sizes: Vec<usize> = batches.iter().map(Vec::len).collect();
+                for (index, already) in
+                    Self::plan_root_rescans(&batch_sizes, per_root_cap, SEARCH_GLOBAL_CAP)
+                {
+                    if cancel_for_task.load(Ordering::SeqCst) || total >= SEARCH_GLOBAL_CAP {
+                        break;
+                    }
+                    let remaining = SEARCH_GLOBAL_CAP - total;
+                    let extra = run_root(&roots[index], remaining, already);
+                    total += extra.len();
+                    batches.push(extra);
+                }
+            }
+            let merged = merge_search_results(batches, SEARCH_GLOBAL_CAP);
+            let stats = SearchRunStats {
+                limit_reached: merged.len() >= SEARCH_GLOBAL_CAP,
+                skipped_large_files: skipped_large.load(Ordering::SeqCst),
+                non_utf8_files: non_utf8.load(Ordering::SeqCst),
+            };
+            (merged, stats)
         });
         let task = cx.spawn(async move |this, cx| {
-            let entries = background.await;
+            let (entries, stats) = background.await;
             let _ = this.update(cx, |this, cx| {
                 if this.search.generation != generation {
                     return;
                 }
+                this.search.last_stats = stats;
                 this.load = LoadState::Ready;
                 // AS04: re-running a query from the Search view (F5) is a
                 // successful read too. Clear a held RESCAN_FAILED before
@@ -9870,8 +10051,12 @@ impl Explorer {
                 }
             }
         };
+        // BC09/BC10: make an incomplete search visible. These counters come
+        // from the completed walk, so filtering the visible rows afterwards
+        // does not hide the fact that the walk itself was bounded.
+        let notices = search_summary_notices(self.search.last_stats);
         let summary = format!(
-            "検索{mode_label}{scope_label}: 「{}」 {} 件",
+            "検索{mode_label}{scope_label}: 「{}」 {} 件{notices}",
             self.search.query,
             self.entries.len()
         );
@@ -9910,6 +10095,7 @@ impl Explorer {
         self.search.query.clear();
         self.search.active_roots.clear();
         self.search.fell_back_to_cwd = false;
+        self.search.last_stats = SearchRunStats::default();
         self.search_lines.clear();
     }
 
@@ -13168,17 +13354,18 @@ mod tests {
         chord_for_action, chords_collide, classify_cli, clear_dialog_error, clear_op_token,
         clear_rescan_failure_after_successful_read, clear_rescan_failure_status,
         context_menu_anchor, core_trash_items, dialog_footer_hint_for_session,
-        effective_dialog_width, effective_sidebar_width, format_chord, format_selected,
-        fuzzy_candidates, fuzzy_score, grid_columns_for_viewport, grid_columns_for_width,
-        help_overrides_line, icon_button_text_color, install_op_token, internal_drop_paths,
-        join_status_notices, keymap_action_name, keymap_bind_caption, keymap_chord_reserved,
-        keymap_limit_status, keymap_unbind_caption, kind_color, labeled_display_name,
-        load_error_display_text, middle_click_tab_dir, normalize_terminal_command, op_is_active,
-        parse_chord, parse_keymap_input, pending_rename_index, rank_fuzzy,
-        read_properties_snapshot, reconcile_aware_status, redo_exists_status, redo_missing_status,
-        redo_trash_failed_status, redo_trash_should_record_undo, remove_keymap_override,
-        resolved_sidebar_width, restore_outcome_with_occupied_paths, saved_search_caption,
-        saved_search_save_status, search_close_status, search_filter_status, set_view_status,
+        effective_dialog_width, effective_sidebar_width, focus_search_name_key_reaches_dispatch,
+        format_chord, format_selected, fuzzy_candidates, fuzzy_score, grid_columns_for_viewport,
+        grid_columns_for_width, help_overrides_line, icon_button_text_color, install_op_token,
+        internal_drop_paths, join_status_notices, keymap_action_name, keymap_bind_caption,
+        keymap_chord_reserved, keymap_limit_status, keymap_unbind_caption, kind_color,
+        labeled_display_name, load_error_display_text, middle_click_tab_dir,
+        normalize_terminal_command, op_is_active, parse_chord, parse_keymap_input,
+        pending_rename_index, rank_fuzzy, read_properties_snapshot, reconcile_aware_status,
+        redo_exists_status, redo_missing_status, redo_trash_failed_status,
+        redo_trash_should_record_undo, remove_keymap_override, resolved_sidebar_width,
+        restore_outcome_with_occupied_paths, saved_search_caption, saved_search_save_status,
+        search_close_status, search_filter_status, search_summary_notices, set_view_status,
         settings_change_affects_list, settings_discard_status,
         settings_editor_write_failure_reason, settings_read_only_status, settings_reset_status,
         settings_row_key_is_bare, settings_save_error_status, settings_save_status,
@@ -13191,20 +13378,22 @@ mod tests {
         transfer_log_level, transfer_progress_status, transfer_skip_notice, trash_batch,
         trash_delete_status, trash_key_action, trash_load_error_status,
         trash_redo_cancelled_status, trash_undo_outcome_status, trash_undo_status,
-        trashed_ids_from_snapshot, undo_exists_status, undo_missing_status, upsert_keymap_override,
-        validate_cli_dir, version_label, visible_secondary_slots, AppPalette, CliAction,
-        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
-        KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab,
-        SortKey, TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED,
-        C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT,
-        PROGRESS_THROTTLE, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
-        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
-        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
-        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
-        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
-        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
+        trashed_ids_from_snapshot, undo_exists_status, undo_history_key_closes,
+        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
+        visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides, Explorer,
+        FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput, Modifiers,
+        PropertiesErrorReaction, SearchRunStats, SecondarySlot, SettingsTab, SortKey,
+        TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT,
+        C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT,
+        PROGRESS_THROTTLE, SEARCH_GLOBAL_CAP, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX,
+        STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
+        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+        STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
+        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+        STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
+        STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
+        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
         STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
         STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
         STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
@@ -14508,26 +14697,41 @@ mod tests {
         // AK05: one table drives both row renderers through the shared helper.
         use super::ViewSource;
 
-        let entry = |name: &str, is_dir: bool, is_symlink: bool, size: u64| Entry {
+        // BC02: `is_file` is a live metadata stat, so the positive cases need
+        // a real regular file; negative cases use paths that are not files.
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-fe-thumbnail-guard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("photo.png");
+        std::fs::write(&real, b"png").unwrap();
+        let entry = |name: &str, path: PathBuf, is_dir: bool, is_symlink: bool, size: u64| Entry {
             name: OsString::from(name),
             name_text: name.to_string(),
             sort_key: name.to_lowercase(),
-            path: PathBuf::from(format!("/tmp/{name}")),
+            path,
             is_dir,
             is_symlink,
             size,
             modified: None,
         };
-        let normal = entry("photo.png", false, false, 1024);
-        let directory = entry("photo.png", true, false, 1024);
+        let normal = entry("photo.png", real.clone(), false, false, 1024);
+        let directory = entry("photo.png", dir.clone(), true, false, 1024);
         let oversize = entry(
             "photo.png",
+            real.clone(),
             false,
             false,
             crate::preview::MAX_IMAGE_BYTES + 1,
         );
-        let symlink = entry("photo.png", false, true, 1024);
-        let unknown_ext = entry("notes.txt", false, false, 1024);
+        let symlink = entry("photo.png", real.clone(), false, true, 1024);
+        let unknown_ext = entry("notes.txt", real.clone(), false, false, 1024);
 
         let cases = [
             ("settings off", false, ViewSource::Directory, &normal, false),
@@ -14553,8 +14757,29 @@ mod tests {
             );
         }
         // Exactly at the limit is still eligible; the guard is `<=`.
-        let at_limit = entry("photo.png", false, false, crate::preview::MAX_IMAGE_BYTES);
+        let at_limit = entry(
+            "photo.png",
+            real.clone(),
+            false,
+            false,
+            crate::preview::MAX_IMAGE_BYTES,
+        );
         assert!(thumbnail_eligible(true, ViewSource::Directory, &at_limit));
+
+        #[cfg(unix)]
+        {
+            // BC02: a zero-byte socket with an image extension must not pass.
+            let socket_path = dir.join("socket.png");
+            let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+            let socket_entry = entry("socket.png", socket_path, false, false, 0);
+            assert!(!thumbnail_eligible(
+                true,
+                ViewSource::Directory,
+                &socket_entry
+            ));
+            drop(listener);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -15297,6 +15522,56 @@ mod tests {
         assert_eq!(Explorer::per_root_cap(2000, 4), 500);
         assert_eq!(Explorer::per_root_cap(2000, 10), 200);
         assert_eq!(Explorer::per_root_cap(2000, 100), 20);
+    }
+
+    #[test]
+    fn capped_roots_get_the_unused_budget_back() {
+        // BC08: 5 results in root A, 1000 (the per-root cap) in root B.
+        // Only B is capped and can contribute more; A has nothing left.
+        let plan = Explorer::plan_root_rescans(&[5, 1000], 1000, SEARCH_GLOBAL_CAP);
+        assert_eq!(plan, vec![(1, 1000)]);
+
+        // Only the capped root is revisited when another root still has spare
+        // capacity; the non-capped root has nothing more to contribute.
+        assert_eq!(
+            Explorer::plan_root_rescans(&[1000, 10], 1000, SEARCH_GLOBAL_CAP),
+            vec![(0, 1000)]
+        );
+        // With a larger budget both capped roots are re-walked at their own
+        // result offset.
+        assert_eq!(
+            Explorer::plan_root_rescans(&[1000, 1000], 1000, 3_000),
+            vec![(0, 1000), (1, 1000)]
+        );
+        // No budget left (or no root hit its cap): nothing to do.
+        assert!(Explorer::plan_root_rescans(&[1000, 1000], 1000, 2000).is_empty());
+        assert!(Explorer::plan_root_rescans(&[5, 7], 1000, SEARCH_GLOBAL_CAP).is_empty());
+    }
+
+    #[test]
+    fn search_summary_reports_incomplete_walks() {
+        assert_eq!(search_summary_notices(SearchRunStats::default()), "");
+        let all = search_summary_notices(SearchRunStats {
+            limit_reached: true,
+            skipped_large_files: 3,
+            non_utf8_files: 2,
+        });
+        assert_eq!(
+            all,
+            "（上限 2000 件に達しました）（1MiB 超の 3 ファイルを除外）（非 UTF-8 のため 2 件を正確に検索できませんでした）"
+        );
+        assert!(search_summary_notices(SearchRunStats {
+            limit_reached: false,
+            skipped_large_files: 1,
+            non_utf8_files: 0,
+        })
+        .contains("1MiB 超の 1 ファイルを除外"));
+        assert!(search_summary_notices(SearchRunStats {
+            limit_reached: false,
+            skipped_large_files: 0,
+            non_utf8_files: 1,
+        })
+        .contains("非 UTF-8 のため 1 件を正確に検索できませんでした"));
     }
 
     #[test]
@@ -18770,6 +19045,95 @@ mod tests {
         assert!(
             keys[escape..cancel].contains("self.op_cancel.is_some()"),
             "first Escape must only cancel when an operation is running"
+        );
+    }
+
+    #[test]
+    fn undo_history_toggle_chord_closes_the_dialog() {
+        // BC07: the footer promises Ctrl+Shift+U / Esc as dismiss keys, but
+        // the toggle action used to fall through `_ => {}` inside the modal
+        // guard, making the advertised chord unreachable while open.
+        let keymap = KeyMap::default_keymap();
+        let toggle = keymap.resolve("u", true, true, false);
+        assert_eq!(toggle, KeyAction::ToggleUndoHistory);
+        assert!(
+            undo_history_key_closes(toggle),
+            "Ctrl+Shift+U must dismiss the dialog"
+        );
+        assert!(undo_history_key_closes(KeyAction::Undo));
+        assert!(undo_history_key_closes(KeyAction::Redo));
+        for inert in [
+            KeyAction::None,
+            KeyAction::ToggleHidden,
+            KeyAction::Reload,
+            KeyAction::FocusSearchName,
+        ] {
+            assert!(!undo_history_key_closes(inert), "{inert:?} must not close");
+        }
+
+        let source = include_str!("main.rs");
+        let guard = source_region(
+            source,
+            "        if self.undo_history_open {",
+            "        if self.preview.is_some() {",
+        );
+        assert!(
+            guard.contains("undo_history_key_closes(action)"),
+            "the dialog guard must dispatch through the pure close helper"
+        );
+        let helper = source_region(
+            source,
+            "fn undo_history_key_closes(action: KeyAction) -> bool {",
+            "/// Search-view early route for",
+        );
+        assert!(
+            helper.contains("KeyAction::ToggleUndoHistory"),
+            "the toggle action itself must be registered as a close action"
+        );
+        assert!(
+            crate::strings::HISTORY_DIALOG_FOOTER_HINT.contains("Ctrl+Shift+U"),
+            "the advertised dismiss chord must match the keymap"
+        );
+    }
+
+    #[test]
+    fn focus_search_name_early_route_rejects_alt_rebinds() {
+        // BC17: this route bypasses the query-input focus guard, so it must
+        // apply AB01's Alt exclusion itself. The shipped Ctrl+Shift+F chord
+        // keeps working; an Alt rebind must not steal keystrokes in Search.
+        let keymap = KeyMap::default_keymap();
+        let default_chord = keymap.resolve("f", true, true, false);
+        assert_eq!(default_chord, KeyAction::FocusSearchName);
+        assert!(focus_search_name_key_reaches_dispatch(false, default_chord));
+        assert!(!focus_search_name_key_reaches_dispatch(true, default_chord));
+
+        let mut alt_keymap = keymap.clone();
+        assert!(alt_keymap.rebind(KeyAction::FocusSearchName, "f", false, false, true));
+        let rebound = alt_keymap.resolve("f", false, false, true);
+        assert_eq!(rebound, KeyAction::FocusSearchName);
+        assert!(
+            !focus_search_name_key_reaches_dispatch(true, rebound),
+            "an Alt-rebound FocusSearchName must not reach the early route"
+        );
+        assert!(!focus_search_name_key_reaches_dispatch(
+            false,
+            KeyAction::None
+        ));
+        assert!(!focus_search_name_key_reaches_dispatch(
+            false,
+            KeyAction::Reload
+        ));
+
+        let source = include_str!("main.rs");
+        let guard = source_region(
+            source,
+            "        if self.view == ViewSource::Search {",
+            "        // Escape is intentionally literal here:",
+        );
+        assert!(
+            guard.contains("focus_search_name_key_reaches_dispatch(")
+                && guard.contains("modifiers.alt"),
+            "the early route must consult the pure Alt guard"
         );
     }
 

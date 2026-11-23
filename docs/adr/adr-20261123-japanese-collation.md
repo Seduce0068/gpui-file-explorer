@@ -70,8 +70,9 @@ crates.io / docs.rs / GitHub の一次情報だけを根拠に、
 
 ### ICU4X の依存状況
 
-- ルートに `Cargo.lock` は無く、`app/Cargo.lock` と `poc/Cargo.lock` が存在する。
-- `app/Cargo.lock` には ICU4X の推移依存が既に入っている。
+- virtual workspace の正本はルート `Cargo.lock`。`app/Cargo.lock` と
+  `poc/Cargo.lock` は workspace 化前の未使用残骸（README.md の「Cargo.lock」節を参照）。
+- ルート `Cargo.lock` には ICU4X の推移依存が既に入っている。
   すべてバージョン `2.4.0` で、
   `icu_collections`（:2930）、`icu_locale_core`（:2944）、
   `icu_locale_fallback`（:2958）、`icu_locale_fallback_data`（:2972）、

@@ -15,8 +15,10 @@
 //!
 //! This module is GPUI-free so it can be unit tested headlessly.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crate::model::{entry_for_path, extension_of, is_hidden_name, Entry};
 
@@ -78,6 +80,11 @@ pub struct SearchOptions {
     pub max_results: usize,
     pub max_depth: usize,
     pub include_hidden: bool,
+    /// Number of leading matches to skip. Used when a multi-root search
+    /// redistributes its unused per-root budget and re-walks a capped root
+    /// past the results it already collected (`max_results` still applies to
+    /// the *returned* matches).
+    pub skip: usize,
 }
 
 impl Default for SearchOptions {
@@ -86,6 +93,7 @@ impl Default for SearchOptions {
             max_results: 2_000,
             max_depth: 24,
             include_hidden: false,
+            skip: 0,
         }
     }
 }
@@ -131,6 +139,7 @@ pub fn search_by_name(
     };
 
     let mut matches: Vec<SearchResult> = Vec::new();
+    let mut skipped = 0usize;
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
 
     while let Some((dir, depth)) = stack.pop() {
@@ -166,12 +175,16 @@ pub fn search_by_name(
                 .unwrap_or(false);
             if name_matches(&name, &needle) {
                 if let Some(entry) = entry_for_path(&path) {
-                    matches.push(SearchResult {
-                        entry,
-                        match_line: None,
-                    });
-                    if matches.len() >= options.max_results {
-                        break;
+                    if skipped < options.skip {
+                        skipped += 1;
+                    } else {
+                        matches.push(SearchResult {
+                            entry,
+                            match_line: None,
+                        });
+                        if matches.len() >= options.max_results {
+                            break;
+                        }
                     }
                 }
             }
@@ -286,13 +299,21 @@ pub fn merge_search_results(
 }
 
 /// Limits for [`search_contents`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ContentSearchOptions {
     pub max_results: usize,
     pub max_depth: usize,
     pub include_hidden: bool,
     /// Files larger than this are skipped (no partial reads).
     pub max_file_size: u64,
+    /// Number of leading matches to skip (see [`SearchOptions::skip`]).
+    pub skip: usize,
+    /// Files skipped because they exceed `max_file_size`. Shared with the
+    /// caller so the search summary can explain an incomplete result set.
+    pub skipped_large_files: Arc<AtomicUsize>,
+    /// Files that could not be searched exactly because they are not valid
+    /// UTF-8 (e.g. CP932). Shared with the caller for the same reason.
+    pub non_utf8_files: Arc<AtomicUsize>,
 }
 
 impl Default for ContentSearchOptions {
@@ -302,6 +323,9 @@ impl Default for ContentSearchOptions {
             max_depth: 24,
             include_hidden: false,
             max_file_size: 1024 * 1024,
+            skip: 0,
+            skipped_large_files: Arc::new(AtomicUsize::new(0)),
+            non_utf8_files: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -356,9 +380,14 @@ fn open_content_file(path: &Path) -> std::io::Result<std::fs::File> {
 /// Return the 1-based line number of the first line containing `needle`
 /// (case-insensitive), or `None` when the file has no match or is binary.
 ///
-/// Reads one line at a time, remembering the first match but continuing to
-/// EOF so a NUL byte anywhere in the read range still marks the file as
-/// binary. Cancellation is checked between lines.
+/// The whole bounded read range is checked first: a NUL byte anywhere marks
+/// the file as binary. Lines are split on `\n`, on `\r`, and on `\r\n` (a
+/// single separator), so CR-only files get correct logical line numbers.
+/// A line that is not valid UTF-8 also marks the file as binary — without
+/// this check `from_utf8_lossy` would replace e.g. CP932 bytes with U+FFFD
+/// and could create a false match. The one exception is the final segment
+/// when the read stopped exactly at `max_bytes`: a multi-byte character may
+/// have been cut by that boundary, so lossy decoding is allowed there only.
 #[cfg(test)]
 fn first_matching_line_in_file(
     path: &Path,
@@ -368,20 +397,36 @@ fn first_matching_line_in_file(
 ) -> std::io::Result<Option<u32>> {
     // Standalone callers take their own identity right before opening.
     let identity = FileIdentity::of(&std::fs::symlink_metadata(path)?);
-    first_matching_line_in_file_checked(path, needle, max_bytes, cancel, identity)
+    let non_utf8 = AtomicUsize::new(0);
+    first_matching_line_in_file_checked(path, needle, max_bytes, cancel, identity, &non_utf8)
+}
+
+/// Decode one logical line. Invalid UTF-8 is rejected unless the caller
+/// allows lossy decoding (only true for a final segment cut by `max_bytes`).
+fn line_text(line: &[u8], allow_lossy: bool) -> Option<Cow<'_, str>> {
+    match std::str::from_utf8(line) {
+        Ok(text) => Some(Cow::Borrowed(text)),
+        Err(_) if allow_lossy => Some(String::from_utf8_lossy(line)),
+        Err(_) => None,
+    }
 }
 
 /// Same as [`first_matching_line_in_file`], but with the identity captured by
 /// the walker's `symlink_metadata` check, so a post-check swap is detectable.
+/// `non_utf8` is incremented once per file rejected for invalid UTF-8.
 fn first_matching_line_in_file_checked(
     path: &Path,
     needle: &str,
     max_bytes: u64,
     cancel: &AtomicBool,
     expected: FileIdentity,
+    non_utf8: &AtomicUsize,
 ) -> std::io::Result<Option<u32>> {
-    use std::io::{BufRead, BufReader, Read};
+    use std::io::Read;
 
+    if cancel.load(Ordering::SeqCst) {
+        return Ok(None);
+    }
     let file = open_content_file(path)?;
     #[cfg(unix)]
     {
@@ -395,27 +440,57 @@ fn first_matching_line_in_file_checked(
     }
     #[cfg(not(unix))]
     let _ = expected;
-    let mut reader = BufReader::new(file.take(max_bytes));
-    let mut line = Vec::new();
-    let mut line_number = 0u32;
+
+    // The read range is bounded by `max_bytes` (the caller's max_file_size),
+    // so materializing it is cheap and lets us split on \r as well as \n.
+    let mut bytes = Vec::new();
+    file.take(max_bytes).read_to_end(&mut bytes)?;
+    let cut_at_limit = bytes.len() as u64 == max_bytes;
+    if bytes.contains(&0) {
+        return Ok(None); // binary file
+    }
+
     let mut first_match = None;
-    loop {
+    let mut line_number = 0u32;
+    let mut start = 0usize;
+    let len = bytes.len();
+    let mut i = 0usize;
+    while i < len {
+        let byte = bytes[i];
+        if byte != b'\n' && byte != b'\r' {
+            i += 1;
+            continue;
+        }
+        line_number += 1;
+        let line = &bytes[start..i];
+        // `\r\n` is one separator, not two.
+        if byte == b'\r' && i + 1 < len && bytes[i + 1] == b'\n' {
+            i += 1;
+        }
         if cancel.load(Ordering::SeqCst) {
             return Ok(None);
         }
-        line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            break;
+        let Some(text) = line_text(line, false) else {
+            non_utf8.fetch_add(1, Ordering::SeqCst);
+            return Ok(None);
+        };
+        if first_match.is_none() && text.to_lowercase().contains(needle) {
+            first_match = Some(line_number);
         }
+        start = i + 1;
+        i += 1;
+    }
+    if start < len {
         line_number += 1;
-        if line.contains(&0) {
-            return Ok(None); // binary file
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(None);
         }
-        if first_match.is_none()
-            && String::from_utf8_lossy(&line)
-                .to_lowercase()
-                .contains(needle)
-        {
+        let line = &bytes[start..len];
+        let Some(text) = line_text(line, cut_at_limit) else {
+            non_utf8.fetch_add(1, Ordering::SeqCst);
+            return Ok(None);
+        };
+        if first_match.is_none() && text.to_lowercase().contains(needle) {
             first_match = Some(line_number);
         }
     }
@@ -427,10 +502,11 @@ fn first_matching_line_in_file_checked(
 /// Safety/conservatism:
 /// - symlinks are skipped entirely (no reading through links),
 /// - files larger than `max_file_size` are skipped,
-/// - files containing a NUL byte anywhere in the read range are binary,
+/// - files containing a NUL byte anywhere in the read range are binary, as are
+///   files whose text is not valid UTF-8 (both are counted for the summary),
 /// - hidden entries follow `include_hidden`, unreadable entries are skipped,
-/// - reads are streamed line-by-line, and the whole read range is checked for
-///   NUL before the first match is reported,
+/// - reads are bounded by `max_file_size`, split on LF/CR/CRLF, and the whole
+///   read range is checked for NUL before the first match is reported,
 /// - results and depth are capped; cancellation is checked per entry and line.
 pub fn search_contents(
     root: &Path,
@@ -444,6 +520,7 @@ pub fn search_contents(
     }
 
     let mut matches: Vec<SearchResult> = Vec::new();
+    let mut skipped = 0usize;
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
 
     while let Some((dir, depth)) = stack.pop() {
@@ -487,7 +564,11 @@ pub fn search_contents(
                 }
                 continue;
             }
-            if !link_metadata.is_file() || link_metadata.len() > options.max_file_size {
+            if !link_metadata.is_file() {
+                continue;
+            }
+            if link_metadata.len() > options.max_file_size {
+                options.skipped_large_files.fetch_add(1, Ordering::SeqCst);
                 continue;
             }
             // Reuse the identity from the symlink_metadata check above: if the
@@ -500,14 +581,19 @@ pub fn search_contents(
                 options.max_file_size,
                 cancel,
                 identity,
+                &options.non_utf8_files,
             ) {
                 if let Some(entry) = entry_for_path(&path) {
-                    matches.push(SearchResult {
-                        entry,
-                        match_line: Some(line),
-                    });
-                    if matches.len() >= options.max_results {
-                        break;
+                    if skipped < options.skip {
+                        skipped += 1;
+                    } else {
+                        matches.push(SearchResult {
+                            entry,
+                            match_line: Some(line),
+                        });
+                        if matches.len() >= options.max_results {
+                            break;
+                        }
                     }
                 }
             }
@@ -760,6 +846,37 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let found = search_by_name(&dir, "txt", SearchOptions::default(), &cancel);
         assert!(found.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skip_continues_after_an_already_collected_batch() {
+        let dir = scratch("skip");
+        for index in 0..5 {
+            write(&dir.join(format!("match-{index}.txt")));
+        }
+        let cancel = AtomicBool::new(false);
+        let first = search_by_name(
+            &dir,
+            "match",
+            SearchOptions {
+                max_results: 2,
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert_eq!(names(&first), vec!["match-0.txt", "match-1.txt"]);
+        let rest = search_by_name(
+            &dir,
+            "match",
+            SearchOptions {
+                max_results: 2,
+                skip: 2,
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert_eq!(names(&rest), vec!["match-2.txt", "match-3.txt"]);
         let _ = fs::remove_dir_all(&dir);
     }
 }
@@ -1173,17 +1290,119 @@ mod content_tests {
 
         // No swap: the ordinary file is searched normally.
         let options = ContentSearchOptions::default();
-        let normal = search_contents(&root, "target", options, &AtomicBool::new(false));
+        let normal = search_contents(&root, "target", options.clone(), &AtomicBool::new(false));
         assert!(normal.is_empty(), "fixture must not match without the swap");
 
         // Simulate the path being replaced between symlink_metadata and open.
         SWAP_OPEN_WITH.with(|cell| *cell.borrow_mut() = Some(outside.clone()));
-        let swapped = search_contents(&root, "target", options, &AtomicBool::new(false));
+        let swapped = search_contents(&root, "target", options.clone(), &AtomicBool::new(false));
         SWAP_OPEN_WITH.with(|cell| *cell.borrow_mut() = None);
         assert!(
             swapped.is_empty(),
             "the opened file's dev/ino differs from the checked path: {swapped:?}"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_utf8_without_nul_is_not_a_match() {
+        use super::first_matching_line_in_file;
+
+        let dir = scratch("invalid-utf8");
+        // A false match under `from_utf8_lossy`: TARGET followed by CP932-ish
+        // bytes that become U+FFFD but still leave "target" intact.
+        let invalid = dir.join("invalid.txt");
+        write(&invalid, b"plain first\nTARGET\xff\xfe\n");
+        // Control: a clean line really does match.
+        let clean = dir.join("clean.txt");
+        write(&clean, b"TARGET clean\n");
+
+        let live = AtomicBool::new(false);
+        assert_eq!(
+            first_matching_line_in_file(&invalid, "target", 1024, &live).unwrap(),
+            None,
+            "invalid UTF-8 must be treated as binary"
+        );
+        assert_eq!(
+            first_matching_line_in_file(&clean, "target", 1024, &live).unwrap(),
+            Some(1),
+            "clean control line must still match"
+        );
+
+        let found = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions::default(),
+            &AtomicBool::new(false),
+        );
+        let names: Vec<_> = found
+            .iter()
+            .map(|result| result.entry.name_text.clone())
+            .collect();
+        assert_eq!(names, vec!["clean.txt"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn take_boundary_splitting_multibyte_is_not_treated_as_binary() {
+        use super::first_matching_line_in_file;
+
+        let dir = scratch("utf8-boundary");
+        let file = dir.join("cut.txt");
+        // "TARGET あ" — the 3-byte あ starts at offset 7, so a read capped at
+        // 8 bytes cuts it in the middle. That final segment must be decoded
+        // lossily instead of being rejected as invalid UTF-8.
+        write(&file, "TARGET あ".as_bytes());
+        assert_eq!(
+            first_matching_line_in_file(&file, "target", 8, &AtomicBool::new(false)).unwrap(),
+            Some(1)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cr_only_line_endings_get_logical_line_numbers() {
+        let dir = scratch("cr-lines");
+        write(&dir.join("cr.txt"), b"alpha\rTARGET here\rmiddle\r");
+        let found = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions::default(),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].match_line, Some(2));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crlf_counts_as_one_separator() {
+        let dir = scratch("crlf-lines");
+        write(&dir.join("crlf.txt"), b"alpha\r\nTARGET here\r\nlast\r\n");
+        let found = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions::default(),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(found.len(), 1);
+        // If \r\n were counted twice the match would be reported on line 3.
+        assert_eq!(found[0].match_line, Some(2));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mixed_lf_and_crlf_line_endings() {
+        let dir = scratch("mixed-lines");
+        write(&dir.join("mixed.txt"), b"first\nsecond\rTARGET\r\nfourth\n");
+        let found = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions::default(),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].match_line, Some(3));
         let _ = fs::remove_dir_all(&dir);
     }
 }

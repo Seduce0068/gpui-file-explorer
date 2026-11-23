@@ -78,6 +78,23 @@ impl Entry {
             modified,
         })
     }
+
+    /// Whether this path resolves to a **regular** file.
+    ///
+    /// `std::fs::metadata` follows symlinks and reports `false` for FIFOs,
+    /// Unix sockets and device nodes as well as directories. Thumbnail
+    /// renderers must consult this before handing a path to `gpui_kit::img`:
+    /// that loader performs an unbounded `fs::read`, which blocks forever on a
+    /// named pipe/socket even when `metadata.len()` is `0` and the 8 MiB guard
+    /// passes. This is a stat (not a read), so it cannot block on FIFOs.
+    ///
+    /// Deliberately a method rather than a cached `Entry` field: adding a
+    /// field would break every `Entry { .. }` literal in modules outside this
+    /// change's scope. Callers only pay for the stat after the cheap extension,
+    /// size and symlink checks have already passed (see `thumbnail_eligible`).
+    pub fn is_file(&self) -> bool {
+        std::fs::metadata(&self.path).is_ok_and(|meta| meta.is_file())
+    }
 }
 
 /// Outcome of a directory scan that distinguishes a clean read from one where
@@ -1678,6 +1695,35 @@ mod tests {
             fingerprint(std::slice::from_ref(&from_path))
         );
 
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_file_is_false_for_unix_socket_and_true_for_regular_file() {
+        // BC02: a socket named `picture.png` has metadata.len() == 0, so the
+        // 8 MiB thumbnail guard alone would let gpui_kit::img call fs::read on
+        // it and hang the executor. The safe API must report it as not a file.
+        let dir = scratch_dir("socket-is-not-file");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join("picture.png");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+
+        let socket_entry = entry_for_path(&socket_path).expect("socket entry");
+        assert!(!socket_entry.is_file(), "socket must not be a regular file");
+        assert_eq!(socket_entry.size, 0);
+        assert!(!socket_entry.is_file());
+
+        let regular_path = dir.join("regular.png");
+        fs::write(&regular_path, b"png").unwrap();
+        let regular_entry = entry_for_path(&regular_path).expect("regular entry");
+        assert!(regular_entry.is_file());
+
+        // A directory is not a file either (follows the same metadata rule).
+        assert!(!entry_for_path(&dir).expect("dir entry").is_file());
+
+        drop(listener);
         fs::remove_dir_all(&dir).unwrap();
     }
 

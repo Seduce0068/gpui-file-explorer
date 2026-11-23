@@ -295,7 +295,8 @@ use core::{model, ops, search, strings};
    （同条件 (3)、`docs/adr/adr-20261122-mobile-android-ios-support.md:218`）。
 4. `core/src/lib.rs` に `#![forbid(unsafe_code)]` があること。
 5. `cargo tree -p gpui-file-explorer-core` に `gpui-*` が含まれないこと。
-6. `settings.rs:3458,3531,3560` の unknown enum → read-only 回帰が通ること。
+6. `app/src/settings.rs` の `detect_unknown_persisted_enum_*` と
+   `parallel_loads_keep_read_only_scoped_to_each_file` が通ること（行アンカーは使わない）。
 7. fmt / check / test / clippy / deny / audit の全ゲートが green であること。
 
 ### 未解決点（設計判断として残す項目）

@@ -245,6 +245,8 @@ pub const PREVIEW_OVERLAY_FOOTER_HINT: &str =
     "↑/↓ で前後のファイル、Ctrl+Enter で新タブ、Space / F3 / Esc で閉じる（読み取り専用）";
 /// あいまいジャンプオーバーレイのフッター案内（AM02）。
 pub const FUZZY_JUMP_OVERLAY_FOOTER_HINT: &str = "↑/↓ で選択 / Enter で移動 / Esc で閉じる";
+/// プレビューの画像デコード失敗時に `Img::with_fallback` が描画する文言（BC03）。
+pub const PREVIEW_IMAGE_FALLBACK_LABEL: &str = "画像を表示できません";
 
 const _: () = assert!(!HISTORY_DIALOG_FOOTER_HINT.is_empty());
 const _: () = assert!(!HISTORY_UNDO_BUTTON_LABEL.is_empty());
@@ -256,6 +258,7 @@ const _: () = assert!(!SEARCH_BAR_HINT.is_empty());
 const _: () = assert!(!SEARCH_IN_PROGRESS_LABEL.is_empty());
 const _: () = assert!(!PREVIEW_OVERLAY_FOOTER_HINT.is_empty());
 const _: () = assert!(!FUZZY_JUMP_OVERLAY_FOOTER_HINT.is_empty());
+const _: () = assert!(!PREVIEW_IMAGE_FALLBACK_LABEL.is_empty());
 
 #[cfg(test)]
 mod dialog_and_bar_hint_tests {
@@ -428,6 +431,38 @@ mod dialog_and_bar_hint_tests {
                 "hint must not be inlined into main.rs: {literal}"
             );
         }
+    }
+
+    #[test]
+    fn history_footer_dismiss_chord_matches_the_undo_history_key_route() {
+        // BC07: strings.rs のフッターが約束する Ctrl+Shift+U が main.rs の
+        // モーダルガードで実際に「閉じる」操作として扱われることを双方向で固定する。
+        // 文言だけを変えても、キールートだけを変えてもこのテストは落ちる。
+        assert!(HISTORY_DIALOG_FOOTER_HINT.contains("Ctrl+Shift+U"));
+        let main_source = include_str!("main.rs");
+        assert!(
+            main_source.contains("fn undo_history_key_closes(action: KeyAction) -> bool"),
+            "main.rs must define the pure undo-history close helper"
+        );
+        assert!(
+            main_source.contains("undo_history_key_closes(action)"),
+            "the dialog guard must dispatch through the close helper"
+        );
+        let helper = main_source
+            .split("fn undo_history_key_closes(action: KeyAction) -> bool")
+            .nth(1)
+            .expect("close helper")
+            .split("/// Search-view early route for")
+            .next()
+            .expect("helper end");
+        assert!(
+            helper.contains("KeyAction::ToggleUndoHistory"),
+            "Ctrl+Shift+U (ToggleUndoHistory) must be a close action"
+        );
+        assert!(
+            main_source.contains("binding(\"u\", true, false, Some(true), ToggleUndoHistory)"),
+            "the advertised chord must still be bound to ToggleUndoHistory"
+        );
     }
 
     #[test]
@@ -1881,6 +1916,19 @@ pub const STATUS_SEARCH_NOT_OPEN: &str = "先に Ctrl+F で検索を開いてく
 /// 検索ビューを開いた直後に表示する入力案内（W02）。開く操作と入力待ちの
 /// 案内を一箇所で管理し、main.rs へのインライン再追加を防ぐ。
 pub const STATUS_SEARCH_PROMPT: &str = "検索語を入力して Enter（Esc で閉じる）";
+
+/// 検索サマリへ上限到達を添える接尾の定型部（`{}` に `SEARCH_GLOBAL_CAP`）。
+pub const SEARCH_SUMMARY_LIMIT_PREFIX: &str = "（上限 ";
+/// 上限接尾の後半。件数の後ろに続く。
+pub const SEARCH_SUMMARY_LIMIT_SUFFIX: &str = " 件に達しました）";
+/// 1MiB 超で読み飛ばしたファイル数を添える接尾の前半（`{}` に件数）。
+pub const SEARCH_SUMMARY_SKIPPED_LARGE_PREFIX: &str = "（1MiB 超の ";
+/// サイズ超過接尾の後半。件数の後ろに続く。
+pub const SEARCH_SUMMARY_SKIPPED_LARGE_SUFFIX: &str = " ファイルを除外）";
+/// 非 UTF-8 のため厳密に検索できなかった件数を添える接尾の前半（`{}` に件数）。
+pub const SEARCH_SUMMARY_NON_UTF8_PREFIX: &str = "（非 UTF-8 のため ";
+/// 非 UTF-8 接尾の後半。件数の後ろに続く。
+pub const SEARCH_SUMMARY_NON_UTF8_SUFFIX: &str = " 件を正確に検索できませんでした）";
 
 /// OS がプロパティのメタデータ読み取りを拒否したときの通知（R02）。
 /// 以前は main.rs ローカルだったが、色分類表と一元化するためここへ移動した。
@@ -4036,6 +4084,31 @@ mod tests {
     }
 
     #[test]
+    fn search_summary_notices_have_one_canonical_wording() {
+        // BC09/BC10: 動的な件数だけを呼び出し側が埋め、前後の定型文はここで固定する。
+        assert_eq!(
+            format!("{SEARCH_SUMMARY_LIMIT_PREFIX}2000{SEARCH_SUMMARY_LIMIT_SUFFIX}"),
+            "（上限 2000 件に達しました）"
+        );
+        assert_eq!(
+            format!("{SEARCH_SUMMARY_SKIPPED_LARGE_PREFIX}3{SEARCH_SUMMARY_SKIPPED_LARGE_SUFFIX}"),
+            "（1MiB 超の 3 ファイルを除外）"
+        );
+        assert_eq!(
+            format!("{SEARCH_SUMMARY_NON_UTF8_PREFIX}2{SEARCH_SUMMARY_NON_UTF8_SUFFIX}"),
+            "（非 UTF-8 のため 2 件を正確に検索できませんでした）"
+        );
+        let source = include_str!("main.rs");
+        for name in [
+            "SEARCH_SUMMARY_LIMIT_PREFIX",
+            "SEARCH_SUMMARY_SKIPPED_LARGE_PREFIX",
+            "SEARCH_SUMMARY_NON_UTF8_PREFIX",
+        ] {
+            assert!(source.contains(name), "summary notice not wired: {name}");
+        }
+    }
+
+    #[test]
     fn read_only_hint_names_the_settings_shortcut() {
         // W08: 読み取り専用の理由を表示するとき、設定を確認する導線を
         // 括弧で添える。呼び出し側の書式は main.rs のテストで固定する。
@@ -4244,6 +4317,90 @@ mod tests {
         assert!(
             exceptions.contains("\"一覧の列\""),
             "settings_ui.rs HELP_KEY_EXCEPTIONS must register the prose row"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BC02 / BC03 / BC04: preview safety source guards.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod preview_safety_source_guard_tests {
+    use crate::strings::PREVIEW_IMAGE_FALLBACK_LABEL;
+
+    #[test]
+    fn thumbnail_guard_uses_the_entry_is_file_predicate() {
+        let main_source = include_str!("main.rs");
+        assert!(
+            main_source.contains(
+                "preview::is_thumbnailable(&entry.name_text, entry.is_symlink, entry.is_file())"
+            ),
+            "thumbnail_eligible must pass the metadata-based is_file guard"
+        );
+        let model_source = include_str!("../../core/src/model.rs");
+        assert!(
+            model_source.contains("pub fn is_file(&self) -> bool"),
+            "Entry must expose the safe is_file predicate"
+        );
+        assert!(
+            model_source.contains("meta.is_file()"),
+            "Entry::is_file must be derived from metadata"
+        );
+        let preview_source = include_str!("preview.rs");
+        assert!(
+            preview_source.contains("!entry_is_symlink && entry_is_file"),
+            "the pure thumbnail decision must require a regular file"
+        );
+    }
+
+    #[test]
+    fn preview_image_has_an_async_decode_fallback() {
+        let main_source = include_str!("main.rs");
+        let dialog = main_source
+            .split("fn preview_dialog(")
+            .nth(1)
+            .expect("main.rs must define preview_dialog")
+            .split("fn ")
+            .next()
+            .expect("preview_dialog must terminate");
+        assert!(
+            dialog.contains(".with_fallback("),
+            "the preview image element must render a fallback on decode failure"
+        );
+        assert!(
+            dialog.contains("preview-image-fallback"),
+            "the fallback must be identifiable in the rendered tree"
+        );
+        assert!(
+            dialog.contains("PREVIEW_IMAGE_FALLBACK_LABEL"),
+            "the fallback must use the shared wording"
+        );
+        assert!(
+            !PREVIEW_IMAGE_FALLBACK_LABEL.is_empty(),
+            "fallback wording must not be empty"
+        );
+    }
+
+    #[test]
+    fn preview_image_assets_are_released_on_every_replacement_path() {
+        let main_source = include_str!("main.rs");
+        let definition_and_calls = main_source.matches("release_preview_image_asset(").count();
+        assert!(
+            definition_and_calls >= 3,
+            "release helper must be defined and used by open_preview and close_preview"
+        );
+        assert!(
+            main_source.contains("preview.image_asset = new_asset;"),
+            "a new image must replace the previously held Arc<Image>"
+        );
+        assert!(
+            main_source.matches("remove_asset(cx)").count() >= 2,
+            "GPUI assets must be removed on replacement and on close"
+        );
+        assert!(
+            main_source.contains("image_asset: Option<Arc<gpui_kit::Image>>"),
+            "PreviewState must hold the decoded image asset"
         );
     }
 }

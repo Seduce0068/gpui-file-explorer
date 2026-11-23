@@ -204,6 +204,180 @@ fn default_theme() -> ThemeMode {
     ThemeMode::Dark
 }
 
+/// Serialize the shipped defaults once. The three registry tests share this
+/// structural view of persisted settings, so a field rename cannot leave them
+/// quietly probing a stale shape (BC18/BC22).
+#[cfg(test)]
+fn persisted_default_json() -> serde_json::Value {
+    serde_json::to_value(Settings::default()).expect("default settings serialize")
+}
+
+/// A present field is known when its string deserializes into `T`; an absent
+/// field is fine because serde's field-level default applies. A non-string is
+/// *not* an unknown enum name: it is a wrong JSON type that
+/// [`salvage_settings`] drops on its own, so treating it as unknown here would
+/// make the whole load read-only and permanently disable saving a file the
+/// loader can otherwise repair (BB08). The column fields keep their own
+/// stricter check, where a non-string key really is an unknown column.
+fn is_known_enum<T>(field: Option<&serde_json::Value>) -> bool
+where
+    T: for<'de> Deserialize<'de>,
+{
+    field.is_none_or(|value| {
+        !value.is_string() || serde_json::from_value::<T>(value.clone()).is_ok()
+    })
+}
+
+/// A name no current enum recognizes. Registry tests plant this at every
+/// [`ENUM_SITES`] entry instead of guessing which default strings are enums
+/// (BC05).
+const FUTURE_ENUM_NAME: &str = "__future_enum_value__";
+
+fn plant_simple_enum(raw: &mut serde_json::Value, field: &str) {
+    raw[field] = serde_json::json!(FUTURE_ENUM_NAME);
+}
+
+fn ensure_object_field<'a>(
+    raw: &'a mut serde_json::Value,
+    field: &str,
+) -> &'a mut serde_json::Map<String, serde_json::Value> {
+    if !raw.get(field).is_some_and(serde_json::Value::is_object) {
+        raw[field] = serde_json::json!({});
+    }
+    raw[field].as_object_mut().expect("JSON object")
+}
+
+fn ensure_array_field(raw: &mut serde_json::Value, field: &str) {
+    if !raw.get(field).is_some_and(serde_json::Value::is_array) {
+        raw[field] = serde_json::json!([]);
+    }
+}
+
+fn ensure_windows(raw: &mut serde_json::Value) -> &mut Vec<serde_json::Value> {
+    ensure_array_field(raw, "windows");
+    let windows = raw["windows"].as_array_mut().expect("windows array");
+    if windows.is_empty() {
+        windows.push(serde_json::json!({}));
+    }
+    windows
+}
+
+fn plant_window_mode(raw: &mut serde_json::Value) {
+    ensure_windows(raw)[0]["bounds"]["mode"] = serde_json::json!(FUTURE_ENUM_NAME);
+}
+
+fn plant_column_visible(raw: &mut serde_json::Value) {
+    let prefs = ensure_object_field(raw, "column_prefs");
+    let visible = prefs
+        .entry("visible".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    if !visible.is_array() {
+        *visible = serde_json::json!([]);
+    }
+    visible
+        .as_array_mut()
+        .expect("visible array")
+        .push(serde_json::json!(FUTURE_ENUM_NAME));
+}
+
+fn plant_column_widths(raw: &mut serde_json::Value) {
+    let prefs = ensure_object_field(raw, "column_prefs");
+    let widths = prefs
+        .entry("widths".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !widths.is_object() {
+        *widths = serde_json::json!({});
+    }
+    widths
+        .as_object_mut()
+        .expect("widths object")
+        .insert(FUTURE_ENUM_NAME.to_string(), serde_json::json!(80));
+}
+
+/// One persisted enum site. `detect` uses the enum's own serde impl as the
+/// source of truth for known names; `plant` writes the probe at the same path.
+/// Detector and tests therefore scan one list, and `terminal_command` — the
+/// one free-form string in the schema — is deliberately not a site (BC05).
+struct EnumSite {
+    #[cfg_attr(not(test), allow(dead_code))]
+    path: &'static str,
+    detect: fn(&serde_json::Value) -> bool,
+    #[cfg_attr(not(test), allow(dead_code))]
+    plant: fn(&mut serde_json::Value),
+}
+
+/// All persisted enum sites, including each element of `windows[].bounds`.
+/// The column list and width map keep their stricter key check, so a
+/// non-string column key really is reported as unknown here.
+const ENUM_SITES: &[EnumSite] = &[
+    EnumSite {
+        path: "sort.key",
+        detect: |raw| !is_known_enum::<SortKey>(raw.get("sort").and_then(|value| value.get("key"))),
+        plant: |raw| raw["sort"]["key"] = serde_json::json!(FUTURE_ENUM_NAME),
+    },
+    EnumSite {
+        path: "sort.dir",
+        detect: |raw| !is_known_enum::<SortDir>(raw.get("sort").and_then(|value| value.get("dir"))),
+        plant: |raw| raw["sort"]["dir"] = serde_json::json!(FUTURE_ENUM_NAME),
+    },
+    EnumSite {
+        path: "view",
+        detect: |raw| !is_known_enum::<ViewLayout>(raw.get("view")),
+        plant: |raw| plant_simple_enum(raw, "view"),
+    },
+    EnumSite {
+        path: "theme",
+        // `theme` accepts "system" as well: `ThemeChoice` models that legacy
+        // preference even though `ThemeMode` cannot.
+        detect: |raw| !is_known_enum::<ThemeChoice>(raw.get("theme")),
+        plant: |raw| plant_simple_enum(raw, "theme"),
+    },
+    EnumSite {
+        path: "theme_choice",
+        detect: |raw| !is_known_enum::<ThemeChoice>(raw.get("theme_choice")),
+        plant: |raw| plant_simple_enum(raw, "theme_choice"),
+    },
+    EnumSite {
+        path: "windows[].bounds.mode",
+        detect: |raw| {
+            raw.get("windows")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|windows| {
+                    windows.iter().any(|window| {
+                        window
+                            .get("bounds")
+                            .is_some_and(|bounds| !is_known_enum::<WindowMode>(bounds.get("mode")))
+                    })
+                })
+        },
+        plant: plant_window_mode,
+    },
+    EnumSite {
+        path: "column_prefs.visible[]",
+        detect: |raw| {
+            raw.get("column_prefs")
+                .and_then(|value| value.get("visible"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|visible| {
+                    visible
+                        .iter()
+                        .any(|key| key.as_str().is_none_or(|key| !is_known_column_key(key)))
+                })
+        },
+        plant: plant_column_visible,
+    },
+    EnumSite {
+        path: "column_prefs.widths.<key>",
+        detect: |raw| {
+            raw.get("column_prefs")
+                .and_then(|value| value.get("widths"))
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|widths| widths.keys().any(|key| !is_known_column_key(key)))
+        },
+        plant: plant_column_widths,
+    },
+];
+
 /// Return `true` when any persisted enum field in `raw` holds a name this
 /// build does not recognize.
 ///
@@ -212,154 +386,233 @@ fn default_theme() -> ThemeMode {
 /// load they belonged to. A process-global signal would leak between
 /// concurrent loads (one load's note could be consumed by another load's
 /// take), so the decision is derived from each file's own bytes instead.
-/// Each enum's `Deserialize` impl is the single source of truth for its known
-/// names; the column fields reuse [`COLUMN_KEYS`] / [`is_known_column_key`].
+/// [`ENUM_SITES`] is the single list the loader and its registry tests scan.
 fn detect_unknown_persisted_enum(raw: &serde_json::Value) -> bool {
-    /// A present field is known when its string deserializes into `T`; an
-    /// absent field is fine because serde's field-level default applies. A
-    /// non-string is *not* an unknown enum name: it is a wrong JSON type that
-    /// [`salvage_settings`] drops on its own, so treating it as unknown here
-    /// would make the whole load read-only and permanently disable saving a
-    /// file the loader can otherwise repair (BB08). The column fields below
-    /// keep their own stricter check, where a non-string key really is an
-    /// unknown column.
-    fn is_known<T>(field: Option<&serde_json::Value>) -> bool
-    where
-        T: for<'de> Deserialize<'de>,
-    {
-        field.is_none_or(|value| {
-            !value.is_string() || serde_json::from_value::<T>(value.clone()).is_ok()
-        })
-    }
-
-    let sort = raw.get("sort");
-    if !is_known::<SortKey>(sort.and_then(|value| value.get("key")))
-        || !is_known::<SortDir>(sort.and_then(|value| value.get("dir")))
-    {
-        return true;
-    }
-    if !is_known::<ViewLayout>(raw.get("view")) {
-        return true;
-    }
-    // `theme` accepts the same three names as `ThemeChoice`, including the
-    // legacy "system" that `ThemeMode` itself cannot represent.
-    if !is_known::<ThemeChoice>(raw.get("theme"))
-        || !is_known::<ThemeChoice>(raw.get("theme_choice"))
-    {
-        return true;
-    }
-    if let Some(windows) = raw.get("windows").and_then(serde_json::Value::as_array) {
-        for window in windows {
-            if let Some(bounds) = window.get("bounds") {
-                if !is_known::<WindowMode>(bounds.get("mode")) {
-                    return true;
-                }
-            }
-        }
-    }
-    if let Some(prefs) = raw.get("column_prefs") {
-        if let Some(visible) = prefs.get("visible").and_then(serde_json::Value::as_array) {
-            if visible
-                .iter()
-                .any(|key| key.as_str().is_none_or(|key| !is_known_column_key(key)))
-            {
-                return true;
-            }
-        }
-        if let Some(widths) = prefs.get("widths").and_then(serde_json::Value::as_object) {
-            if widths.keys().any(|key| !is_known_column_key(key)) {
-                return true;
-            }
-        }
-    }
-    false
+    ENUM_SITES.iter().any(|site| (site.detect)(raw))
 }
+
+/// One nested persisted object family. `objects` extracts every instance —
+/// including array elements — from a raw file, `known` is the key whitelist,
+/// and the test hooks seed/plant at the same locations. Keeping all three in
+/// one table means the detector and its registry test cover the same paths:
+/// the old test only probed the two objects present in `Settings::default()`,
+/// leaving windows, bounds, tabs, bookmark labels and saved searches
+/// unverified (BC06).
+/// A nested object paired with its concrete path prefix (array indices
+/// resolved), so the read-only diagnostic still names the exact offender.
+type NestedObjects<'a> = Vec<(&'a serde_json::Map<String, serde_json::Value>, String)>;
+
+struct NestedSite {
+    #[cfg_attr(not(test), allow(dead_code))]
+    path: &'static str,
+    known: &'static [&'static str],
+    objects: for<'a> fn(&'a serde_json::Value) -> NestedObjects<'a>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    seed: fn(&mut serde_json::Value),
+    #[cfg_attr(not(test), allow(dead_code))]
+    plant: fn(&mut serde_json::Value, &str),
+}
+
+fn seed_bounds(raw: &mut serde_json::Value) {
+    let windows = ensure_windows(raw);
+    if !windows[0]
+        .get("bounds")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        windows[0]["bounds"] = serde_json::json!({});
+    }
+}
+
+fn seed_tabs(raw: &mut serde_json::Value) {
+    let windows = ensure_windows(raw);
+    if !windows[0]
+        .get("tabs")
+        .is_some_and(serde_json::Value::is_array)
+    {
+        windows[0]["tabs"] = serde_json::json!([]);
+    }
+    let tabs = windows[0]["tabs"].as_array_mut().expect("tabs array");
+    if tabs.is_empty() {
+        tabs.push(serde_json::json!({}));
+    }
+}
+
+fn seed_object_array(raw: &mut serde_json::Value, field: &str) {
+    ensure_array_field(raw, field);
+    let values = raw[field].as_array_mut().expect("array");
+    if values.is_empty() {
+        values.push(serde_json::json!({}));
+    } else if !values[0].is_object() {
+        values[0] = serde_json::json!({});
+    }
+}
+
+fn plant_object(raw: &mut serde_json::Value, field: &str, key: &str) {
+    raw[field][key] = serde_json::json!(1);
+}
+
+fn plant_array_object(raw: &mut serde_json::Value, field: &str, key: &str) {
+    seed_object_array(raw, field);
+    raw[field][0][key] = serde_json::json!(1);
+}
+
+const NESTED_SITES: &[NestedSite] = &[
+    NestedSite {
+        path: "sort.",
+        known: &["key", "dir", "dirs_first"],
+        objects: |raw| {
+            raw.get("sort")
+                .and_then(serde_json::Value::as_object)
+                .into_iter()
+                .map(|object| (object, "sort.".to_string()))
+                .collect()
+        },
+        seed: |_| {},
+        plant: |raw, key| plant_object(raw, "sort", key),
+    },
+    NestedSite {
+        path: "column_prefs.",
+        known: &["visible", "widths"],
+        objects: |raw| {
+            raw.get("column_prefs")
+                .and_then(serde_json::Value::as_object)
+                .into_iter()
+                .map(|object| (object, "column_prefs.".to_string()))
+                .collect()
+        },
+        seed: |_| {},
+        plant: |raw, key| plant_object(raw, "column_prefs", key),
+    },
+    NestedSite {
+        path: "windows[].",
+        known: &["bounds", "tabs", "active_tab"],
+        objects: |raw| {
+            raw.get("windows")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flat_map(|windows| windows.iter().enumerate())
+                .filter_map(|(index, window)| {
+                    window
+                        .as_object()
+                        .map(|object| (object, format!("windows[{index}].")))
+                })
+                .collect()
+        },
+        seed: |raw| {
+            ensure_windows(raw);
+        },
+        plant: |raw, key| ensure_windows(raw)[0][key] = serde_json::json!(1),
+    },
+    NestedSite {
+        path: "windows[].bounds.",
+        known: &["x", "y", "width", "height", "mode"],
+        objects: |raw| {
+            raw.get("windows")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flat_map(|windows| windows.iter().enumerate())
+                .filter_map(|(index, window)| {
+                    window
+                        .get("bounds")
+                        .and_then(serde_json::Value::as_object)
+                        .map(|object| (object, format!("windows[{index}].bounds.")))
+                })
+                .collect()
+        },
+        seed: seed_bounds,
+        plant: |raw, key| {
+            seed_bounds(raw);
+            raw["windows"][0]["bounds"][key] = serde_json::json!(1);
+        },
+    },
+    NestedSite {
+        path: "windows[].tabs[].",
+        known: &["cwd", "back", "forward"],
+        objects: |raw| {
+            raw.get("windows")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flat_map(|windows| windows.iter().enumerate())
+                .flat_map(|(window_index, window)| {
+                    window
+                        .get("tabs")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flat_map(|tabs| tabs.iter().enumerate())
+                        .map(move |(tab_index, tab)| (window_index, tab_index, tab))
+                })
+                .filter_map(|(window_index, tab_index, tab)| {
+                    tab.as_object().map(|object| {
+                        (
+                            object,
+                            format!("windows[{window_index}].tabs[{tab_index}]."),
+                        )
+                    })
+                })
+                .collect()
+        },
+        seed: seed_tabs,
+        plant: |raw, key| {
+            seed_tabs(raw);
+            raw["windows"][0]["tabs"][0][key] = serde_json::json!(1);
+        },
+    },
+    NestedSite {
+        path: "bookmark_labels[].",
+        known: &["path", "label"],
+        objects: |raw| {
+            raw.get("bookmark_labels")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flat_map(|values| values.iter().enumerate())
+                .filter_map(|(index, value)| {
+                    value
+                        .as_object()
+                        .map(|object| (object, format!("bookmark_labels[{index}].")))
+                })
+                .collect()
+        },
+        seed: |raw| seed_object_array(raw, "bookmark_labels"),
+        plant: |raw, key| plant_array_object(raw, "bookmark_labels", key),
+    },
+    NestedSite {
+        path: "saved_searches[].",
+        known: &["name", "query"],
+        objects: |raw| {
+            raw.get("saved_searches")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flat_map(|values| values.iter().enumerate())
+                .filter_map(|(index, value)| {
+                    value
+                        .as_object()
+                        .map(|object| (object, format!("saved_searches[{index}].")))
+                })
+                .collect()
+        },
+        seed: |raw| seed_object_array(raw, "saved_searches"),
+        plant: |raw, key| plant_array_object(raw, "saved_searches", key),
+    },
+];
 
 /// Find an unknown key *inside* a nested object. Top-level unknown keys are
 /// preserved verbatim by [`Settings::extra_fields`], so they are deliberately
 /// not treated as read-only here. Nested structs cannot carry a flattened
 /// catch-all without widening their public `Copy` contracts, so a nested key
 /// written by a newer build must make the load read-only to keep the original
-/// file intact (AV21).
+/// file intact (AV21). [`NESTED_SITES`] is the single list of nested objects,
+/// including every array-backed family.
 fn detect_unknown_nested_keys(raw: &serde_json::Value) -> Option<String> {
-    fn first_unknown(
-        object: &serde_json::Map<String, serde_json::Value>,
-        known: &[&str],
-        prefix: &str,
-    ) -> Option<String> {
-        object
-            .keys()
-            .find(|key| !known.iter().any(|name| name == key))
-            .map(|key| format!("{prefix}{key}"))
-    }
-    fn each_object<'a>(
-        values: &'a [serde_json::Value],
-        known: &'a [&'a str],
-        field: &'a str,
-    ) -> impl Iterator<Item = String> + 'a {
-        values.iter().enumerate().filter_map(move |(index, value)| {
-            value
-                .as_object()
-                .and_then(|object| first_unknown(object, known, &format!("{field}[{index}].")))
-        })
-    }
-
-    let object = raw.as_object()?;
-    if let Some(sort) = object.get("sort").and_then(serde_json::Value::as_object) {
-        if let Some(key) = first_unknown(sort, &["key", "dir", "dirs_first"], "sort.") {
-            return Some(key);
-        }
-    }
-    if let Some(prefs) = object
-        .get("column_prefs")
-        .and_then(serde_json::Value::as_object)
-    {
-        if let Some(key) = first_unknown(prefs, &["visible", "widths"], "column_prefs.") {
-            return Some(key);
-        }
-    }
-    if let Some(windows) = object.get("windows").and_then(serde_json::Value::as_array) {
-        for (index, window) in windows.iter().enumerate() {
-            let Some(window) = window.as_object() else {
-                continue;
-            };
-            if let Some(key) = first_unknown(
-                window,
-                &["bounds", "tabs", "active_tab"],
-                &format!("windows[{index}]."),
-            ) {
-                return Some(key);
-            }
-            if let Some(bounds) = window.get("bounds").and_then(serde_json::Value::as_object) {
-                if let Some(key) = first_unknown(
-                    bounds,
-                    &["x", "y", "width", "height", "mode"],
-                    &format!("windows[{index}].bounds."),
-                ) {
-                    return Some(key);
-                }
-            }
-            if let Some(tabs) = window.get("tabs").and_then(serde_json::Value::as_array) {
-                if let Some(key) = each_object(tabs, &["cwd", "back", "forward"], "tabs")
-                    .map(|key| format!("windows[{index}].{key}"))
-                    .next()
-                {
-                    return Some(key);
-                }
-            }
-        }
-    }
-    for (field, known) in [
-        ("bookmark_labels", &["path", "label"][..]),
-        ("saved_searches", &["name", "query"][..]),
-    ] {
-        if let Some(values) = object.get(field).and_then(serde_json::Value::as_array) {
-            if let Some(key) = each_object(values, known, field).next() {
-                return Some(key);
-            }
-        }
-    }
-    None
+    NESTED_SITES.iter().find_map(|site| {
+        (site.objects)(raw)
+            .into_iter()
+            .find_map(|(object, prefix)| {
+                object
+                    .keys()
+                    .find(|key| !site.known.contains(&key.as_str()))
+                    .map(|key| format!("{prefix}{key}"))
+            })
+    })
 }
 
 /// Rebuild a settings object from a file where one field has the wrong JSON
@@ -2185,8 +2438,9 @@ mod tests {
     // proc-macro which would shadow the built-in `#[test]`.
     use super::{
         detect_unknown_nested_keys, detect_unknown_persisted_enum, next_theme, next_theme_choice,
-        resolve_theme, salvage_settings, Settings, SettingsSaveError, ThemeChoice, ViewLayout,
-        APP_DIR, LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES, SCHEMA_VERSION,
+        persisted_default_json, resolve_theme, salvage_settings, Settings, SettingsSaveError,
+        ThemeChoice, ViewLayout, APP_DIR, ENUM_SITES, LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES,
+        NESTED_SITES, SCHEMA_VERSION,
     };
     use crate::model::{SortDir, SortKey, SortSpec};
     use gpui_kit::component::ThemeMode;
@@ -3280,8 +3534,7 @@ mod tests {
 
     #[test]
     fn salvage_settings_has_a_type_check_for_every_persisted_field() {
-        let default =
-            serde_json::to_value(Settings::default()).expect("default settings serialize");
+        let default = persisted_default_json();
         let fields = default
             .as_object()
             .expect("Settings serializes to a JSON object");
@@ -3316,9 +3569,51 @@ mod tests {
     }
 
     #[test]
+    fn salvage_settings_keeps_valid_defaults_and_unknown_enum_strings() {
+        let default = persisted_default_json();
+        let (kept, dropped) = salvage_settings(&default);
+        assert!(
+            dropped.is_empty(),
+            "every shipped default must survive salvage: {dropped:?}"
+        );
+        assert_eq!(
+            kept,
+            default
+                .as_object()
+                .expect("Settings serializes to a JSON object")
+                .clone()
+        );
+
+        // BC19/BC22: an unknown enum name is a valid string for salvage — the
+        // read-only signal comes from the raw cross-check, so salvage must not
+        // erase a value a newer build may still understand.
+        let mut raw = default;
+        raw["view"] = serde_json::json!("__future_enum_value__");
+        raw["sort"]["key"] = serde_json::json!("__future_enum_value__");
+        raw["column_prefs"]["widths"]["__future_key__"] = serde_json::json!(80);
+        raw["terminal_command"] = serde_json::json!("__future_enum_value__");
+        let (kept, dropped) = salvage_settings(&raw);
+        assert!(dropped.is_empty(), "unknown enum names are not type errors");
+        assert_eq!(kept["view"], raw["view"]);
+        assert_eq!(kept["sort"], raw["sort"]);
+        assert_eq!(kept["column_prefs"], raw["column_prefs"]);
+        assert_eq!(kept["terminal_command"], raw["terminal_command"]);
+        assert!(
+            detect_unknown_persisted_enum(&serde_json::Value::Object(kept)),
+            "salvage must not hide the unknown enum from the read-only check"
+        );
+
+        // BC18: a genuinely mistyped sibling is dropped without taking the
+        // preserved enum string with it.
+        raw["show_hidden"] = serde_json::json!("not-a-bool");
+        let (kept, dropped) = salvage_settings(&raw);
+        assert_eq!(dropped, vec!["show_hidden"]);
+        assert_eq!(kept["view"], raw["view"]);
+    }
+
+    #[test]
     fn detect_unknown_persisted_enum_registers_every_enum_field() {
-        let default =
-            serde_json::to_value(Settings::default()).expect("default settings serialize");
+        let default = persisted_default_json();
         assert!(
             !detect_unknown_persisted_enum(&default),
             "the defaults must not look like an unknown enum: {default}"
@@ -3334,46 +3629,70 @@ mod tests {
             "mistyped enum values must be deferred to salvage: {mistyped}"
         );
 
-        // Every string-valued default except the free-form terminal command
-        // is an enum site: a dummy future name must be detected. Adding an
-        // enum field without adding its detector site fails this assertion.
-        for (key, value) in default
-            .as_object()
-            .expect("Settings serializes to a JSON object")
-        {
-            if !value.is_string() || key == "terminal_command" {
-                continue;
-            }
+        // BC05: the detector itself owns the site list. A probe planted at
+        // every registered path must be caught; no inference from the default
+        // value's JSON type can miss a nested or non-string enum this way.
+        for site in ENUM_SITES {
             let mut raw = default.clone();
-            raw[key.as_str()] = serde_json::json!("__future_enum_value__");
+            (site.plant)(&mut raw);
             assert!(
                 detect_unknown_persisted_enum(&raw),
-                "enum site {key} is not checked by the detector"
+                "enum site {} is not checked by the detector: {raw}",
+                site.path
             );
         }
+
+        // The old heuristic treated every other string default as an enum.
+        // New free-form text (and terminal_command) must stay out of the list.
+        let mut free_form = default;
+        free_form["future_text_setting"] = serde_json::json!("hello world");
+        free_form["terminal_command"] = serde_json::json!("__future_enum_value__");
+        assert!(
+            !detect_unknown_persisted_enum(&free_form),
+            "free-form strings are not enum sites: {free_form}"
+        );
+        assert!(
+            ENUM_SITES
+                .iter()
+                .all(|site| site.path != "terminal_command"),
+            "terminal_command is free-form and must not be an enum site"
+        );
     }
 
     #[test]
     fn detect_unknown_nested_keys_registers_every_nested_default_object() {
-        let default =
-            serde_json::to_value(Settings::default()).expect("default settings serialize");
+        let default = persisted_default_json();
         assert_eq!(
             detect_unknown_nested_keys(&default),
             None,
             "the defaults must not contain an unknown nested key: {default}"
         );
 
-        // The nested structs already present in the defaults must each be
-        // registered: a key written by a newer build has to make the load
-        // read-only rather than being dropped and overwritten on the next save
-        // (AV21/BB09).
-        for field in ["sort", "column_prefs"] {
-            let mut raw = default.clone();
-            raw[field]["__future_key__"] = serde_json::json!(1);
-            assert!(
-                detect_unknown_nested_keys(&raw)
-                    .is_some_and(|key| key.starts_with(&format!("{field}."))),
-                "nested object {field} is not checked by the detector"
+        // BC06: empty-by-default arrays need one representative element each
+        // before a future key can be planted. The seeded shape must remain
+        // clean, so the detector and its test agree on what "known" means.
+        let mut seeded = default;
+        for site in NESTED_SITES {
+            (site.seed)(&mut seeded);
+        }
+        assert_eq!(
+            detect_unknown_nested_keys(&seeded),
+            None,
+            "seeded representatives must use only known keys: {seeded}"
+        );
+
+        for site in NESTED_SITES {
+            let mut raw = seeded.clone();
+            (site.plant)(&mut raw, "__future_key__");
+            let expected = format!(
+                "{}__future_key__",
+                site.path.replace("[]", "[0]").replace("<key>", "")
+            );
+            assert_eq!(
+                detect_unknown_nested_keys(&raw),
+                Some(expected.clone()),
+                "nested object {} is not checked by the detector: {raw}",
+                site.path
             );
         }
     }

@@ -1107,17 +1107,20 @@ app/
 ### 10.2 単体テスト一覧（最低ライン）
 
 | モジュール | テスト内容 |
-|---|---|
-| `model/sort.rs` | dirs first / 自然順（file2 < file10）/ 大小文字無視 / 降順 / サイズ・更新日時ソート / 同値時パス安定 |
-| `model/listing.rs` | 隠しファイルフィルタ、`visible` 再構築、`upsert`、`remove_path` |
-| `model/selection.rs` | Replace/Toggle/Range、`move_focus` の端で clamp、`reconcile`（削除後の近傍フォーカス）、`paths_for_action` |
-| `model/history.rs` | Push で forward 消去、Back/Forward の往復、Up（親）、ルートで no-op |
-| `model/format.rs` | `human_size`（0/1023/1024/1.5K/G）、`human_age`（None/秒/分/時/日）、0 件表示 |
-| `model/load.rs` | `io::ErrorKind` → FsErrorKind 変換、日本語メッセージ |
-| `settings.rs` | serde ラウンドトリップ、未知フィールド無視、破損 JSON で既定値、`last_dir` フォールバック、原子的保存（tmp 残存なし） |
-| `fs/listing.rs` | 一時 dir の列挙（dirs first）、権限なし dir のエラー、read_dir 中の削除（一時ファイル削除）で全体失敗しない |
-| `fs/watch.rs` | イベント正規化（notify 型 → FsEvent）の純関数テスト（可能なら） |
-| `fs/paths.rs` | 隠し判定、拡張子抽出、`same_path`（Linux） |
+| --- | --- |
+| `core/src/model.rs` | dirs first / 自然順 / 大小文字無視 / サイズ・更新日時ソート、`visible_entries`、`Selection` の Replace/Toggle/Range、`fingerprint`、`human_age_at` |
+| `core/src/search.rs` | 名前検索、内容検索（NUL/不正 UTF-8 除外、行番号、1MiB 上限）、`merge_search_results` |
+| `core/src/ops.rs` | FNV-1a KAT、内容ハッシュ検証、`sync_all` 伝播、hard_link 公開、rename 予約、EXDEV |
+| `core/src/error.rs` | `FsErrorKind` 分類、`raw_os_error` 保持、clone 後の errno |
+| `core/src/trash_view.rs` | in-memory 一覧・復元の純関数、RestoreByIdOutcome 分割 |
+| `app/src/settings.rs` | salvage / enum / nested-key レジストリ、誤型救出、原子的保存、並列ロード隔離 |
+| `app/src/history.rs` | Push で forward 消去、Back/Forward の往復、Up（親）、ルートで no-op |
+| `app/src/watcher.rs` | イベント正規化（notify 型 → FsEvent）、unwatch 再試行、複数 rename ペア |
+| `app/src/main.rs` | キーガード、undo/redo 不変条件、source-guard（行番号は使わずシンボル名で参照） |
+
+> as-built（2026-11-24）: core 抽出後、ロジックとテストは `core/src/*.rs` に同居する。
+> 設計当初の `model/*.rs` / `fs/*.rs` という分割は採用しなかったため、
+> 旧パスは存在しない（シンボル名で参照すること）。
 
 ### 10.3 GUI 受入手順（Kubuntu/Wayland）
 

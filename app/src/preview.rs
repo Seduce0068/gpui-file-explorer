@@ -26,8 +26,35 @@ pub const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 /// limits are advisory in `image 0.25`, so check the header ourselves).
 pub const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
 
-/// Read PNG IHDR width/height (big-endian u32 at bytes 16..24). Other formats
-/// are left to the decoder; PNG covers the common compressed-bomb case.
+/// Width/height declared by an image header. Pure and I/O-free: callers run
+/// this on the already-read leading bytes before GPUI starts a decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageDimensions {
+    pub width: u32,
+    pub height: u32,
+}
+
+fn be_u16(bytes: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
+}
+
+fn le_u16(bytes: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
+}
+
+fn le_u24(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(
+        u32::from(*bytes.get(at)?)
+            | (u32::from(*bytes.get(at + 1)?) << 8)
+            | (u32::from(*bytes.get(at + 2)?) << 16),
+    )
+}
+
+fn le_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+}
+
+/// Read PNG IHDR width/height (big-endian u32 at bytes 16..24).
 fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() < 24 || &bytes[12..16] != b"IHDR" {
         return None;
@@ -35,6 +62,289 @@ fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
     let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
     Some((width, height))
+}
+
+/// GIF logical screen descriptor: two little-endian u16 after the 6-byte magic.
+fn gif_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
+    if bytes.len() < 10 || !(bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
+        return None;
+    }
+    Some(ImageDimensions {
+        width: u32::from(le_u16(bytes, 6)?),
+        height: u32::from(le_u16(bytes, 8)?),
+    })
+}
+
+/// Walk RIFF chunks (skipping ALPH/ICC/animation extras) until a VP8/VP8L/
+/// VP8X payload declares the canvas size. Chunk sizes are untrusted, so every
+/// offset is bounds-checked and the loop is bounded.
+fn webp_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
+    if bytes.len() < 20 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return None;
+    }
+    let mut offset = 12usize;
+    for _ in 0..8 {
+        let header_end = offset.checked_add(8)?;
+        let size = le_u32(bytes, offset + 4)? as usize;
+        let data = header_end;
+        let end = data.checked_add(size)?;
+        if end > bytes.len() {
+            return None;
+        }
+        match &bytes[offset..offset + 4] {
+            b"VP8 " => {
+                // 3-byte frame tag + 0x9d 0x01 0x2a sync, then 14-bit W/H.
+                if size < 10
+                    || bytes[data + 3] != 0x9d
+                    || bytes[data + 4] != 0x01
+                    || bytes[data + 5] != 0x2a
+                {
+                    return None;
+                }
+                return Some(ImageDimensions {
+                    width: u32::from(le_u16(bytes, data + 6)? & 0x3fff),
+                    height: u32::from(le_u16(bytes, data + 8)? & 0x3fff),
+                });
+            }
+            b"VP8L" => {
+                // 0x2f signature + 4 bytes: 14 bits (w-1), 14 bits (h-1).
+                if size < 5 || bytes[data] != 0x2f {
+                    return None;
+                }
+                let bits = le_u32(bytes, data + 1)?;
+                return Some(ImageDimensions {
+                    width: (bits & 0x3fff) + 1,
+                    height: ((bits >> 14) & 0x3fff) + 1,
+                });
+            }
+            b"VP8X" => {
+                // flags(1) + reserved(3) + canvas_w-1 (24) + canvas_h-1 (24).
+                if size < 10 {
+                    return None;
+                }
+                return Some(ImageDimensions {
+                    width: le_u24(bytes, data + 4)? + 1,
+                    height: le_u24(bytes, data + 7)? + 1,
+                });
+            }
+            _ => {}
+        }
+        // RIFF chunks are padded to an even byte boundary.
+        offset = end.checked_add(size & 1)?;
+    }
+    None
+}
+
+/// JPEG: scan markers after SOI for the first SOF segment. Standalone markers
+/// have no length; DHT/JPG/DAC share the 0xC0..0xCF range but are not frames.
+fn jpeg_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
+    if !bytes.starts_with(&[0xff, 0xd8]) {
+        return None;
+    }
+    let mut at = 2usize;
+    for _ in 0..64 {
+        while bytes.get(at) == Some(&0xff) {
+            at += 1;
+        }
+        let marker = *bytes.get(at)?;
+        at += 1;
+        if marker == 0xd9 || marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+            continue;
+        }
+        let len = usize::from(be_u16(bytes, at)?);
+        if len < 2 {
+            return None;
+        }
+        let is_sof = (0xc0..=0xcf).contains(&marker) && !matches!(marker, 0xc4 | 0xc8 | 0xcc);
+        if is_sof {
+            if len < 7 {
+                return None;
+            }
+            return Some(ImageDimensions {
+                height: u32::from(be_u16(bytes, at + 3)?),
+                width: u32::from(be_u16(bytes, at + 5)?),
+            });
+        }
+        at = at.checked_add(len)?;
+        if at > bytes.len() {
+            return None;
+        }
+    }
+    None
+}
+
+/// BMP: 40-byte BITMAPINFOHEADER uses signed i32 W/H; the 12-byte CORE header
+/// uses u16. Negative heights (top-down DIBs) are reported as magnitudes.
+fn bmp_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
+    // The CORE header is only 22 bytes in total; the longer variants are
+    // bounds-checked by the individual field reads below.
+    if !bytes.starts_with(b"BM") || bytes.len() < 18 {
+        return None;
+    }
+    match le_u32(bytes, 14)? {
+        size if size >= 40 => {
+            let width = i32::from_le_bytes(bytes.get(18..22)?.try_into().ok()?);
+            let height = i32::from_le_bytes(bytes.get(22..26)?.try_into().ok()?);
+            Some(ImageDimensions {
+                width: width.unsigned_abs(),
+                height: height.unsigned_abs(),
+            })
+        }
+        12 => Some(ImageDimensions {
+            width: u32::from(le_u16(bytes, 18)?),
+            height: u32::from(le_u16(bytes, 20)?),
+        }),
+        _ => None,
+    }
+}
+
+/// TIFF: follow the byte-order-mark and read tags 0x0100/0x0101 from the first
+/// IFD. Both SHORT and LONG values fit inline in the 4-byte value field.
+fn tiff_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
+    let little = match bytes.get(..4)? {
+        b"II*\0" => true,
+        b"MM\0*" => false,
+        _ => return None,
+    };
+    let u16_at = |at: usize| -> Option<u16> {
+        let pair = bytes.get(at..at + 2)?;
+        Some(if little {
+            u16::from_le_bytes(pair.try_into().ok()?)
+        } else {
+            u16::from_be_bytes(pair.try_into().ok()?)
+        })
+    };
+    let u32_at = |at: usize| -> Option<u32> {
+        let quad = bytes.get(at..at + 4)?;
+        Some(if little {
+            u32::from_le_bytes(quad.try_into().ok()?)
+        } else {
+            u32::from_be_bytes(quad.try_into().ok()?)
+        })
+    };
+    let ifd = u32_at(4)? as usize;
+    let count = usize::from(u16_at(ifd)?);
+    if count == 0 || count > 512 {
+        return None;
+    }
+    let mut width = None;
+    let mut height = None;
+    for index in 0..count {
+        let at = ifd.checked_add(2)?.checked_add(index.checked_mul(12)?)?;
+        if at.checked_add(12)? > bytes.len() {
+            return None;
+        }
+        match u16_at(at)? {
+            0x0100 => {
+                width = Some(match u16_at(at + 2)? {
+                    3 => u32::from(u16_at(at + 8)?),
+                    4 => u32_at(at + 8)?,
+                    _ => return None,
+                })
+            }
+            0x0101 => {
+                height = Some(match u16_at(at + 2)? {
+                    3 => u32::from(u16_at(at + 8)?),
+                    4 => u32_at(at + 8)?,
+                    _ => return None,
+                })
+            }
+            _ => {}
+        }
+    }
+    Some(ImageDimensions {
+        width: width?,
+        height: height?,
+    })
+}
+
+/// ICO: the first 16-byte directory entry stores W/H in bytes (0 means 256).
+fn ico_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
+    if !bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) || bytes.len() < 24 {
+        return None;
+    }
+    if le_u16(bytes, 4)? == 0 {
+        return None;
+    }
+    let width = if bytes[6] == 0 {
+        256
+    } else {
+        u32::from(bytes[6])
+    };
+    let height = if bytes[7] == 0 {
+        256
+    } else {
+        u32::from(bytes[7])
+    };
+    Some(ImageDimensions { width, height })
+}
+
+/// PNM: ASCII width/height tokens after the P1..P6 magic, skipping comments.
+fn pnm_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
+    if bytes.len() < 2 || bytes[0] != b'P' || !(b'1'..=b'6').contains(&bytes[1]) {
+        return None;
+    }
+    let mut at = 2usize;
+    let mut tokens = [0u32; 2];
+    for token in &mut tokens {
+        loop {
+            while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+                at += 1;
+            }
+            if bytes.get(at) == Some(&b'#') {
+                while at < bytes.len() && !matches!(bytes[at], b'\n' | b'\r') {
+                    at += 1;
+                }
+                continue;
+            }
+            break;
+        }
+        let start = at;
+        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+        }
+        if start == at {
+            return None;
+        }
+        *token = std::str::from_utf8(bytes.get(start..at)?)
+            .ok()?
+            .parse()
+            .ok()?;
+    }
+    Some(ImageDimensions {
+        width: tokens[0],
+        height: tokens[1],
+    })
+}
+
+/// Declared raster dimensions, or `None` when the header is truncated or uses
+/// a format without a fixed-size dimension field.
+///
+/// SVG is intentionally excluded: its size is expressed as CSS lengths or a
+/// `viewBox` in arbitrary text, and GPUI's vector rasterizer applies its own
+/// limits; parsing it here would require a full XML parser and a new
+/// dependency. All raster formats supported by [`image_format_for_name`] are
+/// covered, so the 64M-pixel guard can no longer be bypassed by changing the
+/// file extension.
+pub fn declared_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
+    match sniff_image_format(bytes)? {
+        ImageFormat::Png => {
+            png_dimensions(bytes).map(|(width, height)| ImageDimensions { width, height })
+        }
+        ImageFormat::Jpeg => jpeg_dimensions(bytes),
+        ImageFormat::Webp => webp_dimensions(bytes),
+        ImageFormat::Gif => gif_dimensions(bytes),
+        ImageFormat::Bmp => bmp_dimensions(bytes),
+        ImageFormat::Tiff => tiff_dimensions(bytes),
+        ImageFormat::Ico => ico_dimensions(bytes),
+        ImageFormat::Pnm => pnm_dimensions(bytes),
+        ImageFormat::Svg => None,
+    }
+}
+
+/// Common pixel-budget predicate for every declared raster size.
+pub fn pixels_exceed_limit(width: u32, height: u32) -> bool {
+    u64::from(width).saturating_mul(u64::from(height)) > MAX_IMAGE_PIXELS
 }
 
 /// Image format guessed from a file name extension.
@@ -64,13 +374,16 @@ pub fn image_format_for_name(name: &str) -> Option<ImageFormat> {
 /// `Unknown` even though this module and `gpui_kit::img` support them, so it is
 /// deliberately not used as a gate here (follow-up: align the icon mapping).
 /// Symlinks are refused just like in [`read_image_preview`], so a thumbnail
-/// never reads through a link. Content is not sniffed: that needs bytes and
-/// hence fs I/O. `gpui_kit::img` detects the format asynchronously and calls
-/// `.with_fallback(...)` if the contents do not match the extension, leaving
-/// the ordinary icon visible. The caller also checks the entry size against
-/// [`MAX_IMAGE_BYTES`] before using this helper's result.
-pub fn is_thumbnailable(name: &str, entry_is_symlink: bool) -> bool {
-    !entry_is_symlink && image_format_for_name(name).is_some()
+/// never reads through a link. `entry_is_file` must come from a metadata stat
+/// that rejects FIFOs/sockets/devices: `gpui_kit::img` reads path resources with
+/// an unbounded `fs::read`, which never returns for a pipe named `*.png` even
+/// when its reported length is `0`. Content is not sniffed: that needs bytes
+/// and hence fs I/O. `gpui_kit::img` detects the format asynchronously and
+/// calls `.with_fallback(...)` if the contents do not match the extension,
+/// leaving the ordinary icon visible. The caller also checks the entry size
+/// against [`MAX_IMAGE_BYTES`] before using this helper's result.
+pub fn is_thumbnailable(name: &str, entry_is_symlink: bool, entry_is_file: bool) -> bool {
+    !entry_is_symlink && entry_is_file && image_format_for_name(name).is_some()
 }
 
 /// An image ready to render: the format that matches the **content**, plus the
@@ -174,11 +487,13 @@ pub fn read_image_preview(
     }
     match sniff_image_format(&bytes) {
         Some(format) => {
-            if let Some((width, height)) = png_dimensions(&bytes) {
-                let pixels = u64::from(width) * u64::from(height);
-                if pixels > MAX_IMAGE_PIXELS {
+            // BC11: the guard is format-agnostic. A 100000x100000 JPEG/WebP/
+            // GIF header must be rejected just like the PNG bomb case.
+            if let Some(dims) = declared_dimensions(&bytes) {
+                if pixels_exceed_limit(dims.width, dims.height) {
                     return Err(format!(
-                        "画像のピクセル数が大きすぎます（{width}x{height}、上限 {MAX_IMAGE_PIXELS}）"
+                        "画像のピクセル数が大きすぎます（{}x{}、上限 {MAX_IMAGE_PIXELS}）",
+                        dims.width, dims.height
                     ));
                 }
             }
@@ -212,18 +527,27 @@ pub fn read_preview(path: &Path, max_bytes: u64) -> Result<Preview, String> {
     if !link_metadata.is_file() {
         return Err("ファイルではありません".to_string());
     }
-    let size = link_metadata.len();
     let file = std::fs::File::open(path).map_err(|error| format!("開けません: {error}"))?;
     let mut bytes = Vec::new();
-    file.take(max_bytes)
+    // BC12: read one byte past the limit and decide `truncated` from the
+    // bytes actually returned. `metadata.len()` lies on pseudo filesystems
+    // and may change between the stat and the read (TOCTOU).
+    file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| format!("読み取りに失敗しました: {error}"))?;
+    let truncated = bytes_exceed_limit(bytes.len() as u64, max_bytes);
+    if truncated {
+        let keep = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+        bytes.truncate(keep);
+    }
     if bytes.contains(&0) {
         return Err("バイナリファイルはプレビューできません".to_string());
     }
+    // Prefer the measured lower bound when the reported size is wrong.
+    let size = link_metadata.len().max(bytes.len() as u64);
     Ok(Preview {
         text: String::from_utf8_lossy(&bytes).into_owned(),
-        truncated: size > max_bytes,
+        truncated,
         size,
     })
 }
@@ -319,8 +643,9 @@ pub fn preview_key_action(key: &str, control: bool) -> PreviewKeyAction {
 #[cfg(test)]
 mod image_tests {
     use super::{
-        bytes_exceed_limit, image_format_for_name, image_too_large_error, is_thumbnailable,
-        png_dimensions, read_image_preview, sniff_image_format, MAX_IMAGE_BYTES,
+        bytes_exceed_limit, declared_dimensions, image_format_for_name, image_too_large_error,
+        is_thumbnailable, pixels_exceed_limit, png_dimensions, read_image_preview,
+        sniff_image_format, ImageDimensions, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS,
     };
     use gpui_kit::ImageFormat;
     use std::fs;
@@ -383,7 +708,7 @@ mod image_tests {
             ".hidden.png",
             "holiday.photo.PNG",
         ] {
-            assert!(is_thumbnailable(name, false), "{name}");
+            assert!(is_thumbnailable(name, false, true), "{name}");
         }
         // Non-images and image *kinds* the decoder cannot handle stay on the
         // ordinary icon path.
@@ -397,7 +722,7 @@ mod image_tests {
             "photo.psd",
             "photo.raw",
         ] {
-            assert!(!is_thumbnailable(name, false), "{name}");
+            assert!(!is_thumbnailable(name, false, true), "{name}");
         }
     }
 
@@ -408,8 +733,8 @@ mod image_tests {
         // Pin the expectation here so aligning the icon mapping later cannot
         // silently take their thumbnails away.
         for name in ["img.pbm", "img.ppm", "img.pgm", "img.pnm"] {
-            assert!(is_thumbnailable(name, false), "{name}");
-            assert!(!is_thumbnailable(name, true), "{name}");
+            assert!(is_thumbnailable(name, false, true), "{name}");
+            assert!(!is_thumbnailable(name, true, true), "{name}");
         }
     }
 
@@ -417,9 +742,20 @@ mod image_tests {
     fn thumbnail_decision_refuses_symlinks() {
         // A symlink may point outside the listed directory; the preview
         // reader rejects links for the same reason.
-        assert!(!is_thumbnailable("photo.png", true));
-        assert!(is_thumbnailable("photo.png", false));
-        assert!(!is_thumbnailable("notes.md", true));
+        assert!(!is_thumbnailable("photo.png", true, true));
+        assert!(is_thumbnailable("photo.png", false, true));
+        assert!(!is_thumbnailable("notes.md", true, true));
+    }
+
+    #[test]
+    fn thumbnail_decision_refuses_non_regular_files() {
+        // BC02: a FIFO/socket/device with an image extension and a zero
+        // reported size passes the byte cap, but `gpui_kit::img` would block
+        // forever on `fs::read`. The caller's metadata stat is the only guard.
+        for name in ["photo.png", "anim.GIF", "vector.svg"] {
+            assert!(!is_thumbnailable(name, false, false), "{name}");
+        }
+        assert!(is_thumbnailable("photo.png", false, true));
     }
 
     #[test]
@@ -641,6 +977,283 @@ mod image_tests {
         assert_eq!(png_dimensions(&wrong_chunk[..23]), None);
     }
 
+    fn webp_chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(id);
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    fn webp_header(chunk: Vec<u8>) -> Vec<u8> {
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend_from_slice(&(chunk.len() as u32 + 4).to_le_bytes());
+        bytes.extend_from_slice(b"WEBP");
+        bytes.extend_from_slice(&chunk);
+        bytes
+    }
+
+    fn jpeg_header(width: u16, height: u16) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08];
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&[0x01, 0x01, 0x11, 0x00]);
+        bytes
+    }
+
+    fn tiff_header(little: bool, width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = if little {
+            b"II*\0".to_vec()
+        } else {
+            b"MM\0*".to_vec()
+        };
+        let word = |value: u16| -> Vec<u8> {
+            if little {
+                value.to_le_bytes().to_vec()
+            } else {
+                value.to_be_bytes().to_vec()
+            }
+        };
+        let dword = |value: u32| -> Vec<u8> {
+            if little {
+                value.to_le_bytes().to_vec()
+            } else {
+                value.to_be_bytes().to_vec()
+            }
+        };
+        bytes.extend_from_slice(&dword(8)); // IFD offset
+        bytes.extend_from_slice(&word(2)); // two entries: width, height
+        for (tag, value) in [(0x0100u16, width), (0x0101u16, height)] {
+            bytes.extend_from_slice(&word(tag));
+            bytes.extend_from_slice(&word(4)); // LONG
+            bytes.extend_from_slice(&dword(1)); // count
+            bytes.extend_from_slice(&dword(value));
+        }
+        bytes
+    }
+
+    #[test]
+    fn declared_dimensions_cover_all_supported_raster_formats() {
+        // PNG
+        let mut png = PNG_HEADER.to_vec();
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&1000u32.to_be_bytes());
+        png.extend_from_slice(&2000u32.to_be_bytes());
+        assert_eq!(
+            declared_dimensions(&png),
+            Some(ImageDimensions {
+                width: 1000,
+                height: 2000
+            })
+        );
+
+        // GIF87a / GIF89a
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&640u16.to_le_bytes());
+        gif.extend_from_slice(&480u16.to_le_bytes());
+        assert_eq!(
+            declared_dimensions(&gif),
+            Some(ImageDimensions {
+                width: 640,
+                height: 480
+            })
+        );
+
+        // WebP: VP8 (lossy), VP8L (lossless), VP8X (extended), and an ALPH
+        // chunk before VP8 (alpha channel in extended files).
+        let mut vp8 = vec![0u8; 3];
+        vp8.extend_from_slice(&[0x9d, 0x01, 0x2a]);
+        vp8.extend_from_slice(&640u16.to_le_bytes());
+        vp8.extend_from_slice(&480u16.to_le_bytes());
+        assert_eq!(
+            declared_dimensions(&webp_header(webp_chunk(b"VP8 ", &vp8))),
+            Some(ImageDimensions {
+                width: 640,
+                height: 480
+            })
+        );
+        let mut vp8l = vec![0x2f];
+        let bits = (639u32) | (479u32 << 14);
+        vp8l.extend_from_slice(&bits.to_le_bytes());
+        assert_eq!(
+            declared_dimensions(&webp_header(webp_chunk(b"VP8L", &vp8l))),
+            Some(ImageDimensions {
+                width: 640,
+                height: 480
+            })
+        );
+        let mut vp8x = vec![0u8; 4];
+        vp8x.extend_from_slice(&639u32.to_le_bytes()[..3]);
+        vp8x.extend_from_slice(&479u32.to_le_bytes()[..3]);
+        assert_eq!(
+            declared_dimensions(&webp_header(webp_chunk(b"VP8X", &vp8x))),
+            Some(ImageDimensions {
+                width: 640,
+                height: 480
+            })
+        );
+        let mut with_alpha = webp_chunk(b"ALPH", &[0u8; 3]);
+        with_alpha.extend_from_slice(&webp_chunk(b"VP8 ", &vp8));
+        assert_eq!(
+            declared_dimensions(&webp_header(with_alpha)),
+            Some(ImageDimensions {
+                width: 640,
+                height: 480
+            })
+        );
+
+        // JPEG SOF0: width/height are big-endian u16 after the precision byte.
+        assert_eq!(
+            declared_dimensions(&jpeg_header(640, 480)),
+            Some(ImageDimensions {
+                width: 640,
+                height: 480
+            })
+        );
+
+        // BMP both DIB header variants.
+        for (dib_size, header) in [
+            (40u32, {
+                let mut bmp = b"BM".to_vec();
+                bmp.extend_from_slice(&[0u8; 8]);
+                bmp.extend_from_slice(&0u32.to_le_bytes());
+                bmp.extend_from_slice(&40u32.to_le_bytes());
+                bmp.extend_from_slice(&640u32.to_le_bytes());
+                bmp.extend_from_slice(&480u32.to_le_bytes());
+                bmp
+            }),
+            (12u32, {
+                let mut bmp = b"BM".to_vec();
+                bmp.extend_from_slice(&[0u8; 8]);
+                bmp.extend_from_slice(&0u32.to_le_bytes());
+                bmp.extend_from_slice(&12u32.to_le_bytes());
+                bmp.extend_from_slice(&640u16.to_le_bytes());
+                bmp.extend_from_slice(&480u16.to_le_bytes());
+                bmp
+            }),
+        ] {
+            let dims = declared_dimensions(&header).unwrap_or_else(|| panic!("BMP {dib_size}"));
+            assert_eq!(
+                dims,
+                ImageDimensions {
+                    width: 640,
+                    height: 480
+                }
+            );
+        }
+
+        // TIFF: both byte orders.
+        for little in [true, false] {
+            assert_eq!(
+                declared_dimensions(&tiff_header(little, 640, 480)),
+                Some(ImageDimensions {
+                    width: 640,
+                    height: 480
+                })
+            );
+        }
+
+        // ICO: a zero byte means 256.
+        let mut ico = vec![0, 0, 1, 0, 1, 0, 0, 0];
+        ico.extend_from_slice(&[0u8; 16]);
+        assert_eq!(
+            declared_dimensions(&ico),
+            Some(ImageDimensions {
+                width: 256,
+                height: 256
+            })
+        );
+
+        // PNM: ASCII tokens with a comment.
+        assert_eq!(
+            declared_dimensions(b"P6\n# generated\n640 480\n255\n"),
+            Some(ImageDimensions {
+                width: 640,
+                height: 480
+            })
+        );
+
+        // SVG has no fixed-size header: it is intentionally not guarded here.
+        assert_eq!(declared_dimensions(br#"<svg width="1" height="1"/>"#), None);
+    }
+
+    #[test]
+    fn declared_dimensions_refuse_truncated_and_lying_headers() {
+        assert_eq!(declared_dimensions(&PNG_HEADER), None);
+        assert_eq!(declared_dimensions(b"GIF89a\x80\x02"), None);
+        assert_eq!(declared_dimensions(&jpeg_header(1, 1)[..10]), None);
+        // A RIFF container that is not WebP must not be parsed as one.
+        let mut wave = b"RIFF".to_vec();
+        wave.extend_from_slice(&4u32.to_le_bytes());
+        wave.extend_from_slice(b"WAVE");
+        wave.extend_from_slice(&webp_chunk(b"VP8 ", &[0u8; 10]));
+        assert_eq!(declared_dimensions(&wave), None);
+    }
+
+    #[test]
+    fn huge_declared_dimensions_are_rejected_for_every_format() {
+        // BC11: changing the extension (or the actual format) must not bypass
+        // the 64M-pixel cap. Build valid-signature headers that only declare
+        // an oversized canvas; the sniffer and the guard must both fire.
+        let mut png = PNG_HEADER.to_vec();
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&100_000u32.to_be_bytes());
+        png.extend_from_slice(&100_000u32.to_be_bytes());
+
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&30_000u16.to_le_bytes());
+        gif.extend_from_slice(&30_000u16.to_le_bytes());
+
+        let mut vp8 = vec![0u8; 3];
+        vp8.extend_from_slice(&[0x9d, 0x01, 0x2a]);
+        vp8.extend_from_slice(&10_000u16.to_le_bytes());
+        vp8.extend_from_slice(&10_000u16.to_le_bytes());
+        let webp = webp_header(webp_chunk(b"VP8 ", &vp8));
+
+        let mut bmp = b"BM".to_vec();
+        bmp.extend_from_slice(&[0u8; 8]);
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&100_000u32.to_le_bytes());
+        bmp.extend_from_slice(&100_000u32.to_le_bytes());
+
+        for (name, bytes) in [
+            ("png.png", png),
+            ("gif.gif", gif),
+            ("webp.webp", webp),
+            ("jpeg.jpg", jpeg_header(30_000, 30_000)),
+            ("bmp.bmp", bmp),
+            ("tiff.tiff", tiff_header(true, 100_000, 100_000)),
+            ("pnm.pnm", b"P6\n100000 100000\n255\n".to_vec()),
+        ] {
+            let dir = scratch("huge-all-formats");
+            let path = dir.join(name);
+            fs::write(&path, &bytes).unwrap();
+            let error =
+                read_image_preview(&path, image_format_for_name(name).unwrap(), MAX_IMAGE_BYTES)
+                    .unwrap_err();
+            assert!(
+                error.contains("ピクセル数が大きすぎます"),
+                "{name}: {error}"
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn pixels_exceed_limit_uses_the_shared_exact_boundary() {
+        assert_eq!(MAX_IMAGE_PIXELS, 8192 * 8192);
+        assert!(!pixels_exceed_limit(8192, 8192));
+        assert!(pixels_exceed_limit(8192, 8193));
+        assert!(pixels_exceed_limit(u32::MAX, u32::MAX));
+        assert!(!pixels_exceed_limit(0, u32::MAX));
+    }
+
     #[test]
     fn refuses_symlinks_and_missing_files() {
         let dir = scratch("types");
@@ -711,6 +1324,37 @@ mod tests {
         assert_eq!(preview.text.len(), 10);
         assert!(preview.truncated);
         assert_eq!(preview.size, 100);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn truncation_uses_the_bytes_actually_read_at_the_boundary() {
+        // BC12: `metadata.len()` is no longer the truncation oracle. Exactly
+        // `max_bytes` is complete; one more byte truncates the displayed text
+        // to the limit while retaining the full size for the status line.
+        let dir = scratch("boundary");
+        let exact = dir.join("exact.txt");
+        fs::write(&exact, vec![b'a'; 32]).unwrap();
+        let preview = read_preview(&exact, 32).unwrap();
+        assert_eq!(preview.text.len(), 32);
+        assert!(!preview.truncated);
+        assert_eq!(preview.size, 32);
+
+        let over = dir.join("over.txt");
+        fs::write(&over, vec![b'b'; 33]).unwrap();
+        let preview = read_preview(&over, 32).unwrap();
+        assert_eq!(preview.text.len(), 32);
+        assert!(preview.truncated);
+        assert_eq!(preview.size, 33);
+
+        // A NUL in the extra byte is never displayed (it is dropped before the
+        // binary check), so an otherwise-text file stays previewable.
+        let mut with_nul = vec![b'c'; 32];
+        with_nul.push(0);
+        let nul_path = dir.join("nul.txt");
+        fs::write(&nul_path, with_nul).unwrap();
+        assert!(read_preview(&nul_path, 32).is_ok());
+
         let _ = fs::remove_dir_all(&dir);
     }
 

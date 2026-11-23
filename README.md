@@ -109,6 +109,10 @@ virtual workspace で実際に解決に使われるのは**ルートの `Cargo.l
 | パス | 内容 |
 |---|---|
 | [app/](app/) | **動く試作**（AGPL-3.0-or-later）。ツールバー / ブレッドクラム / サイドバー / 仮想リスト / 非同期ロード / 自然順ソート / 隠しファイル切替 / 履歴 / 右クリックメニュー / ゴミ箱（確認付き）/ 設定永続化 / notify 監視 |
+| [core/](core/) | `gfe_core`。GPUI 非依存の純ロジック（model / search / ops / error / ports / trash_view） |
+| [win32/](win32/) | `gfe-win32`。Win32 FFI を隔離（unsafe はここのみ。実機未検証） |
+| [pwa/](pwa/) | iOS / Android 共通の 1 画面 PWA。core wasm API 経由の一覧・検索は受入達成（実ファイル走査は Phase 2） |
+| [android/](android/) | Compose 1 画面ビューアの scaffold。SDK/JDK 不在のためビルド未検証 |
 | [DESIGN.md](DESIGN.md) | 設計書。機能マトリクス P0〜P3、ASCII ワイヤーフレーム、型契約、watch→debounce→reconcile 状態機械、trash-first 安全則、AGPL 運用、受入条件 AC-1〜AC-13、ADR 12 件（変更履歴は DESIGN.md 末尾を参照） |
 | [docs/adr/](docs/adr/) | [ADR 索引](docs/adr/index.md): 新要件の個別 ADR 5 件。モバイルのみ **approved（2026-11-23 承認）**、他4件は **draft・未承認**。DESIGN.md の ADR-001〜012 とは別系列 |
 | [RESEARCH.md](RESEARCH.md) | 調査レポート。要点 12 項目 / 推奨スタック / クロスプラットフォームの罠 / MVP 計画 / PoC 検証結果 |
@@ -213,9 +217,10 @@ sudo dpkg -r gpui-file-explorer
 - レスポンシブサイドバー（NW04）: ビューポート幅が 900px 以上なら 190px、
   520px 以下なら 0px、その間は線形補間。`Ctrl+B` で表示を強制した場合は
   狭い画面でも 190px（[DESIGN.md](DESIGN.md) §3.1 の as-built 記載）。
-- Android / iOS は**要件化**したが**未実装**。実現可能性は
-  [モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md)
-  は approved（2026-11-23 承認、選択肢B）である。
+- Android は Compose アプリ＋PWA、iOS は PWA のみ（Apple Developer Program 年会費のため）。
+  [モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md) は
+  approved（2026-11-23 承認、選択肢B）。[pwa/](pwa/) は core wasm API 経由の
+  1 画面ビューアとして受入達成、[android/](android/) は scaffold（ビルド未検証）。
 - 配布は実装されるまで従来どおり **Linux amd64 の DEB のみ**。
   Windows / macOS / モバイル向けパッケージは未対応。
 
@@ -227,7 +232,8 @@ sudo dpkg -r gpui-file-explorer
 
 ## WASM / ブラウザ対応
 
-- 現試作は**デスクトップ専用**です（`std::fs` / `notify` / `trash` / OS ダイアログを使用）。
+- デスクトップ試作は `std::fs` / `notify` / `trash` / OS ダイアログを使用する。
+  PWA は `gfe_core` を wasm 化し in-memory JSON アダプタで一覧・検索を動かす（実ファイルは未対応）。
 - GPUI 自体には Web バックエンド（`gpui-pre-web`）があり、`gpui-pre` + `gpui-pre-platform` を
   `default-features = false` にすれば **stable で wasm32 にコンパイル可能**（検証済み）。
   ただし `gpui-kit` の既定 feature は nightly 必須の `wasm_thread` を有効にします。
@@ -284,8 +290,9 @@ CI と同じ範囲を手元で回すスクリプトを用意しています。�
 実行します。
 
 ```bash
-bash scripts/check.sh              # app + poc: fmt/check/test/clippy +
+bash scripts/check.sh              # app/poc/core/win32: fmt/check/test/clippy +
                                    # app の release check/test +
+                                   # wasm32 / windows-gnu の cross check +
                                    # cargo audit / deny / vet
 bash scripts/check.sh --fast       # audit と vet を省略。deny は advisories を
                                    # 省きオフラインで licenses/bans/sources のみ。

@@ -1973,6 +1973,39 @@ status: current
 - [x] **BB23** selectionRange の非配列入力・重複パス境界にテストなし — 対応: loop15
 - [x] **BB24** #select-count が非 live region — 対応: loop15
 
+## 進行中（ループ16 バックログ）
+
+### 優先度: 高（ループ16・confirmed）
+
+- [x] **BC01** NUL のみのバイナリ判定が不正 UTF-8 を見逃し偽一致 — 対応: loop16
+- [x] **BC02** サムネイル経路に is_file ガードが無く FIFO/特殊ファイルで無限ブロック — 対応: loop16
+- [x] **BC03** 破損画像のデコード失敗が無言の空白になる — 対応: loop16
+- [x] **BC04** デコード済み画像が GPUI アセットキャッシュに残り続ける — 対応: loop16
+- [x] **BC05** enum レジストリが文字列デフォルト推論で誤検知と検出漏れ — 対応: loop16
+- [x] **BC06** nested-key レジストリが配列内ネストを走査しない — 対応: loop16
+- [x] **BC07** 履歴ダイアログの Ctrl+Shift+U が到達不能 — 対応: loop16
+
+### 優先度: 中（ループ16・confirmed）
+
+- [x] **BC08** 検索 per-root cap の未使用枠が再配分されない — 対応: loop16
+- [x] **BC09** 検索の上限到達・1MiB 超過スキップがサマリに現れない — 対応: loop16
+- [x] **BC10** 非 UTF-8 テキストが無警告で不一致（UTF-8 限定の明記） — 対応: loop16
+- [x] **BC11** MAX_IMAGE_PIXELS ガードが PNG のみ — 対応: loop16
+- [x] **BC12** テキストプレビューの truncated が metadata.size 依存 — 対応: loop16
+- [x] **BC13** DESIGN §10.2 の単体テスト一覧が存在しないパスを指す — 対応: loop16
+- [x] **BC14** phase1-core-extraction 受入条件が古い行アンカー — 対応: loop16
+- [x] **BC15** 複数 ADR が app/Cargo.lock を依存根拠として参照 — 対応: loop16
+- [x] **BC16** README 構成表と WASM 節が pwa/android を未反映 — 対応: loop16
+- [x] **BC17** FocusSearchName 専用ハンドラが Alt 排除ガードを迂回 — 対応: loop16
+- [x] **BC18** salvage レジストリが正常値保持と未知 enum 温存を未検証 — 対応: loop16
+- [x] **BC19** enum レジストリの2層が別情報源 — 対応: loop16
+
+### 優先度: 低（ループ16・confirmed）
+
+- [x] **BC20** CR のみ改行で行番号が常に1 — 対応: loop16
+- [x] **BC21** README 既定ループ説明が member/クロスターゲットを省略 — 対応: loop16
+- [x] **BC22** 3レジストリが persisted default JSON を個別再計算 — 対応: loop16
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。
