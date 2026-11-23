@@ -94,14 +94,20 @@ FileSystem ポートが必要（`notes/wasm-browser-notes.md` §2 を参照）�
 | `Home` / `End` | 先頭 / 末尾の行へ移動 |
 | `Enter` | 選択を確定（選択モード中は当該行をトグル / 範囲選択） |
 | `Space` / `i` | フォーカス行の詳細（`path` / `size` / `isDir`）をステータスへ表示 |
+| `Escape` | 範囲選択の arm → 選択モード → 選択状態の順に一段ずつ解除 |
 
 詳細表示はタッチの長押しから `Space` / `i`（マウスは右クリック）へ退避した。
 長押しは「選択モードへ突入 + 当該行をトグル」として扱う。
-`Ctrl` / `Shift` / `Cmd` / `Alt` との同時押しはブラウザ / OS のショートカットへ譲り、
-一覧のハンドラは横取りしない（デスクトップ版の Ctrl トグル / Shift 範囲 /
-Ctrl+A の代わりに、下記の専用ボタンを使う）。キーボードで移動したときだけ
-`scrollIntoView({ block: 'nearest' })` で viewport 内へ追従する。ポインタの
-タップでは `preventScroll` のままスクロール位置を動かさない。
+`Ctrl` / `Cmd` / `Alt` との同時押しはブラウザ / OS のショートカットへ譲り、
+一覧のハンドラは横取りしない。`Shift` はナビゲーションキー（`↑` / `↓` /
+`Home` / `End`）だけを譲り、`Shift+I`（大文字入力）は詳細表示として受理する。
+デスクトップ版の Ctrl トグル / Shift 範囲 / Ctrl+A の代わりに、下記の専用ボタンを使う。
+キーボードで移動したときだけ `scrollIntoView({ block: 'nearest' })` で viewport 内へ
+追従する。ポインタのタップでは `preventScroll` のままスクロール位置を動かさない。
+
+一覧は検索やソートで描き直されるが、再描画前に一覧内へフォーカスがあった場合は
+同じ行（空状態では検索欄）へフォーカスを戻すため、`activeElement` が `body` へ
+落ちない。検索0件の「検索をクリア」を `Enter` で押した後も同様に復元される。
 
 一覧の 📁 / 📄 / ↗ は `aria-hidden="true"` の span に分離しているため、
 `role="option"` のアクセシブル名にはファイル名とメタ情報だけが含まれる。
@@ -120,11 +126,20 @@ Ctrl+A の代わりに、下記の専用ボタンを使う）。キーボード�
 | 「すべて選択」 | Ctrl+A | `selectionSelectAll` で表示中の全行を選択 |
 | 「選択を解除」 | 選択クリア | `selectionClear` で全解除 |
 | 行を長押し | — | 選択モードへ突入し、当該行をトグル |
+| `Escape` | Esc | 範囲 arm → 選択モード → 選択の順に脱出 |
+
+「範囲選択」はトグルで arm するが、**1 回の範囲選択で必ず解除**される
+（pure helper `nextRangeArmed(current, { completed: true })`）。完了時にボタンの
+`aria-pressed` を更新し、ステータスへ終了を通知する。arm 中に `Escape` を押しても解除できる。
 
 選択は object 参照ではなく **path** で保持する（core の `Selection` と同じ不変条件）。
 再描画時に `retainSelectedPaths(prev, next)` が新一覧へ残った path だけを再選択するため、
 検索欄へ 1 文字入力しても一致が残る行の選択は消えない。検索で消えた行の選択だけが外れる。
 選択モードを終了すると選択状態もクリアする。
+
+選択件数は `#select-count` の `aria-live="polite"` が通知する。`#status`（`role="status"`
+のライブリージョン）は操作内容だけを読み上げ、件数は重複して含めないため、
+同じ変化が 2 回読み上げられることはない。
 
 ## 並び替え
 

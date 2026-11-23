@@ -1938,6 +1938,41 @@ status: current
 - [x] **BA23** deny.toml の unused-ignored-advisory = allow が失効 ignore を隠す
   — 対応: loop14
 
+## 進行中（ループ15 バックログ）
+
+### 優先度: 高（ループ15・confirmed）
+
+- [x] **BB01** FNV-1a に known-answer テストが無い — 対応: loop15
+- [x] **BB02** salvage_settings の型検査表が手守管理で新規フィールドに脆弱 — 対応: loop15
+- [x] **BB03** detect_unknown_persisted_enum の enum サイト列挙が手守管理 — 対応: loop15
+- [x] **BB04** PWA 選択モードに Escape の脱出経路が無い — 対応: loop15
+- [x] **BB05** PWA 再描画でフォーカス行が復元されない — 対応: loop15
+
+### 優先度: 中（ループ15・confirmed）
+
+- [x] **BB06** 同一FS移動が進捗 0 / total のままでスロットルもバイパス — 対応: loop15
+- [x] **BB07** BA01 の検証フェーズが進捗表示に現れない — 対応: loop15
+- [x] **BB08** 誤型 enum が salvage 対象なのに read_only になる — 対応: loop15
+- [x] **BB09** detect_unknown_nested_keys の known キー配列が手守管理 — 対応: loop15
+- [x] **BB10** build-deb.sh dry-run が自動実行されない --verify を提示 — 対応: loop15
+- [x] **BB11** デバッグフック有効時のタブ保存省略が一部フックで不成立 — 対応: loop15
+- [x] **BB12** production_text が他形式 test ブロックを production に含める — 対応: loop15
+- [x] **BB13** hard_link 公開パスに空ファイル境界テストが無い — 対応: loop15
+- [x] **BB14** Shift+矢印が修飾キー譲渡方針と矛盾して横取り — 対応: loop15
+- [x] **BB15** 範囲選択が1回発火後も arm 状態が残る — 対応: loop15
+
+### 優先度: 低（ループ15・confirmed）
+
+- [x] **BB16** total_bytes がキャンセル非対応 — 対応: loop15
+- [x] **BB17** 検索の進捗・ローディング・キャンセルが転送系と未統合 — 対応: loop15
+- [x] **BB18** keymap だけロード時に黙って切り詰められる — 対応: loop15
+- [x] **BB19** README の --app 説明が実動作と不一致 — 対応: loop15
+- [x] **BB20** check.sh --help の --poc が「poc/ only」と記載 — 対応: loop15
+- [x] **BB21** DESIGN §10.9 の DEB 収録物記述が古い — 対応: loop15
+- [x] **BB22** sortEntries の dir 大文字・modified 空文字境界にテストなし — 対応: loop15
+- [x] **BB23** selectionRange の非配列入力・重複パス境界にテストなし — 対応: loop15
+- [x] **BB24** #select-count が非 live region — 対応: loop15
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

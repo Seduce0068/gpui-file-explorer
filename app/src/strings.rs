@@ -1697,6 +1697,11 @@ pub const STATUS_SKIP_REASON_SAME_DIRECTORY: &str = "同じフォルダ";
 pub const STATUS_CANCELLED: &str = "キャンセルしました";
 /// 進行中通知の接尾（`{verb}` に続く）。
 pub const STATUS_OP_IN_PROGRESS_SUFFIX: &str = "中…（Esc でキャンセル）";
+/// バイト進捗が 100% に達したときの補足（`{verb}` に続く）。
+/// コピー／移動のバイト転送は完了済みで、コピー先の検証（BA01）が続くことを
+/// 明示する。検証は通知を出さないため、何もしないと 100% で停止したように見える
+/// （BB07）。括弧は呼び出し側が付ける。
+pub const STATUS_TRANSFER_VERIFY_SUFFIX: &str = "完了、検証中…";
 /// キャンセル可能な操作中に表示する括弧内の案内（K05）。
 /// `STATUS_OP_RUNNING` / `STATUS_OP_IN_PROGRESS_SUFFIX` と、main.rs の
 /// 「…しています」系ステータスが同じ文言を共有するための唯一の定義。
@@ -2573,6 +2578,7 @@ mod tests {
             STATUS_SKIP_REASON_SAME_DIRECTORY,
             STATUS_CANCELLED,
             STATUS_CANCEL_HINT,
+            STATUS_TRANSFER_VERIFY_SUFFIX,
             STATUS_INVALID_CLI_DIR,
             STATUS_NO_SELECTION,
             STATUS_OP_IN_PROGRESS_SUFFIX,

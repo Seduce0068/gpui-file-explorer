@@ -741,7 +741,8 @@ sudo dpkg -r gpui-file-explorer
   `GPUI_FE_DEBUG_LOCATION=1`（パス入力バー）、`GPUI_FE_DEBUG_PREVIEW=1`（プレビュー）、
   `GPUI_FE_DEBUG_PREVIEW_REPORT=1`（プレビュー結果を stderr に1行出力）、
   `GPUI_FE_DEBUG_DROP_PATH=<file>` + `GPUI_FE_DEBUG_DROP_TARGET=<folder>`（外部ドロップ相当を1回実行）
-  の開発用フックがあります。デバッグ用フックが有効なセッションではタブ構成を保存しません。
+  の開発用フックがあります。`debug_hooks_from_env()` の ephemeral 判定対象に
+  含まれるフックが有効なセッションではタブ構成を保存しません（全フックが対象ではありません）。
   （as-built 注記: 2026-11-21 時点で `GPUI_FE_DEBUG_PROGRESS` /
   `GPUI_FE_DEBUG_UNDO_HISTORY` / `GPUI_FE_DEBUG_TAB_MOVE` を一覧へ追加。
   根拠: `src/main.rs` の `debug_hooks_from_env()`（行番号は drift するため

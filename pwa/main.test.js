@@ -16,6 +16,7 @@ const {
   selectionSelectSingle,
   selectionSelectAll,
   selectionRange,
+  nextRangeArmed,
   retainSelectedPaths,
   compareNatural,
   compareNames,
@@ -138,7 +139,30 @@ test('listKeyCommand yields to modifier shortcuts and maps list keys', () => {
   assert.equal(listKeyCommand({ key: 'i' }), 'details');
   assert.equal(listKeyCommand({ key: 'I', shiftKey: true }), 'details');
   assert.equal(listKeyCommand({ key: 'Enter' }), 'enter');
+  assert.equal(listKeyCommand({ key: 'Escape' }), 'escape', 'BB04: keyboard escape route');
+  assert.equal(listKeyCommand({ key: 'Escape', shiftKey: true }), 'escape');
+  assert.equal(listKeyCommand({ key: 'Escape', ctrlKey: true }), null);
   assert.equal(listKeyCommand({ key: 'x' }), null, 'unrelated keys pass through');
+});
+
+test('listKeyCommand yields Shift+navigation keys but keeps Shift+I (BB14)', () => {
+  const shifted = [
+    { key: 'ArrowDown', expected: 'down' },
+    { key: 'ArrowUp', expected: 'up' },
+    { key: 'Home', expected: 'home' },
+    { key: 'End', expected: 'end' },
+  ];
+  for (const { key, expected } of shifted) {
+    assert.equal(listKeyCommand({ key }), expected, `${key} works without Shift`);
+    assert.equal(listKeyCommand({ key, shiftKey: true }), null, `Shift+${key} is yielded`);
+    assert.equal(listKeyCommand({ key, shiftKey: true, ctrlKey: true }), null);
+  }
+  // Shift+I は大文字入力なので詳細表示のまま（README の修飾キー方針と整合）。
+  assert.equal(listKeyCommand({ key: 'I', shiftKey: true }), 'details');
+  assert.equal(listKeyCommand({ key: 'i', shiftKey: true }), 'details');
+  // ナビゲーション以外は Shift でも横取りする（最小修正）。
+  assert.equal(listKeyCommand({ key: ' ', shiftKey: true }), 'details');
+  assert.equal(listKeyCommand({ key: 'Enter', shiftKey: true }), 'enter');
 });
 
 test('updatePickDirAvailability mirrors canPickDirectory into a DOM button', () => {
@@ -211,6 +235,40 @@ test('selectionRange selects an inclusive span in view order', () => {
   assert.deepEqual(selectionRange(entries, '/a', '/missing'), [],
     'a target outside the view selects nothing');
   assert.deepEqual(selectionRange([], '/a', '/b'), []);
+});
+
+test('selectionRange handles non-array input, duplicate paths and stays pure (BB23)', () => {
+  assert.deepEqual(selectionRange(null, '/a', '/b'), [], 'null entries → []');
+  assert.deepEqual(selectionRange(undefined, '/a', '/b'), [], 'undefined entries → []');
+  assert.deepEqual(selectionRange('not-an-array', '/a', '/b'), [], 'string entries → []');
+  assert.deepEqual(selectionRange({ entries: [] }, '/a', '/b'), [], 'object entries → []');
+
+  // 同じ path が 2 回現れても indexOf の位置を両端に使うため重複は保持される。
+  const duplicated = [
+    { path: '/a' }, { path: '/b' }, { path: '/a' }, { path: '/c' },
+  ];
+  assert.deepEqual(selectionRange(duplicated, '/a', '/c'), ['/a', '/b', '/a', '/c'],
+    'duplicate paths inside the span are kept in view order');
+  assert.deepEqual(selectionRange(duplicated, '/b', '/a'), ['/a', '/b'],
+    'the first occurrence of a duplicated target is used and the span stays in view order');
+
+  // pure 性: 入力配列とその要素は一切変更されない。
+  const input = [{ path: '/a' }, { path: '/b' }, { path: '/c' }];
+  const snapshot = JSON.parse(JSON.stringify(input));
+  const result = selectionRange(input, '/a', '/c');
+  assert.deepEqual(input, snapshot, 'the entries array is not mutated');
+  assert.notEqual(result, input, 'a new array is returned');
+  result.push('/leak');
+  assert.deepEqual(input, snapshot, 'mutating the result cannot leak into the input');
+});
+
+test('nextRangeArmed toggles from the button and always consumes after selection (BB15)', () => {
+  assert.equal(nextRangeArmed(false), true, 'button arms the range mode');
+  assert.equal(nextRangeArmed(true), false, 'button disarms the range mode');
+  assert.equal(nextRangeArmed(true, { completed: true }), false,
+    'one range selection consumes the arm state');
+  assert.equal(nextRangeArmed(false, { completed: true }), false,
+    'completed is idempotent even when nothing was armed');
 });
 
 test('retainSelectedPaths keeps only surviving paths and preserves prev order', () => {
@@ -301,4 +359,36 @@ test('sortEntries falls back safely on unknown keys, bad dirs and empty input', 
   const ties = [{ name: 'alpha', path: '/a' }, { name: 'Alpha', path: '/A' }];
   assert.deepEqual(names(sortEntries(ties, 'name', 'asc')), ['Alpha', 'alpha']);
   assert.deepEqual(names(sortEntries(ties, 'name', 'desc')), ['alpha', 'Alpha']);
+});
+
+test('sortEntries accepts an upper-case dir string (BB22)', () => {
+  const expected = names(sortEntries(fixtureEntries(), 'name', 'desc'));
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'DESC')), expected,
+    'String(dir).toLowerCase() === "desc"');
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'Desc')), expected);
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'ASC')),
+    names(sortEntries(fixtureEntries(), 'name', 'asc')));
+});
+
+test('sortEntries treats modified:"" as missing and never throws on mixed types (BB22)', () => {
+  const empty = fixtureEntries();
+  empty[1].modified = ''; // file2.txt を欠損値にする
+  // null / '' はどちらも欠損として名前でタイブレーク → Beta, file2.txt の順。
+  assert.deepEqual(names(sortEntries(empty, 'modified', 'asc')),
+    ['Zebra', 'alpha', 'Beta', 'file2.txt', 'file10.txt']);
+  // desc では各グループ内で欠損値が最後へ回る（ディレクトリは常に先頭のまま）。
+  assert.deepEqual(names(sortEntries(empty, 'modified', 'desc')),
+    ['alpha', 'Zebra', 'file10.txt', 'file2.txt', 'Beta']);
+
+  const mixed = [
+    { name: 'epoch.txt', path: '/epoch', isDir: false, modified: 1704067200000 },
+    { name: 'iso.txt', path: '/iso', isDir: false, modified: '2024-01-01' },
+    { name: 'missing.txt', path: '/missing', isDir: false, modified: null },
+  ];
+  // number は String() されて ISO 文字列と辞書順比較される（決定的な順序）。
+  // "1704067200000" < "2024-01-01" なので epoch → iso、欠損は asc で先頭。
+  assert.deepEqual(names(sortEntries(mixed, 'modified', 'asc')),
+    ['missing.txt', 'epoch.txt', 'iso.txt']);
+  assert.deepEqual(names(sortEntries(mixed, 'modified', 'desc')),
+    ['iso.txt', 'epoch.txt', 'missing.txt']);
 });

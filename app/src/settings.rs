@@ -135,9 +135,10 @@ pub const MAX_QUERY_BYTES: usize = 1024;
 /// Maximum byte length of the persisted terminal launch command. It is split
 /// into argv by the UI, so this is a generous bound for a program + flags.
 pub const MAX_TERMINAL_COMMAND_BYTES: usize = 1024;
-/// Maximum number of persisted keymap overrides. The shipped table has fewer
-/// than 50 actions, so this leaves headroom without letting a crafted file
-/// grow the list without bound.
+/// Keymap override cap enforced when *adding* an override. Like the other list
+/// caps, loading never truncates: a file with more valid overrides keeps them
+/// all and only logs a warning (AV02/BB18). The shipped table has fewer than
+/// 50 actions, so 64 leaves headroom for user bindings.
 pub const MAX_KEYMAP_OVERRIDES: usize = 64;
 /// Maximum byte length of one keymap action name or chord string (both sides
 /// of a `(action, chord)` pair get the same bound).
@@ -214,13 +215,21 @@ fn default_theme() -> ThemeMode {
 /// Each enum's `Deserialize` impl is the single source of truth for its known
 /// names; the column fields reuse [`COLUMN_KEYS`] / [`is_known_column_key`].
 fn detect_unknown_persisted_enum(raw: &serde_json::Value) -> bool {
-    /// A present field is known when it deserializes into `T`; an absent field
-    /// is fine because serde's field-level default applies.
+    /// A present field is known when its string deserializes into `T`; an
+    /// absent field is fine because serde's field-level default applies. A
+    /// non-string is *not* an unknown enum name: it is a wrong JSON type that
+    /// [`salvage_settings`] drops on its own, so treating it as unknown here
+    /// would make the whole load read-only and permanently disable saving a
+    /// file the loader can otherwise repair (BB08). The column fields below
+    /// keep their own stricter check, where a non-string key really is an
+    /// unknown column.
     fn is_known<T>(field: Option<&serde_json::Value>) -> bool
     where
         T: for<'de> Deserialize<'de>,
     {
-        field.is_none_or(|value| serde_json::from_value::<T>(value.clone()).is_ok())
+        field.is_none_or(|value| {
+            !value.is_string() || serde_json::from_value::<T>(value.clone()).is_ok()
+        })
     }
 
     let sort = raw.get("sort");
@@ -1829,21 +1838,20 @@ impl Settings {
         }
 
         // Keymap overrides get the same harden-on-load treatment: trim both
-        // sides, drop unusable/reserved entries, cap the count and keep only
-        // the first override per action AND per chord (compared canonically,
+        // sides, drop unusable/reserved entries and keep only the first
+        // override per action AND per chord (compared canonically,
         // so equivalent modifier spellings — including ctrl+key vs
         // ctrl+alt+key, which dispatch treats identically (T01) — collapse).
         // Two actions bound to the same chord would make key resolution depend
         // on iteration order, so a later entry with a duplicate chord is
         // dropped. Unknown action names are kept; the application ignores them
-        // when building the map.
+        // when building the map. Like every other persisted list, loading does
+        // not truncate to the cap (AV02/BB18): excess valid overrides are
+        // kept and only logged, so a later save cannot destroy the tail.
         let mut keymap = Vec::new();
         let mut seen_actions = HashSet::new();
         let mut seen_chords = HashSet::new();
         for (action, chord) in std::mem::take(&mut self.keymap) {
-            if keymap.len() >= MAX_KEYMAP_OVERRIDES {
-                break;
-            }
             let Some((action, chord)) = sane_keymap_entry(&action, &chord) else {
                 continue;
             };
@@ -1868,6 +1876,7 @@ impl Settings {
             }
         }
         self.keymap = keymap;
+        warn_over_cap("keymap", self.keymap.len(), MAX_KEYMAP_OVERRIDES);
 
         // A validated settings value always carries the current version.
         self.version = SCHEMA_VERSION;
@@ -2175,9 +2184,9 @@ mod tests {
     // Explicit imports only: the crate root glob re-exports GPUI's `test`
     // proc-macro which would shadow the built-in `#[test]`.
     use super::{
-        detect_unknown_persisted_enum, next_theme, next_theme_choice, resolve_theme, Settings,
-        SettingsSaveError, ThemeChoice, ViewLayout, APP_DIR, LEGACY_SCHEMA_VERSION,
-        MAX_SETTINGS_BYTES, SCHEMA_VERSION,
+        detect_unknown_nested_keys, detect_unknown_persisted_enum, next_theme, next_theme_choice,
+        resolve_theme, salvage_settings, Settings, SettingsSaveError, ThemeChoice, ViewLayout,
+        APP_DIR, LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES, SCHEMA_VERSION,
     };
     use crate::model::{SortDir, SortKey, SortSpec};
     use gpui_kit::component::ThemeMode;
@@ -3268,6 +3277,106 @@ mod tests {
         });
         assert!(detect_unknown_persisted_enum(&mixed));
     }
+
+    #[test]
+    fn salvage_settings_has_a_type_check_for_every_persisted_field() {
+        let default =
+            serde_json::to_value(Settings::default()).expect("default settings serialize");
+        let fields = default
+            .as_object()
+            .expect("Settings serializes to a JSON object");
+        assert_eq!(fields.len(), 19, "unexpected set of persisted fields");
+
+        // Replace every persisted field with a value of the wrong JSON type:
+        // strings become numbers, null becomes a bool, everything else becomes
+        // a string. Each is rejected by its own serde type. A field added to
+        // `Settings` without a matching arm in `salvage_settings` falls through
+        // to `_ => true`, survives mistyped, and re-fails `from_value` at load
+        // time — backing up the whole file and losing every unrelated setting
+        // (AV03/BB02). This assertion keeps the salvage table and the struct in
+        // lockstep without a second hand-maintained key list in production.
+        let wrong_type = |value: &serde_json::Value| match value {
+            serde_json::Value::String(_) => serde_json::json!(5),
+            serde_json::Value::Null => serde_json::json!(true),
+            _ => serde_json::json!("wrong-type-probe"),
+        };
+        let mistyped: serde_json::Map<String, serde_json::Value> = fields
+            .iter()
+            .map(|(key, value)| (key.clone(), wrong_type(value)))
+            .collect();
+        let (kept, dropped) = salvage_settings(&serde_json::Value::Object(mistyped));
+
+        for key in fields.keys() {
+            assert!(
+                dropped.iter().any(|name| name == key),
+                "{key} has no explicit type check in salvage_settings"
+            );
+            assert!(!kept.contains_key(key), "mistyped {key} was kept");
+        }
+    }
+
+    #[test]
+    fn detect_unknown_persisted_enum_registers_every_enum_field() {
+        let default =
+            serde_json::to_value(Settings::default()).expect("default settings serialize");
+        assert!(
+            !detect_unknown_persisted_enum(&default),
+            "the defaults must not look like an unknown enum: {default}"
+        );
+
+        // A wrong JSON type is salvage's job, not an unknown enum name. It
+        // must not flip the whole load to read-only and disable saving (BB08).
+        let mut mistyped = default.clone();
+        mistyped["view"] = serde_json::json!(5);
+        mistyped["sort"]["key"] = serde_json::json!(42);
+        assert!(
+            !detect_unknown_persisted_enum(&mistyped),
+            "mistyped enum values must be deferred to salvage: {mistyped}"
+        );
+
+        // Every string-valued default except the free-form terminal command
+        // is an enum site: a dummy future name must be detected. Adding an
+        // enum field without adding its detector site fails this assertion.
+        for (key, value) in default
+            .as_object()
+            .expect("Settings serializes to a JSON object")
+        {
+            if !value.is_string() || key == "terminal_command" {
+                continue;
+            }
+            let mut raw = default.clone();
+            raw[key.as_str()] = serde_json::json!("__future_enum_value__");
+            assert!(
+                detect_unknown_persisted_enum(&raw),
+                "enum site {key} is not checked by the detector"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_unknown_nested_keys_registers_every_nested_default_object() {
+        let default =
+            serde_json::to_value(Settings::default()).expect("default settings serialize");
+        assert_eq!(
+            detect_unknown_nested_keys(&default),
+            None,
+            "the defaults must not contain an unknown nested key: {default}"
+        );
+
+        // The nested structs already present in the defaults must each be
+        // registered: a key written by a newer build has to make the load
+        // read-only rather than being dropped and overwritten on the next save
+        // (AV21/BB09).
+        for field in ["sort", "column_prefs"] {
+            let mut raw = default.clone();
+            raw[field]["__future_key__"] = serde_json::json!(1);
+            assert!(
+                detect_unknown_nested_keys(&raw)
+                    .is_some_and(|key| key.starts_with(&format!("{field}."))),
+                "nested object {field} is not checked by the detector"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3920,6 +4029,53 @@ mod schema_validation_tests {
                 loaded.bookmarks,
                 vec![PathBuf::from("/home/koppe")],
                 "{text}"
+            );
+            fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn mistyped_enum_values_stay_writable_and_keep_other_fields() {
+        // BB08: a wrong JSON type is discarded by `salvage_settings`, not an
+        // unknown enum name. Flagging these loads read-only would permanently
+        // disable Save on a file the loader can otherwise repair.
+        for (tag, text, dropped) in [
+            (
+                "view-number",
+                r#"{"version":1,"view":5,"show_hidden":true,"bookmarks":["/home/koppe"],"theme":"light"}"#,
+                "view",
+            ),
+            (
+                "sort-key-number",
+                r#"{"version":1,"sort":{"key":42,"dir":"desc","dirs_first":false},"show_hidden":true,"bookmarks":["/home/koppe"],"theme":"light"}"#,
+                "sort",
+            ),
+        ] {
+            let (dir, path) = setup(tag);
+            fs::write(&path, text).unwrap();
+            let loaded = Settings::load_from(&path);
+            assert!(
+                path.exists() && backup_names(&dir).is_empty(),
+                "{text} must not be backed up"
+            );
+            assert!(!loaded.read_only && loaded.load_error.is_none(), "{text}");
+            assert!(
+                loaded
+                    .settings_reset_notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.contains(dropped)),
+                "{text}: notice must name the discarded field"
+            );
+            assert!(loaded.show_hidden, "{text}: unrelated bool must survive");
+            assert_eq!(
+                loaded.bookmarks,
+                vec![PathBuf::from("/home/koppe")],
+                "{text}"
+            );
+            assert_eq!(
+                loaded.theme,
+                ThemeMode::Light,
+                "{text}: valid enum must survive"
             );
             fs::remove_dir_all(&dir).unwrap();
         }
@@ -5608,19 +5764,24 @@ mod keymap_settings_tests {
     }
 
     #[test]
-    fn keymap_validation_caps_the_number_of_overrides() {
+    fn keymap_validation_keeps_all_valid_overrides_over_cap() {
+        // BB18: loading mirrors the tabs/recent_dirs rule — warn_over_cap,
+        // never truncate. Dropping the tail here would silently destroy those
+        // bindings on the next save (AV02); the runtime cap only blocks adding
+        // new overrides.
+        let over_cap = MAX_KEYMAP_OVERRIDES + 12;
         let mut settings = Settings {
-            keymap: (0..MAX_KEYMAP_OVERRIDES + 12)
+            keymap: (0..over_cap)
                 .map(|index| (format!("action-{index}"), format!("ctrl+{index}")))
                 .collect(),
             ..Settings::default()
         };
         settings.validate();
-        assert_eq!(settings.keymap.len(), MAX_KEYMAP_OVERRIDES);
+        assert_eq!(settings.keymap.len(), over_cap);
         assert_eq!(settings.keymap[0].0, "action-0");
         assert_eq!(
-            settings.keymap[MAX_KEYMAP_OVERRIDES - 1].0,
-            format!("action-{}", MAX_KEYMAP_OVERRIDES - 1)
+            settings.keymap[over_cap - 1].0,
+            format!("action-{}", over_cap - 1)
         );
     }
 }

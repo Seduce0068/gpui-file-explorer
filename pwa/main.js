@@ -76,13 +76,18 @@ function shouldSwipeBack(touchState, dx, dy) {
 
 // 一覧の keydown をコマンドへ変換する。修飾キー付きはブラウザ / OS の
 // ショートカットへ譲り、Ctrl/Cmd/Alt+I 等を横取りしない。
+// Shift はナビゲーションキー（矢印 / Home / End）だけ譲る。Shift+I は
+// 大文字入力なので詳細表示として受理する（BB14）。
 function listKeyCommand(event) {
   if (!event || event.ctrlKey || event.metaKey || event.altKey) return null;
+  const shifted = Boolean(event.shiftKey);
   switch (event.key) {
-    case 'ArrowDown': return 'down';
-    case 'ArrowUp': return 'up';
-    case 'Home': return 'home';
-    case 'End': return 'end';
+    case 'ArrowDown': return shifted ? null : 'down';
+    case 'ArrowUp': return shifted ? null : 'up';
+    case 'Home': return shifted ? null : 'home';
+    case 'End': return shifted ? null : 'end';
+    // 選択モード / 範囲 arm / 選択状態からの脱出経路（BB04）。
+    case 'Escape': return 'escape';
     case ' ':
     case 'Spacebar': return 'details';
     case 'Enter': return 'enter';
@@ -155,6 +160,13 @@ function selectionRange(entries, anchor, target) {
   const start = Math.min(anchorIndex, targetIndex);
   const end = Math.max(anchorIndex, targetIndex);
   return paths.slice(start, end + 1);
+}
+
+// 範囲選択ボタンの arm 状態を決める pure helper（BB15）。
+// ボタンではトグルし、1 回の範囲選択が完了したら completed に関わらず解除する。
+function nextRangeArmed(currentArmed, { completed = false } = {}) {
+  if (completed) return false;
+  return !currentArmed;
 }
 
 // 再描画時に旧選択パスのうち新一覧にも残っているものだけを残す（BA07）。
@@ -393,6 +405,10 @@ function render(entries, { heading, query = '', mode = 'list' } = {}) {
   state.lastRender = { entries, options };
   const view = sortEntries(entries, currentSort().key, currentSort().dir);
 
+  // BB05: 一覧内のフォーカスは replaceChildren() で失われるため、先に保存する。
+  // 一覧外（検索欄 / ソート select / ボタン）にフォーカスがある場合は何もしない。
+  const focusWasInList = captureListFocus();
+
   els.title.textContent = heading;
   els.count.textContent = `${view.length} 件`;
   els.list.replaceChildren();
@@ -437,6 +453,8 @@ function render(entries, { heading, query = '', mode = 'list' } = {}) {
     }
     els.list.append(li);
     applySelectionAria();
+    // 空状態には復元する行が無い。検索0件なら検索欄へ戻し、body 落下を防ぐ。
+    restoreListFocus(focusWasInList, { fallbackToSearch: true });
     return;
   }
 
@@ -482,6 +500,7 @@ function render(entries, { heading, query = '', mode = 'list' } = {}) {
   }
   els.list.append(fragment);
   applySelectionAria();
+  restoreListFocus(focusWasInList);
 }
 
 // --- 選択 / タッチ / マウス / キーボード操作 -------------------------------
@@ -513,6 +532,24 @@ function applySelectionAria() {
     li.tabIndex = index === state.focusIndex ? 0 : -1;
   }
   updateSelectModeUi();
+}
+
+// BB05: 一覧は render() で丸ごと差し替わるため、フォーカス中の行も
+// replaceChildren() で消えて activeElement が body へ落ちる。描画前に
+// 「一覧内にフォーカスがあったか」を保存し、描画後に同じ行へ戻す。
+function captureListFocus() {
+  return Boolean(hasDom && els.list && els.list.contains(document.activeElement));
+}
+
+function restoreListFocus(focusWasInList, { fallbackToSearch = false } = {}) {
+  if (!focusWasInList || !hasDom) return;
+  // 呼び出し時点で state.renderedEntries は新しい view へ更新済み。
+  if (entryAt(state.focusIndex)) {
+    focusRow(state.focusIndex, { fromKeyboard: false });
+    return;
+  }
+  // 空状態には li[data-index] が無いため、検索欄（復帰導線）へ逃がす。
+  if (fallbackToSearch && els.search) els.search.focus({ preventScroll: true });
 }
 
 function focusRow(index, { fromKeyboard = false } = {}) {
@@ -549,26 +586,30 @@ function toggleAt(index) {
     ? state.selectedPaths[state.selectedPaths.length - 1]
     : null;
   state.focusIndex = index;
-  setStatus(`${isPathSelected(entry.path) ? '選択' : '解除'}: ${entry.name}`
-    + `（${state.selectedPaths.length} 件選択中）`);
+  // 件数は #select-count の aria-live が知らせる（#status とは二重に読まない）。
+  setStatus(`${isPathSelected(entry.path) ? '選択' : '解除'}: ${entry.name}`);
   focusRow(index);
 }
 
 // 範囲選択ボタンで arm した後のタップ: アンカーから当該行までを選択する。
+// 1 回の範囲選択で arm を消費し、ボタン表示と終了通知を出す（BB15）。
 function selectRangeTo(index) {
   const entry = entryAt(index);
   if (!entry) return;
   const anchor = state.anchorPath ?? entry.path;
   state.selectedPaths = selectionRange(state.renderedEntries, anchor, entry.path);
   state.focusIndex = index;
-  setStatus(`範囲選択: ${state.selectedPaths.length} 件`);
+  state.rangeArmed = nextRangeArmed(state.rangeArmed, { completed: true });
+  updateSelectModeUi();
+  // 選択件数は #select-count（aria-live）が知らせるため二重に読ませない（BB24）。
+  setStatus('範囲選択が完了しました（範囲選択モードを終了）');
   focusRow(index);
 }
 
 function selectAllEntries() {
   state.selectedPaths = selectionSelectAll(state.renderedEntries);
   if (state.selectedPaths.length) state.anchorPath = state.selectedPaths[0];
-  setStatus(`すべて選択: ${state.selectedPaths.length} 件`);
+  setStatus('すべて選択しました');
   applySelectionAria();
 }
 
@@ -781,6 +822,19 @@ function onListKeyDown(event) {
       event.preventDefault();
       moveFocusTo(state.renderedEntries.length - 1);
       return;
+    // BB04: キーボードの脱出経路。arm → 選択モード → 選択の順で一段ずつ戻す。
+    case 'escape':
+      event.preventDefault();
+      if (state.rangeArmed) {
+        state.rangeArmed = false;
+        updateSelectModeUi();
+        setStatus('範囲選択を解除しました');
+      } else if (state.selectMode) {
+        exitSelectMode();
+      } else {
+        clearSelection();
+      }
+      return;
     // 詳細表示（path / size / isDir）は長押しから Space / i へ退避（BA19）。
     // Space はページスクロールを止める。修飾キー付きは listKeyCommand が
     // 既に null を返すため、ブラウザ / OS のショートカットを横取りしない。
@@ -991,7 +1045,7 @@ async function boot() {
   if (els.selectClear) els.selectClear.addEventListener('click', clearSelection);
   if (els.selectRange) {
     els.selectRange.addEventListener('click', () => {
-      state.rangeArmed = !state.rangeArmed;
+      state.rangeArmed = nextRangeArmed(state.rangeArmed);
       updateSelectModeUi();
       setStatus(state.rangeArmed
         ? '範囲選択: 開始行をタップ、終端行をタップ'
@@ -1045,6 +1099,7 @@ if (typeof module !== 'undefined' && module.exports) {
     selectionSelectSingle,
     selectionSelectAll,
     selectionRange,
+    nextRangeArmed,
     retainSelectedPaths,
     compareNatural,
     compareNames,

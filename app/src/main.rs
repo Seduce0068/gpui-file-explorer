@@ -322,6 +322,20 @@ fn search_filter_status(current: &str, summary: String) -> String {
     }
 }
 
+/// Status left behind when the Search view closes (BB17).
+///
+/// Esc on an in-flight search now reports the same completion notice as a
+/// cancelled transfer, so search cancellation is not silently swallowed. An
+/// idle search bar stays silent: closing it must not bury an earlier message.
+/// Kept pure so both branches are unit-testable without a GPUI `Context`.
+fn search_close_status(was_running: bool) -> String {
+    if was_running {
+        STATUS_CANCELLED.to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// Status for directory watch events that would report `STATUS_CHANGED` (Z02).
 ///
 /// F5 (`Reload`) reaches the keymap even in the Search view, where `reload()`
@@ -1330,9 +1344,36 @@ fn transfer_log_level(first_error: &Option<OpError>, cancelled: bool) -> Level {
 /// Status text for a byte-progress update during a transfer (U08). Building it
 /// here keeps the parenthesised cancel guidance on the shared
 /// `STATUS_CANCEL_HINT` constant instead of a hand-copied inline literal.
+/// Whether a byte-progress sample should reach the UI (BB06).
+///
+/// `emitted_any` — not `last_bytes == 0` — decides whether this is the first
+/// update. Using the byte count meant every `done == 0` sample (skipped or
+/// instant moves) was treated as a first update and bypassed the ~80 ms
+/// throttle. Zero samples are now throttled like every other repeat, while a
+/// genuine first sample is always shown immediately.
+fn should_forward_progress(
+    emitted_any: bool,
+    done: u64,
+    last_bytes: u64,
+    since_last: Duration,
+) -> bool {
+    if done < last_bytes || (done == last_bytes && done != 0) {
+        return false;
+    }
+    !emitted_any || since_last >= PROGRESS_THROTTLE
+}
+
 fn transfer_progress_status(verb: &str, done: u64, total: u64) -> String {
+    // BB07: BA01 verification runs *after* the last byte is reported and emits
+    // no progress of its own, so a plain "100%" looks like a frozen operation.
+    // Spell out that the bytes are done and the destination is being verified.
+    let phase_hint = if total > 0 && done >= total {
+        format!("（{verb}{STATUS_TRANSFER_VERIFY_SUFFIX}）")
+    } else {
+        String::new()
+    };
     format!(
-        "{verb}中… {} / {} {STATUS_CANCEL_HINT}",
+        "{verb}中… {} / {} {phase_hint}{STATUS_CANCEL_HINT}",
         human_size(done),
         human_size(total)
     )
@@ -2431,15 +2472,16 @@ use crate::strings::{
     STATUS_TAB_MOVED_LEFT, STATUS_TAB_MOVED_RIGHT, STATUS_TAB_RESTORED, STATUS_TAB_RESTORE_EMPTY,
     STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_DISABLED,
     STATUS_TERMINAL_COMMAND_INVALID, STATUS_TERMINAL_DISABLED_HINT, STATUS_TERMINAL_START_PREFIX,
-    STATUS_THEME_CHANGED_PREFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOADING,
-    STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON, STATUS_TRASH_NO_AUTO_REFRESH,
-    STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE,
-    STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-    STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED, STATUS_TRASH_RESTORE_OCCUPIED,
-    STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT,
-    STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED,
-    STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX,
-    TERMINAL_COMMAND_DESCRIPTION, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
+    STATUS_THEME_CHANGED_PREFIX, STATUS_TRANSFER_VERIFY_SUFFIX, STATUS_TRASH_ALL_FAILED,
+    STATUS_TRASH_LOADING, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_MISSING_REASON,
+    STATUS_TRASH_NO_AUTO_REFRESH, STATUS_TRASH_NO_COPY, STATUS_TRASH_NO_CUT,
+    STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME,
+    STATUS_TRASH_NO_SORT, STATUS_TRASH_NO_TERMINAL_PREFIX, STATUS_TRASH_PARTIAL_FAILED,
+    STATUS_TRASH_RESTORE_OCCUPIED, STATUS_UNDO_EMPTY, STATUS_UNDO_EXISTS_SUFFIX,
+    STATUS_UNDO_FAILED, STATUS_UNDO_HISTORY_HINT, STATUS_UNDO_MISSING_SUFFIX,
+    STATUS_WATCH_COUNT_SUFFIX, STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED,
+    STATUS_WATCH_PARTIAL, STATUS_WATCH_PREFIX, TERMINAL_COMMAND_DESCRIPTION, THEME_LABEL_DARK,
+    THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
 };
 
 /// One sidebar "place".
@@ -2682,6 +2724,12 @@ struct SearchState {
     fell_back_to_cwd: bool,
     task: Option<Task<()>>,
     cancel: Option<Arc<AtomicBool>>,
+    /// BB17: dedicated search-progress state. `LoadState` is the *directory*
+    /// load state — reusing it here would make the search-bar hint track a
+    /// directory reload, and calling `reload()` from `run_search` would disturb
+    /// generation guards / error overlays. A plain flag has none of those side
+    /// effects and is set/cleared exactly with the search task.
+    running: bool,
     generation: u64,
 }
 
@@ -6878,14 +6926,15 @@ impl Explorer {
         cx.spawn(async move |this, cx| {
             let mut last_report = Instant::now();
             let mut last_bytes = 0u64;
+            // BB06: track whether *any* sample was forwarded. `done == 0` is no
+            // longer mistaken for "first update" on every repeat, so a burst of
+            // zero-byte move notifications is throttled like real progress.
+            let mut emitted_any = false;
             while let Ok((done, total)) = progress_rx.recv().await {
-                if done <= last_bytes && done != 0 {
+                if !should_forward_progress(emitted_any, done, last_bytes, last_report.elapsed()) {
                     continue;
                 }
-                let first_update = last_bytes == 0;
-                if !first_update && last_report.elapsed() < PROGRESS_THROTTLE {
-                    continue;
-                }
+                emitted_any = true;
                 last_report = Instant::now();
                 last_bytes = done;
                 let _ = this.update(cx, |this, cx| {
@@ -6907,7 +6956,10 @@ impl Explorer {
         let destination_for_ui = destination.clone();
         let progress_tx_for_task = progress_tx.clone();
         let background = cx.background_spawn(async move {
-            let total_bytes = ops::total_bytes(&paths);
+            // BB16: pass the operation's cancellation flag so the size estimate
+            // of a huge tree can be interrupted with Esc instead of pinning the
+            // background executor until the walk finishes.
+            let total_bytes = ops::total_bytes(&paths, &task_cancel);
             let _ = progress_tx_for_task.try_send((0, total_bytes));
             let mut total = OpStats::default();
             let mut first_error: Option<OpError> = None;
@@ -9719,6 +9771,11 @@ impl Explorer {
                 clear_rescan_failure_after_successful_read(&mut this.status);
                 this.search.task = None;
                 this.search.cancel = None;
+                // BB17: clear the dedicated progress flag with the task. Keep
+                // the `load = Ready` normalization above: search runs while the
+                // directory view is suspended, but dropping a stale in-flight
+                // directory load stays desirable. It is not the search hint.
+                this.search.running = false;
                 this.search_lines = entries
                     .iter()
                     .filter_map(|result| {
@@ -9747,6 +9804,7 @@ impl Explorer {
             });
         });
         self.search.task = Some(task);
+        self.search.running = true;
     }
 
     /// Recompute the visible search results from the last search's entries
@@ -9832,6 +9890,7 @@ impl Explorer {
             cancel.store(true, Ordering::SeqCst);
         }
         self.search.task.take();
+        self.search.running = false;
         // Invalidate completions already queued on the executor: a late search
         // callback checks only `search.generation`, so without this bump it
         // could overwrite `load = Ready` / `all_entries` while the directory
@@ -9858,11 +9917,15 @@ impl Explorer {
         if self.view != ViewSource::Search {
             return;
         }
+        // BB17: snapshot the dedicated progress flag before `clear_search`
+        // drops the task. Only a search that was actually running produces the
+        // shared cancellation notice; closing an idle bar stays silent.
+        let was_running = self.search.running;
         self.clear_search();
         self.view = ViewSource::Directory;
         self.selection.clear();
         self.selected = 0;
-        self.status.clear();
+        self.status = search_close_status(was_running);
         // The search input is destroyed by `clear_search`; restore list focus
         // on the next render instead of leaving it on a removed element.
         self.restore_focus_next_frame();
@@ -9872,7 +9935,10 @@ impl Explorer {
     fn search_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
         let input = self.search.input.as_ref()?;
         let p = self.palette;
-        let hint = if self.load.is_loading() {
+        // BB17: search progress uses its own flag. `load.is_loading()` is the
+        // directory load state; using it here made the hint depend on an
+        // unrelated directory reload and invited reusing `LoadState` for search.
+        let hint = if self.search.running {
             crate::strings::SEARCH_IN_PROGRESS_LABEL
         } else {
             crate::strings::SEARCH_BAR_HINT
@@ -13112,13 +13178,13 @@ mod tests {
         read_properties_snapshot, reconcile_aware_status, redo_exists_status, redo_missing_status,
         redo_trash_failed_status, redo_trash_should_record_undo, remove_keymap_override,
         resolved_sidebar_width, restore_outcome_with_occupied_paths, saved_search_caption,
-        saved_search_save_status, search_filter_status, set_view_status,
+        saved_search_save_status, search_close_status, search_filter_status, set_view_status,
         settings_change_affects_list, settings_discard_status,
         settings_editor_write_failure_reason, settings_read_only_status, settings_reset_status,
         settings_row_key_is_bare, settings_save_error_status, settings_save_status,
         settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
         settings_validation_status, settings_with_live_save_error, settings_write_needs_rollback,
-        settings_write_status, split_undo_trash_items, startup_dir_from,
+        settings_write_status, should_forward_progress, split_undo_trash_items, startup_dir_from,
         startup_save_failure_status, status_color, summarize_op, tab_label, terminal_dir_for,
         terminal_disabled_status, terminal_failed_status, terminal_process,
         terminal_started_status, terminal_target_dir, theme_choice_label, thumbnail_eligible,
@@ -13131,7 +13197,7 @@ mod tests {
         KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab,
         SortKey, TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED,
         C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT,
-        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        PROGRESS_THROTTLE, SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
         STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
         STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
@@ -13175,16 +13241,17 @@ mod tests {
         STATUS_RENAME_NO_PARENT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
         STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
         STATUS_SETTINGS_RESET_PREFIX, STATUS_SKIP_REASON_MISSING,
-        STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL, STATUS_TRASH_ALL_FAILED,
-        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
-        STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
-        STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_MISSING_SUFFIX,
-        STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
+        STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
+        STATUS_TRANSFER_VERIFY_SUFFIX, STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX,
+        STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
+        STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
+        STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED,
+        STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
     use std::ffi::OsString;
     use std::path::PathBuf;
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     #[test]
     fn status_color_classifies_errors_warnings_and_success() {
@@ -13613,17 +13680,16 @@ mod tests {
         &source[from..to]
     }
 
-    /// BA11: one authoritative production/test split. A silent fallback to
-    /// the whole source would let the test module's own literals inflate
-    /// `.matches()` counts, so require exactly one separator.
+    /// BA11: one authoritative production/test split. Everything from the
+    /// last `#[cfg(test)]` onward is test code, including the small helper
+    /// modules that precede `mod tests`. A silent fallback to the whole
+    /// source would let those literals inflate `.matches()` counts.
     fn production_text(source: &str) -> &str {
         const SEPARATOR: &str = "#[cfg(test)]\nmod tests {";
         let mut parts = source.split(SEPARATOR);
         let production = parts
             .next()
             .unwrap_or_else(|| panic!("missing production portion"));
-        // `split` yields N+1 parts for N separators: require one trailing
-        // part (the test module) and no third part (a duplicate separator).
         assert!(parts.next().is_some(), "missing production/test separator");
         assert!(
             parts.next().is_none(),
@@ -13656,24 +13722,26 @@ mod tests {
     }
 
     #[test]
-    fn production_text_requires_exactly_one_separator() {
-        // Build the separator from fragments so this test's own source does
-        // not contribute an extra match to the synthetic input.
-        let sep = concat!("#[cfg(test)]", "\n", "mod tests {");
-        let source = format!("fn production() {{}}\n{sep}\nfn t() {{}}\n}}\n");
-        assert_eq!(production_text(&source), "fn production() {}\n");
-        // BA11: a missing separator must panic instead of falling back to the
-        // whole source, which would let test literals inflate match counts.
+    fn production_text_excludes_small_test_blocks_from_counts() {
+        // BB12: small #[cfg(test)] helper modules precede `mod tests`. They
+        // remain in the production slice today, so pin the fact that they do
+        // not contain the literals the source-guard counts depend on.
+        let separator = concat!("#[cfg(test)]", "\n", "mod tests {");
+        let source = include_str!("main.rs");
+        let production = production_text(source);
+        assert!(!production.contains(separator));
+        let before_main_tests = production;
+        assert_eq!(
+            before_main_tests
+                .matches(concat!("self", ".rollback_settings("))
+                .count(),
+            7,
+            "small test blocks must not add rollback literals"
+        );
         let missing = std::panic::catch_unwind(|| production_text("fn production() {}"));
         assert!(
             missing.is_err(),
             "a missing separator must not be tolerated"
-        );
-        let dup = format!("fn a() {{}}\n{sep}\n{sep}\n");
-        let duplicate = std::panic::catch_unwind(|| production_text(&dup));
-        assert!(
-            duplicate.is_err(),
-            "duplicate separators must not be tolerated"
         );
     }
 
@@ -16571,6 +16639,15 @@ mod tests {
     }
 
     #[test]
+    fn search_close_reports_cancellation_only_when_running() {
+        // BB17: cancelling an in-flight search shares the transfer pipeline's
+        // completion notice; closing an idle bar must stay silent so it cannot
+        // bury an earlier status message.
+        assert_eq!(search_close_status(true), STATUS_CANCELLED);
+        assert_eq!(search_close_status(false), "");
+    }
+
+    #[test]
     fn search_view_forwards_ctrl_comma_to_open_settings() {
         use super::{search_view_key_allowed, search_view_key_reaches_keymap};
 
@@ -18545,6 +18622,46 @@ mod tests {
         assert_eq!(status, "コピー中… 1.0 K / 2.0 K （Esc でキャンセル）");
         assert!(status.ends_with(STATUS_CANCEL_HINT), "{status}");
         assert_eq!(STATUS_CANCEL_HINT, "（Esc でキャンセル）");
+    }
+
+    #[test]
+    fn transfer_progress_status_explains_the_verification_phase() {
+        // BB07: reaching 100% means the byte copy finished; BA01 verification
+        // follows without its own notification, so the label must say so.
+        let status = transfer_progress_status("コピー", 2048, 2048);
+        assert_eq!(
+            status,
+            format!("コピー中… 2.0 K / 2.0 K （コピー{STATUS_TRANSFER_VERIFY_SUFFIX}）{STATUS_CANCEL_HINT}")
+        );
+        assert!(status.contains(STATUS_TRANSFER_VERIFY_SUFFIX));
+        assert!(status.ends_with(STATUS_CANCEL_HINT));
+        // A total of zero (a pure rename / skipped item) is not "100% copied".
+        let no_bytes = transfer_progress_status("移動", 0, 0);
+        assert!(!no_bytes.contains(STATUS_TRANSFER_VERIFY_SUFFIX));
+    }
+
+    #[test]
+    fn progress_pump_throttles_repeated_zero_samples() {
+        // BB06: the first zero sample is the initial estimate and must show,
+        // but later zeros are throttled just like non-zero byte counts.
+        assert!(should_forward_progress(false, 0, 0, Duration::ZERO));
+        assert!(!should_forward_progress(
+            true,
+            0,
+            0,
+            Duration::from_millis(10)
+        ));
+        assert!(should_forward_progress(true, 0, 0, PROGRESS_THROTTLE));
+        // Real bytes are still throttled and never regress.
+        assert!(!should_forward_progress(
+            true,
+            100,
+            0,
+            Duration::from_millis(10)
+        ));
+        assert!(should_forward_progress(true, 100, 0, PROGRESS_THROTTLE));
+        assert!(!should_forward_progress(true, 100, 100, PROGRESS_THROTTLE));
+        assert!(!should_forward_progress(true, 50, 100, PROGRESS_THROTTLE));
     }
 
     #[test]

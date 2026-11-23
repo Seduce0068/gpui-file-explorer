@@ -1054,9 +1054,11 @@ pub fn remove_entry_safe(path: &Path) -> Result<(), OpError> {
 ///
 /// Symlinks are not followed (counted as 0), unreadable entries are skipped,
 /// and directories are walked recursively. The function never fails: an
-/// incomplete total is still useful for a progress bar.
-pub fn total_bytes(paths: &[PathBuf]) -> u64 {
-    paths.iter().map(|path| total_bytes_of(path)).sum()
+/// incomplete total is still useful for a progress bar. `cancel` is checked
+/// per entry just like [`dir_stats`]; a cancelled estimate returns the partial
+/// sum gathered so far instead of walking a huge tree to completion (BB16).
+pub fn total_bytes(paths: &[PathBuf], cancel: &CancelFlag) -> u64 {
+    paths.iter().map(|path| total_bytes_of(path, cancel)).sum()
 }
 
 /// Aggregate statistics for a directory tree (read-only).
@@ -1106,7 +1108,10 @@ pub fn dir_stats(root: &Path, cancel: &CancelFlag) -> DirStats {
     stats
 }
 
-fn total_bytes_of(path: &Path) -> u64 {
+fn total_bytes_of(path: &Path, cancel: &CancelFlag) -> u64 {
+    if cancel.is_cancelled() {
+        return 0;
+    }
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return 0;
     };
@@ -1120,10 +1125,14 @@ fn total_bytes_of(path: &Path) -> u64 {
         let Ok(reader) = fs::read_dir(path) else {
             return 0;
         };
-        return reader
-            .filter_map(|entry| entry.ok())
-            .map(|entry| total_bytes_of(&entry.path()))
-            .sum();
+        let mut total = 0u64;
+        for entry in reader.flatten() {
+            if cancel.is_cancelled() {
+                break;
+            }
+            total += total_bytes_of(&entry.path(), cancel);
+        }
+        return total;
     }
     0
 }
@@ -1287,9 +1296,19 @@ pub fn move_entry(
     reservation.release_for_rename();
     match fs::rename(src, &dest) {
         Ok(()) => {
-            let mut stats = OpStats::default();
+            // BB06: a same-filesystem rename only changes a directory entry,
+            // but the UI advances its progress bar from `stats.bytes`. Without
+            // a real count the transfer stays at "0 / N bytes" and then jumps
+            // straight to the final status. Measure the moved entry with the
+            // same recursive estimate used for the pre-move total so a file or
+            // a whole tree reports the same bytes as the copy fallback.
+            let bytes = total_bytes_of(&dest, cancel);
+            let mut stats = OpStats {
+                bytes,
+                ..Default::default()
+            };
             stats.created.push(dest);
-            on_progress(0);
+            on_progress(bytes);
             Ok(stats)
         }
         Err(error) if error.kind() == ErrorKind::CrossesDevices => {
@@ -2114,16 +2133,37 @@ mod tests {
         let dir = scratch("total");
         write(&dir.join("a.bin"), &[0u8; 10]);
         write(&dir.join("sub/b.bin"), &[0u8; 20]);
-        assert_eq!(total_bytes(&[dir.join("a.bin")]), 10);
-        assert_eq!(total_bytes(std::slice::from_ref(&dir)), 30);
-        assert_eq!(total_bytes(&[dir.join("missing")]), 0);
+        let cancel = CancelFlag::new();
+        assert_eq!(total_bytes(&[dir.join("a.bin")], &cancel), 10);
+        assert_eq!(total_bytes(std::slice::from_ref(&dir), &cancel), 30);
+        assert_eq!(total_bytes(&[dir.join("missing")], &cancel), 0);
 
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(dir.join("a.bin"), dir.join("link.bin")).unwrap();
             // The symlink itself must not be followed/counted.
-            assert_eq!(total_bytes(&[dir.join("link.bin")]), 0);
+            assert_eq!(total_bytes(&[dir.join("link.bin")], &cancel), 0);
         }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn total_bytes_honours_cancel() {
+        let dir = scratch("total-cancel");
+        write(&dir.join("a.bin"), &[0u8; 10]);
+        write(&dir.join("sub/b.bin"), &[0u8; 20]);
+
+        // BB16: a cancelled estimate must never walk the whole tree. The
+        // per-entry checks make an already-cancelled flag return a partial
+        // (here empty) sum immediately, just like `dir_stats`.
+        let cancelled = CancelFlag::new();
+        cancelled.cancel();
+        assert_eq!(total_bytes(std::slice::from_ref(&dir), &cancelled), 0);
+        assert_eq!(total_bytes(&[dir.join("a.bin")], &cancelled), 0);
+
+        let live = CancelFlag::new();
+        assert_eq!(total_bytes(std::slice::from_ref(&dir), &live), 30);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2236,6 +2276,30 @@ mod tests {
         assert_eq!(stats.created.len(), 1);
         assert!(!src.exists());
         assert_eq!(fs::read(dest_dir.join("a.txt")).unwrap(), b"move me");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_via_rename_reports_moved_bytes() {
+        // BB06: the same-filesystem rename fast path must not report 0 bytes.
+        let dir = scratch("move-rename-progress");
+        let src = dir.join("a.txt");
+        write(&src, b"move me");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+
+        let mut samples = Vec::new();
+        let stats = move_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |bytes| samples.push(bytes),
+        )
+        .unwrap();
+        assert_eq!(stats.bytes, 7);
+        assert_eq!(samples.last().copied(), Some(7));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -3101,6 +3165,22 @@ mod tests {
     // ---- R2-INTEGRITY: content verification, durability, publish, BA20 ----
 
     #[test]
+    fn fnv1a_known_answer_vectors_and_chunk_split_equivalence() {
+        // BB01: pin the absolute hash values. The relative src/dest checks
+        // would still pass if the offset, prime or fold order regressed.
+        assert_eq!(fnv1a_update(FNV1A_OFFSET, b""), FNV1A_OFFSET);
+        assert_eq!(fnv1a_update(FNV1A_OFFSET, b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a_update(FNV1A_OFFSET, b"foobar"), 0x8594_4171_f739_67e8);
+        assert_ne!(fnv1a_update(FNV1A_OFFSET, b"\xff"), FNV1A_OFFSET);
+        let whole = b"the quick brown fox jumps over the lazy dog";
+        let (head, tail) = whole.split_at(11);
+        assert_eq!(
+            fnv1a_update(fnv1a_update(FNV1A_OFFSET, head), tail),
+            fnv1a_update(FNV1A_OFFSET, whole)
+        );
+    }
+
+    #[test]
     fn verify_transfer_detects_same_length_content_mismatch() {
         let dir = scratch("verify-content");
         let src = dir.join("src.txt");
@@ -3188,6 +3268,42 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".partial-"))
             .collect();
         assert!(leftovers.is_empty(), "partial left behind: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_publish_handles_an_empty_source_file() {
+        // BB13: an empty file is the boundary case for the 0-byte check above.
+        // A successful copy of an empty source must still publish a real (but
+        // zero-length) destination and leave no partial behind.
+        let dir = scratch("publish-empty");
+        let src = dir.join("empty.txt");
+        let dest_dir = dir.join("dest");
+        fs::create_dir(&dest_dir).unwrap();
+        write(&src, b"");
+
+        copy_entry(
+            &src,
+            &dest_dir,
+            ConflictPolicy::Fail,
+            &CancelFlag::new(),
+            |_| {},
+        )
+        .expect("empty source must copy successfully");
+
+        let dest = dest_dir.join("empty.txt");
+        assert!(dest.exists(), "destination must exist even for empty input");
+        assert_eq!(fs::metadata(&dest).unwrap().len(), 0);
+        let partials: Vec<_> = fs::read_dir(&dest_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".partial-"))
+            .collect();
+        assert!(
+            partials.is_empty(),
+            "no partial may remain after publication"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

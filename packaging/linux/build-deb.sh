@@ -372,7 +372,7 @@ if [ "${dry_run}" -eq 1 ]; then
   echo "  4. バイナリ/.desktop/アイコン/ドキュメントを ${stage} へ配置"
   echo "  5. ステージング済みファイルと現行ソースを照合"
   echo "  6. DEBIAN/control を生成して ${deb} をビルド"
-  echo "  7. --verify でステージと .deb のメタデータおよびバイナリを照合"
+  echo "  7. ビルド後、手動で --verify を実行してステージと .deb を照合"
   printf '  照合対象 (%d 件):\n' "${#doc_pairs[@]}"
   for pair in "${doc_pairs[@]}"; do
     echo "    ${pair%%|*} -> ${pair#*|}"

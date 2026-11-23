@@ -68,7 +68,7 @@ Usage:
                                     # licenses/bans/sources
   bash scripts/check.sh --app       # app/ + core/win32 + cross-target checks
                                     # (includes release verification)
-  bash scripts/check.sh --poc       # poc/ only
+  bash scripts/check.sh --poc       # poc/ + core/win32 + cross-target checks (app/ omitted)
   bash scripts/check.sh --no-release # skip the app/ release verification
   bash scripts/check.sh --strict    # fail if a needed supply-chain tool is missing
 EOF

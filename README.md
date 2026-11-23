@@ -292,7 +292,7 @@ bash scripts/check.sh --fast       # audit と vet を省略。deny は advisori
                                    # --no-release も暗示（release 検証を省略）。
 bash scripts/check.sh --no-release # app の release check/test のみ省略。
 bash scripts/check.sh --strict     # 監査ツール未導入時に失敗（既定は SKIPPED）。
-bash scripts/check.sh --app        # app/ のみ（release 検証を含む）。
+bash scripts/check.sh --app        # app/ + core/win32 + cross-target checks（release 検証を含む）。
 bash scripts/check.sh --poc        # poc/ に加え、workspace member の core / win32 の
                                    # test+clippy と wasm32 / windows-gnu の
                                    # クロスターゲット check も実行（app/ は省略）。
