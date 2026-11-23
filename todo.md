@@ -1546,6 +1546,23 @@ status: current
 - [x] **AU03** review-report chrono 参照が 1 行ずれ — review-report.md:326 — 対応: impl-r48
 - [x] **AU04** DESIGN PoC 行アンカーが 6 行ずれ — DESIGN.md:1086 — 対応: impl-r48
 
+### 優先度: 中（ループ R49・confirmed）
+
+- [ ] **AV01** ラベル編集ダイアログが read-only でも「Enter で保存」
+  — main.rs:8531
+- [ ] **AV02** app/README の設定スキーマ「一致」主張が as-built と乖離
+  — app/README.md:749
+- [ ] **AV03** 設定カード全体がスクロールし操作ボタンが画面外へ
+  — settings_ui.rs:2068
+
+### 優先度: 低（ループ R49）
+
+- [ ] **AV04** NW04 レスポンシブが README/app/README に未記載
+- [ ] **AV05** AppError::with_cause の Cancelled no-op 分岐が無テスト
+  — error.rs:177
+- [ ] **AV06** app/README が新要件（Windows 第一級）を未反映
+  — app/README.md:5
+
 ### 優先度: 低（調査タスク）
 
 - [x] **F6-39〜F6-48** 未確認項目を調査し、事実／未確認／必要環境を整理 — 成果物:
