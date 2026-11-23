@@ -1,13 +1,16 @@
 ---
 type: Spec
 title: "Phase 1: GPUI 非依存コア crate の抽出境界と workspace 構成"
-description: "モバイルADR選択肢Bの Phase 1 spike に向け、model/ops/search 等を GPUI 非依存 crate へ抽出する設計案"
+description: >-
+  Rust コア共有 + Compose（Android アプリ）/ PWA の Phase 1 spike に向け、
+  model/ops/search 等を GPUI 非依存 crate へ抽出する設計案
 tags:
   - gpui
   - core-extraction
   - workspace
   - phase1
   - mobile
+  - pwa
 generated:
   by: "p1-design-core"
   at: "2026-11-23T14:34:25+09:00"
@@ -20,6 +23,13 @@ status: draft
 Phase 1 合格条件のうち **(1) 抽出境界定義** を本設計で満たす。対象は設計のみであり、
 `Cargo.toml` / ソースの直接変更は行わない。R1 の実読事実（親エージェント確認済み）を前提に、
 第1スコープ・逆参照の解消・ポート定義・段階移行を具体的に定める。
+
+新方針（2026-11-23、AGENTS.md「クロスプラットフォーム対応方針」）では、
+選択肢Bは「Rust コア共有 + Jetpack Compose（Android アプリ）/
+Web PWA（iOS および Android PWA）」を指す。SwiftUI アプリ版は提供しない。
+iOS を PWA のみとする主因は、iOS アプリ配布に Apple Developer Program の
+年会費が必ずかかるというコスト理由である。技術的理由（gpui-kit の wasm
+安定パスなし、後述 §技術的制約）と併せて決定根拠とする。
 
 ## 1. クレート名・配置と workspace 構成
 
@@ -66,14 +76,14 @@ strip = true
 設計上の注意点:
 
 - 現在 `app/Cargo.toml:36-45` と `poc/Cargo.toml:14-23` にある `[profile.*]` は
-  workspace ルートへ集約する。member 側の profile は警告付きで無視される。
+   workspace ルートへ集約する。member 側の profile は警告付きで無視される。
 - virtual workspace の resolver 既定は 1 のため `resolver = "2"` を明示する。
 - `default-members` から `poc` を外し、ルートでの `cargo test` がコアと app を対象にする。
 - core は AGPL-3.0-or-later を維持する。GPUI スタック（Apache-2.0）は app アダプタ側に
-  閉じ込め、ADR 選択肢B のライセンス境界（`docs/adr/adr-20261122-mobile-android-ios-support.md:133`）
-  を保つ。
+  閉じ込め、ADR 選択肢B のライセンス境界を保つ
+  （`docs/adr/adr-20261122-mobile-android-ios-support.md:133`）。
 - `core/src/lib.rs` 先頭に `#![forbid(unsafe_code)]` を明記する
-  （`app/src/main.rs:8` の crate 単位規約と同準拠）。
+   （`app/src/main.rs:8` の crate 単位規約と同準拠）。
 
 ## 2. 第1スコープのファイル一覧と根拠
 
@@ -91,13 +101,13 @@ strip = true
 `app/src/trash_view.rs:10` の GPUI-free 先行例をそのまま境界として使う。
 
 1. 第1層（core）: 純関数 `partition_restore_ids` / `entries_from_items` /
-   `original_parent_for_path` / `items_for_paths` / `record_ids` と、`TrashItem` 相当の
-   データ契約（§4 の `TrashBackend` 関連型）のみ。
+   `original_parent_for_path` / `items_for_paths` / `record_ids` と、
+   `TrashItem` 相当のデータ契約（§4 の `TrashBackend` 関連型）のみ。
 2. 第2層（app アダプタ）: ブロッキングな platform API（`:27-76`）と
    cfg no-op fallback（`:78-125`）。`trash` クレート自体は `app/Cargo.toml:33-34` に残す。
 3. 第3層（UI）: `cx.background_spawn` で第2層を呼ぶ（`:46-47` の契約コメントを維持）。
 
-これにより iOS / Android では第2層が no-op のままでも、コアの単体テストは全ターゲットで通る。
+これにより Android / PWA では第2層が no-op のままでも、コアの単体テストは全ターゲットで通る。
 
 ### settings の扱い（完全移行は別スコープ）
 
@@ -108,16 +118,17 @@ strip = true
 Phase 1 で core へ切り出すのは純粋な判定部分に限定する。
 
 - `SCHEMA_VERSION` / `LEGACY_SCHEMA_VERSION`（`:92,95`）と `schema_status` 相当の
-  バージョン判定。
+   バージョン判定。
 - `deserialize_theme_choice`（`:266-280`）/ `deserialize_theme`（`:296-310`）の
-  文字列分類を、GPUI 型を受け取らない `classify_theme_*(&str) -> ThemeValue` として抽出。
+   文字列分類を、GPUI 型を受け取らない `classify_theme_*(&str) -> ThemeValue` として抽出。
 - `migrate`（`:1410-1421`）のバージョン判定を
-  `migrate_version(loaded: u32, current: u32) -> MigrationStatus` として抽出。
+   `migrate_version(loaded: u32, current: u32) -> MigrationStatus` として抽出。
 
 承認済みADR:215の「settings を抽出対象とする」は、型・判定を core へ置き、
 I/O と gpui_kit 型変換を app アダプタへ残す形で充足する（条件 (1) の充足形）。
 置き先は `core/src/settings_persistence.rs` とし、
-`MigrationReport { read_only: bool, unknown_fields: Vec<String> }` を返す純関数だけを持たせる。
+`MigrationReport` を返す純関数だけを持たせる
+（フィールドは `read_only: bool` と `unknown_fields: Vec<String>`）。
 `std::fs`・パス注入（`load_from` / `save_to`）・UI 型は core へ持ち込まない。
 
 ## 3. model → settings 逆参照の解消
@@ -125,8 +136,9 @@ I/O と gpui_kit 型変換を app アダプタへ残す形で充足する（条�
 現状: `model.rs:348-363` の `deserialize_sort_key` と
 `:507-520` の `deserialize_sort_dir` が
 `crate::settings::note_unknown_persisted_enum()`（`settings.rs:222`）を呼び、
-thread_local `UNKNOWN_ENUM_SEEN`（`:205,213`）を立てる。`load_from_with_backup`（`:1281`）が
-`:1382-1390` でこれを消費して `read_only` を決定する。model を core へ移すと依存が逆転し、
+thread_local `UNKNOWN_ENUM_SEEN`（`:205,213`）を立てる。
+`load_from_with_backup`（`:1281`）が `:1382-1390` でこれを消費して
+`read_only` を決定する。model を core へ移すと依存が逆転し、
 core が app（ひいては GPUI）を参照するため解消が必須。
 
 | 案 | 概要 | 長所 | 短所 |
@@ -140,32 +152,33 @@ core が app（ひいては GPUI）を参照するため解消が必須。
 **Phase 1 は案3、Phase 2 で案2へ収束する** ことを推奨する。
 
 - 案3の具体: `model.rs:542,544` の `#[serde(deserialize_with = ...)]` と `:348,507` の
-  2関数を app の `PersistedSortSpec` へ移し、core の `SortKey` / `SortDir` は
-  `rename_all = "snake_case"` と安全なデフォルトだけを持つ。thread_local は app 内に残る。
+   2関数を app の `PersistedSortSpec` へ移し、core の `SortKey` / `SortDir` は
+   `rename_all = "snake_case"` と安全なデフォルトだけを持つ。thread_local は app 内に残る。
 - 理由: 第1スコープの目的は「core を GPUI/settings 非依存にして一覧・検索を試作で出す」こと。
-  案3なら2フックを消すだけで逆参照が完全に断てる。
+   案3なら2フックを消すだけで逆参照が完全に断てる。
 - 案1は短期安全だが隠れ状態を core に持ち込むため採用しない。
 - 案2は最終形として正しいが、settings の大規模テスト改修を Phase 1 に載せるのはリスクが高い。
 - 案3の乖離リスクは `PersistedSortSpec` に `TryFrom<&str>` / `From<SortSpec>` を実装し、
-  対応表を一箇所へ集約して緩和する。
+   対応表を一箇所へ集約して緩和する。
 
 ## 4. ポート（トレイト）定義草案
 
 置き先は `core/src/ports.rs`（トレイトとデータ型のみ、GPUI も platform crate も依存しない）。
 実装は app が `app/src/ports_gpui.rs` に、モバイルは各ネイティブ層に置く。
 
-| トレイト | 役割 | GPUI アダプタ | SwiftUI / Compose アダプタ |
+| トレイト | 役割 | GPUI アダプタ | Compose / PWA アダプタ |
 | --- | --- | --- | --- |
 | `TrashBackend` | 一覧・復元・削除 | `trash_view.rs` platform | no-op → Phase2 |
-| `VolumeSource` | ボリューム一覧 | `app/src/mounts.rs` | 外部ストレージ |
-| `ImageDecoder` | アイコン解析 | `icons.rs` 等 | `UIImage` / `Bitmap` |
-| `OpenRevealPrompt` | picker / reveal | gpui-pre API | `UIDocPicker` / SAF |
-| `Clipboard` | uri-list 読み書き | OS clipboard | `UIPasteboard` / `CM` |
-| `WatchSource` | ディレクトリ監視 | `notify` | FSEvents / `FileObserver` |
+| `VolumeSource` | ボリューム一覧 | `app/src/mounts.rs` | 外部ストレージ / 空 |
+| `ImageDecoder` | アイコン解析 | `icons.rs` 等 | `Bitmap` / Web 画像 |
+| `OpenRevealPrompt` | picker / reveal | gpui-pre API | SAF / FSA API |
+| `Clipboard` | uri-list 読み書き | OS clipboard | CM / Web Clipboard |
+| `WatchSource` | ディレクトリ監視 | `notify` | `FileObserver` / ポーリング |
 
-gpui-pre の prompt は iOS がスタブ
-（モバイル ADR `:62-66`）、
-Windows が実装済み（同 `:72-75`）という ADR 事実を境界の根拠とする。
+gpui-pre の prompt は iOS がスタブ（モバイル ADR `:62-66`）、Windows が実装済み
+（同 `:72-75`）という ADR 事実を境界の根拠とする。iOS アプリ版を作らないため、
+iOS スタブは PWA 方針ではブロッカーではない。なお FSA API は File System
+Access API、CM は Android の ClipboardManager を指す。
 
 ```rust
 // core/src/ports.rs
@@ -198,13 +211,16 @@ pub trait WatchSource {
 }
 ```
 
-呼び出し形は `Explorer::new(trash, volumes, images, prompt, clipboard, watcher, progress)`
-のような依存注入を想定する。同期メソッドのブロッキング契約は `trash_view.rs:46-47` を踏襲し、
+呼び出し形は `Explorer::new(...)` のような依存注入を想定する
+（引数は trash, volumes, images, prompt, clipboard, watcher, progress）。
+同期メソッドのブロッキング契約は `trash_view.rs:46-47` を踏襲し、
 UI 側がバックグラウンド実行を担当する（Phase 1 で async 化しない）。
 
-SwiftUI / Compose 側は、Rust コアを staticlib としてビルドし（iOS の precedent は ADR `:67`）、
-uniFFI / JNI 経由で `Explorer::list(path)` と `Explorer::search(query)` を呼ぶ。
-各ポートの実装だけを Swift / Kotlin の第一級 API で書き、GPUI はバイナリに含めない。
+Compose 側は Rust コアを staticlib としてビルドし、JNI 経由で
+`Explorer::list(path)` と `Explorer::search(query)` を呼ぶ。
+ポート実装だけを Kotlin の第一級 API（SAF 等）で書き、GPUI はバイナリに含めない。
+PWA 側は GPUI 非依存コアを wasm 化し、Web フロントエンドから同じ API を呼ぶ。
+SwiftUI アプリ版は提供しない（コスト理由と wasm 制約は §技術的制約を参照）。
 
 ## 5. 段階移行手順と検証ゲート
 
@@ -214,7 +230,7 @@ uniFFI / JNI 経由で `Explorer::list(path)` と `Explorer::search(query)` を�
 | 1. core 骨格 | Cargo.toml + lib.rs + error/strings/ports | 同上 + core 単体テスト |
 | 2. 本体移動 | model/search/ops/trash 純関数。§3 案3 | 同上 + app 全テスト |
 | 3. re-export | `pub use gfe_core as core;` で参照を一本化 | 同上 + cargo tree |
-| 4. 1画面試作 | core API 経由の一覧・検索ビューアを iOS/Android 双方で作成 | 同上 + デスクトップ回帰なし |
+| 4. 1画面試作 | core API 経由の一覧・検索を Compose / PWA で作成 | 同上 + デスクトップ回帰なし |
 
 段階2 の import 置換の具体:
 
@@ -231,10 +247,23 @@ use core::{model, ops, search, strings};
 
 ## 6. 受け入れ条件と未解決点
 
+### 技術的制約と検証環境
+
+- `notes/wasm-browser-notes.md:51-91` のとおり、gpui-kit 0.9.1 には wasm の安定パスが
+  存在しない。PWA は GPUI UI を再利用せず、Web フロントエンドを新規構築する。
+- よって UI 系統は **desktop(GPUI) / Android(Compose) / PWA(Web) の3系統** とする。
+- iOS アプリ版は提供しない。主因は Apple Developer Program の年会費が必ずかかる
+  というコスト理由（ユーザー明示、2026-11-23）で、技術的理由（上記 wasm 制約）と
+  併せて決定根拠とする。
+- 検証環境（verified）: Kubuntu（Linux）はメイン開発環境かつ実機動作検証あり。
+  Windows は評価版 Windows で動作検証する。macOS は実機動作検証を行わない。
+  Android はアプリ版と PWA の両方、iOS は PWA のみを対象とする。
+
 ### 受け入れ条件
 
 1. 抽出境界を本設計で定義したこと（ADR Phase 1 条件 (1)）。
-2. コア API 経由で一覧・検索を出す1画面が iOS / Android 双方で試作できること（同条件 (2)）。
+2. Android Compose アプリと iOS / Android 共通 PWA で、コア API 経由の一覧・検索
+   1画面が起動すること（同条件 (2)）。iOS アプリ版ビルドは要求しない。
 3. 試作後に選択肢Aとの工数差・ライセンス境界を再見積もりしユーザーへ提示すること
    （同条件 (3)、`docs/adr/adr-20261122-mobile-android-ios-support.md:218`）。
 4. `core/src/lib.rs` に `#![forbid(unsafe_code)]` があること。
@@ -248,15 +277,19 @@ use core::{model, ops, search, strings};
 - 案3の `PersistedSortSpec` を app に置くか、core の `persisted` feature に置くか。
 - `TrashBackend` を async トレイトにするか（現状は同期 + background_spawn 契約）。
 - `ImageDecoder` の出力形（生ピクセル / サムネイルバイト）と Breeze アイコン資産の
-  ライセンス表示先。
+   ライセンス表示先。
 - `WatchSource` の通知を `dyn Fn` コールバックにするか channel にするか。
-- モバイル adapter の配置（単一 staticlib + uniFFI か、iOS / Android で別 crate か）。
+- モバイル adapter の配置（Android は staticlib + JNI、PWA は wasm バインディング、
+  共有方法は未確定）。
 - ライセンス境界: core を AGPL のまま公開するか、Apache-2.0 で再ライセンスして
   採用範囲を広げるかはユーザー判断として残す。
 
 ## 参照
 
-- `docs/adr/adr-20261122-mobile-android-ios-support.md`（承認済み、Phase 1 条件 :213-218）
+- `docs/adr/adr-20261122-mobile-android-ios-support.md`
+  （承認済み、Phase 1 条件 :213-218）
+- [wasm 調査ノート](../../notes/wasm-browser-notes.md)（:51-91、gpui-kit wasm 制約）
+- `AGENTS.md`（クロスプラットフォーム対応方針、2026-11-23）
 - `app/src/model.rs`, `app/src/ops.rs`, `app/src/search.rs`, `app/src/error.rs`
 - `app/src/strings.rs`, `app/src/trash_view.rs`, `app/src/settings.rs`
 - `app/Cargo.toml`, `poc/Cargo.toml`
