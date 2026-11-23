@@ -1935,7 +1935,8 @@ status: current
 - [x] **BA21** gates ジョブに timeout-minutes が無い — 対応: loop14
 - [x] **BA22** ツールチェーン未ピン留めで fmt/clippy が drift に晒される
   — 対応: loop14（1.92 ピンは実検証で不採用・理由記録）
-- [x] **BA23** deny.toml の unused-ignored-advisory = allow が失効 ignore を隠す — 対応: loop14
+- [x] **BA23** deny.toml の unused-ignored-advisory = allow が失効 ignore を隠す
+  — 対応: loop14
 
 ## メモ
 
