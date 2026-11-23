@@ -1345,6 +1345,26 @@ status: current
   — icu_collator 2.4.0 未取得、実装は Phase 0 以降
   — strings.rs:25 / R1-PRD01
 
+### 優先度: 高（モバイル ADR Phase 1 実装計画・設計完了）
+
+> 設計: [phase1-core-extraction.md](docs/design/phase1-core-extraction.md) /
+> [phase1-platform-ports.md](docs/design/phase1-platform-ports.md)
+> モバイル ADR は approved（2026-11-23、選択肢B）。
+> iOS は PWA のみ（Apple Developer Program の年会費が必ずかかるため）、
+> Android は Compose アプリ＋PWA、Windows は評価版で検証、macOS は実機検証なし。
+
+- [ ] **P1-00** workspace 準備: ルート Cargo.toml に [workspace] と members/power を追加
+  — app/poc の profile を集約。挙動不変
+- [ ] **P1-01** core 骨格: `core/`（package gpui-file-explorer-core / lib gfe_core）を作成
+  — `#![forbid(unsafe_code)]`、error/strings/ports を配置
+- [ ] **P1-02** 純粋ロジック移動: model/search/ops/trash_view 純関数群を core へ
+  — model→settings 逆参照は deserialize hook を app 側へ移す案3で解消
+- [ ] **P1-03** app 側 re-export: `pub use gfe_core as core;` で参照を一本化
+  — デスクトップ全テスト green を維持
+- [ ] **P1-04** 1画面ビューア試作: Android Compose アプリ＋iOS/Android 共通 PWA
+  — コア API 経由で一覧・検索を表示（外観完成は要求しない）
+- [ ] **P1-05** 工数・ライセンス再見積もりの実績反映とユーザー提示
+
 ### 優先度: 中（新要件フォローアップ）
 
 - [x] **NF01** 列カスタマイズ時にヘッダと行の列を整列させる（行描画を列ベースへ） — 対応: fix-columns
