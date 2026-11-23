@@ -972,6 +972,17 @@ fn settings_write_status(
     }
 }
 
+/// AW11: the startup notice naming the backup path survives in
+/// `Settings::settings_reset_notice`, but the status bar moves on with the
+/// first user action. Expose the same notice to the settings dialog so the
+/// backup location stays inspectable for the whole session.
+fn settings_reset_status(settings: &Settings) -> Option<String> {
+    settings
+        .settings_reset_notice
+        .clone()
+        .filter(|notice| !notice.is_empty())
+}
+
 /// Status shown after a view switch. Only a real write reports the switch; a
 /// skipped (read-only / ephemeral) write shows the read-only notice and a failed
 /// write shows the save-failure notice, so `set_view` never silently drops the
@@ -992,6 +1003,15 @@ fn set_view_status(settings: &Settings, saved: bool, mode: ViewLayout) -> String
 /// sync (D13/H01).
 fn settings_write_needs_rollback(saved: bool) -> bool {
     !saved
+}
+
+/// Restore a pre-preview settings snapshot while keeping the failure reason
+/// that the just-failed `save_with_reason()` recorded in the live value (AW02).
+/// Only the `last_save_error` Cell is inherited: every persisted/previewed
+/// field must still come from `snapshot` so the UI matches what is on disk.
+fn settings_with_live_save_error(snapshot: Settings, live: &Settings) -> Settings {
+    snapshot.last_save_error.set(live.last_save_error.get());
+    snapshot
 }
 
 /// Status shown after undoing a trash operation. A zero restore count means
@@ -1599,6 +1619,15 @@ fn upsert_keymap_override(
     chord: &str,
 ) -> bool {
     let chord = canonical_chord(chord);
+    // AW01: the capacity guard must run BEFORE the collision `retain`. A full
+    // list has no room for a new action even when its chord would evict an
+    // existing entry; evicting first and only then returning `false` would
+    // silently destroy that entry (the caller's early return skips rollback).
+    // Rebinding an action already in the list is still allowed at capacity.
+    let is_existing = overrides.iter().any(|(name, _)| name == action);
+    if !is_existing && overrides.len() >= MAX_KEYMAP_OVERRIDES {
+        return false;
+    }
     // A chord can only belong to one action. Mirror `KeyMap::rebind`'s eviction
     // in the persisted list so the binding survives a restart unchanged. The
     // comparison is semantic, not textual: `binding_matches` ignores `alt` for
@@ -1609,9 +1638,6 @@ fn upsert_keymap_override(
     if let Some(entry) = overrides.iter_mut().find(|(name, _)| name == action) {
         entry.1 = chord;
         return true;
-    }
-    if overrides.len() >= MAX_KEYMAP_OVERRIDES {
-        return false;
     }
     overrides.push((action.to_string(), chord));
     true
@@ -5361,7 +5387,9 @@ impl Explorer {
                 div()
                     .text_xs()
                     .text_color(rgb(p.muted))
-                    .child(dialog_footer_hint_for_session(self.settings.read_only)),
+                    .child(dialog_footer_hint_for_session(
+                        self.settings.ui_is_read_only(),
+                    )),
             );
 
         Some(
@@ -5555,7 +5583,9 @@ impl Explorer {
                 div()
                     .text_xs()
                     .text_color(rgb(p.muted))
-                    .child(dialog_footer_hint_for_session(self.settings.read_only)),
+                    .child(dialog_footer_hint_for_session(
+                        self.settings.ui_is_read_only(),
+                    )),
             );
 
         Some(
@@ -5739,11 +5769,24 @@ impl Explorer {
         }
         if self.undo_history_open {
             // Same limitation as the F1 overlay: no `ScrollHandle::scroll_by`
-            // API exists for its `.overflow_y_scroll()` body, so only Escape
-            // is routed here; scrolling stays mouse-wheel only.
+            // API exists for its `.overflow_y_scroll()` body, so scrolling stays
+            // mouse-wheel only. Escape dismisses, Ctrl+Z (or its rebind) undoes.
             if key == "escape" {
                 self.undo_history_open = false;
                 cx.notify();
+                return;
+            }
+            // AW25: keep the keyboard path inside the dialog equivalent to the
+            // new undo button. The keymap is consulted so a rebound Undo chord
+            // keeps working here; Escape stays literal and is handled above.
+            if self
+                .keymap
+                .resolve(key, modifiers.control, modifiers.shift, modifiers.alt)
+                == KeyAction::Undo
+            {
+                self.undo_history_open = false;
+                self.undo_last(cx);
+                return;
             }
             return;
         }
@@ -6061,7 +6104,12 @@ impl Explorer {
     fn rollback_settings(&mut self, snapshot: Settings, cx: &mut Context<Self>) {
         let previous_mode = snapshot.theme;
         let was_system = snapshot.theme_choice == ThemeChoice::System;
-        self.settings = snapshot;
+        // AW02: `save_with_reason()` records the concrete failure (TooLarge /
+        // Locked) in the LIVE settings. Restoring the pre-preview snapshot
+        // would replace that Cell with the stale value and degrade the status
+        // to the generic message. Carry only the Cell across the restore.
+        let restored = settings_with_live_save_error(snapshot, &self.settings);
+        self.settings = restored;
         self.keymap = KeyMap::from_settings(&self.settings);
         self.apply_theme_mode(previous_mode, cx);
         if was_system {
@@ -6294,6 +6342,15 @@ impl Explorer {
             return;
         };
         cancel.cancel();
+        // AW09: cancelling a running operation must not leave the keymap or
+        // preferences overlay open on top of it. Their inputs own Escape while
+        // visible, so close them here as part of the same cancel transition.
+        let had_dialog = self.keymap_editor.is_some() || self.settings_ui.is_some();
+        self.keymap_editor = None;
+        self.settings_ui = None;
+        if had_dialog {
+            self.focus_list_on_next_render = true;
+        }
         self.status = STATUS_CANCELLING.to_string();
         cx.notify();
     }
@@ -6788,12 +6845,29 @@ impl Explorer {
                 );
             }
         }
+        // AW25: the history list stays read-only, but the overlay must expose a
+        // direct undo action. Both the button and Ctrl+Z (handled in
+        // `on_key_down`) share `undo_last`, so pointer and keyboard users get
+        // the same state transition.
+        let undo = cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.undo_history_open = false;
+            this.undo_last(cx);
+        });
         body = body.child(
-            div().flex().justify_end().child(
-                Button::new("undo-history-close")
-                    .label("閉じる")
-                    .on_click(close),
-            ),
+            div()
+                .flex()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("undo-history-undo")
+                        .label(crate::strings::HISTORY_UNDO_BUTTON_LABEL)
+                        .on_click(undo),
+                )
+                .child(
+                    Button::new("undo-history-close")
+                        .label("閉じる")
+                        .on_click(close),
+                ),
         );
         body = body.child(
             div()
@@ -8717,7 +8791,7 @@ impl Explorer {
             )
             .child(div().text_xs().text_color(rgb(p.muted)).child(format!(
                 "{} / {}",
-                dialog_footer_hint_for_session(self.settings.read_only),
+                dialog_footer_hint_for_session(self.settings.ui_is_read_only()),
                 DIALOG_FOOTER_DELETE_SUFFIX
             )));
         Some(
@@ -11860,6 +11934,24 @@ impl Explorer {
                     this.dismiss_settings_ui(cx);
                 }),
             );
+        // AW11: keep the backup notice visible below the card for as long as
+        // the session holds it; the startup status bar line is transient.
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_2()
+            .child(content);
+        if let Some(notice) = settings_reset_status(&self.settings) {
+            let color = self.palette.status_color(&notice);
+            card = card.child(
+                div()
+                    .max_w(px(640.0))
+                    .text_xs()
+                    .text_color(rgb(color))
+                    .child(notice),
+            );
+        }
         Some(
             div()
                 .absolute()
@@ -11870,7 +11962,7 @@ impl Explorer {
                 .items_center()
                 .justify_center()
                 .child(backdrop)
-                .child(content),
+                .child(card),
         )
     }
 }
@@ -12514,22 +12606,22 @@ mod tests {
         parse_keymap_input, pending_rename_index, rank_fuzzy, read_properties_snapshot,
         reconcile_aware_status, remove_keymap_override, resolved_sidebar_width,
         saved_search_caption, saved_search_save_status, search_filter_status, set_view_status,
-        settings_discard_status, settings_read_only_status, settings_row_key_is_bare,
-        settings_save_error_status, settings_save_status, settings_sort_next,
-        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
-        settings_write_needs_rollback, settings_write_status, startup_dir_from,
-        startup_save_failure_status, status_color, summarize_op, tab_label, terminal_dir_for,
-        terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, theme_choice_label, thumbnail_eligible,
-        transfer_log_level, transfer_progress_status, transfer_skip_notice, trash_batch,
-        trash_delete_status, trash_key_action, trash_load_error_status,
-        trash_redo_cancelled_status, trash_undo_status, trashed_ids_from_snapshot,
-        undo_exists_status, undo_missing_status, upsert_keymap_override, validate_cli_dir,
-        version_label, visible_secondary_slots, AppPalette, CliAction, DebugSettingsOverrides,
-        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
-        Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab, SortKey, TrashKeyAction,
-        UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW,
-        GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT,
+        settings_discard_status, settings_read_only_status, settings_reset_status,
+        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
+        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        settings_validation_status, settings_with_live_save_error, settings_write_needs_rollback,
+        settings_write_status, startup_dir_from, startup_save_failure_status, status_color,
+        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
+        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
+        theme_choice_label, thumbnail_eligible, transfer_log_level, transfer_progress_status,
+        transfer_skip_notice, trash_batch, trash_delete_status, trash_key_action,
+        trash_load_error_status, trash_redo_cancelled_status, trash_undo_status,
+        trashed_ids_from_snapshot, undo_exists_status, undo_missing_status, upsert_keymap_override,
+        validate_cli_dir, version_label, visible_secondary_slots, AppPalette, CliAction,
+        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
+        KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction, SecondarySlot, SettingsTab,
+        SortKey, TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED,
+        C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT,
         SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
         STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
         STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
@@ -12573,12 +12665,12 @@ mod tests {
         STATUS_RENAME_INVALID_RESERVED_PREFIX, STATUS_RENAME_INVALID_SEPARATOR,
         STATUS_RENAME_NO_PARENT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
         STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
-        STATUS_SKIP_REASON_MISSING, STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL,
-        STATUS_TRASH_ALL_FAILED, STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT,
-        STATUS_TRASH_NO_HIDDEN, STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE,
-        STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT, STATUS_TRASH_PARTIAL_FAILED,
-        STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_MISSING_SUFFIX, STATUS_WATCH_DISABLED,
-        STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
+        STATUS_SETTINGS_RESET_PREFIX, STATUS_SKIP_REASON_MISSING,
+        STATUS_SKIP_REASON_SAME_DIRECTORY, STATUS_SKIP_REASON_SPECIAL, STATUS_TRASH_ALL_FAILED,
+        STATUS_TRASH_LOAD_FAILED_PREFIX, STATUS_TRASH_NO_CUT, STATUS_TRASH_NO_HIDDEN,
+        STATUS_TRASH_NO_PASTE, STATUS_TRASH_NO_PURGE, STATUS_TRASH_NO_RENAME, STATUS_TRASH_NO_SORT,
+        STATUS_TRASH_PARTIAL_FAILED, STATUS_UNDO_EXISTS_SUFFIX, STATUS_UNDO_MISSING_SUFFIX,
+        STATUS_WATCH_DISABLED, STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
     use std::ffi::OsString;
@@ -12821,11 +12913,40 @@ mod tests {
     }
 
     #[test]
+    fn dialog_footer_hint_covers_ephemeral_and_load_error_sessions() {
+        // AW03: the dialogs use `ui_is_read_only()`, so an ephemeral session or
+        // an unreadable config (read_only == false) also drops the "Enter で保存"
+        // promise. Those writes never reach disk.
+        let ephemeral = Settings {
+            ephemeral: true,
+            ..Settings::default()
+        };
+        let load_error = Settings {
+            load_error: Some("設定ディレクトリを特定できません".to_string()),
+            ..Settings::default()
+        };
+        let normal = Settings::default();
+        for settings in [&ephemeral, &load_error] {
+            assert!(settings.ui_is_read_only());
+            assert!(!settings.read_only, "regression guard for the old check");
+            assert_eq!(
+                dialog_footer_hint_for_session(settings.ui_is_read_only()),
+                DIALOG_FOOTER_HINT_READ_ONLY
+            );
+        }
+        assert!(!normal.ui_is_read_only());
+        assert_eq!(
+            dialog_footer_hint_for_session(normal.ui_is_read_only()),
+            DIALOG_FOOTER_HINT
+        );
+    }
+
+    #[test]
     fn alt_t_and_alt_k_dialogs_choose_the_read_only_footer() {
-        // AT01: 3 つのダイアログ（Alt+T / Alt+K / ブックマークラベル）が
-        // self.settings.read_only から脚文を選ぶことを source-guard で固定する
-        // （ダイアログ自体は無効化しない）。ラベルは削除案内を併記するため、
-        // 共通文言部分だけがセッションに応じて切り替わる。
+        // AT01 + AW03: 3 つのダイアログ（Alt+T / Alt+K / ブックマークラベル）が
+        // ui_is_read_only()（read_only / ephemeral / load_error の統合判定）
+        // から脚文を選ぶことを source-guard で固定する。ラベルは削除案内を
+        // 併記するため、共通文言部分だけがセッションに応じて切り替わる。
         let source = include_str!("main.rs");
         for (start, end) in [
             ("    fn terminal_command_dialog(", "    fn confirm_keymap("),
@@ -12833,9 +12954,12 @@ mod tests {
             ("    fn label_dialog(", "    fn reveal("),
         ] {
             let region = source_region(source, start, end);
+            // rustfmt may wrap the call across lines; compare whitespace-free
+            // text so the guard checks behaviour, not formatting.
+            let compact: String = region.chars().filter(|ch| !ch.is_whitespace()).collect();
             assert!(
-                region.contains("dialog_footer_hint_for_session(self.settings.read_only)"),
-                "dialog footer must follow read_only: {region}"
+                compact.contains("dialog_footer_hint_for_session(self.settings.ui_is_read_only()"),
+                "dialog footer must follow ui_is_read_only(): {region}"
             );
         }
     }
@@ -16376,6 +16500,98 @@ mod tests {
         assert!(!settings_write_needs_rollback(true));
     }
 
+    // AW11: the backup notice must remain inspectable after the startup status
+    // line has been replaced by a later user action.
+    #[test]
+    fn settings_reset_notice_is_exposed_to_the_settings_dialog() {
+        assert_eq!(settings_reset_status(&Settings::default()), None);
+        let empty = Settings {
+            settings_reset_notice: Some(String::new()),
+            ..Settings::default()
+        };
+        assert_eq!(settings_reset_status(&empty), None);
+        let notice = format!("{STATUS_SETTINGS_RESET_PREFIX}: /tmp/settings.bak");
+        let backed_up = Settings {
+            settings_reset_notice: Some(notice.clone()),
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings_reset_status(&backed_up).as_deref(),
+            Some(notice.as_str())
+        );
+        let source = include_str!("main.rs");
+        assert_eq!(
+            source
+                .matches(concat!("settings_reset_status(&self", ".settings)"))
+                .count(),
+            1,
+            "the settings dialog must render the persistent backup notice"
+        );
+    }
+
+    // AW02: the rollback must not replace the failure reason recorded by the
+    // failed save. Exercise the same helper the rollback path calls, then feed
+    // the restored settings through the status function used by every caller.
+    #[test]
+    fn rollback_preserves_recorded_save_failure_reason() {
+        for reason in [SettingsSaveError::TooLarge, SettingsSaveError::Locked] {
+            let snapshot = Settings::default();
+            let live = Settings {
+                view: ViewLayout::Icons,
+                ..Settings::default()
+            };
+            live.last_save_error.set(Some(reason));
+            let restored = settings_with_live_save_error(snapshot, &live);
+            assert_eq!(restored.last_save_error.get(), Some(reason));
+            assert_eq!(
+                restored.view,
+                ViewLayout::Details,
+                "snapshot fields must win"
+            );
+            let status = settings_write_status(&restored, false, true, "成功".to_string());
+            let expected = settings_save_error_status(Some(reason)).expect("reason has a notice");
+            assert_eq!(
+                status, expected,
+                "reason must reach the status bar: {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_settings_carries_the_live_save_error_cell() {
+        let source = include_str!("main.rs");
+        // Build the needle from fragments so this test's own source does not
+        // contribute a second match (same convention as the guards below).
+        let guard = concat!(
+            "settings_with_live_save_error(",
+            "snapshot, &self.settings)"
+        );
+        assert_eq!(
+            source.matches(guard).count(),
+            1,
+            "rollback_settings must preserve the failure reason"
+        );
+    }
+
+    #[test]
+    fn cancelling_an_operation_closes_the_keymap_and_settings_dialogs() {
+        // AW09: Escape that cancels a running op must not leave either modal
+        // dialog open (their "is_open" state is the Option taken here).
+        let source = include_str!("main.rs");
+        let body = source_region(
+            source,
+            "    fn cancel_op(",
+            "    /// Paste the internal clipboard",
+        );
+        for close in ["self.keymap_editor = None;", "self.settings_ui = None;"] {
+            assert!(body.contains(close), "cancel_op must run {close}: {body}");
+        }
+        assert!(
+            body.contains("self.focus_list_on_next_render = true;"),
+            "closing a dialog must restore list focus: {body}"
+        );
+    }
+
     // H06: the pure decision helper above cannot prove that a call site exists.
     // Check the source itself so a newly added or regressed write path cannot
     // silently omit rollback (the `main.rs` include is compiled into the test).
@@ -16992,6 +17208,133 @@ mod tests {
             ],
         };
         assert_eq!(Explorer::undo_action_detail(&trash_multiple), "2 件");
+    }
+
+    #[test]
+    fn undo_history_dialog_exposes_keyboard_and_pointer_undo() {
+        // AW25: rows stay read-only, but undo must be reachable from the dialog
+        // both through a button and through the configured Undo chord.
+        assert_eq!(crate::strings::HISTORY_UNDO_BUTTON_LABEL, "元に戻す");
+        let source = include_str!("main.rs");
+        let dialog = source_region(
+            source,
+            "    fn undo_history_dialog(&self, viewport_width: f32, cx: &mut Context<Self>) -> Option<Div> {",
+            "    /// One-line description of an undoable action.",
+        );
+        assert!(
+            dialog.contains("Button::new(\"undo-history-undo\")"),
+            "history dialog must expose a dedicated undo button"
+        );
+        assert!(
+            dialog.contains("crate::strings::HISTORY_UNDO_BUTTON_LABEL"),
+            "undo button must use the shared wording"
+        );
+        assert!(
+            dialog.contains(".on_click(undo)") && dialog.contains("this.undo_last(cx)"),
+            "undo button must be wired to the undo application"
+        );
+        let keys = source_region(
+            source,
+            "        if self.undo_history_open {",
+            "        if self.preview.is_some() {",
+        );
+        assert!(
+            keys.contains("KeyAction::Undo") && keys.contains("self.undo_last(cx)"),
+            "Ctrl+Z inside the dialog must undo and dismiss it"
+        );
+    }
+
+    #[test]
+    fn undo_last_pops_and_records_redo_without_reapplying() {
+        // AW05: `undo_last` must consume the newest entry and move it to redo on
+        // success; a failed/cancelled attempt pushes it back onto undo instead.
+        use crate::undo::{UndoStack, MAX_UNDO};
+        let mut stack = UndoStack::new();
+        for index in 0..(MAX_UNDO + 2) {
+            stack.push(UndoAction::Rename {
+                from: PathBuf::from(format!("/old-{index}")),
+                to: PathBuf::from(format!("/new-{index}")),
+            });
+        }
+        assert_eq!(stack.undo_len(), MAX_UNDO, "undo must respect its cap");
+        let newest = stack.pop_undo().expect("latest undo entry");
+        assert_eq!(
+            newest,
+            UndoAction::Rename {
+                from: PathBuf::from(format!("/old-{}", MAX_UNDO + 1)),
+                to: PathBuf::from(format!("/new-{}", MAX_UNDO + 1)),
+            }
+        );
+        stack.push_redo(newest.clone());
+        assert_eq!(stack.undo_len(), MAX_UNDO - 1);
+        assert_eq!(stack.redo_len(), 1);
+        stack.push_redo(newest.clone());
+        assert_eq!(stack.redo_len(), 2);
+        assert_eq!(stack.pop_redo(), Some(newest));
+
+        let source = include_str!("main.rs");
+        let undo = source_region(
+            source,
+            "    fn undo_last(&mut self, cx: &mut Context<Self>) {",
+            "    /// Redo the most recently undone operation (Ctrl+Shift+Z).",
+        );
+        assert!(
+            undo.contains("self.undo.pop_undo()"),
+            "undo must pop the newest entry before applying it"
+        );
+        assert!(
+            undo.contains("this.undo.push_redo("),
+            "a successful undo must record a redo entry"
+        );
+        assert!(
+            undo.contains("this.undo.push_undo("),
+            "a failed undo must put the entry back"
+        );
+    }
+
+    #[test]
+    fn undo_guards_inflight_op_before_mutating_the_stack() {
+        // AW06: while an operation is running, Ctrl+Z must report the busy
+        // status instead of popping/applying another undo entry.
+        let source = include_str!("main.rs");
+        let undo = source_region(
+            source,
+            "    fn undo_last(&mut self, cx: &mut Context<Self>) {",
+            "    /// Redo the most recently undone operation (Ctrl+Shift+Z).",
+        );
+        let guard = undo
+            .find("if self.op_task.is_some()")
+            .expect("in-flight op guard");
+        let pop = undo.find("self.undo.pop_undo()").expect("undo stack pop");
+        assert!(
+            guard < pop,
+            "a running operation must block a second undo before stack mutation"
+        );
+    }
+
+    #[test]
+    fn escape_guards_are_layered_before_keymap_dispatch() {
+        // AW10: the dialog/overlay guards in `on_key_down` are ordered so one
+        // Escape closes only the topmost layer; keymap actions are dispatched
+        // after every modal has had a chance to consume the key.
+        let source = include_str!("main.rs");
+        let start = source
+            .find("    fn on_key_down(&mut self, event: &KeyDownEvent")
+            .expect("on_key_down");
+        let keys = &source[start..];
+        let end = keys
+            .find("        // Page step: how many 28px rows fit")
+            .expect("keymap dispatch marker");
+        let keys = &keys[..end];
+        let position = |marker: &str| {
+            keys.find(marker)
+                .unwrap_or_else(|| panic!("missing layered guard: {marker}"))
+        };
+        assert!(position("if self.settings_ui.is_some()") < position("if self.fuzzy.is_some()"));
+        assert!(position("if self.fuzzy.is_some()") < position("if self.undo_history_open"));
+        assert!(position("if self.undo_history_open") < position("if self.preview.is_some()"));
+        assert!(position("if self.preview.is_some()") < position("if key == \"f1\""));
+        assert!(position("if key == \"f1\"") < position("if self.view == ViewSource::Search"));
     }
 
     #[test]
@@ -17886,6 +18229,30 @@ mod tests {
         assert!(upsert_keymap_override(&mut full, "action-0", "ctrl+p"));
         assert_eq!(full.len(), MAX_KEYMAP_OVERRIDES);
         assert_eq!(full[0].1, "ctrl+p");
+    }
+
+    #[test]
+    fn upsert_keymap_override_at_cap_with_colliding_chord_keeps_vec_unchanged() {
+        // AW01: a rejected bind must not mutate the persisted overrides. The
+        // capacity check runs before chord eviction, so the collision that
+        // would otherwise free a slot cannot destroy the incumbent entry.
+        let mut full: Vec<(String, String)> = (0..MAX_KEYMAP_OVERRIDES)
+            .map(|index| (format!("action-{index}"), format!("chord-{index}")))
+            .collect();
+        full[0].1 = "ctrl+p".to_string();
+        let before = full.clone();
+        assert!(!upsert_keymap_override(
+            &mut full,
+            "open_preview",
+            "ctrl+alt+p"
+        ));
+        assert_eq!(full, before, "a full list must be byte-for-byte unchanged");
+        assert_eq!(full.len(), MAX_KEYMAP_OVERRIDES);
+
+        // A bind for an action already stored still succeeds at capacity.
+        assert!(upsert_keymap_override(&mut full, "action-0", "ctrl+alt+p"));
+        assert_eq!(full.len(), MAX_KEYMAP_OVERRIDES);
+        assert_eq!(full[0].1, "ctrl+alt+p");
     }
 
     #[test]

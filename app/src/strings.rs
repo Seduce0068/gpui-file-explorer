@@ -222,6 +222,10 @@ const _: () = assert!(
 
 /// 操作履歴ダイアログのフッター案内（AK08）。
 pub const HISTORY_DIALOG_FOOTER_HINT: &str = "Ctrl+Shift+U / Esc で閉じる（読み取り専用）";
+/// 操作履歴ダイアログの「元に戻す」ボタン（AW25）。
+///
+/// 履歴行自体は読み取り専用だが、最新の操作を取り消す導線をボタンで提供する。
+pub const HISTORY_UNDO_BUTTON_LABEL: &str = "元に戻す";
 /// 場所入力バーの操作案内（AK09）。
 pub const LOCATION_BAR_HINT: &str = "Enter で移動 / Esc で閉じる";
 /// F1 ヘルプオーバーレイのフッター案内（AK10）。
@@ -239,6 +243,7 @@ pub const PREVIEW_OVERLAY_FOOTER_HINT: &str =
 pub const FUZZY_JUMP_OVERLAY_FOOTER_HINT: &str = "↑/↓ で選択 / Enter で移動 / Esc で閉じる";
 
 const _: () = assert!(!HISTORY_DIALOG_FOOTER_HINT.is_empty());
+const _: () = assert!(!HISTORY_UNDO_BUTTON_LABEL.is_empty());
 const _: () = assert!(!LOCATION_BAR_HINT.is_empty());
 const _: () = assert!(!HELP_OVERLAY_FOOTER_HINT.is_empty());
 const _: () = assert!(!PROPERTIES_READ_ONLY_HINT.is_empty());
@@ -255,6 +260,7 @@ mod dialog_and_bar_hint_tests {
     fn all_hints_are_nonempty() {
         for hint in [
             HISTORY_DIALOG_FOOTER_HINT,
+            HISTORY_UNDO_BUTTON_LABEL,
             LOCATION_BAR_HINT,
             HELP_OVERLAY_FOOTER_HINT,
             PROPERTIES_READ_ONLY_HINT,
@@ -276,6 +282,8 @@ mod dialog_and_bar_hint_tests {
             HISTORY_DIALOG_FOOTER_HINT,
             "Ctrl+Shift+U / Esc で閉じる（読み取り専用）"
         );
+        // AW25: 履歴ダイアログの「元に戻す」ボタンは共有文言を参照する。
+        assert_eq!(HISTORY_UNDO_BUTTON_LABEL, "元に戻す");
         assert_eq!(LOCATION_BAR_HINT, "Enter で移動 / Esc で閉じる");
         assert_eq!(
             HELP_OVERLAY_FOOTER_HINT,

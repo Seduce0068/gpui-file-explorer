@@ -1791,6 +1791,42 @@ status: current
 - [x] **AV24** .desktop に TryExec が無い — 対応: loop9
 - [x] **AV25** 未知フィールド保全テストが保存時を検証していない — 対応: loop9
 
+## 進行中（ループ10 バックログ）
+
+### 優先度: 高（ループ10・confirmed）
+
+- [x] **AW01** Alt+K 上限到達で既存 override が削除されたまま残る — 対応: loop10
+- [x] **AW02** rollback_settings が last_save_error を上書きし理由が退化 — 対応: loop10
+- [x] **AW03** ダイアログ脚文が ephemeral / load_error を無視 — 対応: loop10
+- [x] **AW04** undo の Close が全ペイン状態を復元しない — 対応: loop10（dual-pane ADR の将来事項として分離）
+- [x] **AW05** undo が undo スタックを更新しない（再 undo で旧状態へ） — 対応: loop10（現行コードで充足・ガード追加のみ）
+- [x] **AW06** save 完了を待たずに undo が Close を再適用し得る — 対応: loop10（現行コードで充足・ガード追加のみ）
+- [x] **AW07** PWA searchInJson に 8 MiB ガードが無い — 対応: loop10
+
+### 優先度: 中（ループ10・confirmed）
+
+- [x] **AW08** 検索履歴チップの era 切替が undo 履歴を汚す — 対応: loop10（dual-pane ADR の将来事項として分離）
+- [x] **AW09** op_cancel が Keymap / Settings ダイアログを閉じない — 対応: loop10
+- [x] **AW10** Esc がダイアログを閉じた後に command palette を残す — 対応: loop10（現行コードで充足・ガード追加のみ）
+- [x] **AW11** settings.json 退避先のパス/件数が UI で確認できない — 対応: loop10
+- [x] **AW12** 設定カードの shortcuts タブが横スクロール不可 — 対応: loop10
+- [x] **AW13** help_dialog_footer が strings.rs に未集約 — 対応: loop10（現行コードで充足・ガード追加のみ）
+- [x] **AW14** error_log が strings.rs に未集約 — 対応: loop10（現行コードで充足・ガード追加のみ）
+- [x] **AW15** group_by_directory が strings.rs に未集約 — 対応: loop10（現行コードで充足・ガード追加のみ）
+- [x] **AW16** salvage_settings の型別回帰が一部のみ — 対応: loop10
+- [x] **AW17** isClickSuppressed の境界が until=0/MAX のみ — 対応: loop10
+- [x] **AW18** raw_os_error が BoxedCause/PortError で未テスト — 対応: loop10
+- [x] **AW19** human_age_at の 365d/LOCALE 境界テスト追加 — 対応: loop10
+- [x] **AW20** double_click が一覧キーボードヘルプに無い — 対応: loop10
+
+### 優先度: 低（ループ10・confirmed）
+
+- [x] **AW21** 設定検索キーワード grep 0件の見出し3つ — 対応: loop10
+- [x] **AW22** .deb が SOURCE_DATE_EPOCH 未設定で非再現 — 対応: loop10
+- [x] **AW23** --verify が control の Package/Version 値を検証しない — 対応: loop10
+- [x] **AW24** PWA FSA ボタンが wasm 非ロード時も有効 — 対応: loop10
+- [x] **AW25** undo ダイアログに「元に戻す」ボタンが無い — 対応: loop10
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

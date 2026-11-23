@@ -686,6 +686,9 @@ const SHORTCUTS_KEYMAP_KEYWORDS: &[&str] = &[
     // The no-match hint names these direct-jump chords; searching that wording
     // must land on the Shortcuts page too (L03).
     "Alt+数字",
+    // AW21: the exact section heading must itself be a keyword, not just its
+    // "ショートカット" substring — copying the heading from the card must work.
+    "キーボードショートカット",
     // Visible hint + section title ("キーボードショートカット", "操作=キー",
     // "unbind アクション名", "置き換わります", "入力します").
     "キーボード",
@@ -746,6 +749,8 @@ const SHORTCUTS_DEFAULTS_KEYWORDS: &[&str] = &[
     // Search-only wording aliases (visible as the section title / row text).
     "既定",
     "default",
+    // AW21: the exact section title as rendered by 「主な既定のショートカット」.
+    "主な既定のショートカット",
     "ショートカット",
     "キー",
     "主な",
@@ -948,7 +953,10 @@ const PERSONALIZE_PALETTE_CHANGE_HINT: &str = "配色は外観タブのテーマ
 /// separator so the mirror is mechanical. Two groups are documented exceptions:
 ///
 /// * Prose / mouse / metadata help rows (gestures, "ゴミ箱ビュー", the dialog
-///   guidance entries and the license row) have no chord to render.
+///   guidance entries and the license row) have no chord to render. AW20 keeps
+///   the mouse-gesture rows that matter for discovery (currently
+///   `ダブルクリック`) in this list even though F1 exempts them from the chord
+///   mirror; they are listed in `SETTINGS_ONLY_KEYS` in the tests.
 /// * `Alt+1〜5` and `Alt+S` appear in F1 help *descriptions* of the dialog
 ///   entries rather than as keys, because F1 is swallowed while the settings
 ///   dialog owns the keyboard; they are still shown here so the user can find
@@ -957,6 +965,9 @@ const SHORTCUTS_DEFAULT_LINES: &[&str] = &[
     // ナビゲーション
     "F1 … ヘルプ / キー一覧",
     "Enter … 選択項目を開く",
+    // AW20: the F1 mouse row is a prose key, but the Shortcuts tab is the only
+    // in-app help reachable while a dialog owns the keyboard, so mirror it.
+    "ダブルクリック … ディレクトリ移動 / ファイルを既定アプリで開く",
     "↑ / ↓ … 選択項目を上下に移動",
     "Ctrl+L … 場所を入力",
     "Ctrl+B … サイドバーを表示 / 非表示",
@@ -1034,6 +1045,9 @@ const SEARCH_HISTORY_CHIPS_HELP: &str = crate::strings::search_history_chips_des
 const TERMINAL_COMMAND_KEYWORDS: &[&str] = &[
     "ターミナル",
     "terminal",
+    // AW21: "Shell" is the same concept in the F1 / README wording; grepping
+    // the keyword arrays for it previously returned zero hits.
+    "shell",
     // V07: persisted `settings.json` key name; the "起動コマンドが未設定です"
     // recovery hint (strings.rs) points users at it by name.
     "terminal_command",
@@ -2120,6 +2134,10 @@ pub fn render_settings_content<V: SettingsUiHost>(
                 .id("settings-card-scroll")
                 .min_h_0()
                 .overflow_y_scroll()
+                // AW12: long chords in the Shortcuts list are wider than the
+                // card; keep the vertical scroll and allow horizontal panning
+                // so no line is clipped at the right edge.
+                .overflow_x_scroll()
                 .child(body),
         )
         .child(divider(palette))
@@ -2374,6 +2392,24 @@ mod tests {
         assert!(FILES_HIDDEN_KEYWORDS.contains(&"show_hidden"));
         assert!(FILES_THUMBNAILS_KEYWORDS.contains(&"show_thumbnails"));
         assert!(TERMINAL_COMMAND_KEYWORDS.contains(&"terminal_command"));
+    }
+
+    #[test]
+    fn section_heading_keywords_are_searchable() {
+        // AW21: these three strings had zero hits in the keyword arrays, so
+        // copying a visible section heading (or the "Shell" synonym) into the
+        // settings search box dead-ended with a zero-hit hint.
+        for (keyword, expected) in [
+            ("キーボードショートカット", SettingsTab::Shortcuts),
+            ("主な既定のショートカット", SettingsTab::Shortcuts),
+            ("shell", SettingsTab::Terminal),
+            ("SHELL", SettingsTab::Terminal),
+        ] {
+            assert!(
+                tabs_matching_query(keyword).contains(&expected),
+                "{keyword} must surface {expected:?}"
+            );
+        }
     }
 
     #[test]
@@ -3947,7 +3983,14 @@ mod tests {
     /// `Shift+F10 / Menu` is the NW08 context-menu row: F1 keeps the mouse
     /// gesture key ("右クリック", exempt from the chord mirror) and documents
     /// the two keyboard keys in that row's description only.
-    const SETTINGS_ONLY_KEYS: &[&str] = &["Alt+1〜5", "Alt+S", "Shift+F10 / Menu"];
+    const SETTINGS_ONLY_KEYS: &[&str] = &[
+        "Alt+1〜5",
+        "Alt+S",
+        "Shift+F10 / Menu",
+        // AW20: F1 lists ダブルクリック as a mouse gesture (exempt from the
+        // chord mirror), but the Shortcuts tab renders it for discovery.
+        "ダブルクリック",
+    ];
 
     /// Search-only synonyms that are not literal chord rows. `default` is the
     /// English alias of "既定"; `Alt+数字` is the generic wording of the
@@ -3966,6 +4009,8 @@ mod tests {
         "キー一覧",
         "場所",
         "設定を開く",
+        // AW21: the exact defaults section title is not a rendered chord row.
+        "主な既定のショートカット",
     ];
 
     /// The `Alt+1〜5` display row expands to these five searchable chords;
@@ -4466,7 +4511,11 @@ mod tests {
         let wrapper = lines[start..=end].join("\n");
         assert!(
             wrapper.contains(".overflow_y_scroll()"),
-            "body wrapper must scroll: {wrapper}"
+            "body wrapper must scroll vertically: {wrapper}"
+        );
+        assert!(
+            wrapper.contains(".overflow_x_scroll()"),
+            "AW12: body wrapper must scroll horizontally for long chords: {wrapper}"
         );
         assert!(
             wrapper.contains(".child(body)"),

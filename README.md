@@ -135,6 +135,8 @@ bash packaging/linux/build-deb.sh --skip-build
   `README.md` / `copyright` (DEP-5) / `LICENSE` / `NOTICE.md` / `NOTICE-app.md`
 - `Depends` は `ldd` + `dpkg -S` から自動生成（Vulkan ローダは dlopen のため `libvulkan1` を明示追加）
 - `dpkg-deb --root-owner-group` を使うため **sudo 不要**。ホストへのインストールも行いません
+- 再現性: `SOURCE_DATE_EPOCH` を `dpkg-deb` へ渡します（明示値を優先。未設定なら HEAD のコミット時刻）。
+  これにより ar のタイムスタンプと tar の mtime が固定され、同一ソースなら `.deb` がバイト単位で再現します
 - 検証済み: `dpkg-deb -x` で展開したバイナリが `--version` / GUI 起動（Wayland）で動作、
   `apt-get -s install ./...deb` の依存解決が通ること
 - 署名・リポジトリ公開・タグ付けは未実施（リリースはユーザー指示があるまで行いません）

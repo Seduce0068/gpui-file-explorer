@@ -1313,6 +1313,30 @@ mod tests {
     }
 
     #[test]
+    fn human_age_at_locks_long_boundaries_and_japanese_wording() {
+        // AW19: 365d switches days -> years; the wording is fixed Japanese
+        // (no locale-dependent formatting) and the pure clock is pinned.
+        let now = now();
+        let at = |secs| human_age_at(Some(now - Duration::from_secs(secs)), now);
+        assert_eq!(human_age_at(None, now), "-");
+        assert_eq!(
+            human_age_at(Some(now + Duration::from_nanos(1)), now),
+            "未来"
+        );
+        assert_eq!(at(59), "たった今");
+        assert_eq!(at(60), "1分前");
+        assert_eq!(at(3_599), "59分前");
+        assert_eq!(at(3_600), "1時間前");
+        assert_eq!(at(86_400), "1日前");
+        assert_eq!(at(86_400 * 364), "364日前");
+        assert_eq!(at(86_400 * 365), "1年前");
+        assert_eq!(at(86_400 * 365 + 1), "1年前");
+        assert_eq!(at(86_400 * 730), "2年前");
+        // There is no month unit in this ladder: 30d stays days, 365d years.
+        assert_eq!(at(86_400 * 30), "30日前");
+    }
+
+    #[test]
     fn fingerprint_changes_with_content() {
         let base = vec![entry("a", false, 1, 10), entry("b", true, 0, 20)];
         let same = vec![entry("a", false, 1, 10), entry("b", true, 0, 20)];

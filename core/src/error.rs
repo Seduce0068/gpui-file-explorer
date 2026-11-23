@@ -726,6 +726,33 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn fs_cause_slot_wins_over_the_boxed_errno() {
+        // AW18: `FsCause` has two errno sources. The dedicated slot must win;
+        // the boxed cause is only the fallback for a slot-less value.
+        let boxed_code = 13; // EACCES
+        let with_slot = AppError::FsCause {
+            kind: FsErrorKind::Io,
+            path: PathBuf::from("/tmp/slot"),
+            os_message: None,
+            raw_os_error: Some(2), // ENOENT, deliberately different
+            cause: BoxedCause::new(std::io::Error::from_raw_os_error(boxed_code)),
+        };
+        assert_eq!(with_slot.raw_os_error(), Some(2));
+        assert_eq!(with_slot.fs_raw_os_error(), Some(2));
+
+        let slotless = AppError::FsCause {
+            kind: FsErrorKind::Io,
+            path: PathBuf::from("/tmp/no-slot"),
+            os_message: None,
+            raw_os_error: None,
+            cause: BoxedCause::new(std::io::Error::from_raw_os_error(boxed_code)),
+        };
+        assert_eq!(slotless.raw_os_error(), Some(boxed_code));
+        assert_eq!(slotless.fs_raw_os_error(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cloned_boxed_cause_keeps_raw_os_error() {
         // AV09: cloning a cause used to collapse it to text and lose errno.
         let io = std::io::Error::from_raw_os_error(2);

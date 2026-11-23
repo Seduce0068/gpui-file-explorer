@@ -12,6 +12,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::{model, search};
 
+/// 描画側がサムネイルの読み込みを避けるためのサイズ上限（8 MiB）。
+///
+/// `app/src/preview.rs::MAX_IMAGE_BYTES` と同じ値をコア側にも持つ。wasm の
+/// in-memory API は JS から任意の `size` を受け取れるため、これを超える行は
+/// [`OVERSIZED_KIND`] を返して `img` による `fs::read` を回避する。
+pub const MAX_THUMBNAIL_BYTES: u64 = 8 * 1024 * 1024;
+
+/// `MAX_THUMBNAIL_BYTES` 超過を描画側へ伝える `kind` の値。
+pub const OVERSIZED_KIND: &str = "oversized";
+
+/// `EntryView.kind` を決める。通常ファイルが上限を超えた場合だけ
+/// [`OVERSIZED_KIND`] を返し、ディレクトリ / リンクの種別は変えない。
+pub fn entry_kind(entry: &model::Entry) -> String {
+    if !entry.is_dir && !entry.is_symlink && entry.size > MAX_THUMBNAIL_BYTES {
+        return OVERSIZED_KIND.to_string();
+    }
+    model::kind_label(entry)
+}
+
 /// JS 側から見るファイル一覧の 1 行。
 ///
 /// `model::Entry` は `OsString` / `PathBuf` / `SystemTime` を持つため
@@ -47,7 +66,7 @@ impl From<&model::Entry> for EntryView {
             is_dir: entry.is_dir,
             is_symlink: entry.is_symlink,
             size: entry.size,
-            kind: model::kind_label(entry),
+            kind: entry_kind(entry),
             modified_ms: modified_to_ms(entry.modified),
         }
     }
@@ -102,6 +121,10 @@ pub fn ms_to_modified(millis: Option<i64>) -> Option<SystemTime> {
 
 impl EntryInput {
     /// `model::Entry` へ変換する。`path` 省略時は `name` をパスとして使う。
+    ///
+    /// `size` は JS から任意に渡せるためここでは丸めずに保持し、
+    /// [`entry_kind`] / [`EntryView::from`] が [`MAX_THUMBNAIL_BYTES`] を
+    /// 超える行を `oversized` として描画側へ知らせる。
     pub fn into_entry(self) -> model::Entry {
         let name_text = self.name;
         let sort_key = name_text.to_lowercase();
@@ -220,6 +243,55 @@ mod tests {
         assert_eq!(converted.path, PathBuf::from("/demo/notes.txt"));
         // 負値は epoch 前として破棄される。
         assert_eq!(converted.modified, None);
+    }
+
+    #[test]
+    fn oversized_regular_files_get_the_sentinel_kind() {
+        let mut big = entry("photo.png", "/demo/photo.png", None);
+        big.size = MAX_THUMBNAIL_BYTES;
+        assert_eq!(entry_kind(&big), "png", "exactly 8 MiB stays a normal file");
+        assert_eq!(EntryView::from(&big).kind, "png");
+
+        big.size = MAX_THUMBNAIL_BYTES + 1;
+        assert_eq!(entry_kind(&big), OVERSIZED_KIND);
+        assert_eq!(EntryView::from(&big).kind, OVERSIZED_KIND);
+
+        big.size = u64::MAX;
+        assert_eq!(entry_kind(&big), OVERSIZED_KIND, "u64::MAX must not wrap");
+        assert_eq!(EntryView::from(&big).kind, OVERSIZED_KIND);
+    }
+
+    #[test]
+    fn oversized_guard_leaves_dirs_links_and_small_files_untouched() {
+        let mut dir = entry("folder", "/demo/folder", None);
+        dir.is_dir = true;
+        dir.size = u64::MAX;
+        assert_eq!(entry_kind(&dir), model::kind_label(&dir));
+
+        let mut link = entry("shortcut", "/demo/shortcut", None);
+        link.is_symlink = true;
+        link.size = u64::MAX;
+        assert_eq!(entry_kind(&link), model::kind_label(&link));
+
+        let mut small = entry("notes.txt", "/demo/notes.txt", None);
+        small.size = MAX_THUMBNAIL_BYTES - 1;
+        assert_eq!(entry_kind(&small), "txt");
+    }
+
+    #[test]
+    fn pwa_input_size_reaches_the_renderer_kind() {
+        // The full JS JSON path: EntryInput -> Entry -> EntryView.kind.
+        let input = EntryInput {
+            name: "huge.png".to_string(),
+            path: None,
+            is_dir: false,
+            is_symlink: false,
+            size: MAX_THUMBNAIL_BYTES + 1,
+            modified_ms: None,
+        };
+        let view = EntryView::from(&input.into_entry());
+        assert_eq!(view.size, MAX_THUMBNAIL_BYTES + 1);
+        assert_eq!(view.kind, OVERSIZED_KIND);
     }
 
     #[test]

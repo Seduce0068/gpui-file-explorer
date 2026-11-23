@@ -25,6 +25,8 @@
 # the staged DEBIAN/control with the control metadata inside the existing .deb.
 # --dry-run only resolves paths and prints the plan; no directory is created,
 # nothing is deleted, copied or built.
+# SOURCE_DATE_EPOCH is exported for dpkg-deb so the .deb is byte-reproducible
+# (caller value wins; otherwise the HEAD commit time is used).
 # The workspace-profile output normally lands in the root target/; the explicit
 # `--target-dir "${app_dir}/target"` on `cargo build` keeps the binary at the
 # path consumed below (app/target/release/).
@@ -96,6 +98,18 @@ done
 [ "$(id -u)" -ne 0 ] || die "root では実行しないでください（通常ユーザーで実行してください）"
 command -v dpkg-deb >/dev/null 2>&1 || die "dpkg-deb が見つかりません（Debian/Ubuntu 系が必要です）"
 command -v dpkg >/dev/null 2>&1 || die "dpkg が見つかりません"
+
+# AW22: dpkg-deb(1) honours SOURCE_DATE_EPOCH for the ar container timestamp
+# and clamps tar member mtimes, so the .deb is byte-reproducible. Callers may
+# pin an explicit value; otherwise derive a stable one from the HEAD commit.
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  source_epoch="$(git -C "${repo_root}" log -1 --format=%ct 2>/dev/null || true)"
+  SOURCE_DATE_EPOCH="${source_epoch:-0}"
+fi
+case "${SOURCE_DATE_EPOCH}" in
+  ''|*[!0-9]*) die "SOURCE_DATE_EPOCH が不正です: ${SOURCE_DATE_EPOCH}" ;;
+esac
+export SOURCE_DATE_EPOCH
 
 version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "${app_dir}/Cargo.toml" | head -n1)"
 [ -n "${version}" ] || die "app/Cargo.toml からバージョンを取得できません"
@@ -203,6 +217,14 @@ verify_control() {
     die "control の Architecture が不正です: ${stage}/DEBIAN/control"
   [ -f "${deb}" ] ||
     die "既存 .deb がありません: ${deb}（--verify は既存 .deb との照合も行います）"
+  # AW23: check the values embedded in the .deb itself as well as the staged
+  # copy, so a stale/mismatched package is caught even if both controls agree.
+  deb_control="$(dpkg-deb --ctrl-tarfile "${deb}" | tar -xO ./control 2>/dev/null)" ||
+    die "既存 .deb から control を読み取れません: ${deb}"
+  grep -qx "Package: ${pkg}" <<<"${deb_control}" ||
+    die ".deb の control の Package が不正です: ${deb}"
+  grep -qx "Version: ${deb_version}" <<<"${deb_control}" ||
+    die ".deb の control の Version が不正です: ${deb}"
   if cmp -s -- "${stage}/DEBIAN/control" \
       <(dpkg-deb --ctrl-tarfile "${deb}" | tar -xO ./control 2>/dev/null); then
     echo "照合 OK: ${stage}/DEBIAN/control == ${deb} の control"

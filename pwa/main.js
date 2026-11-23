@@ -49,6 +49,19 @@ function isClickSuppressed(now, until) {
   return now < until;
 }
 
+// FSA のフォルダ選択は core API がロード済みのときだけ意味を持つ。
+// デモ（## 一覧（読み取り専用デモ））ではパスを選んでも走査できないため
+// ボタンを無効化する。pure helper にして node --test から検証できるようにする。
+function canPickDirectory(wasmReady, fsaSupported) {
+  return Boolean(wasmReady && fsaSupported);
+}
+
+// DOM 側の状態反映。wasm 初期化の成否が変わるどの経路でも呼ぶ。
+function updatePickDirAvailability() {
+  if (!hasDom || !els.pickDir) return;
+  els.pickDir.disabled = !canPickDirectory(state.wasmReady, supportsFileSystemAccess());
+}
+
 function setStatus(message, level = 'info') {
   els.status.textContent = message;
   els.status.dataset.level = level;
@@ -497,7 +510,7 @@ async function runSearch(query) {
 // --- File System Access API（対応ブラウザのみ） ----------------------------
 
 async function onPickDirectory() {
-  if (!supportsFileSystemAccess()) return;
+  if (!supportsFileSystemAccess() || !state.wasmReady) return;
   try {
     const handle = await window.showDirectoryPicker({ mode: 'read' });
     state.rootName = handle.name;
@@ -523,6 +536,7 @@ const DEMO_ENTRIES = [
 
 function useDemo(message) {
   state.wasmReady = false;
+  updatePickDirAvailability();
   state.entries = DEMO_ENTRIES.map(toEntry).filter(Boolean);
   setStatus(message, 'error');
   els.modeNote.hidden = false;
@@ -558,9 +572,14 @@ async function boot() {
       + 'フォルダ選択を隠し、内蔵サンプルによる読み取り専用デモとして動作します。';
   }
 
+  // wasm のロード完了前はボタンを押せないようにする（デモへ落ちた場合は
+  // useDemo() でも同じ状態を維持する）。
+  updatePickDirAvailability();
+
   try {
     state.viewer = await initCore();
     state.wasmReady = true;
+    updatePickDirAvailability();
     setStatus('core API 初期化完了');
     await refreshList();
   } catch (error) {
@@ -571,5 +590,5 @@ async function boot() {
 if (hasDom) boot();
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { isClickSuppressed };
+  module.exports = { isClickSuppressed, canPickDirectory };
 }
