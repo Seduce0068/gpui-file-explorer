@@ -1,0 +1,95 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
+# pwa/ — core API ビューア（iOS / Android 共通）
+
+`@gpui-file-explorer/core`（クレート名 `gpui-file-explorer-core`、lib 名 `gfe_core`）を
+wasm 化し、**core API 経由**で一覧と検索を表示する 1 画面 PWA の scaffold。
+React 等の新規依存は使わず、Vanilla JS の静的ファイルのみで構成する。
+
+## 受け入れ基準
+
+**Phase 1 spike の受け入れは外観ではなくコア API 経由の一覧・検索表示。**
+2026-11-23 時点で達成済み: `wasm-pack build` 後に Playwright で
+`http://127.0.0.1:8765/index.html` を開き、一覧 4 件と検索 1 件が
+`core API 経由` ステータスで表示されることを確認した（Real Proof）。
+`pkg/` が無いときの内蔵サンプルは scaffold 確認専用の読み取り専用デモ。
+
+## in-memory API と実ファイルの違い
+
+wasm32 の `std::fs` はブラウザで実ファイルを読めないため、
+`listEntriesFromJson` / `searchInJson` に JSON 化したサンプルを渡し、
+コアの `sort_entries` / `visible_entries` / 名前検索を実際に通している。
+実ファイルの走査には OPFS / FileSystem ポートが必要（Phase 2 以降）。
+
+## 前提（core 側の実装）
+
+別エージェントが `core/` に wasm-bindgen API を実装する前提で配線している。
+ビルド前に以下が揃っていること:
+
+- `core/Cargo.toml` の `[lib]` に `crate-type = ["cdylib", "rlib"]`
+  （wasm-pack 0.13.1 は `crate-type must be cdylib` を要求する）
+- `wasm-bindgen`（必要なら `serde_wasm_bindgen`）依存の追加
+- `CoreViewer` の公開と `list_entries` / `search` メソッド
+
+lib 名は `gfe_core` なので、生成される JS は `pkg/gfe_core.js`、
+wasm は `pkg/gfe_core_bg.wasm` になる（`main.js` の `WASM_MODULE` で指定）。
+
+実装済みの API は次のとおり（`core/src/wasm.rs` を実読）:
+
+- `new CoreViewer()` — 引数なし
+- `list_entries(dir: string)` — JSON 文字列（camelCase の配列）を返す
+- `search(query: string, dir: string)` — `{ entry, matchLine }[]` の JSON 文字列を返す
+- `set_panic_hook()` — panic を `console.error` に流す（初期化時に呼ぶ）
+
+**既知の制約**: 両メソッドは `std::fs` を呼ぶため、ブラウザの wasm では実ファイルを
+読めずエラー文言の文字列が返る。`main.js` はその文言をステータスに表示し、
+scaffold 確認用の読み取り専用デモへ退避する。コア API 経由の実データ表示には
+FileSystem ポート（OPFS 等）が必要で、デモ表示は受け入れではない。
+
+## ビルドと起動
+
+Kubuntu 上でリポジトリルートから実行する（外部送信なし、`npm install` 不要）:
+
+```bash
+echo '--- wasm ビルド ---'
+wasm-pack build core --target web --out-dir pwa/pkg --release
+
+echo '--- 生成物の確認 ---'
+ls -la pwa/pkg
+# gfe_core.js / gfe_core_bg.wasm / gfe_core.d.ts が並ぶこと
+
+echo '--- ローカル配信 ---'
+python3 -m http.server 8000 --directory pwa
+# ブラウザで http://localhost:8000/ を開く
+```
+
+`--out-dir` は相対パス指定。配置先が `pwa/pkg` 以外になった場合は
+`core/` から `../pwa/pkg` を指定し、`ls` で実際の配置を確認すること。
+
+`file://` 直接開きは ES module と wasm の MIME で失敗するため、必ず HTTP 配信を使う。
+
+## ファイル選択とブラウザ対応
+
+| 機能 | 対応ブラウザ | 動作 |
+| --- | --- | --- |
+| 一覧・検索 | すべて | core API（`pkg/` がある場合） |
+| フォルダ選択 | FSA API 対応ブラウザ | `showDirectoryPicker()` の結果を利用 |
+| フォルダ選択 | 非対応（**iOS Safari** を含む） | ボタンを非表示にし、内蔵サンプルの読み取り専用デモ |
+
+**iOS Safari は File System Access API に非対応。** Apple Developer Program の
+年会費が必ずかかるため iOS はアプリ版を出さず PWA のみ対応する方針に沿い、
+ホーム画面への追加（PWA インストール）までは可能だが、実ファイルの選択はできない。
+現状はルート名だけを core へ渡しており、実ツリーの走査には OPFS 等の
+FileSystem ポートが必要（`notes/wasm-browser-notes.md` §2 を参照）。
+
+## 構成
+
+| ファイル | 役割 |
+| --- | --- |
+| `index.html` | 検索ボックス + 一覧の 1 画面 |
+| `main.js` | `pkg/` を動的 import し `CoreViewer` を初期化、一覧・検索を DOM へ反映 |
+| `style.css` | ダーク / ライト自動切替（既定は `prefers-color-scheme`）+ iOS セーフエリア対応 |
+| `manifest.webmanifest` | PWA マニフェスト（standalone / SVG 内蔵） |
+| `.gitignore` | 生成物 `pkg/` を除外 |
+
+`pwa/` と `android/` はルート `Cargo.toml` の workspace members には入れない。

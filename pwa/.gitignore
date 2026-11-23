@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# wasm-pack の生成物（再ビルドで復元可能）
+pkg/

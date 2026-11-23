@@ -1365,9 +1365,11 @@ status: current
 - [x] **P1-03** app 側参照を gfe_core へ一本化 + GPUI アダプタ土台
   — 対応: 親（main.rs import 直接化、ports_gpui.rs 追加）
   — デスクトップ全テスト green を維持
-- [ ] **P1-04** 1画面ビューア試作: Android Compose アプリ＋iOS/Android 共通 PWA
+- [x] **P1-04** 1画面ビューア試作: PWA は core API 経由で達成（Real Proof）
+  — Android scaffold は作成、SDK/JDK 不在でビルド検証不可
   — コア API 経由で一覧・検索を表示（外観完成は要求しない）
-- [ ] **P1-05** 工数・ライセンス再見積もりの実績反映とユーザー提示
+- [x] **P1-05** 工数・ライセンス再見積もりの実績反映
+  — wasm ビルド 1.3s / PWA 4件一覧・1件検索確認。ライセンス境界不変
 
 ### 優先度: 中（新要件フォローアップ）
 

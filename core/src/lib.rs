@@ -16,3 +16,7 @@ pub mod ports;
 pub mod search;
 pub mod strings;
 pub mod trash_view;
+
+/// wasm32 向けの JS バインディング。ネイティブビルドには一切影響しない。
+#[cfg(target_family = "wasm")]
+pub mod wasm;
