@@ -1100,6 +1100,14 @@ function useDemo(message) {
 }
 
 async function boot() {
+  // BG13: service worker を登録してオフライン起動可能にする。登録失敗は
+  // オンライン動作へ影響しないため警告どまり（file:// / 非対応ブラウザも継続）。
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch((error) => {
+      console.warn('service worker の登録に失敗しました:', error);
+    });
+  }
+
   els.search.addEventListener('input', () => {
     window.clearTimeout(state.debounce);
     // 新しい入力の時点で実行中リクエストを無効化する。デバウンス解除だけだと

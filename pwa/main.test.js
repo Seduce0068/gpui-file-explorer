@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const path = require('node:path');
 const {
   isClickSuppressed,
   secondClickSuppressed,
@@ -639,4 +640,56 @@ test('sortEntries treats modified:"" as missing and never throws on mixed types 
     ['missing.txt', 'epoch.txt', 'iso.txt']);
   assert.deepEqual(names(sortEntries(mixed, 'modified', 'desc')),
     ['iso.txt', 'epoch.txt', 'missing.txt']);
+});
+
+// --- BG13/19/20: オフライン起動・マニフェスト・アイコン ---------------------
+
+function readPwaFile(name) {
+  return fs.readFileSync(path.join(__dirname, name), 'utf8');
+}
+
+test('service worker precaches the shell and every core wasm asset (BG13)', () => {
+  const sw = readPwaFile('sw.js');
+  for (const asset of [
+    './',
+    './index.html',
+    './manifest.webmanifest',
+    './main.js',
+    './style.css',
+    './pkg/gfe_core.js',
+    './pkg/gfe_core_bg.wasm',
+  ]) {
+    assert.ok(sw.includes(`'${asset}'`), `sw.js must precache ${asset}`);
+  }
+  // snippet のディレクトリは wasm-pack のハッシュ依存なので実配置から導く。
+  const snippetDir = fs.readdirSync(path.join(__dirname, 'pkg', 'snippets'))[0];
+  assert.ok(snippetDir, 'pkg/snippets/<hash>/inline0.js must exist');
+  assert.ok(
+    sw.includes(`'./pkg/snippets/${snippetDir}/inline0.js'`),
+    'sw.js must precache the actual generated inline0.js'
+  );
+  for (const listener of ['install', 'activate', 'fetch']) {
+    assert.ok(sw.includes(`addEventListener('${listener}'`), `missing ${listener} handler`);
+  }
+  assert.ok(sw.includes('caches.match(request)'), 'cache-first lookup is required');
+  assert.ok(sw.includes('self.clients.claim()'), 'activate must claim existing clients');
+});
+
+test('main.js registers the service worker during boot (BG13)', () => {
+  const main = readPwaFile('main.js');
+  assert.ok(main.includes("navigator.serviceWorker.register('./sw.js')"));
+  assert.ok(main.includes("'serviceWorker' in navigator"), 'guard unsupported browsers');
+});
+
+test('manifest name and inline favicon agree (BG19/20)', () => {
+  const manifest = JSON.parse(readPwaFile('manifest.webmanifest'));
+  assert.equal(manifest.name, 'GFE Viewer');
+  assert.equal(manifest.short_name, 'GFE Viewer');
+  const html = readPwaFile('index.html');
+  assert.ok(html.includes('rel="icon"'), 'index.html must declare a favicon');
+  assert.ok(
+    html.includes(manifest.icons[0].src),
+    'favicon must reuse the manifest SVG data URI'
+  );
+  assert.ok(!/\.ico/.test(html), 'no missing .ico request');
 });

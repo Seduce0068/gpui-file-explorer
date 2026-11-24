@@ -1,7 +1,7 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
   "id": ".",
-  "name": "GFE Viewer — core API PWA",
+  "name": "GFE Viewer",
   "short_name": "GFE Viewer",
   "description": "gpui-file-explorer の core API を wasm 経由で表示する PWA",
   "lang": "ja",

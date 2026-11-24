@@ -1809,9 +1809,14 @@ pub const STATUS_SETTINGS_SAVE_TOO_LARGE: &str =
 pub const STATUS_SETTINGS_SAVE_LOCKED: &str =
     "設定を保存できませんでした（別の gpui-file-explorer が設定を編集中です。少し待ってから再試行してください）";
 /// ロック取得直後にディスク上の設定が読み込み時と異なっていたときの理由（BF04）。
-/// 古いスナップショットでの上書きを避け、再読み込みしてやり直す導線を示す。
-pub const STATUS_SETTINGS_SAVE_CHANGED_ON_DISK: &str =
-    "設定を保存できませんでした（別の gpui-file-explorer が設定を変更しました。再読み込みしてやり直してください）";
+/// 古いスナップショットでの上書きを避け、{RELOAD_WORD}してやり直す導線を示す。
+/// 再読込語は `reload_word!()` に一元化するため、静的文字列は `concat!` で
+/// 組み立てる（R2/BG17）。
+pub const STATUS_SETTINGS_SAVE_CHANGED_ON_DISK: &str = concat!(
+    "設定を保存できませんでした（別の gpui-file-explorer が設定を変更しました。",
+    reload_word!(),
+    "してやり直してください）"
+);
 pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
 /// 読み取り専用通知に添える回復導線（W08）。読み込み失敗の理由を連結した後ろに
 /// 置き、設定を確認する操作を案内する。
@@ -3848,7 +3853,16 @@ mod tests {
         // BF04: a lost-update refusal must tell the user to reload first,
         // otherwise retrying the stale snapshot would keep failing.
         assert!(STATUS_SETTINGS_SAVE_CHANGED_ON_DISK.contains("変更しました"));
-        assert!(STATUS_SETTINGS_SAVE_CHANGED_ON_DISK.contains("再読み込みしてやり直してください"));
+        // R2/BG17: 再読込語は RELOAD_WORD / reload_word!() に一元化する。
+        assert_eq!(
+            STATUS_SETTINGS_SAVE_CHANGED_ON_DISK,
+            concat!(
+                "設定を保存できませんでした（別の gpui-file-explorer が設定を変更しました。",
+                reload_word!(),
+                "してやり直してください）"
+            )
+        );
+        assert!(STATUS_SETTINGS_SAVE_CHANGED_ON_DISK.contains(RELOAD_WORD));
         let source = include_str!("main.rs");
         assert!(
             !source.contains("権限や空き容量を確認して再試行してください"),

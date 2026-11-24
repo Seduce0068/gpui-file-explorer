@@ -726,7 +726,11 @@ fn salvage_window(
     let path = format!("windows[{index}]");
     let mut repaired = object.clone();
     if let Some(bounds) = repaired.get("bounds") {
-        if serde_json::from_value::<WindowBoundsState>(bounds.clone()).is_err() {
+        // `bounds` is optional: a literal `null` is a legitimate "no saved
+        // geometry" value, not a damaged field. Only reject a non-null value
+        // that cannot deserialize into `WindowBoundsState` (R2/BG07).
+        if !bounds.is_null() && serde_json::from_value::<WindowBoundsState>(bounds.clone()).is_err()
+        {
             repaired.remove("bounds");
             nested_dropped.push(format!("{path}.bounds"));
         }
@@ -2883,9 +2887,9 @@ mod tests {
     // proc-macro which would shadow the built-in `#[test]`.
     use super::{
         detect_unknown_nested_keys, detect_unknown_persisted_enum, next_theme, next_theme_choice,
-        persisted_default_json, resolve_theme, salvage_settings, SalvageResult, Settings,
-        SettingsSaveError, ThemeChoice, ViewLayout, APP_DIR, ENUM_SITES, LEGACY_SCHEMA_VERSION,
-        MAX_SETTINGS_BYTES, NESTED_SITES, SCHEMA_VERSION,
+        persisted_default_json, resolve_theme, salvage_settings, DiskFingerprint, LoadFingerprint,
+        SalvageResult, Settings, SettingsSaveError, ThemeChoice, ViewLayout, APP_DIR, ENUM_SITES,
+        LEGACY_SCHEMA_VERSION, MAX_SETTINGS_BYTES, NESTED_SITES, SCHEMA_VERSION,
     };
     use crate::model::{SortDir, SortKey, SortSpec};
     use gpui_kit::component::ThemeMode;
@@ -3261,15 +3265,17 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
-        fs::write(&path, r#"{"version":1,"show_hidden":false}"#).unwrap();
+        // R2/BG12: use a same-byte-length rewrite ("/tmp/a" -> "/tmp/b") so a
+        // length check alone cannot detect A's change — the content hash must.
+        fs::write(&path, r#"{"version":1,"last_dir":"/tmp/a"}"#).unwrap();
 
         let mut a = Settings::load_from(&path);
         let b = Settings::load_from(&path);
-        a.show_hidden = true;
+        a.last_dir = Some(PathBuf::from("/tmp/b"));
         a.save_to(&path).unwrap();
         assert!(fs::read_to_string(&path)
             .unwrap()
-            .contains("\"show_hidden\": true"));
+            .contains("\"last_dir\": \"/tmp/b\""));
 
         assert_eq!(
             b.save_to_optional_path_with_reason(Some(&path)),
@@ -3283,7 +3289,7 @@ mod tests {
         assert!(
             fs::read_to_string(&path)
                 .unwrap()
-                .contains("\"show_hidden\": true"),
+                .contains("\"last_dir\": \"/tmp/b\""),
             "A's write must survive B's refused save"
         );
         let leftovers: Vec<_> = fs::read_dir(&dir)
@@ -3302,6 +3308,31 @@ mod tests {
         assert!(!fresh.changed_on_disk());
         fresh.save_to(&path).unwrap();
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_hash_detects_same_length_same_mtime_rewrite() {
+        // R2/BG12: pin the hash's role directly. Two states with identical
+        // length and identical mtime differ only in content; a fingerprint
+        // built from len + mtime alone would miss the rewrite and let B erase A.
+        let path = PathBuf::from("/tmp/settings.json");
+        let base = DiskFingerprint {
+            len: 9,
+            modified_ns: Some(42),
+            hash: 0x1111_1111_1111_1111,
+        };
+        let rewritten = DiskFingerprint {
+            len: base.len,
+            modified_ns: base.modified_ns,
+            hash: 0x2222_2222_2222_2222,
+        };
+        let fingerprint = LoadFingerprint::default();
+        fingerprint.capture(&path, Some(base));
+        assert!(
+            fingerprint.conflicts_with(&path, Some(rewritten)),
+            "a different hash must be a conflict even when len and mtime match"
+        );
+        assert!(!fingerprint.conflicts_with(&path, Some(base)));
     }
 
     #[test]
@@ -4230,6 +4261,66 @@ mod tests {
             settings.bookmarks,
             vec![PathBuf::from("/home/koppe"), PathBuf::from("/tmp")]
         );
+    }
+
+    #[test]
+    fn salvage_keeps_literal_null_bounds_without_dropping_or_backing_up() {
+        // R2/BG07: `bounds` is optional, so a literal `null` is a valid "no
+        // saved geometry" value. Trigger salvage with one bad top-level field
+        // while every nested value — including `bounds: null` — is valid: no
+        // nested element may be reported dropped and no backup may be made.
+        let raw = serde_json::json!({
+            "version": SCHEMA_VERSION,
+            "show_hidden": "not-a-bool",
+            "windows": [
+                {
+                    "bounds": null,
+                    "tabs": [{ "cwd": "/tmp/ok", "back": [], "forward": [] }],
+                    "active_tab": 0,
+                },
+            ],
+        });
+        let SalvageResult {
+            kept,
+            dropped,
+            nested_dropped,
+        } = salvage_settings(&raw);
+        assert_eq!(dropped, vec!["show_hidden"]);
+        assert!(
+            nested_dropped.is_empty(),
+            "bounds:null is valid, not a dropped nested field: {nested_dropped:?}"
+        );
+        assert!(
+            kept["windows"][0]
+                .get("bounds")
+                .is_some_and(|v| v.is_null()),
+            "the legitimate bounds:null must survive salvage"
+        );
+
+        // The load path must not preserve a backup when nothing nested was
+        // discarded — backing up here would falsely claim user data was lost.
+        let dir = scratch("null-bounds-no-backup");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(&path, raw.to_string()).unwrap();
+        let backup = Settings::backup_path_for(&path);
+        let loaded = Settings::load_from_with_backup(&path, backup.clone());
+        assert_eq!(loaded.windows.len(), 1);
+        assert_eq!(loaded.windows[0].bounds, None);
+        assert!(!loaded.read_only && loaded.load_error.is_none());
+        assert!(
+            !backup.exists(),
+            "no backup may be created for a valid bounds:null"
+        );
+        assert!(
+            loaded
+                .settings_reset_notice
+                .as_deref()
+                .is_none_or(|notice| !notice.contains("退避")),
+            "no evacuation notice for a valid bounds:null"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

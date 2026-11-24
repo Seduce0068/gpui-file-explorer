@@ -307,9 +307,11 @@ pub fn merge_search_results(
 }
 
 /// Same merge as [`merge_search_results`], but reports a truncated merge on
-/// `limit_reached`. The flag is set immediately before the cap-driven `break`,
-/// so a merge that lands exactly on `max_total` with nothing left over stays
-/// `false`. Callers can OR this with the per-root walk flag.
+/// `limit_reached`. Duplicates are discarded before the cap check, so the flag
+/// is set only when a *new* path would have been collected past `max_total`:
+/// an overflow made purely of duplicates stays `false`, and a merge that lands
+/// exactly on `max_total` with nothing left over stays `false` as well.
+/// Callers can OR this with the per-root walk flag.
 pub fn merge_search_results_capped(
     batches: Vec<Vec<SearchResult>>,
     max_total: usize,
@@ -320,13 +322,16 @@ pub fn merge_search_results_capped(
     let mut merged = Vec::new();
     for batch in batches {
         for result in batch {
+            // A duplicate is never collectable, even after the cap is full:
+            // drop it before the cap check so it cannot report truncation.
+            if !seen.insert(result.entry.path.clone()) {
+                continue;
+            }
             if merged.len() >= max_total {
                 limit_reached.store(true, Ordering::SeqCst);
                 break;
             }
-            if seen.insert(result.entry.path.clone()) {
-                merged.push(result);
-            }
+            merged.push(result);
         }
     }
     merged.sort_by(|left, right| left.entry.path.cmp(&right.entry.path));
@@ -1005,9 +1010,12 @@ mod tests {
             "matches consumed by `skip` are not collectable and cannot truncate"
         );
 
-        // Three skipped, three collected, nothing left: still not truncated.
+        // skip > cap: five matches, four consumed by `skip`, one collected,
+        // nothing left over. The skip targets must not report truncation.
+        // (With skip=4/max=1 the no-drop boundary is five, not six: a sixth
+        // match is already a collectable result past the cap.)
         let skipped_then_full = scratch("limit-flag-skip-then-full");
-        for index in 0..6 {
+        for index in 0..5 {
             write(&skipped_then_full.join(format!("match-{index}.txt")));
         }
         let full_flag = Arc::new(AtomicBool::new(false));
@@ -1015,20 +1023,43 @@ mod tests {
             &skipped_then_full,
             "match",
             SearchOptions {
-                max_results: 3,
-                skip: 3,
+                max_results: 1,
+                skip: 4,
                 limit_reached: full_flag.clone(),
                 ..Default::default()
             },
             &cancel,
         );
-        assert_eq!(found.len(), 3);
+        assert_eq!(found.len(), 1);
         assert!(
             !full_flag.load(Ordering::SeqCst),
-            "skip targets after the cap do not count as dropped results"
+            "skip targets do not count as dropped results even when skip > cap"
         );
 
-        for dir in [exact, over, skipped, skipped_then_full] {
+        // One more collectable match past the cap must still report truncation.
+        let skipped_then_over = scratch("limit-flag-skip-then-over");
+        for index in 0..6 {
+            write(&skipped_then_over.join(format!("match-{index}.txt")));
+        }
+        let over_after_skip_flag = Arc::new(AtomicBool::new(false));
+        let found = search_by_name(
+            &skipped_then_over,
+            "match",
+            SearchOptions {
+                max_results: 1,
+                skip: 4,
+                limit_reached: over_after_skip_flag.clone(),
+                ..Default::default()
+            },
+            &cancel,
+        );
+        assert_eq!(found.len(), 1);
+        assert!(
+            over_after_skip_flag.load(Ordering::SeqCst),
+            "a collectable match past the cap must report truncation after skip"
+        );
+
+        for dir in [exact, over, skipped, skipped_then_full, skipped_then_over] {
             let _ = fs::remove_dir_all(&dir);
         }
     }
@@ -1909,6 +1940,30 @@ mod scope_tests {
         assert!(
             over_flag.load(Ordering::SeqCst),
             "the merge dropped a result, so the flag must be set before its break"
+        );
+
+        // BG03/BG11: de-duplicate *before* testing the cap. A batch whose only
+        // overflow is a repeat of an already-collected path drops nothing.
+        let dup_flag = AtomicBool::new(false);
+        let dup = merge_search_results_capped(vec![vec![e(&p1)], vec![e(&p1)]], 1, &dup_flag);
+        assert_eq!(dup.len(), 1);
+        assert!(
+            !dup_flag.load(Ordering::SeqCst),
+            "an overflow consisting only of duplicates must not report truncation"
+        );
+
+        // The same overflow followed by a genuinely new path must still report
+        // it, so the fix cannot simply stop flagging capped batches.
+        let dup_then_new_flag = AtomicBool::new(false);
+        let dup_then_new = merge_search_results_capped(
+            vec![vec![e(&p1)], vec![e(&p1), e(&p2)]],
+            1,
+            &dup_then_new_flag,
+        );
+        assert_eq!(dup_then_new.len(), 1);
+        assert!(
+            dup_then_new_flag.load(Ordering::SeqCst),
+            "a new path past the cap must report truncation even after duplicates"
         );
     }
 }

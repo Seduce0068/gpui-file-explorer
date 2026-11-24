@@ -77,6 +77,28 @@ python3 -m http.server 8765 --directory pwa
 
 `file://` 直接開きは ES module と wasm の MIME で失敗するため、必ず HTTP 配信を使う。
 
+## オフライン起動（service worker）
+
+`sw.js` が静的 5 ファイル（`/`、`index.html`、`manifest.webmanifest`、
+`main.js`、`style.css`）と `pkg/gfe_core.js` / `pkg/gfe_core_bg.wasm` /
+`pkg/snippets/<hash>/inline0.js` を precache する。`main.js` の `boot()` が
+`./sw.js` を登録し、install 時に `skipWaiting()`、activate 時に
+`clients.claim()` を呼ぶため、初回ロード後はリロードなしで制御される。
+fetch は同一オリジンの GET だけを cache-first で処理し、ナビゲーションは
+`index.html` へフォールバックする。外部送信は行わない。
+
+cache-first のため静的シェルを更新したら `sw.js` の `CACHE_NAME` も
+インクリメントする（現在 `gfe-viewer-v2`）。古い cache は activate 時に削除される。
+wasm-pack の再ビルドで snippet のハッシュが変わった場合は `sw.js` の
+precache パスも更新してください（`ls pwa/pkg/snippets` で確認）。
+マニフェスト名は `GFE Viewer` に統一し、`index.html` の `<link rel="icon">` が
+同じ SVG data URI を流用するため favicon の 404 は出ない。
+
+オフラインの受け入れは Playwright で確認する。オンラインで一覧 4 件を読み、
+`navigator.serviceWorker.ready` を待ってから `setOffline(true)` → reload し、
+一覧 4 件が再描画されることを見る。`sw.js` の precache 一覧と登録呼び出しは
+`node --test pwa/main.test.js` で固定している。
+
 ## ファイル選択とブラウザ対応
 
 | 機能 | 対応ブラウザ | 動作 |
@@ -217,7 +239,9 @@ PWA はタップ操作を前提にボタンで復帰できるようにしてい�
 | `index.html` | 検索ボックス + 一覧の 1 画面 |
 | `main.js` | `pkg/` を動的 import し `CoreViewer` を初期化、一覧・検索を DOM へ反映 |
 | `style.css` | ダーク / ライト自動切替（既定は `prefers-color-scheme`）+ iOS セーフエリア対応 |
-| `manifest.webmanifest` | PWA マニフェスト（standalone / SVG 内蔵） |
+| `manifest.webmanifest` | PWA マニフェスト（standalone / SVG 内蔵、name は `GFE Viewer`） |
+| `sw.js` | service worker（静的シェル + wasm を precache、オフライン起動） |
+| `main.test.js` | pure helper と SW / マニフェストの回帰テスト（`node --test`） |
 | `.gitignore` | 生成物 `pkg/` を除外 |
 
 `pwa/` と `android/` はルート `Cargo.toml` の workspace members には入れない。

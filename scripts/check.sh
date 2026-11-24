@@ -5,6 +5,8 @@
 #
 #   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
 #   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
+#   pwa: node --test pwa/main.test.js
+#   deb: packaging/linux/build-deb.sh --verify (read-only stage/.deb check)
 #
 # The repository is a virtual Cargo workspace with members core, app, poc
 # and win32 (root Cargo.toml). The shared CI workflow
@@ -28,7 +30,7 @@
 #   - cargo vet check: only when <project>/supply-chain/config.toml exists
 #     (run `cargo vet init` in that project to opt in)
 #
-# Missing supply-chain tools:
+# Missing tools (cargo audit/deny/vet, node, dpkg-deb):
 #   - default: reported as `SKIPPED: <tool> not installed` before the final line
 #   - --strict: the same condition is a hard failure (non-zero exit status)
 set -euo pipefail
@@ -42,6 +44,8 @@ Runs the local verification loop for this repository.
 
   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
+  pwa: node --test pwa/main.test.js (pure helpers + service worker registration)
+  deb:  packaging/linux/build-deb.sh --verify (read-only; needs an existing stage/.deb)
 
 The repository is a virtual Cargo workspace with members core, app, poc
 and win32 (root Cargo.toml). The shared CI workflow
@@ -61,6 +65,10 @@ Supply-chain gates:
   - cargo vet check: only when <project>/supply-chain/config.toml exists
     (run `cargo vet init` in that project to opt in)
 
+Additional artifact gates (always run, independent of --app/--poc):
+  - pwa: node --test pwa/main.test.js
+  - deb: packaging/linux/build-deb.sh --verify
+
 Usage:
   bash scripts/check.sh             # full loop (app + release + poc + supply-chain)
   bash scripts/check.sh --fast      # skip audit/vet and deny advisories; implies
@@ -70,7 +78,7 @@ Usage:
                                     # (includes release verification)
   bash scripts/check.sh --poc       # poc/ + core/win32 + cross-target checks (app/ omitted)
   bash scripts/check.sh --no-release # skip the app/ release verification
-  bash scripts/check.sh --strict    # fail if a needed supply-chain tool is missing
+  bash scripts/check.sh --strict    # fail if a needed tool (incl. node/dpkg-deb) is missing
 EOF
 }
 
@@ -102,7 +110,7 @@ for argument in "$@"; do
 		run_release=false
 		;;
 	--strict)
-		# A missing cargo audit/deny/vet becomes a hard failure.
+		# A missing cargo audit/deny/vet/node/dpkg-deb becomes a hard failure.
 		strict_mode=true
 		;;
 	--app)
@@ -194,6 +202,26 @@ run_vet_check() {
 	fi
 	echo "==> ${project_dir}: cargo vet check"
 	(cd "${project_dir}" && cargo vet check)
+}
+
+run_pwa_test() {
+	if ! command -v node >/dev/null 2>&1; then
+		echo "node is not installed; skipping the PWA test suite (CI runs it)."
+		record_missing_tool node
+		return
+	fi
+	echo '==> pwa: node --test pwa/main.test.js'
+	node --test pwa/main.test.js
+}
+
+run_deb_verify() {
+	if ! command -v dpkg-deb >/dev/null 2>&1; then
+		echo "dpkg-deb is not installed; skipping the .deb verification."
+		record_missing_tool dpkg-deb
+		return
+	fi
+	echo '==> deb: packaging/linux/build-deb.sh --verify'
+	bash packaging/linux/build-deb.sh --verify
 }
 
 if [ "${run_app}" = true ]; then
@@ -288,6 +316,11 @@ if [ "${run_poc}" = true ]; then
 	fi
 fi
 
+# PWA / DEB は scope（--app / --poc）に依存しない配布成果物のゲート。
+# 両方とも読み取り専用で高速なので常に実行する。
+run_pwa_test
+run_deb_verify
+
 if [ "${#skipped_tools[@]}" -gt 0 ]; then
 	echo
 	echo 'Skipped checks (tool not installed):'
@@ -297,7 +330,7 @@ if [ "${#skipped_tools[@]}" -gt 0 ]; then
 fi
 
 if [ "${#strict_failures[@]}" -gt 0 ]; then
-	echo "error: --strict: required supply-chain tool(s) not installed: ${strict_failures[*]}" >&2
+	echo "error: --strict: required tool(s) not installed: ${strict_failures[*]}" >&2
 	exit 1
 fi
 

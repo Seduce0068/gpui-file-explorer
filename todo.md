@@ -2106,6 +2106,37 @@ status: current
 - [x] **BF21** pwa/pkg/.gitignore が親と重複する不要ファイル — 対応: loop19
 - [x] **BF22** BD18 意图コメントと source-guard（誤修正防止） — 対応: loop19
 
+## 進行中（ループ20 バックログ）
+
+### 優先度: 高（ループ20・confirmed）
+
+- [x] **BG01** ChangedOnDisk が rollback 経路で失われ汎用文に退化 — 対応: loop20
+- [x] **BG02** 再走査で回収した件に上限通知が出る — 対応: loop20
+- [x] **BG03** merge_search_results_capped が重複だけで截断フラグを立てる — 対応: loop20
+- [x] **BG04** rescan カウンタ fold テストが代入先を検証していない — 対応: loop20
+- [x] **BG05** ChangedOnDisk の通常保存 UI 経路が未テスト — 対応: loop20
+- [x] **BG06** app/README の fsync 記述が実装と逆（配布物も誤記） — 対応: loop20
+
+### 優先度: 中（ループ20・confirmed）
+
+- [x] **BG07** 入れ子 salvage が正当な bounds:null を破棄扱い — 対応: loop20
+- [x] **BG08** Search 中 undo/redo が pending_select を残す — 対応: loop20
+- [x] **BG09** undo/redo の Search 復元が hidden 判定を欠く — 対応: loop20
+- [x] **BG10** cap flag の skip テストが cap ちょうどに退化 — 対応: loop20
+- [x] **BG11** merge dedupe オラクルが重複ケースを欠く — 対応: loop20
+- [x] **BG12** ChangedOnDisk fingerprint テストが同バイト長を欠く — 対応: loop20
+- [x] **BG13** PWA がオフライン起動できない（SW 無し） — 対応: loop20
+- [x] **BG14** check.sh が PWA テストと DEB 検証を含まない — 対応: loop20
+- [x] **BG15** app/README のキー実装記述が Action 化済みと矛盾 — 対応: loop20
+- [x] **BG16** MSRV 1.92「未検証」記述がルート README の実検証記録と矛盾 — 対応: loop20
+
+### 優先度: 低（ループ20・confirmed）
+
+- [x] **BG17** 新規ステータス文が旧表記「再読み込み」を固定 — 対応: loop20
+- [x] **BG18** all_entries source-guard が新規 undo/redo サイトを対象外 — 対応: loop20
+- [x] **BG19** PWA マニフェスト名に開発者向け語が入る — 対応: loop20
+- [x] **BG20** PWA に favicon が無く 404 — 対応: loop20
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

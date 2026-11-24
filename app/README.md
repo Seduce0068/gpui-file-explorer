@@ -24,7 +24,10 @@ Android / iOS は要件化のみで未実装です。
 - Kubuntu 2026.04 / KDE Plasma 6 / Wayland（ネイティブ Wayland ウィンドウ）
 - NVIDIA GTX 1660 SUPER / rustc 1.99.1 / cargo 1.99.1（**検証済みツールチェーン**）
 - Rust バージョン: `app/Cargo.toml` の `rust-version = "1.92"` が宣言 MSRV（下限）。
-  1.92 でのビルドは未検証で、上位の 1.99.1 で検証済みです（両者は矛盾しません）。
+  実検証では `cargo +1.92.0 check --locked --workspace --all-targets` が
+  依存クレート `gpui-pre-util 0.3.12` の不安定機能 `slice_as_array`（E0658）で
+  失敗したため、1.92 へのピン留めは意図的に行っていません。
+  実機検証済みは rustc / cargo 1.99.1（ルート `README.md` の「前提」を参照）。
   テスト範囲は app クレートのテストのみ（データ層は core。全体は cargo test --workspace）。
 - `gpui-kit 0.9.1` → `gpui-pre 0.3.12` + `gpui-pre-platform 0.3.12`（lib 名 `gpui`）
 
@@ -671,8 +674,10 @@ sudo dpkg -r gpui-file-explorer
   xdg-open 等が失敗しても「開きました」「表示しました」という成功文言のままです
   （AC-9）。GPUI 側の API 制約のため未対応で、将来的には D-Bus /
   プロセス終了コード監視などの導入が必要です。
-- 設定の保存は tmp + rename + `sync_all()` です。ディレクトリの fsync は
-  未実施のため、電源断時の完全な耐性は保証外です。
+- 設定の保存は tmp + rename + `sync_all()` です。`Settings::save_to` は
+  rename 後に親ディレクトリも `File::open` + `sync_all()` で fsync します
+  （`app/src/settings.rs` の BF16）。fsync 失敗は警告ログのみで、
+  書き込み自体は成功として扱います。
   `version` は現状 1 固定です。未知の version（新しいビルドが書いた設定）
   は値を保持したまま**読み取り専用**として扱い、保存を no-op にして
   未知フィールドの消失を防ぎます。
@@ -847,7 +852,7 @@ DESIGN.md §4.1 の指示に従い、P0 実装で設計からずれた点を記�
 | 項目 | DESIGN.md | 本実装（P0） | 扱い |
 |---|---|---|---|
 | モジュール構成 | `app.rs` + `model/*` + `fs/*` + `ui/*` に分割 | `main.rs` + データ層モジュール（GPUI 非依存）。`strings.rs` を新設し、`DebugHooks` / `SearchState` / `LoadState` へ状態を集約、描画フックも専用メソッドへ抽出 | 完全分割は設計判断で実施しない（現状維持）、段階的集約で代替済み（review-report.md H-1） |
-| キー入力 | 大半を `actions!` + `KeyBinding` + `.key_context("Explorer")` で実装 | ルート要素の `track_focus` + `on_key_down` で実装（矢印キー等と同じ経路に統一） | キー動作は §3.4 の表をカバー。Action 化は設計判断のため保留 |
+| キー入力 | `actions!` + `KeyBinding` | `KeyAction` + `KeyMap::resolve` + `dispatch_key_action` で Action 化済み | §3.4 をカバー、`keymap` で再バインド可 |
 | 設定スキーマ | `version` / `sort`（`key`/`dir`/`dirs_first`）/ `show_hidden` / `view` | **DESIGN.md §5.7・§8.1 の基本5項目は一致**（`settings.json` サンプル参照）。下記の拡張キーを追加保持 | 基本5項目は一致（拡張キーあり） |
 | 選択 | `Selection`（`PathBuf` キー、複数選択） | `Selection`（`PathBuf` キー、Ctrl/Shift 複数選択・バッチ操作対応） | 一致（`BTreeSet` 化は見送り） |
 | ロード状態 | `LoadState` / `FsError` の型 | `LoadState`（Loading/Ready/Error）+ `FsError` / `FsErrorKind` を導入 | 一致（generation も LoadState が保持） |
@@ -861,6 +866,12 @@ DESIGN.md §4.1 の指示に従い、P0 実装で設計からずれた点を記�
 | 空き領域の右クリックメニュー | §3.2 で『新規/更新』と明記 | 未対応（仮想リストが領域を占有。新規はツールバー/行メニュー） | 既知の制限 |
 | 入力 E2E | §10.3 の手動操作 | 入力ツールは導入済みだが権限/ポータル制約で **実押下は未検証** | 既知の制限（§実行検証記録） |
 | 通知トースト | `push_notification` で成功/失敗を右に表示 | 単一のステータス行で代替（トースト機構なし） | 設計判断で現状維持。連続操作の通知は上書きされる |
+
+キー入力はルート要素の `track_focus` + `on_key_down` で受け、
+`KeyMap::resolve` が修飾キー込みの押下を `KeyAction` へ解決し、
+`dispatch_key_action` が各操作へ分岐します（矢印キー等と同じ経路）。
+`settings.json` の `keymap` で再バインドできるため、GPUI の `actions!` に
+依存しない Action 化が済んでいます。
 
 **設定スキーマの拡張キー**: DESIGN.md §5.7・§8.1 のスキーマ例で定義されるのは
 `version` / `last_dir` / `sort` / `show_hidden` / `view` の基本 5 項目のみです。

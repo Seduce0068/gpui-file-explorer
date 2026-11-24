@@ -58,9 +58,9 @@ use crate::watcher::{removed_paths, DirWatcher, FsEvent};
 use gfe_core::model::{
     breadcrumb_segments, clamp_index, create_unique_folder, display_path, entry_for_path,
     fingerprint, first_index, grid_columns, grid_row_count, human_age, human_datetime, human_size,
-    last_index, parent_dir, read_entries, read_entries_with_failures, resolve_location_input,
-    sort_entries, step_selection, visible_entries, Entry, FsError, FsErrorKind, ReadEntriesOutcome,
-    Selection, SortKey, SortSpec,
+    is_hidden_name, last_index, parent_dir, read_entries, read_entries_with_failures,
+    resolve_location_input, sort_entries, step_selection, visible_entries, Entry, FsError,
+    FsErrorKind, ReadEntriesOutcome, Selection, SortKey, SortSpec,
 };
 use gfe_core::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use gfe_core::search::{
@@ -1158,10 +1158,15 @@ fn settings_change_affects_list(before: &Settings, after: &Settings) -> bool {
 
 /// Restore a pre-preview settings snapshot while keeping the failure reason
 /// that the just-failed `save_with_reason()` recorded in the live value (AW02).
-/// Only the `last_save_error` Cell is inherited: every persisted/previewed
-/// field must still come from `snapshot` so the UI matches what is on disk.
+/// Only the `last_save_error` and `changed_on_disk` Cells are inherited: every
+/// persisted/previewed field must still come from `snapshot` so the UI matches
+/// what is on disk. `changed_on_disk` is equally live-only state — a stale
+/// snapshot refuses the write and flips that Cell on the live value, and losing
+/// it here would degrade the specific ChangedOnDisk notice to a generic
+/// save-failure message (R2/BG01).
 fn settings_with_live_save_error(snapshot: Settings, live: &Settings) -> Settings {
     snapshot.last_save_error.set(live.last_save_error.get());
+    snapshot.changed_on_disk.set(live.changed_on_disk.get());
     snapshot
 }
 
@@ -6860,9 +6865,10 @@ impl Explorer {
         let previous_mode = snapshot.theme;
         let was_system = snapshot.theme_choice == ThemeChoice::System;
         // AW02: `save_with_reason()` records the concrete failure (TooLarge /
-        // Locked) in the LIVE settings. Restoring the pre-preview snapshot
-        // would replace that Cell with the stale value and degrade the status
-        // to the generic message. Carry only the Cell across the restore.
+        // Locked) in the LIVE settings, and a stale snapshot also flips its
+        // `changed_on_disk` Cell. Restoring the pre-preview snapshot would
+        // replace both Cells with stale values and degrade the status to the
+        // generic message. Carry only those Cells across the restore (R2/BG01).
         let restored = settings_with_live_save_error(snapshot, &self.settings);
         self.settings = restored;
         self.keymap = KeyMap::from_settings(&self.settings);
@@ -10144,60 +10150,68 @@ impl Explorer {
             // and fold the totals into the summary afterwards.
             let rescan_skipped_large = Arc::new(AtomicUsize::new(0));
             let rescan_non_utf8 = Arc::new(AtomicUsize::new(0));
-            // BD15/BC: one shared flag folds the truncation status of every
-            // root walk (first pass + re-scans); the global merge has its own
-            // flag because it is a separate cap path. The summary ORs both.
-            let limit = Arc::new(AtomicBool::new(false));
+            // BD15/BC/BG02: every walker invocation owns its own flag. A root
+            // that hit its fair share in the first pass may be re-walked with
+            // `skip` to collect the matches it dropped; a single shared flag
+            // would keep reporting truncation after that re-scan recovered
+            // them (e.g. the 1001st match). Only the flags of walks that still
+            // describe the final result set are folded into the summary below.
             let merge_limit = AtomicBool::new(false);
             // One walker invocation. A non-zero `skip` means "continue a root
             // that already hit its fair share": the re-scan must return *new*
             // matches, not the ones already in `batches`.
-            let run_root = |root: &PathBuf, cap: usize, skip: usize| match mode {
-                SearchMode::Name => search_by_name(
-                    root,
-                    &query,
-                    SearchOptions {
-                        include_hidden,
-                        max_results: cap,
-                        skip,
-                        limit_reached: limit.clone(),
-                        ..Default::default()
-                    },
-                    &cancel_for_task,
-                ),
-                SearchMode::Content => search_contents(
-                    root,
-                    &query,
-                    ContentSearchOptions {
-                        include_hidden,
-                        max_results: cap,
-                        skip,
-                        skipped_large_files: if skip == 0 {
-                            skipped_large.clone()
-                        } else {
-                            rescan_skipped_large.clone()
+            let run_root = |root: &PathBuf, cap: usize, skip: usize| {
+                let call_limit = Arc::new(AtomicBool::new(false));
+                let batch = match mode {
+                    SearchMode::Name => search_by_name(
+                        root,
+                        &query,
+                        SearchOptions {
+                            include_hidden,
+                            max_results: cap,
+                            skip,
+                            limit_reached: call_limit.clone(),
+                            ..Default::default()
                         },
-                        non_utf8_files: if skip == 0 {
-                            non_utf8.clone()
-                        } else {
-                            rescan_non_utf8.clone()
+                        &cancel_for_task,
+                    ),
+                    SearchMode::Content => search_contents(
+                        root,
+                        &query,
+                        ContentSearchOptions {
+                            include_hidden,
+                            max_results: cap,
+                            skip,
+                            skipped_large_files: if skip == 0 {
+                                skipped_large.clone()
+                            } else {
+                                rescan_skipped_large.clone()
+                            },
+                            non_utf8_files: if skip == 0 {
+                                non_utf8.clone()
+                            } else {
+                                rescan_non_utf8.clone()
+                            },
+                            limit_reached: call_limit.clone(),
+                            ..Default::default()
                         },
-                        limit_reached: limit.clone(),
-                        ..Default::default()
-                    },
-                    &cancel_for_task,
-                ),
+                        &cancel_for_task,
+                    ),
+                };
+                (batch, call_limit)
             };
 
             let mut batches: Vec<Vec<SearchResult>> = Vec::with_capacity(roots.len());
+            let mut walk_flags: Vec<Arc<AtomicBool>> = Vec::with_capacity(roots.len());
             let mut total = 0usize;
             for root in &roots {
                 if cancel_for_task.load(Ordering::SeqCst) || total >= SEARCH_GLOBAL_CAP {
                     break;
                 }
-                let batch = run_root(root, per_root_cap, 0);
+                let (batch, flag) = run_root(root, per_root_cap, 0);
                 total += batch.len();
                 batches.push(batch);
+                walk_flags.push(flag);
             }
             // BC08: hand the unused budget to roots that hit their fair share.
             // Without this, a 2-root search with 5 and 5000 matches stops at
@@ -10211,16 +10225,23 @@ impl Explorer {
                         break;
                     }
                     let remaining = SEARCH_GLOBAL_CAP - total;
-                    let extra = run_root(&roots[index], remaining, already);
+                    let (extra, flag) = run_root(&roots[index], remaining, already);
                     total += extra.len();
                     batches.push(extra);
+                    // This re-scan continued the root past its first-pass cap,
+                    // so its flag supersedes the earlier one: the first-pass
+                    // truncation was recovered and must not be reported.
+                    walk_flags[index] = flag;
                 }
             }
             let merged = merge_search_results_capped(batches, SEARCH_GLOBAL_CAP, &merge_limit);
+            // BD15/BG02: `merged.len() >= cap` could not tell a full result set
+            // from a truncated one; both cap paths now report explicitly, and
+            // only after all re-scans have had a chance to recover overflow.
+            let limit_reached = walk_flags.iter().any(|flag| flag.load(Ordering::SeqCst))
+                || merge_limit.load(Ordering::SeqCst);
             let stats = SearchRunStats {
-                // BD15: `merged.len() >= cap` could not tell a full result set
-                // from a truncated one; both cap paths now report explicitly.
-                limit_reached: limit.load(Ordering::SeqCst) || merge_limit.load(Ordering::SeqCst),
+                limit_reached,
                 skipped_large_files: skipped_large.load(Ordering::SeqCst)
                     + rescan_skipped_large.load(Ordering::SeqCst),
                 non_utf8_files: non_utf8.load(Ordering::SeqCst)
@@ -10400,6 +10421,12 @@ impl Explorer {
             return;
         }
 
+        // BG08: undo/redo sets `pending_select` so the Directory listing can
+        // focus the restored item. This Search patch never calls `apply_loaded`,
+        // so leaving it set would leak into the selection of whichever
+        // Directory listing is loaded after Search closes.
+        self.pending_select.take();
+
         if !removed.is_empty() {
             self.all_entries
                 .retain(|entry| !removed.contains(&entry.path));
@@ -10417,6 +10444,12 @@ impl Explorer {
                 continue;
             }
             if let Some(entry) = entry_for_path(path) {
+                // BG09: mirror the walker's hidden filter. A restored dotfile
+                // must not appear in the Search snapshot while hidden entries
+                // are turned off; a later re-search would drop it anyway.
+                if is_hidden_name(&entry.name_text) && !self.settings.show_hidden {
+                    continue;
+                }
                 if needle
                     .as_deref()
                     .is_some_and(|needle| name_matches(&entry.name_text, needle))
@@ -13804,7 +13837,8 @@ mod tests {
         STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_SAME_DIRECTORY_NO_MOVE,
         STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
         STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
-        STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_SAVED, STATUS_SETTINGS_SAVE_FAILED,
+        STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_SAVED,
+        STATUS_SETTINGS_SAVE_CHANGED_ON_DISK, STATUS_SETTINGS_SAVE_FAILED,
         STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SPECIAL_FILE_NO_COPY,
         STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
         STATUS_TARGET_GONE, STATUS_TARGET_MISSING, STATUS_TERMINAL_COMMAND_INVALID,
@@ -16304,13 +16338,13 @@ mod tests {
         assert_eq!(source.matches(needle).count(), 1);
         let needle = concat!("rescan_non_utf8", ".load(Ordering::SeqCst)");
         assert_eq!(source.matches(needle).count(), 1);
+        // BG04: 以前は `let merged = ...` で領域を切っていたため、
+        // SearchRunStats への代入（fold の着地点）が検証されなかった。
+        // 終端を `(merged, stats)` まで延ばして代入先も pin する。
         let region = source_region(
             source,
             concat!("let skipped_large", " = Arc::new(AtomicUsize::new(0));"),
-            concat!(
-                "let merged",
-                " = merge_search_results_capped(batches, SEARCH_GLOBAL_CAP, &merge_limit);"
-            ),
+            "(merged, stats)",
         );
         assert!(
             region.contains(concat!("let rescan_skipped_large", " = Arc::new")),
@@ -16319,6 +16353,26 @@ mod tests {
         assert!(
             region.contains(concat!("rescan_non_utf8", ".clone()")),
             "re-scans must use their own non-UTF-8 counter"
+        );
+        // 空白を落として比較し、折り込み式が両カウンタの和であることを固定する。
+        // リテラルを concat! で分割しているのは、上の `.load()` 出現回数
+        // アサーションがこのテスト自身の文字列を数えないようにするため。
+        let folded: String = region.split_whitespace().collect();
+        assert!(
+            folded.contains(concat!(
+                "skipped_large_files:skipped_large.load(Ordering::SeqCst)",
+                "+rescan_skipped_large",
+                ".load(Ordering::SeqCst),"
+            )),
+            "the summary must add the re-scan oversized counter to the first-pass one"
+        );
+        assert!(
+            folded.contains(concat!(
+                "non_utf8_files:non_utf8.load(Ordering::SeqCst)",
+                "+rescan_non_utf8",
+                ".load(Ordering::SeqCst),"
+            )),
+            "the summary must add the re-scan non-UTF-8 counter to the first-pass one"
         );
     }
 
@@ -16860,6 +16914,15 @@ mod tests {
                 "    fn run_search(&mut self, cx: &mut Context<Self>) {",
                 "    fn apply_search_filter(",
                 &["this.all_entries = entries.into_iter().map(|result| result.entry).collect();"],
+            ),
+            // BG18: the undo/redo Search patch also rewrites `all_entries`.
+            (
+                "    fn refresh_search_after_undo_redo(",
+                "    fn clear_search(",
+                &[
+                    ".retain(|entry| !removed.contains(&entry.path));",
+                    "self.all_entries.push(entry);",
+                ],
             ),
         ];
         for (start, end, writes) in cases {
@@ -18252,6 +18315,18 @@ mod tests {
             settings_write_status(&settings, false, true, success.clone()),
             STATUS_SETTINGS_SAVE_FAILED
         );
+        // BG05: `ChangedOnDisk` は Io ペイロード詳細として伝わるため
+        // `last_save_error` には残らない。changed_on_disk 単独でも成功文言より
+        // 具体的な理由を優先しなければならない（ChangedOnDisk 経路の回帰固定）。
+        settings.changed_on_disk.set(true);
+        assert_eq!(
+            settings_write_status(&settings, false, true, success.clone()),
+            STATUS_SETTINGS_SAVE_CHANGED_ON_DISK
+        );
+        assert_ne!(
+            settings_write_status(&settings, false, true, success.clone()),
+            success
+        );
     }
 
     #[test]
@@ -18692,6 +18767,29 @@ mod tests {
             source.matches(guard).count(),
             1,
             "rollback_settings must preserve the failure reason"
+        );
+
+        // R2/BG01: a stale snapshot flips `changed_on_disk` on the LIVE value.
+        // The rollback must carry that Cell too, otherwise the specific notice
+        // degrades to the generic save-failure message on all seven paths.
+        let snapshot = Settings::default();
+        let live = Settings {
+            view: ViewLayout::Icons,
+            ..Settings::default()
+        };
+        live.changed_on_disk.set(true);
+        let restored = settings_with_live_save_error(snapshot, &live);
+        assert!(restored.changed_on_disk.get());
+        assert_eq!(
+            restored.view,
+            ViewLayout::Details,
+            "snapshot fields must still win"
+        );
+        let status = settings_write_status(&restored, false, true, "成功".to_string());
+        assert_eq!(
+            status,
+            super::STATUS_SETTINGS_SAVE_CHANGED_ON_DISK,
+            "one rollback path must keep the ChangedOnDisk notice: {status}"
         );
     }
 

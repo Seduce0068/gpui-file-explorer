@@ -5,7 +5,10 @@
 - 前提資料: [`RESEARCH.md`](RESEARCH.md) / [`notes/api-notes.md`](notes/api-notes.md) / [`notes/ecosystem-notes.md`](notes/ecosystem-notes.md) / [`notes/fs-cross-platform-notes.md`](notes/fs-cross-platform-notes.md) / [`notes/poc-report.md`](notes/poc-report.md) / [`poc/src/main.rs`](poc/src/main.rs)
 - 想定環境: Kubuntu 2026.04 / KDE Plasma 6 / Wayland / NVIDIA GTX 1660 SUPER / rustc 1.99.1（POC 実測、[`notes/poc-report.md`](notes/poc-report.md)）
 - Rust ツールチェーン: 1.99.1 は**検証済み**。`app/Cargo.toml` の
-  宣言 MSRV は 1.92 で、1.92 での下限ビルドは未検証です
+  宣言 MSRV は 1.92 だが、実検証で `cargo +1.92.0 check --locked` は
+  `gpui-pre-util 0.3.12` の `slice_as_array`（E0658）で失敗したため、
+  `rust-toolchain.toml` による 1.92 ピン留めは行っていない
+  （ルート `README.md` の「前提」を参照）
 - ライセンス: **AGPL-3.0-or-later**（依頼者決定、[`RESEARCH.md`](RESEARCH.md) §11.1.1）
 - 記法: **✅** = 一次情報（crate ソース・実機）で確認済み、**⚠** = 未確認。crate ソースはローカル `~/.cargo/registry/src/index.crates.io-*/` 配下を指す。
 
@@ -951,7 +954,9 @@ pub fn confirm_and_trash(
   - `last_dir` が存在しない/ディレクトリでない場合は `$HOME`（`dirs::home_dir()`）へフォールバック。
   - 保存は**原子的**（as-built: `app/src/settings.rs` の `Settings::save_to` が
     `settings.json.tmp-<epochナノ秒>-<PID>` を `create_new(true)` で予約し、
-    `write_all` → `sync_all()` → `fs::rename` の順で反映する。本番は
+    `write_all` → `sync_all()` → `fs::rename` の順で反映した後、
+    親ディレクトリも `File::open` + `sync_all()` で fsync する（BF16。
+    失敗は警告ログのみで書き込み成功は維持）。本番は
     `Settings::save_with_reason` 経由で `save_to` を呼ぶ）。固定名の tmp を
     `create(true)` で使うと事前に置かれた symlink を追うため（CWE-59）、
     衝突しない一時名と `O_EXCL` 予約が必須。書き込みまたは rename が失敗した
