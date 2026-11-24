@@ -2273,7 +2273,8 @@ status: current
 - [x] **BL08** phase1-core-extraction の as-built が削除済み関数を現状と記載 — 対応: loop25
 - [x] **BL09** README の Android ゲート説明が実際より過小 — 対応: loop25
 - [x] **BL10** cargo vet 使用例が無条件実行と記載（BF17 取り残し） — 対応: loop25
-- [x] **BL11** desktop-file-validate が .deb 成果物に入れ子で clean checkout で動かない — 対応: loop25
+- [x] **BL11** desktop-file-validate が .deb 成果物に入れ子で clean checkout で動かない
+  — 対応: loop25
 - [x] **BL12** deferred waitUntil オラクルが promise 結線を検証しない — 対応: loop25
 - [x] **BL13** deferred settle オラクルが2経路の片方しか確認しない — 対応: loop25
 - [x] **BL14** theme resync 純粋テストが Dark/System 反転のみ（light 側欠落） — 対応: loop25
