@@ -23,13 +23,15 @@ wasm32 の `std::fs` はブラウザで実ファイルを読めないため、
 
 ## 前提（core 側の実装）
 
-別エージェントが `core/` に wasm-bindgen API を実装する前提で配線している。
-ビルド前に以下が揃っていること:
+core 側の wasm-bindgen API は**すべて実装済み**（as-built）。
+根拠は `core/Cargo.toml:11-14,32-34` と `core/src/wasm.rs:35-118`。
 
-- `core/Cargo.toml` の `[lib]` に `crate-type = ["cdylib", "rlib"]`
-  （wasm-pack 0.13.1 は `crate-type must be cdylib` を要求する）
-- `wasm-bindgen`（必要なら `serde_wasm_bindgen`）依存の追加
-- `CoreViewer` の公開と `list_entries` / `search` メソッド
+- `core/Cargo.toml:11-14`: `[lib] name = "gfe_core"` と
+  `crate-type = ["cdylib", "rlib"]`（wasm-pack 0.13.1 の
+  `crate-type must be cdylib` 要求を満たす）
+- `core/Cargo.toml:32-34`: wasm32 向けの `serde_json` / `wasm-bindgen` 依存
+- `core/src/wasm.rs:35-118`: `set_panic_hook()` / `listEntriesFromJson` /
+  `searchInJson` / `CoreViewer.new()` / `list_entries` / `search` を公開
 
 lib 名は `gfe_core` なので、生成される JS は `pkg/gfe_core.js`、
 wasm は `pkg/gfe_core_bg.wasm` になる（`main.js` の `WASM_MODULE` で指定）。

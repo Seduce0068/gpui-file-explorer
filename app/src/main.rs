@@ -57,8 +57,8 @@ use crate::undo::{UndoAction, UndoStack};
 use crate::watcher::{removed_paths, DirWatcher, FsEvent};
 use gfe_core::model::{
     breadcrumb_segments, clamp_index, create_unique_folder, display_path, entry_for_path,
-    fingerprint, first_index, grid_columns, grid_row_count, human_age, human_datetime, human_size,
-    is_hidden_name, last_index, parent_dir, read_entries, read_entries_with_failures,
+    fingerprint, first_index, grid_columns, grid_row_count, human_age_at, human_datetime,
+    human_size, is_hidden_name, last_index, parent_dir, read_entries, read_entries_with_failures,
     resolve_location_input, sort_entries, step_selection, visible_entries, Entry, FsError,
     FsErrorKind, ReadEntriesOutcome, Selection, SortKey, SortOrder, SortSpec,
 };
@@ -878,6 +878,13 @@ fn selection_status_text(selection_count: usize, detail: Option<&str>, implicit:
 
 /// Expression in the status bar (relaxed English/Japanese)
 fn format_selected(entry: &Entry) -> String {
+    format_selected_at(entry, SystemTime::now())
+}
+
+/// Pure variant of [`format_selected`] with a caller-supplied clock, so the
+/// exact separator order and the relative age can be pinned without depending
+/// on wall-clock time (BP02).
+fn format_selected_at(entry: &Entry, now: SystemTime) -> String {
     if entry.is_dir {
         format!("{}（フォルダ）", entry.name_text)
     } else {
@@ -885,7 +892,7 @@ fn format_selected(entry: &Entry) -> String {
             "{}（{} / {}）",
             entry.name_text,
             human_size(entry.size),
-            human_age(entry.modified)
+            human_age_at(entry.modified, now)
         )
     }
 }
@@ -7426,6 +7433,10 @@ impl Explorer {
                         }
                     }
                     Err(error) => {
+                        // BP06: `set_load_error` only replaces `LoadState`; the
+                        // "フォルダを作成中…" caption would otherwise stay on the
+                        // status bar forever after a failed create.
+                        this.status = format!("{ERR_FOLDER_CREATE}: {error}");
                         this.set_load_error(format!("{ERR_FOLDER_CREATE}: {error}"));
                     }
                 }
@@ -10565,7 +10576,9 @@ impl Explorer {
             return;
         }
         self.search.query = query.clone();
-        self.search.last_stats = SearchRunStats::default();
+        // BP07: do NOT reset last_stats / active_roots here. The rows still on
+        // screen belong to the previous walk and must keep their old roots and
+        // stats until the new results are published together below.
         self.search.generation = self.search.generation.wrapping_add(1);
         let generation = self.search.generation;
         // Three layers guard against a stale result: the cooperative flag
@@ -10586,8 +10599,10 @@ impl Explorer {
         let cwd = self.cwd.clone();
         let resolved = search_roots(scope, &cwd, &tab_paths, &bookmarks);
         let roots = resolved.roots;
-        self.search.active_roots = roots.clone();
-        self.search.fell_back_to_cwd = resolved.fell_back_to_cwd;
+        // BP07: hold the new root set for publication at completion, together
+        // with the new results and their stats.
+        let published_roots = roots.clone();
+        let published_fell_back = resolved.fell_back_to_cwd;
         if resolved.fell_back_to_cwd {
             self.status = format!(
                 "{SEARCH_IN_PROGRESS_LABEL}「{query}」（{}に有効な場所がないため現在のフォルダ）",
@@ -10735,6 +10750,11 @@ impl Explorer {
                     // generation-mismatch early return.
                     return;
                 }
+                // BP07: publish roots, stats and rows in the same update. An
+                // F5 re-search used to swap active_roots at start while the old
+                // rows were still on screen, so their badges named the NEW roots.
+                this.search.active_roots = published_roots;
+                this.search.fell_back_to_cwd = published_fell_back;
                 this.search.last_stats = stats;
                 this.load = LoadState::Ready;
                 // AS04: re-running a query from the Search view (F5) is a
@@ -14479,7 +14499,7 @@ mod tests {
         clear_op_token, clear_rescan_failure_after_successful_read, clear_rescan_failure_status,
         clipboard_all_sources_missing, context_menu_anchor, core_trash_items,
         dialog_footer_hint_for_session, effective_dialog_width, effective_sidebar_width,
-        focus_search_name_key_reaches_dispatch, format_chord, format_selected, fuzzy_candidates,
+        focus_search_name_key_reaches_dispatch, format_chord, format_selected_at, fuzzy_candidates,
         fuzzy_score, grid_columns_for_viewport, grid_columns_for_width, help_overrides_line,
         icon_button_text_color, install_op_token, internal_drop_paths, join_status_notices,
         keymap_action_name, keymap_bind_caption, keymap_chord_reserved, keymap_limit_status,
@@ -14510,22 +14530,22 @@ mod tests {
         Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
         Modifiers, PropertiesErrorReaction, SearchRunStats, SecondarySlot, SettingsTab, SortKey,
         SourcePresence, TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED,
-        C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX,
-        KEYMAP_FORMAT_HINT, PROGRESS_THROTTLE, SEARCH_GLOBAL_CAP, SECONDARY_SLOT_PRIORITY,
-        SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
-        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-        STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
-        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-        STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
-        STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
-        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
-        STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
-        STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
-        STATUS_NEW_FOLDER_ONLY_DIRECTORY, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
-        STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX, STATUS_PARTIAL_FAILURE_SUFFIX,
-        STATUS_PATH_GONE, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
-        STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED,
+        C_RED, C_TEXT, C_YELLOW, ERR_FOLDER_CREATE, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
+        GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT, PROGRESS_THROTTLE, SEARCH_GLOBAL_CAP,
+        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
+        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
+        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
+        STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
+        STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX,
+        STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
+        STATUS_MISSING_COUNT_SUFFIX, STATUS_NEW_FOLDER_ONLY_DIRECTORY, STATUS_NOT_DIRECTORY,
+        STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX,
+        STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE, STATUS_PREVIEW_ONLY_DIRECTORY,
+        STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED,
         STATUS_REDO_NO_TARGET, STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED,
         STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
         STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
@@ -15361,6 +15381,103 @@ mod tests {
         );
     }
 
+    // BP06: `set_load_error` replaces LoadState only; the Err branch must also
+    // overwrite the in-progress caption or "フォルダを作成中…" stays on the bar.
+    #[test]
+    fn new_folder_failure_replaces_the_creating_status() {
+        let source = include_str!("main.rs");
+        let new_folder = source_region(
+            source,
+            "    fn new_folder(&mut self, cx: &mut Context<Self>) {",
+            "    fn copy_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {",
+        );
+        let err = new_folder
+            .find("Err(error) => {")
+            .expect("new_folder Err branch missing");
+        let branch = &new_folder[err..];
+        assert!(
+            branch.contains("this.status = format!(\"{ERR_FOLDER_CREATE}: {error}\");"),
+            "Err branch must replace the creating caption:\n{branch}"
+        );
+        assert!(
+            branch.contains("this.set_load_error(format!(\"{ERR_FOLDER_CREATE}: {error}\"));"),
+            "Err branch must still publish the load error"
+        );
+        let failure = format!("{ERR_FOLDER_CREATE}: permission denied");
+        assert_eq!(status_color(&failure), C_RED, "{failure}");
+        assert_eq!(status_color(STATUS_FOLDER_CREATING), C_GREEN);
+    }
+
+    // BP07: publishing active_roots at run start let the previous rows be
+    // badged with the *new* roots during an F5 re-search. Pin the atomic
+    // publication of roots + stats + entries on the successful completion.
+    #[test]
+    fn search_roots_and_stats_are_published_with_completed_results() {
+        let source = include_str!("main.rs");
+        let run_search = source_region(
+            source,
+            "    fn run_search(&mut self, cx: &mut Context<Self>) {",
+            "    fn apply_search_filter(",
+        );
+        let held = run_search
+            .find("let published_roots = roots.clone();")
+            .expect("new roots must be held until completion");
+        let completion = run_search
+            .find("if this.search.generation != generation {")
+            .expect("generation guard missing");
+        let roots = run_search
+            .find("this.search.active_roots = published_roots;")
+            .expect("roots must be published at completion");
+        let stats = run_search
+            .find("this.search.last_stats = stats;")
+            .expect("stats must be published at completion");
+        let rows = run_search
+            .find("this.all_entries = entries.into_iter()")
+            .expect("results must be published at completion");
+        assert!(
+            held < completion,
+            "roots must be held, not published at start"
+        );
+        assert!(completion < roots && roots < stats && stats < rows);
+        assert!(
+            !run_search[..completion]
+                .contains("self.search.last_stats = SearchRunStats::default();"),
+            "last_stats must describe the visible rows while a new walk runs"
+        );
+        assert!(
+            !run_search[..completion].contains("self.search.active_roots = roots.clone();"),
+            "active_roots must not be replaced while old rows are visible"
+        );
+    }
+
+    // BP15: both source-badge render sites must go through walked_search_roots
+    // so a capped / cancelled walk cannot badge a row with a root it never
+    // entered.
+    #[test]
+    fn source_badges_read_walked_roots_at_both_render_sites() {
+        let source = include_str!("main.rs");
+        for (start, end) in [
+            (
+                "    fn list_row(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {",
+                "    fn grid_cell(",
+            ),
+            (
+                "    fn grid_cell(this: &mut Self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {",
+                "    fn sidebar(",
+            ),
+        ] {
+            let site = source_region(source, start, end);
+            assert!(
+                site.contains("walked_search_roots(&this.search.active_roots, this.search.last_stats)"),
+                "{start} must derive badge roots from the walked-root guard"
+            );
+            assert!(
+                site.contains("source_label_for(&entry, roots)"),
+                "{start} must render the badge from the guarded roots"
+            );
+        }
+    }
+
     #[test]
     fn dynamic_refusal_statuses_are_not_green() {
         // M05: 「解除する設定はありません」は操作拒否なので warning(amber)。
@@ -15385,7 +15502,8 @@ mod tests {
         // failure。接尾辞単体と undo が実際に組み立てる文言の両方で赤を固定し、
         // STATUS_UNDO_FAILED が外れても green に落ちないことを保証する。
         let exists = format!("{STATUS_UNDO_FAILED}: /tmp/target{STATUS_UNDO_EXISTS_SUFFIX}");
-        assert!(exists.contains(STATUS_UNDO_EXISTS_SUFFIX), "{exists}");
+        // BP03: `contains` on a suffix used to compose `exists` was tautological.
+        assert_eq!(exists, "元に戻せません: /tmp/target が既に存在します");
         assert_eq!(
             status_color(STATUS_UNDO_EXISTS_SUFFIX),
             C_RED,
@@ -15395,7 +15513,8 @@ mod tests {
 
         // N08: 動的な上限値を含む「タブは最大 {n} 個までです」もwarning(amber)。
         let max_tabs = format!("{STATUS_MAX_TABS_PREFIX}8{STATUS_MAX_TABS_SUFFIX}");
-        assert!(max_tabs.contains(STATUS_MAX_TABS_PREFIX), "{max_tabs}");
+        // BP03: pin the composed wording literally, not against its own prefix.
+        assert_eq!(max_tabs, "タブは最大 8 個までです");
         assert_eq!(status_color(&max_tabs), C_YELLOW, "{max_tabs}");
     }
 
@@ -15420,7 +15539,12 @@ mod tests {
         );
         let invalid_keymap =
             format!("{STATUS_KEYMAP_INVALID_PREFIX}ctrl+x（{KEYMAP_FORMAT_HINT}）");
-        assert!(invalid_keymap.contains(KEYMAP_FORMAT_HINT));
+        // BP03: the old `contains(KEYMAP_FORMAT_HINT)` just echoed the constant
+        // used to build the string. Pin the entire composed message instead.
+        assert_eq!(
+            invalid_keymap,
+            "無効なキーマップ指定: ctrl+x（形式: アクション名 コード または unbind アクション名（例: open_preview ctrl+shift+p）。設定カードでは 操作=キー も可（例: open_preview=ctrl+shift+p））"
+        );
 
         let messages = [
             invalid_keymap,
@@ -15740,8 +15864,17 @@ mod tests {
     #[test]
     fn status_priority_anchors_secondary_slot_order() {
         assert_eq!(STATUS_PRIORITY.last(), Some(&"監視状態"));
-        assert_eq!(SECONDARY_SLOT_PRIORITY.len(), 4);
-        assert_eq!(SECONDARY_SLOT_PRIORITY.last(), Some(&SecondarySlot::Watch));
+        // BP01: len/last only pinned the ends — a swapped middle pair kept the
+        // test green while changing the hide order. Fix the full literal order.
+        assert_eq!(
+            SECONDARY_SLOT_PRIORITY,
+            &[
+                SecondarySlot::HiddenCount,
+                SecondarySlot::UndoCount,
+                SecondarySlot::Version,
+                SecondarySlot::Watch,
+            ]
+        );
     }
 
     #[test]
@@ -16181,15 +16314,17 @@ mod tests {
             size: 2048,
             modified: Some(SystemTime::UNIX_EPOCH),
         };
-        let file = format_selected(&base);
-        assert!(file.starts_with("item（"), "{file}");
-        assert!(file.contains("2.0 K"), "{file}");
+        // BP02: starts_with/contains ignored the separator, the field order and
+        // the age. Pin a fixed clock through the pure path and compare the whole
+        // string; 2048 B == "2.0 K" and 180 s == "3分前".
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(180);
+        assert_eq!(format_selected_at(&base, now), "item（2.0 K / 3分前）");
 
         let dir = Entry {
             is_dir: true,
             ..base
         };
-        assert_eq!(format_selected(&dir), "item（フォルダ）");
+        assert_eq!(format_selected_at(&dir, now), "item（フォルダ）");
     }
 
     #[test]
@@ -16201,12 +16336,13 @@ mod tests {
             skipped: vec![PathBuf::from("/tmp/skip")],
             created: vec![PathBuf::from("/tmp/dest")],
         };
-        let message = summarize_op("コピー", &stats);
-        assert!(message.contains("コピーしました"), "{message}");
-        assert!(message.contains("3 ファイル"), "{message}");
-        assert!(message.contains("1 フォルダ"), "{message}");
-        assert!(message.contains("1 件スキップ"), "{message}");
-        assert!(message.ends_with(": dest"), "{message}");
+        // BP02: five independent `contains` checks never fixed the " / "
+        // separators, the part order or the ": dest" suffix. Pin the whole
+        // message so a reordering or dropped delimiter fails the test.
+        assert_eq!(
+            summarize_op("コピー", &stats),
+            "コピーしました（3 ファイル / 1 フォルダ / 1 件スキップ）: dest"
+        );
     }
 
     #[test]

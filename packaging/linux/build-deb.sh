@@ -376,21 +376,38 @@ verify_control() {
 # cannot start the installed binary. Read-only, like the other --verify gates.
 verify_desktop_exec() {
   local desktop="${stage}/usr/share/applications/${pkg}.desktop"
-  local exec_line try_exec_line exec_program try_program
+  local line program exec_count=0 try_count=0
   [ -f "${desktop}" ] || die "ステージに .desktop がありません: ${desktop}"
-  exec_line="$(grep -E '^Exec=' "${desktop}" || true)"
-  try_exec_line="$(grep -E '^TryExec=' "${desktop}" || true)"
-  [ -n "${exec_line}" ] || die ".desktop に Exec がありません: ${desktop}"
-  [ -n "${try_exec_line}" ] || die ".desktop に TryExec がありません: ${desktop}"
-  exec_program="${exec_line#Exec=}"
-  exec_program="${exec_program%%[[:space:]]*}"
-  try_program="${try_exec_line#TryExec=}"
-  try_program="${try_program%%[[:space:]]*}"
-  grep -Fqx -- "${pkg}" <<<"${exec_program}" ||
-    die ".desktop の Exec 先頭トークンが ${pkg} ではありません: ${exec_program}"
-  grep -Fqx -- "${pkg}" <<<"${try_program}" ||
-    die ".desktop の TryExec 先頭トークンが ${pkg} ではありません: ${try_program}"
-  echo "照合 OK: ${desktop} の Exec / TryExec == ${pkg}"
+  # BP05: the old `grep -E '^Exec='` only inspected the first match, so a
+  # duplicate or a later bad entry slipped through. Scan every Exec / TryExec
+  # line and reject duplicate keys, mirroring scripts/check.sh (BO12).
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in
+      Exec=*)
+        exec_count=$((exec_count + 1))
+        program="${line#Exec=}"
+        program="${program%%[[:space:]]*}"
+        if [ "${program}" != "${pkg}" ]; then
+          die ".desktop の Exec 先頭トークンが ${pkg} ではありません: ${program}"
+        fi
+        ;;
+      TryExec=*)
+        try_count=$((try_count + 1))
+        program="${line#TryExec=}"
+        program="${program%%[[:space:]]*}"
+        if [ "${program}" != "${pkg}" ]; then
+          die ".desktop の TryExec 先頭トークンが ${pkg} ではありません: ${program}"
+        fi
+        ;;
+    esac
+  done < "${desktop}"
+  if [ "${exec_count}" -eq 0 ] || [ "${try_count}" -eq 0 ]; then
+    die ".desktop に Exec / TryExec がありません: ${desktop}"
+  fi
+  if [ "${exec_count}" -gt 1 ] || [ "${try_count}" -gt 1 ]; then
+    die ".desktop に Exec / TryExec の重複があります: Exec=${exec_count} TryExec=${try_count}"
+  fi
+  echo "照合 OK: ${desktop} の Exec / TryExec == ${pkg} (重複なし)"
 }
 
 # AX15: --verify must also check the packaged binary itself, not only docs and
@@ -630,6 +647,10 @@ for script in "${maintainer_scripts[@]}"; do
     "${stage}/DEBIAN/${script}"
 done
 verify_maintainer_scripts
+# BP05: run the same Exec / TryExec gate on the freshly staged .desktop in the
+# build path (it used to run only under --verify), so a bad launcher is caught
+# before dpkg-deb packages it.
+verify_desktop_exec
 
 # Runtime dependencies from the ELF headers plus the dlopen'ed Vulkan loader.
 compute_depends() {

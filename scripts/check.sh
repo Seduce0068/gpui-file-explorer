@@ -628,19 +628,37 @@ if manifest_root is not None:
                         f"launcher activity {name} に android:exported の明示指定（true/false）がありません"
                     )
 
-# BM16/BN15: ET.parse alone does not prove that every @style/... reference in
-# the manifest or the value resources resolves. Collect the references from
-# all attribute values and require a matching <style name="..."> definition
-# in res/values*/*.xml (qualifier directories such as values-night/ and
-# values-v29/ are included). Framework styles (@android:style/...) are not
-# matched by the @style/ pattern and are intentionally out of scope.
-# BO10: keep definitions/references keyed by (resource qualifier, name). An
-# unqualified reference (from the manifest or values/) must resolve to a style
-# defined in the unqualified values/ directory; a values-night/ definition must
-# not silently satisfy it. Framework styles (@android:style/...) stay out of scope.
-STYLE_REF_RE = re.compile(r"@style/([A-Za-z0-9_.]+)")
-style_refs = set()
-style_defs = set()
+# BM16/BN15/BP11: ET.parse alone does not prove that every resource reference
+# in the manifest or the value resources resolves. Collect @style/, @string/,
+# @color/, @dimen/, @bool/, @integer/ and @array/ references from all attribute
+# values plus element text/tail, then require a matching definition in
+# res/values*/*.xml (qualifier directories such as values-night/ and
+# values-v29/ are included). An optional `android:` prefix is captured only to
+# keep @android: framework resources out of scope, as before.
+# BO10: keep definitions/references keyed by (resource qualifier, type, name).
+# An unqualified reference (from the manifest or values/) must resolve to a
+# definition in the unqualified values/ directory; a values-night/ definition
+# must not silently satisfy it.
+# Resource element tag -> the @type/ it defines. string-array/integer-array
+# are both @array/ resources; `<item name=... type=...>` is handled as well.
+RESOURCE_TAG_TYPES = {
+    "style": "style",
+    "string": "string",
+    "color": "color",
+    "dimen": "dimen",
+    "bool": "bool",
+    "integer": "integer",
+    "array": "array",
+    "string-array": "array",
+    "integer-array": "array",
+}
+RES_REF_RE = re.compile(
+    r"@(?P<framework>android:)?"
+    r"(?P<type>style|string|color|dimen|bool|integer|array)/"
+    r"(?P<name>[A-Za-z0-9_.]+)"
+)
+resource_refs = set()
+resource_defs = set()
 
 
 def qualifier_of(directory_name):
@@ -648,21 +666,41 @@ def qualifier_of(directory_name):
     return directory_name[len("values") :].lstrip("-")
 
 
-def collect_style_refs(element, qualifier=""):
+def collect_resource_refs(element, qualifier=""):
     # BO10: references may live in element text/tail (e.g. an <item> body), not
     # only in attributes; recurse through children with the same qualifier.
     for value in [element.text, element.tail, *element.attrib.values()]:
         if value:
-            for name in STYLE_REF_RE.findall(value):
-                style_refs.add((qualifier, name))
+            for match in RES_REF_RE.finditer(value):
+                if match.group("framework"):
+                    continue  # @android: framework resources stay out of scope
+                resource_refs.add(
+                    (qualifier, match.group("type"), match.group("name"))
+                )
     for child in element:
-        collect_style_refs(child, qualifier)
+        collect_resource_refs(child, qualifier)
+
+
+def resource_type_of(element):
+    """@type/ defined by a values child element, or None if not one of ours."""
+    if element.tag == "item":
+        return RESOURCE_TAG_TYPES.get(element.get("type"))
+    return RESOURCE_TAG_TYPES.get(element.tag)
+
+
+def collect_resource_defs(element, qualifier):
+    name = element.get("name")
+    res_type = resource_type_of(element)
+    if name and res_type:
+        resource_defs.add((qualifier, res_type, name))
+    for child in element:
+        collect_resource_defs(child, qualifier)
 
 
 if manifest_root is not None:
-    collect_style_refs(manifest_root)
+    collect_resource_refs(manifest_root)
 
-# BN15: scan res/values*/*.xml, not only res/values/*.xml. A style may be
+# BN15: scan res/values*/*.xml, not only res/values/*.xml. A resource may be
 # defined (or referenced) in a qualified resource directory, and limiting the
 # scan to the unqualified directory produced false failures on such scaffolds.
 res_dir = root / "app/src/main/res"
@@ -676,23 +714,20 @@ for values_file in values_files:
         errors.append(f"{values_file.name} が well-formed ではありません: {exc}")
         continue
     qualifier = qualifier_of(values_file.parent.name)
-    collect_style_refs(values_root, qualifier)
-    for style_node in values_root.iter("style"):
-        style_name = style_node.get("name")
-        if style_name:
-            style_defs.add((qualifier, style_name))
+    collect_resource_refs(values_root, qualifier)
+    collect_resource_defs(values_root, qualifier)
 
-for qualifier, style_ref in sorted(style_refs):
-    if (qualifier, style_ref) in style_defs:
+for qualifier, res_type, name in sorted(resource_refs):
+    if (qualifier, res_type, name) in resource_defs:
         continue
     # A qualified reference may fall back to the default values/ definition,
-    # but an unqualified reference may never rely on a qualified-only style.
-    if qualifier and ("", style_ref) in style_defs:
+    # but an unqualified reference may never rely on a qualified-only resource.
+    if qualifier and ("", res_type, name) in resource_defs:
         continue
     where = f"values-{qualifier}/" if qualifier else "values/"
     errors.append(
-        f"@style/{style_ref} に対応する <style name=\"{style_ref}\"> が "
-        f"res/{where} にありません"
+        f"@{res_type}/{name} に対応する {res_type} リソース定義 "
+        f'(name="{name}") が res/{where} にありません'
     )
 
 root_gradle = (root / "build.gradle.kts").read_text(encoding="utf-8")

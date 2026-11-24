@@ -3683,24 +3683,48 @@ mod tests {
                 dirs_first: true,
             },
             show_hidden: false,
+            // BP04: pin an explicit value instead of inheriting the
+            // platform-dependent default, so the expected JSON is identical on
+            // every target OS.
+            terminal_command: "custom-terminal".to_string(),
             ..Settings::default()
         };
         settings.save_to(&path).unwrap();
         let text = fs::read_to_string(&path).unwrap();
-        for needle in [
-            "\"version\": 1",
-            "\"last_dir\": \"/home/koppe/document\"",
-            "\"sort\"",
-            "\"key\": \"size\"",
-            "\"dir\": \"desc\"",
-            "\"dirs_first\": true",
-            "\"show_hidden\": false",
-            "\"view\": \"details\"",
-            "\"theme\": \"dark\"",
-            "\"theme_choice\": \"dark\"",
-        ] {
-            assert!(text.contains(needle), "missing {needle} in:\n{text}");
-        }
+        // BP04: `contains` enumeration could not catch an extra key, a missing
+        // key or a wrong value on a key that happened not to be listed. Parse
+        // the file and compare the complete object (key set *and* values).
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("settings JSON must parse");
+        let expected = serde_json::json!({
+            "version": 1,
+            "last_dir": "/home/koppe/document",
+            "sort": {
+                "key": "size",
+                "dir": "desc",
+                "dirs_first": true
+            },
+            "show_hidden": false,
+            "show_thumbnails": true,
+            "column_prefs": {
+                "visible": ["name", "kind", "size", "modified"],
+                "widths": {}
+            },
+            "view": "details",
+            "theme": "dark",
+            "theme_choice": "dark",
+            "terminal_command": "custom-terminal",
+            "keymap": [],
+            "recent_dirs": [],
+            "bookmarks": [],
+            "bookmark_labels": [],
+            "tabs": [],
+            "active_tab": 0,
+            "windows": [],
+            "recent_searches": [],
+            "saved_searches": []
+        });
+        assert_eq!(parsed, expected, "unexpected settings JSON:\n{text}");
         fs::remove_dir_all(&dir).unwrap();
     }
 

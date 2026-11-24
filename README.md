@@ -308,7 +308,8 @@ CI と同じ範囲を手元で回すスクリプトを用意しています（�
 
 `--app` / `--poc` の scope に関わらず、配布成果物のゲートも実行します。
 
-- **PWA**: `node --check pwa/sw.js` と `node --check pwa/main.js`（node が有れば
+- **PWA**: `node --check pwa/sw.js` と
+  `node --input-type=module --check < pwa/main.js`（node が有れば
   `node:test` 非対応でも構文検証）に加え、`sw.js` の `PRECACHE` 配列を `python3` で
   パースして列挙された全アセットの実在を照合し、`node --test pwa/main.test.js`
   を実行します。pure ヘルパーと snippet の形式・一意性、および
@@ -324,8 +325,10 @@ CI と同じ範囲を手元で回すスクリプトを用意しています（�
   依存せず常に実行します。
 - **Android**: `python3` 標準ライブラリで AndroidManifest.xml の well-formedness と
   構造（`<manifest>` / `<application>` / MAIN+LAUNCHER intent-filter と
-  `android:exported` の明示）を検証します。さらに `@style/...` 参照が
-  `res/values*/*.xml` の `<style>` で解決すること（修飾子ディレクトリを含む）、
+  `android:exported` の明示）を検証します。さらに `@style/...` や
+  `@string/` / `@color/` / `@dimen/` / `@bool/` / `@integer/` / `@array/` の
+  リソース参照が `res/values*/*.xml` の対応する定義で解決すること
+  （修飾子ディレクトリを含む。`@android:` の framework 参照は対象外）、
   相対 Activity 名が `namespace`（無ければ `applicationId`）で解決し、
   `src/main/{java,kotlin}/` の Kotlin ファイルと package 宣言が一致することも
   静的に検証します。`settings.gradle.kts` / `build.gradle.kts` /
@@ -337,7 +340,8 @@ CI と同じ範囲を手元で回すスクリプトを用意しています（�
 CI は Rust 系ゲートのみで、PWA / DEB / Android は対象外です。
 
 ```bash
-bash scripts/check.sh              # app/poc/core/win32: fmt/check/test/clippy +
+bash scripts/check.sh              # app/poc: fmt/check/test/clippy +
+                                   # core/win32: test/clippy +
                                    # app の release check/test +
                                    # wasm32 / windows-gnu の cross check +
                                    # cargo audit / deny / desktop-file-validate

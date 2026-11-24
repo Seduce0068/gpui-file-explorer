@@ -22,6 +22,9 @@ const {
   listKeyCommand,
   updatePickDirAvailability,
   toEntry,
+  // BP17: core のエラー文言 / JSON 配列のデコーダを node --test から直接検証する。
+  decodeCorePayload,
+  normalizeEntries,
   selectionToggle,
   selectionClear,
   selectionSelectSingle,
@@ -385,57 +388,109 @@ test('BN10: shouldClearSearchOnSwipeBack は検索モードだけ clearSearch �
   assert.equal(shouldClearSearchOnSwipeBack('SEARCH'), false, '完全一致のみ');
 });
 
-test('BN10: vm で一覧のスワイプが選択を維持し検索だけクリアする', async () => {
-  // 本番の shouldClearSearchOnSwipeBack / onSwipeBack を vm で動かし、
-  // モード無関係に clearSearch() を呼ぶ回帰と誤通知を実行経路で固定する。
-  const guardSource = 'function shouldClearSearchOnSwipeBack(' + sourceRegion(
-    mainSource, 'function shouldClearSearchOnSwipeBack(', '// BM11: スワイプ追跡の可否');
-  const swipeBackSource = 'async function onSwipeBack() {' + sourceRegion(
-    mainSource, 'async function onSwipeBack() {', 'function onListKeyDown(');
+test('BN10/BP09: vm で本番 clearSearch/runSearch/refreshList を流す', async () => {
+  // 旧テストは clearSearch をモックしていたため、通知が refreshList の
+  // setStatus に上書きされる回帰（BP09）も本体の配線も検出できなかった。
+  // 本番の clearSearch / runSearch / refreshList を vm 上でつなぎ、
+  // DOM 依存の render だけをスタブして実行経路を固定する。
+  const src = (start, end) => start + sourceRegion(mainSource, start, end);
+  const guardSource = src(
+    'function shouldClearSearchOnSwipeBack(mode) {', '// BM11: スワイプ追跡の可否');
+  const pickSource = src(
+    'function pick(obj, ...keys) {', '// wasm-bindgen / serde_wasm_bindgen の出力差を吸収する。');
+  const toEntrySource = src(
+    'function toEntry(raw) {', '// core API は失敗時に JSON ではなくエラー文言の JsValue 文字列を返す。');
+  const decodeSource = src(
+    'function decodeCorePayload(value) {', '// wasm-bindgen は Rust の Err(JsValue)');
+  const errorSource = src(
+    'function errorMessage(error) {', 'function normalizeEntries(value) {');
+  const normalizeSource = src(
+    'function normalizeEntries(value) {', 'function humanSize(bytes) {');
+  const genSource = src(
+    'function nextSearchGeneration(current) {', '// --- 複数選択の pure helper');
+  const clearSelectionSource = src(
+    'function selectionClear() {', 'function selectionSelectSingle(path) {');
+  const statusSource = src(
+    'function setStatus(', '// SW 更新通知の判定を純粋関数にして');
+  const refreshSource = src(
+    'async function refreshList() {', 'async function runSearch(query) {');
+  const searchSource = src(
+    'async function runSearch(query) {', '// --- File System Access API');
+  const clearSource = src(
+    'async function clearSearch() {', 'async function onSwipeBack() {');
+  const swipeSource = src(
+    'async function onSwipeBack() {', 'function onListKeyDown(');
 
   const statuses = [];
-  let clearCalls = 0;
+  const modes = [];
+  const listed = [{ name: 'README.md', path: '/README.md', isDir: false, size: 10 }];
   const state = {
+    module: { listEntriesFromJson: () => JSON.stringify(listed) },
+    viewer: {},
+    wasmReady: true,
+    entries: [],
+    renderedEntries: [],
+    debounce: 0,
+    searchGeneration: 0,
     lastRender: { entries: [], options: { mode: 'list' } },
     selectedPaths: ['/a.txt', '/c.txt'],
+    anchorPath: '/a.txt',
+    focusIndex: 0,
+    rootName: '.',
     suppressClickUntil: 0,
   };
+  const els = { search: { value: 'notes' }, status: { textContent: '', dataset: {} } };
   const sandbox = {
     console,
     state,
+    els,
     CLICK_SUPPRESS_MS: 700,
     performance: { now: () => 1000 },
-    setStatus(message) { statuses.push(message); },
-    async clearSearch() {
-      clearCalls += 1;
-      state.selectedPaths = [];
-      statuses.push('検索をクリアして一覧へ戻りました');
+    window: { clearTimeout() {} },
+    demoJson: () => '[]',
+    statuses,
+    render(list, options) {
+      state.renderedEntries = list;
+      state.lastRender = { entries: list, options };
+      modes.push(options.mode);
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(
-    `${guardSource}\n${swipeBackSource}\nglobalThis.__onSwipeBack = onSwipeBack;`,
-    sandbox
-  );
+  vm.runInContext([
+    guardSource, pickSource, toEntrySource, decodeSource, errorSource, normalizeSource,
+    genSource, clearSelectionSource, statusSource, refreshSource, searchSource,
+    clearSource, swipeSource,
+    'globalThis.__prodStatus = setStatus;',
+    'setStatus = function (message, level = "info") { statuses.push(message); __prodStatus(message, level); };',
+    'globalThis.__onSwipeBack = onSwipeBack;',
+  ].join('\n'), sandbox);
 
   // 通常一覧: 選択も通知も触らず、後続 click の抑止だけ行う。
   await sandbox.__onSwipeBack();
-  assert.equal(clearCalls, 0, '一覧では clearSearch を呼ばない');
+  assert.deepEqual(modes, [], '一覧では clearSearch を呼ばない');
   assert.deepEqual(state.selectedPaths, ['/a.txt', '/c.txt'], '複数選択を維持する');
   assert.deepEqual(statuses, [], '「検索をクリア」と誤通知しない');
   assert.equal(state.suppressClickUntil, 1700, 'スワイプ後の click 抑止は維持');
 
-  // 検索モード: 従来どおり検索をクリアして一覧へ戻る。
+  // 検索モード: 本番 clearSearch → runSearch('') → refreshList を流す。
   state.lastRender.options.mode = 'search';
   await sandbox.__onSwipeBack();
-  assert.equal(clearCalls, 1, '検索モードでは clearSearch を呼ぶ');
-  assert.deepEqual(state.selectedPaths, [], '検索クリア時は選択も解除する');
-  assert.deepEqual(statuses, ['検索をクリアして一覧へ戻りました']);
+  assert.deepEqual(modes, ['list'], '検索をクリアして一覧を取得する');
+  // selectionClear() は vm コンテキスト内で配列を作るため realm をまたいで比較する。
+  assert.deepEqual([...state.selectedPaths], [], '検索クリア時は選択も解除する');
+  assert.equal(els.search.value, '', '検索欄もクリアされる');
+  assert.deepEqual(statuses, [
+    'core API 経由で 1 件を表示',
+    '検索をクリアして一覧へ戻りました',
+  ], 'BP09: クリア通知が refreshList の status に上書きされない');
+  assert.equal(els.status.textContent, '検索をクリアして一覧へ戻りました',
+    '最終的な #status にもクリア通知が残る');
 
   // 未初期化の lastRender.options でも一覧扱い（誤消去しない）。
   state.lastRender.options = {};
   await sandbox.__onSwipeBack();
-  assert.equal(clearCalls, 1, 'mode 不明では search 扱いにしない');
+  assert.deepEqual(modes, ['list'], 'mode 不明では search 扱いにしない');
+  assert.equal(statuses.length, 2, '追加の通知は出ない');
 });
 
 test('BM11: canTrackSwipe は検索フォーカス中でも左端以外なら追跡する', () => {
@@ -532,6 +587,53 @@ test('toEntry preserves the core kind field (BO14)', () => {
   assert.equal(wrapped.kind, 'oversized', 'ラッパー経由でも kind を保持する');
   assert.equal(toEntry(JSON.stringify({ name: 'plain.txt' })).kind, undefined,
     'kind の無い core データでは undefined（疑似値を作らない）');
+});
+
+test('BP08: toEntry は core の modifiedMs を modified へ変換する', () => {
+  const fromCore = toEntry(JSON.stringify({
+    name: 'new.txt', path: '/demo/new.txt', isDir: false, size: 10, modifiedMs: 3000,
+  }));
+  assert.equal(fromCore.modified, 3000, 'modifiedMs → modified の変換');
+  const legacy = toEntry({ name: 'legacy.txt', path: '/legacy', modified: '2026-01-01' });
+  assert.equal(legacy.modified, '2026-01-01', '旧 modified も後方互換で読む');
+  assert.equal(toEntry({ name: 'zero.txt', modified: 0 }).modified, 0,
+    '数値 0 は欠損扱いにしない');
+  assert.equal(toEntry({ name: 'missing.txt' }).modified, undefined);
+  // SearchResult ラッパー（{ entry, matchLine }）経由でも変換されること。
+  const wrapped = toEntry(JSON.stringify({
+    entry: { name: 'wrapped.txt', path: '/wrapped', modifiedMs: 4000 }, match_line: 3,
+  }));
+  assert.equal(wrapped.modified, 4000);
+  assert.equal(wrapped.matchLine, 3);
+});
+
+test('BP08: modifiedMs 由来のエントリが sortEntries(..., "modified") に反映される', () => {
+  const entries = [
+    toEntry({ name: 'new.txt', path: '/new', modifiedMs: 3000 }),
+    toEntry({ name: 'old.txt', path: '/old', modifiedMs: 1000 }),
+    toEntry({ name: 'mid.txt', path: '/mid', modified: 2000 }),
+    toEntry({ name: 'missing.txt', path: '/missing' }),
+  ];
+  assert.deepEqual(names(sortEntries(entries, 'modified', 'asc')),
+    ['missing.txt', 'old.txt', 'mid.txt', 'new.txt'],
+    'modifiedMs が無いと全件欠損扱いになる回帰を防ぐ');
+  assert.deepEqual(names(sortEntries(entries, 'modified', 'desc')),
+    ['new.txt', 'mid.txt', 'old.txt', 'missing.txt'],
+    'desc では欠損値が末尾へ回る');
+});
+
+test('BP17: decodeCorePayload はエラー文言を {ok:false}、JSON 配列を {ok:true} に分ける', () => {
+  assert.deepEqual(decodeCorePayload('panic: cannot read dir'),
+    { ok: false, error: 'panic: cannot read dir' },
+    'JSON でない文字列はエラーとして切り分ける（0 件にしない）');
+  const decoded = decodeCorePayload('[{"name":"a.txt","path":"/a.txt","isDir":false,"size":1}]');
+  assert.equal(decoded.ok, true);
+  assert.ok(Array.isArray(decoded.data));
+  assert.equal(decoded.data.length, 1);
+  assert.deepEqual(decodeCorePayload([{ name: 'b.txt' }]),
+    { ok: true, data: [{ name: 'b.txt' }] }, '非文字列はそのまま返す');
+  assert.deepEqual(normalizeEntries(decoded.data).map((entry) => entry.name), ['a.txt']);
+  assert.deepEqual(normalizeEntries('not json'), [], '壊れたペイロードは空配列');
 });
 
 // --- 複数選択の pure helper（BA03 / BA07） --------------------------------
@@ -839,10 +941,41 @@ test('service worker scopes cache writes and deletion (BH09/BH10)', () => {
   assert.ok(sw.includes("request.mode === 'navigate'"), 'navigation needs a distinct strategy');
 });
 
-test('main.js registers the service worker during boot (BG13)', () => {
-  const main = readPwaFile('main.js');
-  assert.ok(main.includes("navigator.serviceWorker.register('./sw.js')"));
-  assert.ok(main.includes("'serviceWorker' in navigator"), 'guard unsupported browsers');
+test('main.js registers the service worker during boot (BG13/BP12/BP13/BP16)', () => {
+  // 旧オラクルはファイル全体の includes だけだったため、boot() から登録呼び出しが
+  // 消えても緑だった。sourceRegion で boot() / registerServiceWorker() 本体を固定する。
+  const boot = 'async function boot() {' + sourceRegion(
+    mainSource, 'async function boot() {', 'if (hasDom) boot();');
+  const register = 'function registerServiceWorker() {' + sourceRegion(
+    mainSource, 'function registerServiceWorker() {', '// --- 起動');
+
+  // BP13: boot() が SW 登録を呼び、register(...).then(watchServiceWorker) で
+  // 更新監視まで接続されていること。
+  assert.match(boot, /registerServiceWorker\(\);/, 'boot() が registerServiceWorker() を呼ぶ');
+  assert.match(register, /'serviceWorker' in navigator/, 'guard unsupported browsers');
+  assert.match(register,
+    /navigator\.serviceWorker\.register\('\.\/sw\.js'\)\s*\.then\(\(registration\) => watchServiceWorker\(registration\)\)/,
+    'register(...).then(watchServiceWorker) の配線が必要');
+  assert.match(register, /wireSwReloadMessage\(\);/, '常設の RELOAD リスナも登録する');
+
+  // BP12: boot() が一覧の各リスナーとタッチ専用の詳細ボタンを配線すること。
+  for (const type of [
+    'click', 'dblclick', 'contextmenu', 'keydown',
+    'touchstart', 'touchmove', 'touchend', 'touchcancel',
+  ]) {
+    assert.match(boot, new RegExp(`els\\.list\\.addEventListener\\('${type}'`),
+      `boot() が els.list の ${type} リスナーを配線する`);
+  }
+  assert.match(boot, /wireSelectDetailsButton\(els\.selectDetails\);/,
+    'boot() が詳細ボタンを配線する');
+
+  // BP16: index.html が module script で main.js を読み込むこと。
+  const html = readPwaFile('index.html');
+  assert.match(html, /<script type="module" src="\.\/main\.js"><\/script>/,
+    'index.html は type=module で main.js を読み込む');
+  const scriptAt = html.indexOf('<script type="module"');
+  assert.ok(scriptAt > html.indexOf('<body>') && scriptAt < html.indexOf('</body>'),
+    'module script は body 内に置く');
 });
 
 test('main.js wires the service worker update flow and reload affordance (BH02)', () => {
@@ -1202,11 +1335,20 @@ test('BN05/BO04: 詳細ボタン・ダブルクリック・details キーが同�
   };
   sandbox.__wire(button);
 
-  function fakeEvent({ detail = 2, key = ' ', index = 3 } = {}) {
+  function fakeEvent({ detail = 2, key = ' ', index = 3, onButton = false } = {}) {
     const target = new sandbox.Element();
-    target.closest = () => ({ dataset: { index: String(index) } });
-    return { detail, key, target, preventDefault() {} };
+    // onButton: 空状態の「検索をクリア」ボタン等、li[data-index] の無い要素。
+    target.closest = onButton
+      ? () => null
+      : () => ({ dataset: { index: String(index) } });
+    const event = { detail, key, target, prevented: false };
+    event.preventDefault = () => { event.prevented = true; };
+    return event;
   }
+
+  assert.match(keyDownSource,
+    /const \{ li \} = entryFromEvent\(event\);\s*if \(!li\) return;/,
+    'BP10: 行以外からの keydown は details へ進む前に早期 return する');
 
   // 1) 詳細ボタン: 選択先頭 /a.txt ではなく最後に触れた /c.txt。
   button.handlers.click[0]();
@@ -1231,6 +1373,19 @@ test('BN05/BO04: 詳細ボタン・ダブルクリック・details キーが同�
     3,
     '3 経路すべてが同じ対象を表示する',
   );
+
+  // 4) BP10: 空状態クリアボタンへフォーカスがある場合は Space / i を横取りしない。
+  //    ボタンの既定 activation が働くよう preventDefault も呼ばないこと。
+  for (const key of [' ', 'i']) {
+    const buttonKey = fakeEvent({ key, onButton: true });
+    const beforeMessages = messages.length;
+    const beforeDetailCalls = detailCalls;
+    sandbox.__key(buttonKey);
+    assert.equal(buttonKey.prevented, false,
+      `target=button の ${JSON.stringify(key)} を preventDefault しない`);
+    assert.equal(messages.length, beforeMessages, '行外のキーで詳細表示しない');
+    assert.equal(detailCalls, beforeDetailCalls, '行外のキーで detailTargetEntry を呼ばない');
+  }
 });
 
 test('manifest name and inline favicon agree (BG19/20)', () => {

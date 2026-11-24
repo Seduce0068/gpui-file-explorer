@@ -462,7 +462,9 @@ function toEntry(raw) {
     // BO14: core が oversized 等で使う kind を落とさずビューへ引き継ぐ。
     kind: pick(value, 'kind'),
     size: Number(pick(value, 'size', 'len') ?? 0),
-    modified: pick(value, 'modified'),
+    // BP08: core は camelCase の `modifiedMs` を返す（core/src/wasm.rs:95）。
+    // 旧 `modified` も受け付け、どちらもビューア側の `modified` へ正規化する。
+    modified: pick(value, 'modified', 'modifiedMs'),
     matchLine: pick(value, 'match_line', 'matchLine'),
   };
 }
@@ -996,8 +998,11 @@ async function clearSearch() {
   els.search.value = '';
   state.selectedPaths = selectionClear();
   state.anchorPath = null;
-  setStatus('検索をクリアして一覧へ戻りました');
+  // BP09: 旧実装はここで通知していたが、runSearch('') → refreshList() の
+  // setStatus（core API 経由で N 件を表示）に即座に上書きされていた。
+  // 一覧の取得が完了してから通知することで、クリアの確認が残る。
   await runSearch('');
+  setStatus('検索をクリアして一覧へ戻りました');
 }
 
 async function onSwipeBack() {
@@ -1010,6 +1015,11 @@ async function onSwipeBack() {
 }
 
 function onListKeyDown(event) {
+  // BP10: 空状態の「検索をクリア」ボタン等、行以外がフォーカスされているときは
+  // Space を details として横取りしない。li が無ければここで返し、ボタンの
+  // 既定 activation（Space / Enter）へ委譲する。
+  const { li } = entryFromEvent(event);
+  if (!li) return;
   const command = listKeyCommand(event);
   if (!command) return;
   switch (command) {
@@ -1489,6 +1499,9 @@ if (typeof module !== 'undefined' && module.exports) {
     listKeyCommand,
     updatePickDirAvailability,
     toEntry,
+    // BP17: core のエラー文言と JSON 配列を切り分けるデコーダを直接検証できるようにする。
+    decodeCorePayload,
+    normalizeEntries,
     // 複数選択 / 残存 / ソートの pure helper（node --test から直接検証する）。
     selectionToggle,
     selectionClear,

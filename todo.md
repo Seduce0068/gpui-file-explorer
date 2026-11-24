@@ -2381,6 +2381,36 @@ status: current
 - [x] **BO19** 空き容量（DESIGN P2 ◎）は新規依存/unsafe 必要で見送り理由を記録 — 対応: loop28
 - [x] **BO20** prompt_for_paths（P1）は XDG ポータル必須で見送り理由を記録 — 対応: loop28
 
+## 進行中（ループ29 バックログ）
+
+### 優先度: 高（ループ29・confirmed）
+
+- [x] **BP01** SECONDARY_SLOT_PRIORITY の中間順序が自己言及的で未検証 — 対応: loop29
+- [x] **BP02** format_selected / summarize_op の文言テストが部分一致のみ — 対応: loop29
+- [x] **BP03** 自己言及的 contains（定数から期待値を生成） — 対応: loop29
+- [x] **BP04** 保存 JSON 形状テストが contains 列挙のみ — 対応: loop29
+- [x] **BP05** build-deb.sh の Exec 検証が先頭行のみ（check.sh と非対称） — 対応: loop29
+
+### 優先度: 中（ループ29・confirmed）
+
+- [x] **BP06** 新規フォルダ作成失敗後「作成中…」がステータスに残存 — 対応: loop29
+- [x] **BP07** F5 再検索中に旧結果が新ルート集合の出典ラベルで描画 — 対応: loop29
+- [x] **BP08** toEntry が core の modifiedMs を読まない — 対応: loop29
+- [x] **BP09** clearSearch のクリア通知が本番 core 経路で即上書き — 対応: loop29
+- [x] **BP10** 空状態クリアボタンで Space/i が details に横取り — 対応: loop29
+- [x] **BP11** Android values* が @style 以外のリソース参照を回収しない — 対応: loop29
+- [x] **BP12** ESM 構文ゲートが `script type=module` 配線を未固定 — 対応: loop29
+- [x] **BP13** SW 登録 boot 呼び出し配線が未固定（includes のみ） — 対応: loop29
+- [x] **BP14** README の PWA 構文チェック記述が ESM モードと不一致 — 対応: loop29
+
+### 優先度: 低（ループ29・confirmed）
+
+- [x] **BP15** 出典バッジ描画サイトに source-guard が無い — 対応: loop29
+- [x] **BP16** boot() 配線（SW/詳細/一覧リスナ）がテスト未固定 — 対応: loop29
+- [x] **BP17** decodeCorePayload エラー/JSON 切り分けに回帰テスト無し — 対応: loop29
+- [x] **BP18** README の core/win32 fmt ゲート記述が過大 — 対応: loop29
+- [x] **BP19** pwa/README の「core 実装前提」節が未実装前提のまま — 対応: loop29
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。
