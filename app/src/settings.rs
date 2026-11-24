@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "version": 1,
-//!   "last_dir": "/home/testuser/document",
+//!   "last_dir": "<home>/document",
 //!   "sort": { "key": "name", "dir": "asc", "dirs_first": true },
 //!   "show_hidden": false,
 //!   "show_thumbnails": true,
@@ -15,9 +15,9 @@
 //!   "theme_choice": "dark",
 //!   "terminal_command": "konsole",
 //!   "recent_dirs": ["/tmp"],
-//!   "bookmarks": ["/home/testuser"],
-//!   "bookmark_labels": [{ "path": "/home/testuser", "label": "home" }],
-//!   "tabs": ["/home/testuser", "/tmp"],
+//!   "bookmarks": ["<home>"],
+//!   "bookmark_labels": [{ "path": "<home>", "label": "home" }],
+//!   "tabs": ["<home>", "/tmp"],
 //!   "active_tab": 0,
 //!   "recent_searches": ["TODO"],
 //!   "saved_searches": [{ "name": "todos", "query": "TODO" }],
@@ -25,7 +25,7 @@
 //!     {
 //!       "bounds": { "x": 80, "y": 60, "width": 1100, "height": 700, "mode": "windowed" },
 //!       "tabs": [
-//!         { "cwd": "/home/testuser", "back": ["/tmp"], "forward": [] },
+//!         { "cwd": "<home>", "back": ["/tmp"], "forward": [] },
 //!         { "cwd": "/tmp", "back": [], "forward": [] }
 //!       ],
 //!       "active_tab": 0

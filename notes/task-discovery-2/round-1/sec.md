@@ -27,7 +27,7 @@ status: complete
 | r1-sec-12 | 監視イベント用 unbounded チャンネルに背圧が無い | 残タスク | `main.rs:545`, `:975-979` | `try_send` は失敗せず、連続 FS 変更で `Vec<FsEvent>` が際限なく蓄積しメモリ枯渇に至る。 | イベント氾濫による DoS を防止 | M | 前回と重複(R6-A-08) | 中 |
 | r1-sec-13 | 非 UTF-8 の CLI 引数で起動時に panic | 残タスク | `main.rs:5618`, `:5642` | `std::env::args()` は不正 Unicode 引数で panic する。ファイルマネージャーから非 UTF-8 名を渡すだけで起動不能。 | 悪意あるファイル名での起動拒否を回避 | S | 新規 | 高 |
 | r1-sec-14 | ファイル名の制御文字/双方向制御文字が確認ダイアログを偽装 | 残タスク | `main.rs:3537-3554`, `model.rs:102-103` | ゴミ箱確認は `to_string_lossy()` した file_name のみを表示し、U+202E 等の bidi override や改行を含むファイル名で表示名と実体をずらせる。 | 破壊操作の確認なりすましを防止 | S | 新規 | 中 |
-| r1-sec-15 | 個人識別子とファイルパスがドキュメント・スクリーンショット・ログに露出 | 残タスク | `settings.rs:9`, `DESIGN.md:119`, `notes/poc-report.md:216-224`, `app/screenshot/properties-dialog.png`, `main.rs:2302-2306` | `/home/testuser/...`、ユーザー名 `testuser` が公開ドキュメント/証跡画像に残存。さらに eprintln と tracing イベントが生パスを journald へ書く。 | 公開リポジトリ・ログ経由のプライバシー漏洩を低減 | S | 新規 | 高 |
+| r1-sec-15 | 個人識別子とファイルパスがドキュメント・スクリーンショット・ログに露出 | 残タスク（画像・ログは未対応） | `settings.rs:9,18`, `DESIGN.md:946`, `notes/poc-report.md:216,224`, `notes/e2e-input-probe.md:49,67`, `app/screenshot/bookmarks-sidebar.png`, `app/screenshot/properties-dialog.png`, `main.rs:2302-2306` | ドキュメント/設定例の実パスは `<home>` 等のプレースホルダへ置換済み。ただし公開スクリーンショット 2 点には実アカウント名とマウント先が残るため要再撮影。さらに eprintln と tracing イベントが生パスを journald へ書く。 | 公開リポジトリ・ログ経由のプライバシー漏洩を低減 | S | 新規 | 高 |
 
 ## レンズ要約
 

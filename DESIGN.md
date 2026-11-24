@@ -943,7 +943,7 @@ pub fn confirm_and_trash(
 ```json
 {
   "version": 1,
-  "last_dir": "/home/testuser/document",
+  "last_dir": "<home>/document",
   "sort": { "key": "name", "dir": "asc", "dirs_first": true },
   "show_hidden": false,
   "view": "details"
