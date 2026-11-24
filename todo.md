@@ -2248,7 +2248,8 @@ status: current
 
 ### 優先度: 低（ループ24・confirmed）
 
-- [x] **BK15** apply_search_filter だけが filtered entries から fingerprint を計算 — 対応: loop24
+- [x] **BK15** apply_search_filter だけが filtered entries から fingerprint を計算
+  — 対応: loop24
 - [x] **BK16** desktop-file-utils の Recommends 追加がドキュメント未反映 — 対応: loop24
 - [x] **BK17** --verify が .deb ペイロードの doc/.desktop/アイコンを照合しない — 対応: loop24
 - [x] **BK18** SW 再通知オラクルが registration.waiting 経路を実行しない — 対応: loop24
