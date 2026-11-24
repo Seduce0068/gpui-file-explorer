@@ -9,8 +9,9 @@
 #        the pure-helper subset still runs without the gitignored pwa/pkg/)
 #   deb: packaging/linux/build-deb.sh --verify (read-only stage/.deb check;
 #        SKIPPED when no built .deb is present)
-#   android: python3 stdlib static gate (AndroidManifest.xml well-formedness +
-#        pinned build.gradle.kts versions; SKIPPED when the scaffold is absent)
+#   android: python3 stdlib static gate (AndroidManifest.xml structure + pinned
+#        Gradle versions incl. settings.gradle.kts and Compose compiler; SKIPPED
+#        when the scaffold is absent)
 #
 # The repository is a virtual Cargo workspace with members core, app, poc
 # and win32 (root Cargo.toml). The shared CI workflow
@@ -221,6 +222,7 @@ fi
 # partially checked-out tree does not silently lose this static verification.
 android_dir="${repo_root}/android"
 android_scaffold_files=(
+	"${android_dir}/settings.gradle.kts"
 	"${android_dir}/app/src/main/AndroidManifest.xml"
 	"${android_dir}/build.gradle.kts"
 	"${android_dir}/app/build.gradle.kts"
@@ -305,8 +307,10 @@ run_pwa_test() {
 }
 
 # BI16: static gate for the Android scaffold. No Gradle/SDK is needed: the
-# manifest must be well-formed and the toolchain/dependency versions pinned.
-# CI has no Android step, so a missing python3 is reported as SKIPPED only.
+# manifest must be well-formed and structurally launchable, and the toolchain /
+# dependency versions (including settings.gradle.kts and the Compose compiler
+# plugin) must stay pinned. CI has no Android step, so a missing python3 is
+# reported as SKIPPED only.
 run_android_scaffold_gate() {
 	if [ "${android_scaffold_ready}" != true ]; then
 		# Already reported as SKIPPED by the front-of-list pre-check.
@@ -319,6 +323,7 @@ run_android_scaffold_gate() {
 	fi
 	echo '==> android: static scaffold gate (python3: XML + pinned versions)'
 	python3 - "${android_dir}" <<'PY'
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -326,14 +331,52 @@ from pathlib import Path
 root = Path(sys.argv[1])
 errors = []
 
+ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
+NAME = ANDROID_NS + "name"
+
+
+def has_active_line(source, needle):
+    """A pinned value that only appears in a // comment is not a declaration (BJ18)."""
+    return any(
+        needle in line and not line.lstrip().startswith("//")
+        for line in source.splitlines()
+    )
+
+
+# BJ19: ET.parse alone only proves well-formedness. Also verify the structure
+# that actually defines a launchable launcher activity.
 manifest = root / "app/src/main/AndroidManifest.xml"
+manifest_root = None
 try:
-    ET.parse(manifest)
+    manifest_root = ET.parse(manifest).getroot()
 except (ET.ParseError, OSError) as exc:
     errors.append(f"AndroidManifest.xml が well-formed ではありません: {exc}")
 
+if manifest_root is not None:
+    if manifest_root.tag != "manifest":
+        errors.append(
+            f"AndroidManifest.xml のルート要素が manifest ではありません: {manifest_root.tag}"
+        )
+    application = manifest_root.find("application")
+    if application is None:
+        errors.append("AndroidManifest.xml に <application> がありません")
+    else:
+        launcher_activities = []
+        for activity in application.findall("activity"):
+            for intent_filter in activity.findall("intent-filter"):
+                actions = [node.get(NAME) for node in intent_filter.findall("action")]
+                categories = [node.get(NAME) for node in intent_filter.findall("category")]
+                if ("android.intent.action.MAIN" in actions
+                        and "android.intent.category.LAUNCHER" in categories):
+                    launcher_activities.append(activity.get(NAME) or "(name なし)")
+        if not launcher_activities:
+            errors.append(
+                "AndroidManifest.xml に MAIN/LAUNCHER intent-filter を持つ <activity> がありません"
+            )
+
 root_gradle = (root / "build.gradle.kts").read_text(encoding="utf-8")
 app_gradle = (root / "app/build.gradle.kts").read_text(encoding="utf-8")
+settings_gradle = (root / "settings.gradle.kts").read_text(encoding="utf-8")
 
 pinned = {
     "build.gradle.kts": (
@@ -341,6 +384,9 @@ pinned = {
         (
             'id("com.android.application") version "8.6.1"',
             'id("org.jetbrains.kotlin.android") version "2.0.21"',
+            # BJ03: the Compose compiler plugin is pinned as well so a silent
+            # version bump cannot escape the gate.
+            'id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"',
         ),
     ),
     "app/build.gradle.kts": (
@@ -350,17 +396,38 @@ pinned = {
             'implementation("androidx.activity:activity-compose:1.9.3")',
         ),
     ),
+    # BJ13: settings.gradle.kts is part of the scaffold; include(":app") must
+    # stay active or the app module silently disappears from the build.
+    "settings.gradle.kts": (
+        settings_gradle,
+        ('include(":app")',),
+    ),
 }
 for name, (source, needles) in pinned.items():
     for needle in needles:
-        if needle not in source:
+        if not has_active_line(source, needle):
             errors.append(f"{name} に固定バージョンがありません: {needle}")
+
+# BJ03: Kotlin Android and the Compose compiler plugin must use the same
+# version; a mismatch fails Gradle configuration even when both are pinned.
+kotlin_android = re.search(
+    r'id\("org\.jetbrains\.kotlin\.android"\)\s+version\s+"([^"]+)"', root_gradle
+)
+kotlin_compose = re.search(
+    r'id\("org\.jetbrains\.kotlin\.plugin\.compose"\)\s+version\s+"([^"]+)"', root_gradle
+)
+if (kotlin_android and kotlin_compose
+        and kotlin_android.group(1) != kotlin_compose.group(1)):
+    errors.append(
+        "Kotlin Android と Compose compiler のバージョンが不一致です: "
+        f"{kotlin_android.group(1)} != {kotlin_compose.group(1)}"
+    )
 
 if errors:
     for error in errors:
         print(error, file=sys.stderr)
     sys.exit(1)
-print("照合 OK: android scaffold (AndroidManifest.xml + pinned versions)")
+print("照合 OK: android scaffold (manifest structure + pinned versions)")
 PY
 }
 

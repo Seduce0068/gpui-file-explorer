@@ -91,7 +91,8 @@ precache は 1 ファイルでも失敗したら install を失敗させ、旧 S
 
 1. 静的シェルを変更したら `sw.js` の `CACHE_NAME` をインクリメントする
    （現在 `gfe-viewer-v2`）。SW のバイト列が変わるため `updatefound` が発火する。
-2. 更新された SW が `installed` になると、`main.js` が `#status`（aria-live）に
+2. 更新された SW が `installed` になると、`main.js` が `#sw-update`（専用の
+   aria-live ノード）に
    更新通知を出し、「新しい版を読み込む」ボタンを表示する。
 3. ボタンは待機中の SW へ `SKIP_WAITING` を送り、`controllerchange` で再読込する。
    通知を無視しても、次回ページを開いたときに待機 SW を検出して再通知する。
@@ -111,7 +112,7 @@ precache パスも更新してください（`ls pwa/pkg/snippets` で確認）�
 オフラインの受け入れは Playwright で確認する。オンラインで一覧 4 件を読み、
 `navigator.serviceWorker.ready` を待ってから `setOffline(true)` → reload し、
 一覧 4 件が再描画されることを見る。更新通知は `sw.js` を書き換えて
-`CACHE_NAME` を進めた後にリロードし、`#status` の通知と
+`CACHE_NAME` を進めた後にリロードし、`#sw-update` の通知と
 `#update-reload` の表示を確認する。`sw.js` の precache 一覧と登録呼び出しは
 `node --test pwa/main.test.js` で固定している。
 

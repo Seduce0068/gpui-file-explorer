@@ -2197,6 +2197,33 @@ status: current
 
 - [x] **BI18** SW snippet ハッシュ直書きと clean checkout の不整合 — 対応: loop22
 
+## 進行中（ループ23 バックログ）
+
+### 優先度: 高（ループ23・confirmed）
+
+- [x] **BJ01** SW updateNotified が2回目以降の更新を永久ブロック — 対応: loop23
+- [x] **BJ02** freshness_paths が workspace ルート Cargo.toml を漏らす — 対応: loop23
+- [x] **BJ03** Android gate が Compose compiler plugin バージョンを検証しない — 対応: loop23
+- [x] **BJ04** SW オラクル /g フラグが2 call sites を1一致で満たす — 対応: loop23
+- [x] **BJ05** BI02 の再読込が派生テーマ状態を再適用しない — 対応: loop23
+
+### 優先度: 中（ループ23・confirmed）
+
+- [x] **BJ06** BI02 の再読込が fingerprint を新ベースライン化し lost-update ガードを外す — 対応: loop23
+- [x] **BJ07** 7 経路の rollback が BI02 のディスク同期を古い snapshot で上書き — 対応: loop23
+- [x] **BJ08** SKIP_WAITING 送信後の再試行導線が無い — 対応: loop23
+- [x] **BJ09** navigation の best-effort 書き込みがレスポンスを待たせる — 対応: loop23
+- [x] **BJ10** 期限切れ runtime シェルが削除されずオフライン復帰を阻害 — 対応: loop23
+- [x] **BJ11** putRuntime が上限削除を put より先に行う — 対応: loop23
+- [x] **BJ12** pwa/README の更新通知先が #status のまま（実は #sw-update） — 対応: loop23
+- [x] **BJ13** Android gate 対象に settings.gradle.kts が無い — 対応: loop23
+- [x] **BJ14** maintainer script 検証が実行ビットのみ（0755 未検証） — 対応: loop23
+- [x] **BJ15** desktop-file-utils が DEB 依存に無い — 対応: loop23
+- [x] **BJ16** walked_roots オラクルがループ内配置を固定していない — 対応: loop23
+- [x] **BJ17** BI03 DOM モックが controllerchange→reload を検証していない — 対応: loop23
+- [x] **BJ18** Android gate がコメント行の固定バージョンを正当と許容 — 対応: loop23
+- [x] **BJ19** Android マニフェスト検証が well-formed のみで構造を検証しない — 対応: loop23
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

@@ -99,7 +99,16 @@ async function shellResponse() {
   try {
     const runtime = await caches.open(RUNTIME_CACHE);
     const dynamic = await runtime.match('./index.html', { ignoreSearch: true });
-    if (dynamic && isFresh(dynamic)) return dynamic;
+    if (dynamic) {
+      if (isFresh(dynamic)) return dynamic;
+      // BJ10: 期限切れ runtime シェルを残すとオフライン復帰時に古い HTML が
+      // 返り続ける。best-effort で削除してから null を返す（precache は残す）。
+      try {
+        await runtime.delete('./index.html');
+      } catch (error) {
+        console.warn('stale runtime shell removal failed (best-effort)', error);
+      }
+    }
   } catch (error) {
     console.warn('runtime shell lookup failed (best-effort)', error);
   }
@@ -126,9 +135,6 @@ function isFresh(response) {
 
 async function putRuntime(request, response) {
   const cache = await caches.open(RUNTIME_CACHE);
-  const keys = await cache.keys();
-  // 件数上限（古い順に 1 件追い出して無限増殖を防ぐ）。
-  if (keys.length >= RUNTIME_MAX_ENTRIES) await cache.delete(keys[0]);
   // 鮮度上限のためタイムスタンプを付与してから保存する。
   const headers = new Headers(response.headers);
   headers.set(CACHED_AT_HEADER, String(Date.now()));
@@ -137,7 +143,21 @@ async function putRuntime(request, response) {
     statusText: response.statusText,
     headers,
   });
+  // BJ11: put を先に行う。以前は put 前に古いエントリを削除していたため、
+  // put が失敗すると既存キャッシュだけが失われていた。
   await cache.put(request, stamped);
+
+  // 件数上限は put 成功後に適用する。今書き込んだキーは除外し、
+  // 古い順に超過分だけを追い出して無限増殖を防ぐ。
+  const keys = await cache.keys();
+  if (keys.length > RUNTIME_MAX_ENTRIES) {
+    const writtenUrl = typeof request === 'string'
+      ? new URL(request, self.location.href).href
+      : request.url;
+    const evictable = keys.filter((key) => key.url !== writtenUrl);
+    const excess = Math.min(keys.length - RUNTIME_MAX_ENTRIES, evictable.length);
+    for (const key of evictable.slice(0, excess)) await cache.delete(key);
+  }
 }
 
 self.addEventListener('fetch', (event) => {
@@ -163,11 +183,11 @@ self.addEventListener('fetch', (event) => {
         // precache を汚染し、ロールバック不能になるため。専用 runtime cache へ
         // best-effort で退避し、失敗しても返すレスポンスは変更しない。
         if (response && response.ok) {
-          try {
-            await putRuntime('./index.html', response.clone());
-          } catch (error) {
+          // BJ09: putRuntime を await しない。キャッシュ書き込みが完了するまで
+          // navigation レスポンスを待たせないため、開始して即 return する。
+          putRuntime('./index.html', response.clone()).catch((error) => {
             console.warn('navigation cache write failed (best-effort)', error);
-          }
+          });
         }
         return response;
       }

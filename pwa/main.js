@@ -55,6 +55,14 @@ const state = {
   searchGeneration: 0,
   // SW の更新を通知済みなら、後続の setStatus で通知を上書きしない（BH02）。
   updateNotified: false,
+  // BJ01: 通知した worker を記録する。別の worker が installed になったら
+  // updateNotified を false へ戻し、次の更新も通知できるようにする。
+  notifiedWorker: null,
+  // BJ08: 更新ボタンの配線済みフラグと SKIP_WAITING の送信状態。
+  // click は once にしない（activate 失敗時に再送できるようにするため）。
+  updateReloadWired: false,
+  controllerReloadWired: false,
+  skipWaitingSent: false,
   rootName: '.',
   // 現在描画中の一覧と選択状態（タップ / 長押し / スワイプ / キーボードで共有）。
   // 選択は object 参照ではなく path で保持する。再描画 / 検索 / 再ソートで
@@ -1104,6 +1112,11 @@ async function onPickDirectory() {
 
 function announceSwUpdate(registration, worker) {
   state.updateNotified = true;
+  // BJ01: どの worker を通知したかを記録する。別 worker が installed に
+  // なったときだけ updateNotified を戻し、次の更新も通知できるようにする。
+  state.notifiedWorker = worker;
+  // BJ08: 新しい通知なら送信状態をリセットする（再送自体は常に許可）。
+  state.skipWaitingSent = false;
   // BI03: 更新通知は専用の aria-live ノードへ書く。#status は通常通知専用のまま。
   // 旧シェルが #sw-update を持たない場合だけ #status へフォールバックする。
   const notice = els.swUpdate || els.status;
@@ -1115,25 +1128,42 @@ function announceSwUpdate(registration, worker) {
 
   if (els.updateReload) {
     els.updateReload.hidden = false;
-    els.updateReload.addEventListener('click', () => {
-      const waiting = registration.waiting || worker;
-      if (waiting && typeof waiting.postMessage === 'function') {
-        // install では skipWaiting() しない代わりに、ここで待機 SW を進める。
-        waiting.postMessage({ type: 'SKIP_WAITING' });
-      } else {
-        window.location.reload();
-      }
-    }, { once: true });
+    // BJ08: once を外す。最初の postMessage が activate に結びつかない
+    // （待機 worker がまだ居ない等）場合でもボタンから再送できるようにする。
+    // リスナ自体は1回だけ配線し、送信状態は state で管理する。
+    if (!state.updateReloadWired) {
+      state.updateReloadWired = true;
+      els.updateReload.addEventListener('click', () => {
+        const waiting = state.notifiedWorker || registration.waiting || worker;
+        if (waiting && typeof waiting.postMessage === 'function') {
+          // install では skipWaiting() しない代わりに、ここで待機 SW を進める。
+          waiting.postMessage({ type: 'SKIP_WAITING' });
+          state.skipWaitingSent = true;
+        } else {
+          window.location.reload();
+        }
+      });
+    }
   }
 
   // 新 SW が control を取った時点で再読込し、新しいシェルを反映する。
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    window.location.reload();
-  }, { once: true });
+  // BJ08: 通知が複数回あってもリロード用リスナは1つだけにする。
+  if (!state.controllerReloadWired) {
+    state.controllerReloadWired = true;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      window.location.reload();
+    }, { once: true });
+  }
 }
 
 function watchInstallingWorker(registration, worker) {
   worker.addEventListener('statechange', () => {
+    // BJ01: 通知済みフラグは通知対象 worker に紐づく。前回とは別の worker が
+    // installed になったら新たな更新として扱い、通知ガードを解除する。
+    if (worker.state === 'installed' && state.notifiedWorker && state.notifiedWorker !== worker) {
+      state.updateNotified = false;
+      state.notifiedWorker = null;
+    }
     if (shouldNotifySwUpdate({
       hasController: Boolean(navigator.serviceWorker.controller),
       workerState: worker.state,

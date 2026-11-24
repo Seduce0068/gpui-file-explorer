@@ -1156,18 +1156,48 @@ fn settings_change_affects_list(before: &Settings, after: &Settings) -> bool {
         || before.view != after.view
 }
 
-/// Restore a pre-preview settings snapshot while keeping the failure reason
-/// that the just-failed `save_with_reason()` recorded in the live value (AW02).
-/// Only the `last_save_error` and `changed_on_disk` Cells are inherited: every
-/// persisted/previewed field must still come from `snapshot` so the UI matches
-/// what is on disk. `changed_on_disk` is equally live-only state — a stale
-/// snapshot refuses the write and flips that Cell on the live value, and losing
-/// it here would degrade the specific ChangedOnDisk notice to a generic
-/// save-failure message (R2/BG01).
-fn settings_with_live_save_error(snapshot: Settings, live: &Settings) -> Settings {
+/// Restore settings from `snapshot` while keeping the **live-only** state that
+/// the just-failed `save_with_reason()` recorded (AW02). Live-only means:
+/// `last_save_error` / `changed_on_disk` Cells and `load_fingerprint`. All
+/// three are `#[serde(skip)]` and excluded from `PartialEq`; none describes a
+/// persisted preference, so carrying them across is consistent with the
+/// contract that every persisted/previewed field still comes from `snapshot`.
+///
+/// - The two Cells keep the specific ChangedOnDisk / TooLarge / Locked notice
+///   from degrading to a generic save-failure message (R2/BG01).
+/// - `load_fingerprint` must be the *pre-reload* baseline, not the fresh one a
+///   re-read `Settings::load()` carries. Adopting the fresh fingerprint would
+///   treat another instance's write as our own and let a later save silently
+///   overwrite it — i.e. remove the lost-update guard (R2/BJ06). Recovery from
+///   a refused save is a restart, so the stale baseline is deliberate: every
+///   later save keeps conflicting until the view is recreated.
+fn settings_with_live_save_error(mut snapshot: Settings, live: &Settings) -> Settings {
     snapshot.last_save_error.set(live.last_save_error.get());
     snapshot.changed_on_disk.set(live.changed_on_disk.get());
+    snapshot.load_fingerprint = live.load_fingerprint.clone();
     snapshot
+}
+
+/// R2/BJ07: restore **only** the fields the seven preview-then-write paths
+/// mutate, leaving every disk-synced field (bookmarks, saved searches,
+/// `last_dir` / `recent_dirs`, tabs, window sessions, …) at the value the
+/// refused-save re-read put in `live` (BI02/BH13). Restoring the whole snapshot
+/// here would undo that disk sync with the stale pre-preview values, and — via
+/// [`settings_with_live_save_error`] — would also resurrect the old fingerprint
+/// if it were ever re-captured. Everything else, including the live-only
+/// Cells / fingerprint, is inherited from `live` by the shared helper.
+fn settings_restoring_preview_fields(snapshot: &Settings, live: &Settings) -> Settings {
+    let mut restored = live.clone();
+    restored.theme = snapshot.theme;
+    restored.theme_choice = snapshot.theme_choice;
+    restored.view = snapshot.view;
+    restored.show_hidden = snapshot.show_hidden;
+    restored.show_thumbnails = snapshot.show_thumbnails;
+    restored.sort = snapshot.sort;
+    restored.column_prefs = snapshot.column_prefs.clone();
+    restored.keymap = snapshot.keymap.clone();
+    restored.terminal_command = snapshot.terminal_command.clone();
+    settings_with_live_save_error(restored, live)
 }
 
 /// BH13: restore the in-memory settings from the persisted file after a real
@@ -1175,8 +1205,10 @@ fn settings_with_live_save_error(snapshot: Settings, live: &Settings) -> Setting
 /// [`Explorer::save_settings`]); previewed fields such as bookmarks, saved
 /// searches, `last_dir` / `recent_dirs` and tabs must come from it, otherwise
 /// a ChangedOnDisk refusal leaves them in memory and a restart loses them.
-/// Only the live failure Cells are carried over so the status bar keeps the
-/// concrete reason (AW02 / R2-BG01).
+/// Only the live-only state (failure Cells and the **pre-reload** fingerprint)
+/// is carried over: the Cells keep the concrete reason in the status bar
+/// (AW02 / R2-BG01) and the stale fingerprint keeps the lost-update guard
+/// active until the view is restarted (R2/BJ06).
 ///
 /// Pure over `Settings` values so a regression test can assert that the
 /// previewed values actually return to the disk values without a GPUI context.
@@ -3622,6 +3654,13 @@ struct Explorer {
     settings: Settings,
     /// Hand-drawn colors for the effective (resolved) theme.
     palette: AppPalette,
+    /// R2/BJ05: a refused `save_settings` re-reads the disk settings, which may
+    /// carry a different resolved `theme`. `save_settings` has no GPUI
+    /// `Context`, so the palette / icon resolver / component theme cannot be
+    /// refreshed there. The next render consumes this flag through
+    /// [`Explorer::apply_pending_theme_resync`] instead of rendering with a
+    /// palette that disagrees with `settings.theme`.
+    theme_resync_pending: bool,
     /// Keeps the OS appearance observer alive; it only has an effect while
     /// `settings.theme_choice == ThemeChoice::System`.
     appearance_subscription: Option<Subscription>,
@@ -4279,6 +4318,7 @@ impl Explorer {
         let mut this = Self {
             settings,
             palette,
+            theme_resync_pending: false,
             // The window-level subscription is installed in `open_window`,
             // where a `&mut Window` is available (`Context` alone has none).
             appearance_subscription: None,
@@ -5367,11 +5407,20 @@ impl Explorer {
         // persisted file (or, for ChangedOnDisk, another instance's newer file)
         // is the only source of truth for those fields: re-read it so a later
         // restart does not silently drop the preview that was never written.
-        // The seven paths that snapshot before previewing still apply their
-        // earlier snapshot in `rollback_settings`; both agree on disk fields.
+        // The seven paths that snapshot before previewing still re-apply their
+        // *previewed* fields in `rollback_settings`; both agree on disk fields
+        // and on the live-only fingerprint/Cells (R2/BJ06/BJ07).
         if settings_write_needs_rollback(saved) && !self.settings.write_was_skipped() {
             self.settings = settings_reconciled_after_save(Settings::load(), &self.settings);
             self.keymap = KeyMap::from_settings(&self.settings);
+            // R2/BJ05: the re-read can carry a different resolved `theme`. The
+            // palette / icon resolver / GPUI theme are derived state and this
+            // method has no `Context`, so defer re-application to the next
+            // render rather than leaving a palette that disagrees with the
+            // reloaded `settings.theme`.
+            if self.palette != AppPalette::for_mode(self.settings.theme) {
+                self.theme_resync_pending = true;
+            }
         }
         saved
     }
@@ -6872,6 +6921,9 @@ impl Explorer {
     /// being pinned with `Theme::change`, but it still performs the exact same
     /// `settings.theme` / palette / icon-resolver updates as Dark and Light.
     fn apply_theme_mode(&mut self, mode: ThemeMode, follow_system: bool, cx: &mut Context<Self>) {
+        // Any explicit application (toggle, OS change, settings dialog, or a
+        // post-rollback restore) makes a pending reload-resync redundant.
+        self.theme_resync_pending = false;
         self.settings.theme = mode;
         self.palette = AppPalette::for_mode(mode);
         // A dark app theme must resolve Breeze icons from breeze-dark first;
@@ -6887,6 +6939,22 @@ impl Explorer {
         cx.notify();
     }
 
+    /// R2/BJ05: finish the derived-theme update a refused `save_settings`
+    /// deferred. That method has no GPUI `Context`, so it can only record the
+    /// mismatch; the next render re-applies the reloaded mode through the same
+    /// `apply_theme_mode` entry point every other theme change uses. This keeps
+    /// `settings.theme`, the palette, the icon resolver and GPUI Component in
+    /// sync even on the write paths that have no caller-side rollback.
+    fn apply_pending_theme_resync(&mut self, cx: &mut Context<Self>) {
+        if !self.theme_resync_pending {
+            return;
+        }
+        self.theme_resync_pending = false;
+        let mode = self.settings.theme;
+        let follow_system = self.settings.theme_choice == ThemeChoice::System;
+        self.apply_theme_mode(mode, follow_system, cx);
+    }
+
     /// Single entry point for a persisted theme *choice*. Resolving the choice
     /// against the appearance GPUI observes and applying the result are shared
     /// by Alt+Shift+T and the settings dialog, so all three choices update
@@ -6900,9 +6968,11 @@ impl Explorer {
     }
 
     /// Undo an in-memory settings preview after a failed disk write (D13).
-    /// `snapshot` is the full `Settings` captured before any field was changed,
-    /// so restoring it also covers `theme`, `theme_choice`, `view`,
-    /// `show_hidden`, `sort`, `keymap` and `terminal_command`. The derived
+    /// Only the previewed fields (`theme`, `theme_choice`, `view`,
+    /// `show_hidden`, `show_thumbnails`, `sort`, `column_prefs`, `keymap` and
+    /// `terminal_command`) come back from `snapshot`; the disk-synced fields
+    /// and the live-only fingerprint / failure Cells stay at the values the
+    /// refused-save re-read installed (BI02/BH13, R2/BJ06/BJ07). The derived
     /// palette / icon resolver / GPUI theme are restored through the same
     /// `apply_theme_mode` entry point every theme change uses.
     fn rollback_settings(&mut self, snapshot: Settings, cx: &mut Context<Self>) {
@@ -6912,13 +6982,17 @@ impl Explorer {
         // Locked) in the LIVE settings, and a stale snapshot also flips its
         // `changed_on_disk` Cell. Restoring the pre-preview snapshot would
         // replace both Cells with stale values and degrade the status to the
-        // generic message. Carry only those Cells across the restore (R2/BG01).
-        let restored = settings_with_live_save_error(snapshot, &self.settings);
+        // generic message. The shared helper carries those Cells — plus the
+        // pre-reload `load_fingerprint` — across the restore (R2/BG01/BJ06).
+        // BJ07: it also keeps every non-preview field from `live`, so the disk
+        // re-read is not undone by the stale snapshot.
+        let restored = settings_restoring_preview_fields(&snapshot, &self.settings);
         self.settings = restored;
         self.keymap = KeyMap::from_settings(&self.settings);
         // The preview may have pinned the component theme with `Theme::change`;
         // restoring a System preference must keep following the OS. The flag
-        // lets the same entry point handle that without a second sync block.
+        // lets the same entry point handle that without a second sync block,
+        // and clears any pending reload-resync (R2/BJ05).
         self.apply_theme_mode(previous_mode, was_system, cx);
     }
 
@@ -12895,6 +12969,9 @@ impl Render for Explorer {
         if let Some(bounds) = WindowBoundsState::from_window(window) {
             self.window_bounds = Some(bounds);
         }
+        // R2/BJ05: refresh derived theme state deferred by a refused save
+        // before anything below reads the palette / icon resolver.
+        self.apply_pending_theme_resync(cx);
         self.apply_startup_hooks(window, cx);
         self.apply_pending_rename(window, cx);
         self.apply_focus_restore(window, cx);
@@ -13872,33 +13949,33 @@ mod tests {
         saved_search_save_status, search_close_status, search_filter_status,
         search_summary_notices, set_view_status, settings_change_affects_list,
         settings_discard_status, settings_editor_write_failure_reason, settings_read_only_status,
-        settings_reconciled_after_save, settings_reset_status, settings_row_key_is_bare,
-        settings_save_error_status, settings_save_status, settings_sort_next,
-        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
-        settings_with_live_save_error, settings_write_needs_rollback, settings_write_status,
-        should_clear_clipboard, should_forward_progress, source_presence, split_undo_trash_items,
-        startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
-        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
-        terminal_started_status, terminal_target_dir, theme_choice_label, thumbnail_eligible,
-        transfer_log_level, transfer_progress_status, transfer_skip_notice,
-        transferable_drop_paths, trash_batch, trash_delete_status, trash_key_action,
-        trash_load_error_status, trash_redo_cancelled_status, trash_undo_outcome_status,
-        trash_undo_status, trashed_ids_from_snapshot, undo_exists_status, undo_history_key_closes,
-        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
-        visible_secondary_slots, walked_root_count, AppPalette, CliAction, DebugSettingsOverrides,
-        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
-        Modifiers, PropertiesErrorReaction, SearchRunStats, SecondarySlot, SettingsTab, SortKey,
-        SourcePresence, TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED,
-        C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX,
-        KEYMAP_FORMAT_HINT, PROGRESS_THROTTLE, SEARCH_GLOBAL_CAP, SECONDARY_SLOT_PRIORITY,
-        SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
-        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
-        STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
-        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-        STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
-        STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
-        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
+        settings_reconciled_after_save, settings_reset_status, settings_restoring_preview_fields,
+        settings_row_key_is_bare, settings_save_error_status, settings_save_status,
+        settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
+        settings_validation_status, settings_with_live_save_error, settings_write_needs_rollback,
+        settings_write_status, should_clear_clipboard, should_forward_progress, source_presence,
+        split_undo_trash_items, startup_dir_from, startup_save_failure_status, status_color,
+        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
+        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
+        theme_choice_label, thumbnail_eligible, transfer_log_level, transfer_progress_status,
+        transfer_skip_notice, transferable_drop_paths, trash_batch, trash_delete_status,
+        trash_key_action, trash_load_error_status, trash_redo_cancelled_status,
+        trash_undo_outcome_status, trash_undo_status, trashed_ids_from_snapshot,
+        undo_exists_status, undo_history_key_closes, undo_missing_status, upsert_keymap_override,
+        validate_cli_dir, version_label, visible_secondary_slots, walked_root_count, AppPalette,
+        CliAction, DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction,
+        KeyBinding, KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction, SearchRunStats,
+        SecondarySlot, SettingsTab, SortKey, SourcePresence, TrashKeyAction, UndoAction,
+        ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX,
+        GRID_GAP_PX, GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT, PROGRESS_THROTTLE, SEARCH_GLOBAL_CAP,
+        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
+        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
+        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
+        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
+        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
+        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
         STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
         STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
         STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
@@ -18934,12 +19011,13 @@ mod tests {
         // Build the needle from fragments so this test's own source does not
         // contribute a second match (same convention as the guards below).
         let guard = concat!(
-            "settings_with_live_save_error(",
-            "snapshot, &self.settings)"
+            "settings_restoring_preview_fields(",
+            "&snapshot, &self.settings)"
         );
-        // BH13: `rollback_settings` still carries the live Cells for the seven
-        // caller-side snapshots. `save_settings` now re-reads the disk snapshot
-        // instead of cloning the already-previewed live value (a no-op).
+        // BH13/R2-BJ07: `rollback_settings` carries the live Cells (and the
+        // live fingerprint) through `settings_restoring_preview_fields`, which
+        // restores only previewed fields. `save_settings` now re-reads the disk
+        // snapshot instead of cloning the already-previewed live value.
         let guards = production_text(source).matches(guard).count();
         assert!(
             guards >= 1,
@@ -18984,6 +19062,122 @@ mod tests {
             status,
             super::STATUS_SETTINGS_SAVE_CHANGED_ON_DISK,
             "one rollback path must keep the ChangedOnDisk notice: {status}"
+        );
+    }
+
+    // R2/BJ06/BJ07: the refused-save re-read must not become a new lost-update
+    // baseline, and the seven rollback paths must not revive the stale
+    // pre-preview snapshot (which would undo the disk sync from BI02/BH13).
+    #[test]
+    fn refused_save_reconcile_and_rollback_keep_live_only_state() {
+        let source = include_str!("main.rs");
+
+        // The shared helper must carry the live fingerprint, not the fresh one
+        // a re-read `Settings::load()` supplies — otherwise a later save passes
+        // the conflict check and silently overwrites another instance (BJ06).
+        let helper = source_region(
+            source,
+            "fn settings_with_live_save_error(",
+            "/// BH13: restore the in-memory settings",
+        );
+        assert!(
+            helper.contains("snapshot.load_fingerprint = live.load_fingerprint.clone();"),
+            "the live fingerprint must survive reconcile and rollback"
+        );
+
+        // The rollback region restores only previewed fields and never writes
+        // the snapshot's fingerprint back over the reloaded one (BJ07).
+        let rollback = guard_region(
+            source,
+            "    fn rollback_settings(&mut self, snapshot: Settings, cx: &mut Context<Self>) {",
+            "    /// Re-resolve the preference when the OS switches",
+        );
+        assert!(
+            rollback.contains("settings_restoring_preview_fields(&snapshot, &self.settings)"),
+            "rollback must restore only the previewed fields"
+        );
+        assert!(
+            !rollback.contains("settings_with_live_save_error(snapshot"),
+            "rollback must not restore the whole stale snapshot"
+        );
+        assert!(
+            !rollback.contains("load_fingerprint ="),
+            "rollback must never overwrite the reloaded fingerprint"
+        );
+
+        // Pure behavior: disk-synced fields come from `live`, preview fields
+        // from `snapshot`, failure Cells from `live`.
+        let search = |name: &str| SavedSearch::new(name, "name:rs").expect("valid saved search");
+        let live = Settings {
+            bookmarks: vec![PathBuf::from("/disk/bookmark")],
+            saved_searches: vec![search("disk-search")],
+            last_dir: Some(PathBuf::from("/disk/last")),
+            show_hidden: false,
+            view: ViewLayout::Details,
+            ..Settings::default()
+        };
+        let snapshot = Settings {
+            bookmarks: vec![PathBuf::from("/stale/bookmark")],
+            saved_searches: vec![search("stale-search")],
+            last_dir: Some(PathBuf::from("/stale/last")),
+            show_hidden: true,
+            view: ViewLayout::Icons,
+            ..live.clone()
+        };
+        live.changed_on_disk.set(true);
+        live.last_save_error.set(Some(SettingsSaveError::Io));
+
+        let restored = settings_restoring_preview_fields(&snapshot, &live);
+        assert_eq!(
+            restored.bookmarks, live.bookmarks,
+            "the disk-synced bookmarks must survive rollback"
+        );
+        assert_eq!(restored.saved_searches, live.saved_searches);
+        assert_eq!(restored.last_dir, live.last_dir);
+        assert_eq!(
+            restored.show_hidden, snapshot.show_hidden,
+            "the previewed flag must revert"
+        );
+        assert_eq!(
+            restored.view, snapshot.view,
+            "the previewed view must revert"
+        );
+        assert!(restored.changed_on_disk.get());
+        assert_eq!(restored.last_save_error.get(), Some(SettingsSaveError::Io));
+    }
+
+    // R2/BJ05: a refused save re-reads the disk settings without a GPUI
+    // `Context`, so the derived theme state must be re-applied on the next
+    // render. Both halves of that hand-off are pinned here.
+    #[test]
+    fn refused_save_defers_theme_resync_to_render() {
+        let source = include_str!("main.rs");
+        let save_settings_body = guard_region(
+            source,
+            "    fn save_settings(&mut self) -> bool {",
+            "    /// Load a tab's directory/history",
+        );
+        assert!(
+            save_settings_body.contains("self.theme_resync_pending = true;"),
+            "a reloaded theme must request a derived-state resync"
+        );
+        let render = guard_region(
+            source,
+            "    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {",
+            "        let tab_bar = self.tab_bar(cx);",
+        );
+        assert!(
+            render.contains("self.apply_pending_theme_resync(cx);"),
+            "render must consume the pending theme resync"
+        );
+        let apply = source_region(
+            source,
+            "    fn apply_pending_theme_resync(",
+            "    /// Single entry point for a persisted theme",
+        );
+        assert!(
+            apply.contains("self.apply_theme_mode(mode, follow_system, cx);"),
+            "the resync must reuse the single theme application path"
         );
     }
 

@@ -767,7 +767,10 @@ test('main.js pins the installing-worker wiring, not just marker strings (BI11)'
   // 文字列存在だけでは watchInstallingWorker の呼び出しが消えても緑だった。
   // 本番の更新フロー本体を sourceRegion で切り出し、配線を固定する。
   const updateFlow = sourceRegion(mainSource, 'function announceSwUpdate(', 'function registerServiceWorker()');
-  assert.match(updateFlow, /watchInstallingWorker\(registration, registration\.installing\)/g,
+  // BJ04: assert.match(..., /g) は1一致でも成功するため、一致数を明示検証する。
+  const installingCallSites =
+    (updateFlow.match(/watchInstallingWorker\(registration, registration\.installing\)/g) || []).length;
+  assert.equal(installingCallSites, 2,
     'both the current installing worker and updatefound must be watched (2 call sites)');
   assert.match(updateFlow, /addEventListener\('updatefound'/, 'updatefound must be observed');
   assert.match(updateFlow, /shouldNotifySwUpdate\(\{/, 'notification must go through the guard');
@@ -877,7 +880,154 @@ test('BI03: DOM モックで更新通知後も #status が通常通知で更新�
 
   updateReload.handlers.click[0]();
   // vm の別 realm で作られた object は deepStrictEqual の prototype 比較に落ちる。
-  assert.equal(posted.length, 1, '再読込ボタンは 1 回だけ postMessage する');
+  assert.equal(posted.length, 1, '1回のクリックで1回 postMessage する');
   assert.equal(posted[0].type, 'SKIP_WAITING', '再読込ボタンは待機 SW を進める');
   assert.ok(listenerTypes.includes('controllerchange'), 'controllerchange も配線される');
+
+  // BJ08: once を外したことで、activate 失敗時などに SKIP_WAITING を再送できる。
+  updateReload.handlers.click[0]();
+  assert.equal(posted.length, 2, '2回目クリックでも SKIP_WAITING を再送する');
+  assert.equal(updateReload.handlers.click.length, 1, 'click リスナは積まれない');
+  assert.equal(state.skipWaitingSent, true, '送信済み状態は state で管理される');
+});
+
+test('BJ01: vm モックで2回目 updatefound を流しても更新通知される', () => {
+  // 本番の shouldNotifySwUpdate / announceSwUpdate / watchInstallingWorker /
+  // watchServiceWorker を vm 上で動かし、別 worker の installed で
+  // updateNotified が戻ることを固定する（文字列マーカーではなく実行経路）。
+  const guardSource = 'function shouldNotifySwUpdate(' + sourceRegion(
+    mainSource, 'function shouldNotifySwUpdate(', 'function supportsFileSystemAccess(');
+  const announceSource = 'function announceSwUpdate(' + sourceRegion(
+    mainSource, 'function announceSwUpdate(', 'function watchInstallingWorker(');
+  const installingSource = 'function watchInstallingWorker(' + sourceRegion(
+    mainSource, 'function watchInstallingWorker(', 'function watchServiceWorker(');
+  const serviceSource = 'function watchServiceWorker(' + sourceRegion(
+    mainSource, 'function watchServiceWorker(', 'function registerServiceWorker(');
+  const messageDecl = mainSource.match(/^const SW_UPDATE_MESSAGE = .*;$/m);
+  assert.ok(messageDecl, 'SW_UPDATE_MESSAGE must be declared in main.js');
+
+  const state = {
+    updateNotified: false,
+    notifiedWorker: null,
+    updateReloadWired: false,
+    controllerReloadWired: false,
+    skipWaitingSent: false,
+  };
+  const posted = [];
+  const controllerListeners = [];
+  let noticeWrites = 0;
+  function fakeNode() {
+    return {
+      textContent: '',
+      dataset: {},
+      hidden: true,
+      handlers: {},
+      addEventListener(type, fn) {
+        (this.handlers[type] ||= []).push(fn);
+      },
+    };
+  }
+  const swUpdate = {
+    hidden: true,
+    dataset: {},
+    _text: '',
+    get textContent() { return this._text; },
+    set textContent(value) { this._text = value; noticeWrites += 1; },
+  };
+  const updateReload = fakeNode();
+  const registration = {
+    waiting: null,
+    installing: null,
+    listeners: {},
+    addEventListener(type, fn) {
+      (this.listeners[type] ||= []).push(fn);
+    },
+  };
+  const sandbox = {
+    console,
+    state,
+    els: { status: fakeNode(), swUpdate, updateReload },
+    window: { location: { reload() { sandbox.reloaded = true; } } },
+    navigator: {
+      serviceWorker: {
+        controller: { state: 'activated' },
+        addEventListener(type, fn) { controllerListeners.push({ type, fn }); },
+      },
+    },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${messageDecl[0]}\n${guardSource}\n${announceSource}\n`
+    + `${installingSource}\n${serviceSource}\n`
+    + 'globalThis.__watchServiceWorker = watchServiceWorker;',
+    sandbox
+  );
+
+  function fakeWorker() {
+    return {
+      state: 'installing',
+      listeners: {},
+      addEventListener(type, fn) {
+        (this.listeners[type] ||= []).push(fn);
+      },
+      postMessage(msg) { posted.push(msg); },
+    };
+  }
+  function fireUpdatefound(worker) {
+    registration.installing = worker;
+    assert.equal(registration.listeners.updatefound.length, 1, 'updatefound must be wired');
+    registration.listeners.updatefound[0]();
+    worker.state = 'installed';
+    assert.equal(worker.listeners.statechange.length, 1, 'statechange must be wired');
+    worker.listeners.statechange[0]();
+  }
+
+  sandbox.__watchServiceWorker(registration);
+  const first = fakeWorker();
+  fireUpdatefound(first);
+  assert.equal(noticeWrites, 1, '最初の更新は通知される');
+  assert.equal(state.notifiedWorker, first, '通知対象 worker が記録される');
+  updateReload.handlers.click[0]();
+  assert.equal(state.skipWaitingSent, true);
+
+  // BJ01: 別の worker が updatefound → installed になったら再通知する。
+  const second = fakeWorker();
+  fireUpdatefound(second);
+  assert.equal(noticeWrites, 2, '別 worker の2回目 updatefound でも通知される');
+  assert.equal(state.notifiedWorker, second, '通知対象 worker が差し替わる');
+  assert.equal(state.skipWaitingSent, false, '新しい通知で送信状態がリセットされる');
+  assert.equal(updateReload.handlers.click.length, 1, 'click リスナは積まれない');
+  assert.equal(controllerListeners.length, 1, 'controllerchange リスナは積まれない');
+
+  // 同じ worker の statechange が再発しても通知は繰り返さない。
+  second.listeners.statechange[0]();
+  assert.equal(noticeWrites, 2, '同一 worker の再 statechange は重複通知しない');
+});
+
+test('BJ09/BJ10/BJ11: runtime cache の即時 return・期限切れ削除・put 後削除', () => {
+  const sw = readPwaFile('sw.js');
+  const navigation = sourceRegion(sw, "if (request.mode === 'navigate') {", '// 静的アセットは cache-first');
+  assert.ok(!/await\s+putRuntime\s*\(/.test(navigation),
+    'navigation must not await putRuntime');
+  assert.match(
+    navigation,
+    /putRuntime\('\.\/index\.html', response\.clone\(\)\)\.catch\(/,
+    'navigation cache write must be fire-and-forget with a catch'
+  );
+
+  const shellResponse = sourceRegion(sw, 'async function shellResponse() {', 'async function cachedAsset(');
+  const staleBranch = sourceRegion(shellResponse, 'if (dynamic) {', 'return null;');
+  assert.match(staleBranch, /isFresh\(dynamic\)/, 'stale shell must be detected');
+  assert.match(staleBranch, /runtime\.delete\('\.\/index\.html'\)/,
+    'stale runtime shell must be deleted before returning null');
+
+  const putRuntime = sourceRegion(sw, 'async function putRuntime(', "self.addEventListener('fetch'");
+  const putAt = putRuntime.indexOf('await cache.put(');
+  const deleteAt = putRuntime.indexOf('cache.delete(');
+  assert.ok(putAt !== -1 && deleteAt !== -1 && putAt < deleteAt,
+    'put must succeed before evicting old entries');
+  assert.ok(
+    !/if \(keys\.length >= RUNTIME_MAX_ENTRIES\) await cache\.delete\(keys\[0\]\)/.test(putRuntime),
+    'pre-put eviction must be gone'
+  );
 });
