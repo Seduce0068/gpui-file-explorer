@@ -1641,6 +1641,9 @@ pub const STATUS_DROP_NOT_FOUND: &str = "ドロップされた項目が見つか
 pub const STATUS_DROP_EMPTY: &str = "ドロップされた項目がありません";
 pub const STATUS_TRASH_LOADING: &str = "ゴミ箱を読み込んでいます…";
 pub const STATUS_FOLDER_CREATING: &str = "フォルダを作成中…";
+/// BN02: キーボードの新規フォルダ操作が Directory ビュー外で拒否された通知。
+/// 既存の「〜はディレクトリ表示でのみ使えます」系と同じ文形で colour 分類も共用する。
+pub const STATUS_NEW_FOLDER_ONLY_DIRECTORY: &str = "新規フォルダはディレクトリ表示でのみ使えます";
 
 /// Repeated format-string prefixes (the dynamic suffix stays at the call site).
 pub const STATUS_TARGET_GONE: &str = "移動先が存在しません";
@@ -1948,6 +1951,9 @@ pub const SEARCH_SUMMARY_SKIPPED_LARGE_SUFFIX: &str = " ファイルを除外）
 pub const SEARCH_SUMMARY_NON_UTF8_PREFIX: &str = "（非 UTF-8 のため ";
 /// 非 UTF-8 接尾の後半。件数の後ろに続く。
 pub const SEARCH_SUMMARY_NON_UTF8_SUFFIX: &str = " 件を正確に検索できませんでした）";
+/// R2-UX: 検索結果行に付ける由来（walk 済みルート名）ラベルの接頭辞。
+/// 複数ルート検索で同名ファイルを区別するためのサブテキストとして使う。
+pub const SEARCH_SOURCE_LABEL_PREFIX: &str = "出典: ";
 
 /// OS がプロパティのメタデータ読み取りを拒否したときの通知（R02）。
 /// 以前は main.rs ローカルだったが、色分類表と一元化するためここへ移動した。
@@ -2627,6 +2633,7 @@ mod tests {
             STATUS_FILE_NO_NEW_TAB_PREFIX,
             STATUS_TRASH_LOADING,
             STATUS_FOLDER_CREATING,
+            STATUS_NEW_FOLDER_ONLY_DIRECTORY,
             STATUS_TARGET_GONE,
             STATUS_PATH_GONE,
             STATUS_PLACE_GONE_HINT,
@@ -3097,6 +3104,12 @@ mod tests {
                 STATUS_SEARCH_ONLY_DIRECTORY,
                 "warning",
             ),
+            // BN02: キーボードの新規フォルダも同じ拒否ファミリとして警告色にする。
+            (
+                "STATUS_NEW_FOLDER_ONLY_DIRECTORY",
+                STATUS_NEW_FOLDER_ONLY_DIRECTORY,
+                "warning",
+            ),
             // N08: 動的な件数を含む上限拒否と、空の復元対象。
             ("STATUS_MAX_TABS_PREFIX", STATUS_MAX_TABS_PREFIX, "warning"),
             ("STATUS_RESTORE_EMPTY", STATUS_RESTORE_EMPTY, "warning"),
@@ -3191,6 +3204,7 @@ mod tests {
             "STATUS_FUZZY_JUMP_ONLY_DIRECTORY",
             "STATUS_PROPERTIES_ONLY_DIRECTORY",
             "STATUS_SEARCH_ONLY_DIRECTORY",
+            "STATUS_NEW_FOLDER_ONLY_DIRECTORY",
             "STATUS_MAX_TABS_PREFIX",
             "STATUS_RESTORE_EMPTY",
             "STATUS_SEARCH_EMPTY_QUERY",
@@ -3955,6 +3969,10 @@ mod tests {
             STATUS_SEARCH_ONLY_DIRECTORY,
             "検索はディレクトリ表示でのみ使えます"
         );
+        assert_eq!(
+            STATUS_NEW_FOLDER_ONLY_DIRECTORY,
+            "新規フォルダはディレクトリ表示でのみ使えます"
+        );
         // クイックジャンプの表示名は `FUZZY_JUMP_LABEL` と常に一致させる。
         assert_eq!(
             STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
@@ -3967,6 +3985,7 @@ mod tests {
             STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
             STATUS_PROPERTIES_ONLY_DIRECTORY,
             STATUS_SEARCH_ONLY_DIRECTORY,
+            STATUS_NEW_FOLDER_ONLY_DIRECTORY,
         ] {
             assert!(message.contains("ディレクトリ表示でのみ"), "{message}");
             assert!(!message.contains(STATUS_OP_FAILED_SUFFIX), "{message}");

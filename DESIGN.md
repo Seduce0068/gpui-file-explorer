@@ -126,7 +126,7 @@
 | OS ネイティブアイコン | × | × | ◎ | | **as-built**: Breeze 実装済み（§8.3、fs-notes §3） |
 | 画像サムネイル | × | × | ◎ | | **as-built（NW09、基本形）**: §8.3 参照 |
 | 再帰検索（名前/複数ルート） | ○ | ◎ | ◎ | 単一実装 | `std::fs` walker（symlink 非追跡・上限付き）、範囲: 現在/タブ/ブックマーク |
-| ボリューム/空き容量 | × | × | ◎ | | as-built: Linux は `/proc/mounts` 解析、Windows は `gfe-win32` 経由で実装済み（実機未検証）。空き容量・macOS は未対応 |
+| ボリューム/空き容量 | × | × | ◎ | | as-built: Linux は `/proc/mounts` 解析、Windows は `gfe-win32` 経由で実装済み（実機未検証）。空き容量は sysinfo/libc `statvfs` の新規依存を要するため今回除外、macOS は未対応 |
 | タブ / 複数ウィンドウ | × | × | △ | ◎ | まず 1 ウィンドウ 1 状態（ADR-002） |
 | OS からの D&D（取り込み） | × | × | △ | ◎ | **as-built**: P1 実装済み（ExternalPaths、§4.1） |
 | アプリ外への D&D | × | × | × | △ | **as-built**: P1 実装済み（ExternalDragPayload、§4.1） |
@@ -152,8 +152,9 @@ OS の外観を監視して実効テーマを追従する。設定オーバー�
 `show_thumbnails` で切替、gpui-kit の非同期読込/キャッシュ、8 MiB ガード・
 symlink 拒否・ゴミ箱ビュー除外。カスタム LRU / ローダ側バイト上限 /
 ローディング表示は未対応）。未実装は完全削除（安全則で意図的に禁止）
-だけではありません。検索結果のソース表示、OS のファイルクリップボード連携、
-空き領域の右クリックメニューなども残っており、一覧は
+だけではありません。検索結果のソース表示や OS のファイルクリップボード連携は
+残っていますが、空き領域の右クリックメニューは実装済みです
+（`empty_area_menu`: 行外の右クリックで新規フォルダ/再読込）。一覧は
 [app/README.md](app/README.md) の「今後の候補」を参照してください。
 
 ---
@@ -912,7 +913,7 @@ pub fn confirm_and_trash(
 | 通知 | gpui-component `push_notification` ✅ source / ⚠ Wayland 実機 | 同左 | 同左 | ✅ | | | component `src/window_ext.rs:118` |
 | パス正規化 | `PathBuf`/`OsStr` 保持、表示のみ lossy ✅ | 長パス `\\?\` + `dunce`（P2） | NFD→NFC 表示（P2） | Linux のみ | | ✅ | fs-notes §5.3 |
 | 隠しファイル | `.` 始まり ✅ | FILE_ATTRIBUTE_HIDDEN（P2） | `.` + UF_HIDDEN（P2） | ✅ | | | fs-notes §5.4 |
-| ボリューム/空き容量 | sysinfo | sysinfo | sysinfo | - | - | ✅ | as-built: Linux は /proc 解析、Windows は gfe-win32 経由（実機未検証）。空き容量・macOS は未対応 |
+| ボリューム/空き容量 | sysinfo | sysinfo | sysinfo | - | - | ✅ | as-built: Linux は /proc 解析、Windows は gfe-win32 経由（実機未検証）。空き容量は sysinfo/libc statvfs の新規依存を要するため今回除外、macOS は未対応 |
 | D&D IN | `on_drop::<ExternalPaths>`（Wayland ✅/他 ⚠） | 同左 | 同左 |  |  | △ | api-notes §4.2 / as-built: P1 実装済み（ExternalPaths 受信→Rename コピー） |
 | D&D OUT | `external_drag_payload`（Wayland ✅） | ⚠ | ⚠ |  |  |  | api-notes §4.3 / as-built: P1 実装済み（ExternalDragPayload で OS へドラッグアウト） |
 

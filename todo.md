@@ -2350,6 +2350,37 @@ status: current
 - [x] **BN20** pwa/README の SW 更新フローがマルチタブ経路と不一致 — 対応: loop27
 - [x] **BN21** phase1-platform-ports の React/Worker 記載が as-built と矛盾 — 対応: loop27
 
+## 進行中（ループ28 バックログ）
+
+### 優先度: 高（ループ28・confirmed）
+
+- [x] **BO01** 検索結果ソース表示（由来ラベル）を新規依存なしで実装 — 対応: loop28
+- [x] **BO02** main.js 構文ゲートが CJS/sloppy（ブラウザは ESM/strict） — 対応: loop28
+- [x] **BO03** PRECACHE 配列パースがコメント/二重引用符/`..` を扱えない — 対応: loop28
+- [x] **BO04** PWA BN05 詳細ターゲットが Space/i とダブルクリックに未接続 — 対応: loop28
+- [x] **BO05** 空き領域右クリック等が「未対応」と文書に残存（実装済み） — 対応: loop28
+
+### 優先度: 中（ループ28・confirmed）
+
+- [x] **BO06** ソート変更で focusIndex が別行を指し BN05 が壊れる — 対応: loop28
+- [x] **BO07** 未入力検索ビューで F5 がプロンプトを空クエリ拒否で上書き — 対応: loop28
+- [x] **BO08** 列幅保存デバウンスがウィンドウクローズで失われる — 対応: loop28
+- [x] **BO09** snippet 一意性が二重引用符を数えない — 対応: loop28
+- [x] **BO10** Android values* が修飾子混在で誤解决、要素テキストの参照不看 — 対応: loop28
+- [x] **BO11** Ctrl+Shift+L / D&D / 名前フィルタが as-built に欠落 — 対応: loop28
+- [x] **BO12** Exec 常時チェックが複数 Exec 行の先頭のみ検証 — 対応: loop28
+- [x] **BO13** sortEntries 大小文字テストが自己言及的オラクル — 対応: loop28
+- [x] **BO14** toEntry kind 欠落が「期待動作」として固定され改善を妨害 — 対応: loop28
+- [x] **BO15** 非 UTF-8 lossy 表示が contains("x") のみ — 対応: loop28
+- [x] **BO16** include_hidden 結果が件数のみで内容未検証 — 対応: loop28
+
+### 優先度: 低（ループ28・confirmed）
+
+- [x] **BO17** BN02 Directory ガードがキーボード NewFolder を黙って無視 — 対応: loop28
+- [x] **BO18** load_error 文言が contains("設定") のみ — 対応: loop28
+- [x] **BO19** 空き容量（DESIGN P2 ◎）は新規依存/unsafe 必要で見送り理由を記録 — 対応: loop28
+- [x] **BO20** prompt_for_paths（P1）は XDG ポータル必須で見送り理由を記録 — 対応: loop28
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

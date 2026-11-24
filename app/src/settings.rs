@@ -3204,7 +3204,13 @@ mod tests {
             .as_deref()
             .expect("an unavailable config dir must be reported");
         assert!(!reason.is_empty());
-        assert!(reason.contains("設定"));
+        // BO18: pin both halves of the message: the cause (missing config dir)
+        // and the safety promise (no write), not just a generic "設定".
+        assert!(
+            reason.contains("設定ディレクトリを特定できない"),
+            "{reason}"
+        );
+        assert!(reason.contains("書き込みは行いません"), "{reason}");
     }
 
     #[test]

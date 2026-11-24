@@ -29,6 +29,7 @@ const {
   selectionRange,
   nextRangeArmed,
   retainSelectedPaths,
+  resolveFocusIndex,
   detailTargetEntry,
   compareNatural,
   compareNames,
@@ -511,7 +512,7 @@ test('updatePickDirAvailability mirrors canPickDirectory into a DOM button', () 
   }), 'no button is a no-op (Node has no DOM)');
 });
 
-test('toEntry currently drops the core kind field (documented regression)', () => {
+test('toEntry preserves the core kind field (BO14)', () => {
   const raw = JSON.stringify({
     name: 'huge.png',
     path: '/demo/huge.png',
@@ -524,9 +525,13 @@ test('toEntry currently drops the core kind field (documented regression)', () =
   const entry = toEntry(raw);
   assert.equal(entry.name, 'huge.png');
   assert.equal(entry.size, 8 * 1024 * 1024 + 1, 'size survives the JS boundary');
-  assert.equal(entry.kind, undefined,
-    'PWA does not read kind yet; oversized sentinel is ignored here');
-  assert.ok(!Object.keys(entry).includes('kind'), 'kind must not leak into the view model');
+  assert.equal(entry.kind, 'oversized', 'core の oversized シグナルを保持する');
+  assert.ok(Object.keys(entry).includes('kind'), 'kind がビューへ引き継がれる');
+  // SearchResult ラッパー経由でも kind が失われないこと。
+  const wrapped = toEntry(JSON.stringify({ entry: JSON.parse(raw), match_line: 12 }));
+  assert.equal(wrapped.kind, 'oversized', 'ラッパー経由でも kind を保持する');
+  assert.equal(toEntry(JSON.stringify({ name: 'plain.txt' })).kind, undefined,
+    'kind の無い core データでは undefined（疑似値を作らない）');
 });
 
 // --- 複数選択の pure helper（BA03 / BA07） --------------------------------
@@ -693,12 +698,15 @@ test('sortEntries falls back safely on unknown keys, bad dirs and empty input', 
 });
 
 test('sortEntries accepts an upper-case dir string (BB22)', () => {
-  const expected = names(sortEntries(fixtureEntries(), 'name', 'desc'));
-  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'DESC')), expected,
+  // 期待値は被テスト関数から生成せずリテラルで固定する（BO13）。
+  const desc = ['Zebra', 'alpha', 'file10.txt', 'file2.txt', 'Beta'];
+  const asc = ['alpha', 'Zebra', 'Beta', 'file2.txt', 'file10.txt'];
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'desc')), desc);
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'DESC')), desc,
     'String(dir).toLowerCase() === "desc"');
-  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'Desc')), expected);
-  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'ASC')),
-    names(sortEntries(fixtureEntries(), 'name', 'asc')));
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'Desc')), desc);
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'ASC')), asc);
+  assert.deepEqual(names(sortEntries(fixtureEntries(), 'name', 'asc')), asc);
 });
 
 test('sortEntries treats modified:"" as missing and never throws on mixed types (BB22)', () => {
@@ -732,6 +740,9 @@ function readPwaFile(name) {
 
 test('service worker precaches the shell and every core wasm asset (BG13)', () => {
   const sw = readPwaFile('sw.js');
+  // BO03: scope the required-asset check to the PRECACHE array itself, so a
+  // quoted path that only appears in a comment or another literal cannot pass.
+  const precache = sourceRegion(sw, 'const PRECACHE = [', '];');
   for (const asset of [
     './',
     './index.html',
@@ -741,13 +752,19 @@ test('service worker precaches the shell and every core wasm asset (BG13)', () =
     './pkg/gfe_core.js',
     './pkg/gfe_core_bg.wasm',
   ]) {
-    assert.ok(sw.includes(`'${asset}'`), `sw.js must precache ${asset}`);
+    assert.ok(
+      precache.includes(`'${asset}'`) || precache.includes(`"${asset}"`),
+      `PRECACHE must contain ${asset}`
+    );
   }
   // BI12/BI18: pwa/pkg/ は gitignore 済みで clean checkout には無い。
   // 実配置の有無にかかわらず、PRECACHE に snippet が「ちょうど 1 件」だけ
   // 正しい形で書かれていることを常時検証する（以前は pkg が無いと丸ごとスキップされた）。
-  const precache = sourceRegion(sw, 'const PRECACHE = [', '];');
-  const snippets = [...precache.matchAll(/'(\.\/pkg\/snippets\/[^'/]+\/inline0\.js)'/g)];
+  // BO09: accept both quote styles while still requiring matching delimiters;
+  // the mapped tuple keeps [0] = full match and [1] = captured asset path.
+  const snippets = [
+    ...precache.matchAll(/(['"])(\.\/pkg\/snippets\/[^'"\/\n]+\/inline0\.js)\1/g),
+  ].map((match) => [match[0], match[2]]);
   assert.equal(snippets.length, 1, 'PRECACHE must contain exactly one snippet inline0.js');
   assert.match(
     snippets[0][1],
@@ -1073,6 +1090,147 @@ test('BN05: vm の詳細ボタンで複数/範囲選択の最後に触れた行�
   state.focusIndex = 3;
   button.handlers.click[0]();
   assert.match(messages.at(-1), /^詳細: \/a\.txt · size: 10 B/);
+});
+
+// --- BO06: ソート変更後もフォーカス行 / 詳細対象が同じ行を指す -------------
+
+test('BO06: resolveFocusIndex がソート前後でフォーカス行を path で再解決する', () => {
+  const entries = [
+    { name: 'a.txt', path: '/a.txt' },
+    { name: 'b.txt', path: '/b.txt' },
+    { name: 'c.txt', path: '/c.txt' },
+    { name: 'd.txt', path: '/d.txt' },
+  ];
+  const selectedPaths = ['/a.txt', '/b.txt', '/c.txt'];
+  const anchorPath = '/a.txt';
+  const focusIndex = 2; // 範囲選択の終端 /c.txt（選択済み）
+  const before = detailTargetEntry(entries, selectedPaths, focusIndex, anchorPath);
+  assert.equal(before.path, '/c.txt');
+
+  const sorted = sortEntries(entries, 'name', 'desc');
+  assert.deepEqual(names(sorted), ['d.txt', 'c.txt', 'b.txt', 'a.txt']);
+  // 再解決しない旧挙動では index 2 が /b.txt（選択済み）を指し詳細が変わる。
+  assert.equal(detailTargetEntry(sorted, selectedPaths, focusIndex, anchorPath).path, '/b.txt');
+
+  const resolved = resolveFocusIndex(entries, sorted, focusIndex, anchorPath);
+  assert.equal(sorted[resolved].path, '/c.txt', '同じ行へフォーカスを戻す');
+  assert.equal(detailTargetEntry(sorted, selectedPaths, resolved, anchorPath).path, before.path,
+    'ソート前後で詳細対象が変わらない');
+
+  // 検索でフォーカス行が消えた場合は anchorPath へ逃がす。
+  const searched = entries.slice(0, 1); // /a.txt だけ残る
+  assert.equal(
+    searched[resolveFocusIndex(entries, searched, focusIndex, anchorPath)].path,
+    '/a.txt',
+  );
+  // アンカーも消えた場合は index を新長さへクランプし、空一覧なら 0。
+  assert.equal(resolveFocusIndex(entries, searched, 9, '/gone.txt'), 0);
+  assert.equal(resolveFocusIndex(entries, [], focusIndex, anchorPath), 0);
+});
+
+test('BO06: render() は再描画時に resolveFocusIndex を呼ぶ', () => {
+  const render = sourceRegion(
+    mainSource, 'function render(entries,', '// --- 選択 / タッチ / マウス / キーボード操作');
+  assert.match(render, /const previousEntries = state\.renderedEntries;/,
+    '描画前に旧一覧を保存する');
+  assert.match(
+    render,
+    /state\.focusIndex = resolveFocusIndex\(\s*previousEntries, view, state\.focusIndex, state\.anchorPath,\s*\);/,
+    '新しい一覧へフォーカスを再解決する',
+  );
+  assert.ok(
+    render.indexOf('const previousEntries = state.renderedEntries;')
+      < render.indexOf('state.renderedEntries = view;'),
+    '旧一覧の上書き前に保存する',
+  );
+});
+
+// --- BO04: 詳細表示の3経路を同じ vm テストで固定 ---------------------------
+
+test('BN05/BO04: 詳細ボタン・ダブルクリック・details キーが同じ対象を表示する', () => {
+  const source = (start, end) => start + sourceRegion(mainSource, start, end);
+  const humanSizeSource = source('function humanSize(bytes) {', '// --- 描画（テキストはすべて textContent');
+  const selectionHelpers = source('function entryAt(index) {', '// 複数選択 listbox では aria-selected');
+  const showMetaSource = source('function showEntryMeta(entry) {', '// BM03: 選択操作行の「詳細」ボタン');
+  const wireSource = source('function wireSelectDetailsButton(button) {', 'function entryFromEvent(');
+  const eventSource = source('function entryFromEvent(event) {', 'function onListClick(');
+  const dblClickSource = source('function onListDblClick(event) {', 'function onListContextMenu(');
+  const keyDownSource = source('function onListKeyDown(event) {', '// --- コア API 呼び出し');
+
+  const messages = [];
+  const state = {
+    renderedEntries: [
+      { name: 'a.txt', path: '/a.txt', size: 10, isDir: false },
+      { name: 'b.txt', path: '/b.txt', size: 20, isDir: false },
+      { name: 'c.txt', path: '/c.txt', size: 30, isDir: false },
+      { name: 'd.txt', path: '/d.txt', size: 40, isDir: false },
+    ],
+    selectedPaths: ['/a.txt', '/b.txt', '/c.txt'],
+    anchorPath: '/a.txt',
+    focusIndex: 2, // 範囲選択の終端 /c.txt（選択済み）
+    selectMode: true,
+    suppressClickUntil: 0,
+  };
+  let detailCalls = 0;
+  const sandbox = {
+    console,
+    state,
+    Element: class Element {},
+    CLICK_SUPPRESS_MS: 700,
+    isClickSuppressed,
+    doubleClickCommand,
+    listKeyCommand,
+    detailTargetEntry(...args) {
+      detailCalls += 1;
+      return detailTargetEntry(...args);
+    },
+    setStatus(message, level = 'info') { messages.push({ message, level }); },
+    performance: { now: () => 1000 },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext([
+    humanSizeSource, selectionHelpers, showMetaSource, wireSource, eventSource,
+    dblClickSource, keyDownSource,
+    'globalThis.__wire = wireSelectDetailsButton;',
+    'globalThis.__dbl = onListDblClick;',
+    'globalThis.__key = onListKeyDown;',
+  ].join('\n'), sandbox);
+
+  const button = {
+    handlers: {},
+    addEventListener(type, fn) { (this.handlers[type] ||= []).push(fn); },
+  };
+  sandbox.__wire(button);
+
+  function fakeEvent({ detail = 2, key = ' ', index = 3 } = {}) {
+    const target = new sandbox.Element();
+    target.closest = () => ({ dataset: { index: String(index) } });
+    return { detail, key, target, preventDefault() {} };
+  }
+
+  // 1) 詳細ボタン: 選択先頭 /a.txt ではなく最後に触れた /c.txt。
+  button.handlers.click[0]();
+  assert.match(messages.at(-1).message, /^詳細: \/c\.txt · size: 30 B/);
+  assert.equal(detailCalls, 1, '詳細ボタンが detailTargetEntry を呼ぶ');
+
+  // 2) ダブルクリック: イベント行は未選択の /d.txt でも /c.txt を表示。
+  state.suppressClickUntil = 0;
+  sandbox.__dbl(fakeEvent());
+  assert.match(messages.at(-2).message, /^詳細: \/c\.txt · size: 30 B/);
+  assert.match(messages.at(-1).message, /^選択確定: c\.txt（3 件）$/);
+  assert.equal(detailCalls, 2, 'dblclick が detailTargetEntry を呼ぶ');
+
+  // 3) details キー（Space）: 未選択行 /d.txt へフォーカスしても /c.txt。
+  state.suppressClickUntil = 0;
+  sandbox.__key(fakeEvent({ key: ' ' }));
+  assert.match(messages.at(-1).message, /^詳細: \/c\.txt · size: 30 B/);
+  assert.equal(detailCalls, 3, 'details キーが detailTargetEntry を呼ぶ');
+
+  assert.equal(
+    messages.filter(({ message }) => message.startsWith('詳細: /c.txt ·')).length,
+    3,
+    '3 経路すべてが同じ対象を表示する',
+  );
 });
 
 test('manifest name and inline favicon agree (BG19/20)', () => {

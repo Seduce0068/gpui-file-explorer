@@ -1198,9 +1198,12 @@ mod tests {
         let entries = read_entries(&dir).expect("directory should be readable");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, raw, "raw OS name must survive intact");
-        assert!(
-            entries[0].name_text.contains("x"),
-            "display form is a lossy rendering of the same name"
+        // BO15: an exact comparison also pins the invalid byte's replacement
+        // character; contains("x") would pass for any lossy rendering.
+        assert_eq!(
+            entries[0].name_text.as_str(),
+            raw.to_string_lossy().as_ref(),
+            "display form must be exactly to_string_lossy() of the raw name"
         );
 
         fs::remove_dir_all(&dir).unwrap();

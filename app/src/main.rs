@@ -662,6 +662,7 @@ const STATUS_WARNING_MARKERS: &[&str] = &[
     STATUS_FUZZY_JUMP_ONLY_DIRECTORY,
     STATUS_PROPERTIES_ONLY_DIRECTORY,
     STATUS_SEARCH_ONLY_DIRECTORY,
+    STATUS_NEW_FOLDER_ONLY_DIRECTORY,
     // N08 / N09: 件数上限・空の復元対象・空の検索語も操作拒否なので amber。
     STATUS_MAX_TABS_PREFIX,
     STATUS_RESTORE_EMPTY,
@@ -930,6 +931,35 @@ fn display_name_for(
         return entry.path.display().to_string();
     }
     entry.name_text.clone()
+}
+
+/// R2-UX: origin label of a search result, derived from the walked roots.
+/// The most specific matching ancestor wins so overlapping roots (for example
+/// `/data` and `/data/shared`) cannot mislabel a result. `None` means the entry
+/// came from outside the walked roots, in which case no badge is rendered.
+fn source_label_for(entry: &Entry, active_roots: &[PathBuf]) -> Option<String> {
+    let mut best: Option<&PathBuf> = None;
+    for root in active_roots {
+        if entry.path.strip_prefix(root).is_err() {
+            continue;
+        }
+        if best.is_none_or(|current| root.components().count() > current.components().count()) {
+            best = Some(root);
+        }
+    }
+    best.map(|root| {
+        let name = root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| display_path(root));
+        format!("{SEARCH_SOURCE_LABEL_PREFIX}{name}")
+    })
+}
+
+/// Only the prefix of `active_roots` the walk actually entered is eligible as
+/// a result origin; a capped/cancelled walk leaves the tail untouched (BH17).
+fn walked_search_roots(roots: &[PathBuf], stats: SearchRunStats) -> &[PathBuf] {
+    &roots[..walked_root_count(stats, roots.len()).min(roots.len())]
 }
 
 /// Short status label for a theme preference. Both theme entry points (the
@@ -2673,7 +2703,7 @@ use crate::strings::{
     LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH,
     LOAD_ERROR_HINT_TRASH, LOAD_ERROR_NOT_FOUND_DISPLAY, LOAD_ERROR_PERMISSION_DISPLAY,
     OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
-    PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD, SEARCH_IN_PROGRESS_LABEL,
+    PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD, SEARCH_IN_PROGRESS_LABEL, SEARCH_SOURCE_LABEL_PREFIX,
     SEARCH_SUMMARY_LIMIT_PREFIX, SEARCH_SUMMARY_LIMIT_SUFFIX, SEARCH_SUMMARY_NON_UTF8_PREFIX,
     SEARCH_SUMMARY_NON_UTF8_SUFFIX, SEARCH_SUMMARY_SKIPPED_LARGE_PREFIX,
     SEARCH_SUMMARY_SKIPPED_LARGE_SUFFIX, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
@@ -2691,8 +2721,8 @@ use crate::strings::{
     STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX,
     STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX,
     STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
-    STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
-    STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
+    STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NEW_FOLDER_ONLY_DIRECTORY,
+    STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
     STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
     STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
     STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
@@ -4618,6 +4648,12 @@ impl Explorer {
     /// so that view re-runs the query instead (see `reload_reruns_search`).
     fn reload_for_view(&mut self, cx: &mut Context<Self>) {
         if reload_reruns_search(self.view) {
+            // BO07: F5 in a freshly opened, still empty search must keep the
+            // input prompt. Running an empty query would replace it with the
+            // "empty query" refusal, even though nothing was submitted.
+            if self.search.query.is_empty() && !self.search.running {
+                return;
+            }
             self.run_search(cx);
         } else {
             self.reload(cx);
@@ -6140,13 +6176,14 @@ impl Explorer {
 
     /// BN18: the single settings write for a finished column-width drag.
     /// Keeps the same preview/rollback pattern as `set_view`.
-    fn flush_column_widths(&mut self, cx: &mut Context<Self>) {
+    fn flush_column_widths(&mut self, cx: &mut Context<Self>) -> bool {
         let snapshot = self.settings.clone();
         let saved = self.save_settings();
         if settings_write_needs_rollback(saved) {
             self.rollback_settings(snapshot, cx);
         }
         cx.notify();
+        saved
     }
 
     /// Switch between the details list and the icon grid (persisted).
@@ -7351,6 +7388,10 @@ impl Explorer {
         // too. Keep one Directory guard at the action so a stale menu in
         // Trash/Search can never create a folder under the previous cwd.
         if self.view != ViewSource::Directory {
+            // BN02: a keyboard-triggered NewFolder outside Directory used to be
+            // silently ignored. Reuse the canonical directory-only refusal so
+            // the status bar explains why nothing happened.
+            self.status = STATUS_NEW_FOLDER_ONLY_DIRECTORY.to_string();
             cx.notify();
             return;
         }
@@ -11870,6 +11911,15 @@ impl Explorer {
             Some(line) if this.view == ViewSource::Search => format!("{display_name}:{line}"),
             _ => display_name,
         };
+        // R2-UX: show which walked root produced this result. With two roots
+        // holding the same file name the relative path already differs; the
+        // badge makes the origin explicit without changing sorting or actions.
+        let source_label = if this.view == ViewSource::Search {
+            let roots = walked_search_roots(&this.search.active_roots, this.search.last_stats);
+            source_label_for(&entry, roots)
+        } else {
+            None
+        };
         // F6-49: bookmark labels prefix the row name; the real name stays
         // visible so the underlying entry can still be identified.
         let bookmark_label = this.settings.bookmark_label(&entry.path).map(str::to_owned);
@@ -12101,9 +12151,22 @@ impl Explorer {
                     None => base.flex_1(),
                 };
                 let tooltip_text = name_tooltip_text.clone();
-                base.tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
-                    .child(text)
-                    .into_any_element()
+                let base = base.tooltip(move |window, cx| {
+                    Tooltip::new(tooltip_text.clone()).build(window, cx)
+                });
+                match source_label.clone() {
+                    Some(label) => base
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(div().truncate().child(text))
+                                .child(div().text_xs().text_color(rgb(p.muted)).child(label)),
+                        )
+                        .into_any_element(),
+                    None => base.child(text).into_any_element(),
+                }
             } else {
                 let base = div().text_xs().truncate().text_color(rgb(p.muted));
                 let base = match width {
@@ -12171,6 +12234,14 @@ impl Explorer {
         let display_name = match this.search_lines.get(&entry.path) {
             Some(line) if this.view == ViewSource::Search => format!("{display_name}:{line}"),
             _ => display_name,
+        };
+        // R2-UX: same walked-root badge as the list row, on a second line of
+        // the grid label so duplicate names across roots stay distinguishable.
+        let source_label = if this.view == ViewSource::Search {
+            let roots = walked_search_roots(&this.search.active_roots, this.search.last_stats);
+            source_label_for(&entry, roots)
+        } else {
+            None
         };
         // F6-49: bookmark labels prefix the row name; the real name stays
         // visible so the underlying entry can still be identified.
@@ -12368,12 +12439,25 @@ impl Explorer {
                         .w_full()
                         .text_xs()
                         .text_center()
-                        .truncate();
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_1();
                     let tooltip_text = name_tooltip_text.clone();
                     base.tooltip(move |window, cx| {
                         Tooltip::new(tooltip_text.clone()).build(window, cx)
                     })
-                    .child(display_name)
+                    .child(div().w_full().truncate().child(display_name))
+                    .when_some(source_label, |cell, label| {
+                        cell.child(
+                            div()
+                                .w_full()
+                                .text_xs()
+                                .text_color(rgb(p.muted))
+                                .truncate()
+                                .child(label),
+                        )
+                    })
                 })
                 .into_any_element(),
         )
@@ -14350,9 +14434,13 @@ fn main() {
                         cx.notify();
                     });
                 }
-                let _ = explorer.update(cx, |this, _cx| {
+                let _ = explorer.update(cx, |this, cx| {
                     this.persist_tabs();
-                    if !this.save_settings() {
+                    // BO08: the 250 ms width-save debounce is dropped when the
+                    // entity goes away. Cancel the pending timer and flush its
+                    // in-memory widths synchronously before the window closes.
+                    this.column_width_save_task.take();
+                    if !this.flush_column_widths(cx) {
                         // No status bar survives the close; mirror the Ctrl+Q
                         // path and surface the failure in the log (Bug L01).
                         // V10: include why the write failed.
@@ -14434,14 +14522,14 @@ mod tests {
         STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
         STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
         STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
-        STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
-        STATUS_OP_FAILED_SUFFIX, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_GONE,
-        STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
-        STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RESCAN_FAILED,
-        STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_SAME_DIRECTORY_NO_MOVE,
-        STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
-        STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED, STATUS_SETTINGS_READ_ONLY,
-        STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_SAVED,
+        STATUS_NEW_FOLDER_ONLY_DIRECTORY, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
+        STATUS_NO_SELECTION, STATUS_OP_FAILED_SUFFIX, STATUS_PARTIAL_FAILURE_SUFFIX,
+        STATUS_PATH_GONE, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
+        STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED,
+        STATUS_REDO_NO_TARGET, STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED,
+        STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN,
+        STATUS_SEARCH_ONLY_DIRECTORY, STATUS_SEARCH_STALE, STATUS_SETTINGS_DISCARDED,
+        STATUS_SETTINGS_READ_ONLY, STATUS_SETTINGS_READ_ONLY_HINT, STATUS_SETTINGS_SAVED,
         STATUS_SETTINGS_SAVE_CHANGED_ON_DISK, STATUS_SETTINGS_SAVE_FAILED,
         STATUS_SETTINGS_SAVE_LOCKED, STATUS_SETTINGS_SAVE_TOO_LARGE, STATUS_SPECIAL_FILE_NO_COPY,
         STATUS_SYMLINK_NO_PREVIEW, STATUS_TABS_ONLY_DIRECTORY, STATUS_TAB_RESTORE_EMPTY,
@@ -14588,6 +14676,7 @@ mod tests {
             (STATUS_FUZZY_JUMP_ONLY_DIRECTORY, C_YELLOW),
             (STATUS_PROPERTIES_ONLY_DIRECTORY, C_YELLOW),
             (STATUS_SEARCH_ONLY_DIRECTORY, C_YELLOW),
+            (STATUS_NEW_FOLDER_ONLY_DIRECTORY, C_YELLOW),
             // N08 / N09: 上限・空対象・空検索語の拒否。
             (STATUS_MAX_TABS_PREFIX, C_YELLOW),
             (STATUS_RESTORE_EMPTY, C_YELLOW),
@@ -15533,6 +15622,7 @@ mod tests {
             (STATUS_FUZZY_JUMP_ONLY_DIRECTORY, dark.yellow, light.yellow),
             (STATUS_PROPERTIES_ONLY_DIRECTORY, dark.yellow, light.yellow),
             (STATUS_SEARCH_ONLY_DIRECTORY, dark.yellow, light.yellow),
+            (STATUS_NEW_FOLDER_ONLY_DIRECTORY, dark.yellow, light.yellow),
             (STATUS_MAX_TABS_PREFIX, dark.yellow, light.yellow),
             (STATUS_RESTORE_EMPTY, dark.yellow, light.yellow),
             (STATUS_SEARCH_EMPTY_QUERY, dark.yellow, light.yellow),
@@ -16851,7 +16941,7 @@ mod tests {
 
     #[test]
     fn display_name_for_search_prefers_matching_roots_then_full_path() {
-        use super::{display_name_for, ViewSource};
+        use super::{display_name_for, source_label_for, ViewSource};
         use crate::model::Entry;
         use std::ffi::OsString;
 
@@ -16921,9 +17011,91 @@ mod tests {
             "docs/notes.txt"
         );
 
+        // R2-UX: two roots holding a file with the same name. The relative
+        // paths can still be identical, so the walked-root badge is what
+        // actually tells the two search results apart.
+        let make_same = |path: PathBuf| Entry {
+            name: OsString::from("README.md"),
+            name_text: "README.md".to_string(),
+            sort_key: "readme.md".to_string(),
+            path,
+            is_dir: false,
+            is_symlink: false,
+            size: 1,
+            modified: None,
+        };
+        let first = make_same(PathBuf::from("/work/project/docs/README.md"));
+        let second = make_same(PathBuf::from("/data/shared/docs/README.md"));
+        assert_eq!(
+            display_name_for(&first, ViewSource::Search, &cwd, &roots),
+            "docs/README.md"
+        );
+        assert_eq!(
+            display_name_for(&second, ViewSource::Search, &cwd, &roots),
+            "docs/README.md"
+        );
+        assert_eq!(
+            source_label_for(&first, &roots),
+            Some("出典: project".to_string())
+        );
+        assert_eq!(
+            source_label_for(&second, &roots),
+            Some("出典: shared".to_string())
+        );
+
         assert_eq!(
             display_name_for(&in_other_root, ViewSource::Directory, &cwd, &roots),
             "notes.txt"
+        );
+    }
+
+    #[test]
+    fn source_label_for_uses_the_most_specific_walked_root() {
+        use super::{source_label_for, walked_search_roots, SearchRunStats};
+        use crate::model::Entry;
+        use std::ffi::OsString;
+
+        let outer = PathBuf::from("/data");
+        let inner = PathBuf::from("/data/shared");
+        let other = PathBuf::from("/work/project");
+        let roots = vec![outer.clone(), inner.clone(), other.clone()];
+        let make = |path: PathBuf| Entry {
+            name: OsString::from("notes.txt"),
+            name_text: "notes.txt".to_string(),
+            sort_key: "notes.txt".to_string(),
+            path,
+            is_dir: false,
+            is_symlink: false,
+            size: 1,
+            modified: None,
+        };
+        let in_inner = make(PathBuf::from("/data/shared/docs/notes.txt"));
+        // The inner root is the actual origin even though the outer one also
+        // matches via strip_prefix.
+        assert_eq!(
+            source_label_for(&in_inner, &roots),
+            Some("出典: shared".to_string())
+        );
+        assert_eq!(
+            source_label_for(&in_inner, &[outer.clone(), other.clone()]),
+            Some("出典: data".to_string())
+        );
+        assert_eq!(
+            source_label_for(&make(PathBuf::from("/elsewhere/notes.txt")), &roots),
+            None
+        );
+        // BH17: only roots the walk entered are eligible as origins.
+        let walked = walked_search_roots(
+            &roots,
+            SearchRunStats {
+                walked_roots: 2,
+                ..Default::default()
+            },
+        );
+        assert_eq!(walked, &roots[..2]);
+        assert_eq!(
+            source_label_for(&make(PathBuf::from("/work/project/notes.txt")), walked),
+            None
         );
     }
 
@@ -22711,6 +22883,10 @@ mod tests {
             new_folder.contains("self.view != ViewSource::Directory"),
             "new_folder itself must enforce the toolbar's Directory guard"
         );
+        assert!(
+            new_folder.contains("self.status = STATUS_NEW_FOLDER_ONLY_DIRECTORY.to_string()"),
+            "the Directory guard must explain the refusal, not silently ignore it"
+        );
         let row_menu = source_region(source, "    fn entry_menu(", "    /// BM01");
         let empty_menu = source_region(
             source,
@@ -22740,6 +22916,10 @@ mod tests {
         assert!(reload.contains("reload_reruns_search(self.view)"));
         assert!(reload.contains("self.run_search(cx)"));
         assert!(reload.contains("self.reload(cx)"));
+        assert!(
+            reload.contains("self.search.query.is_empty() && !self.search.running"),
+            "BO07: F5 with an empty query must keep STATUS_SEARCH_PROMPT"
+        );
         let key_action = source_region(
             source,
             "            Reload =>",
@@ -22775,6 +22955,21 @@ mod tests {
         );
         assert_eq!(flush.matches("save_settings()").count(), 1);
         assert!(flush.contains("settings_write_needs_rollback("));
+        // BO08: the entity is gone before the debounce timer can fire on
+        // window close, so the close hook must cancel it and flush in place.
+        let close = source_region(
+            source,
+            "window.on_window_should_close(",
+            "            focus_handle.focus(",
+        );
+        assert!(
+            close.contains("this.column_width_save_task.take()"),
+            "close must drop the pending debounce task"
+        );
+        assert!(
+            close.contains("this.flush_column_widths(cx)"),
+            "close must persist column widths before the entity disappears"
+        );
     }
 
     #[test]

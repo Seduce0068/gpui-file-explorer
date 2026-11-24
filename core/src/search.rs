@@ -907,7 +907,12 @@ mod tests {
             ..Default::default()
         };
         let found = search_by_name(&dir, "txt", options, &AtomicBool::new(false));
-        assert_eq!(names(&found).len(), 3);
+        // BO16: compare the whole ordered list, not just its length, so a
+        // missing/extra match or a changed sort order is detected.
+        assert_eq!(
+            names(&found),
+            vec![".hidden.txt", "inside.txt", "visible.txt"]
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

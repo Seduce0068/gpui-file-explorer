@@ -254,6 +254,26 @@ function retainSelectedPaths(prev, next) {
   return previous.filter((path) => nextSet.has(path));
 }
 
+// BO06: ソートや検索で一覧が差し替わると、同じ focusIndex が別行を指す。
+// フォーカス行を path で新一覧へ再解決し、見つからなければ anchorPath
+// （最後に触れた行）へ逃がす。両方とも無い場合は index を新長さへクランプ
+// する。入力を変更しない純粋関数（描画前に旧一覧を渡すこと）。
+function resolveFocusIndex(previousEntries, nextEntries, focusIndex, anchorPath) {
+  const next = Array.isArray(nextEntries) ? nextEntries : [];
+  if (next.length === 0) return 0;
+  const previous = Array.isArray(previousEntries) ? previousEntries : [];
+  const index = Number.isInteger(focusIndex) ? focusIndex : -1;
+  const focusedPath = index >= 0 && index < previous.length
+    ? previous[index]?.path
+    : null;
+  for (const candidate of [focusedPath, anchorPath]) {
+    if (typeof candidate !== 'string' || candidate.length === 0) continue;
+    const resolved = next.findIndex((entry) => entry && entry.path === candidate);
+    if (resolved >= 0) return resolved;
+  }
+  return Math.min(Math.max(index, 0), next.length - 1);
+}
+
 // BN05: 選択操作行の「詳細」ボタンが表示する行を決める pure helper。
 // selectedEntries()[0] は描画順の先頭にすぎず、最後に触れた行とは限らない。
 // フォーカス行が選択されていればそれを優先し、そうでなければ anchorPath
@@ -439,6 +459,8 @@ function toEntry(raw) {
     path: String(pick(value, 'path', 'full_path', 'fullPath') ?? name),
     isDir: Boolean(pick(value, 'is_dir', 'isDir')),
     isSymlink: Boolean(pick(value, 'is_symlink', 'isSymlink')),
+    // BO14: core が oversized 等で使う kind を落とさずビューへ引き継ぐ。
+    kind: pick(value, 'kind'),
     size: Number(pick(value, 'size', 'len') ?? 0),
     modified: pick(value, 'modified'),
     matchLine: pick(value, 'match_line', 'matchLine'),
@@ -514,6 +536,8 @@ function render(entries, { heading, query = '', mode = 'list' } = {}) {
   const options = { heading, query, mode };
   state.lastRender = { entries, options };
   const view = sortEntries(entries, currentSort().key, currentSort().dir);
+  // BO06: 再描画前のフォーカス行 path を resolveFocusIndex へ渡すため保存する。
+  const previousEntries = state.renderedEntries;
 
   // BB05: 一覧内のフォーカスは replaceChildren() で失われるため、先に保存する。
   // 一覧外（検索欄 / ソート select / ボタン）にフォーカスがある場合は何もしない。
@@ -533,7 +557,11 @@ function render(entries, { heading, query = '', mode = 'list' } = {}) {
   if (state.anchorPath && !state.selectedPaths.includes(state.anchorPath)) {
     state.anchorPath = state.selectedPaths.length ? state.selectedPaths[0] : null;
   }
-  if (state.focusIndex >= view.length) state.focusIndex = Math.max(0, view.length - 1);
+  // BO06: ソートで index が入れ替わっても同じ行（無ければ anchorPath）に
+  // フォーカスを再解決し、BN05 の詳細対象が変わらないようにする。
+  state.focusIndex = resolveFocusIndex(
+    previousEntries, view, state.focusIndex, state.anchorPath,
+  );
 
   if (view.length === 0) {
     const li = document.createElement('li');
@@ -833,13 +861,17 @@ function onListDblClick(event) {
   const { entry } = entryFromEvent(event);
   if (!entry) return;
   event.preventDefault();
+  // BN05/BO04: 詳細ボタン・details キーと同じ detailTargetEntry 経路へ統一する。
+  // 描画順の先頭選択行やイベント行ではなく、最後に触れた行を表示する。
+  const chosen = detailTargetEntry(
+    state.renderedEntries, state.selectedPaths, state.focusIndex, state.anchorPath,
+  ) ?? entry;
   if (state.selectMode && state.selectedPaths.length) {
-    const chosen = selectedEntries()[0] ?? entry;
     showEntryMeta(chosen);
     setStatus(`選択確定: ${chosen.name}（${state.selectedPaths.length} 件）`);
     return;
   }
-  showEntryMeta(entry);
+  showEntryMeta(chosen);
 }
 
 function onListContextMenu(event) {
@@ -1015,9 +1047,11 @@ function onListKeyDown(event) {
     // 既に null を返すため、ブラウザ / OS のショートカットを横取りしない。
     case 'details': {
       event.preventDefault();
-      const { entry } = entryFromEvent(event);
-      const firstSelected = selectedEntries()[0];
-      showEntryMeta(entry ?? firstSelected ?? entryAt(state.focusIndex));
+      // BN05/BO04: 詳細ボタン / ダブルクリックと同じ対象解決へ統一する。
+      // 未選択行へフォーカスが動いても anchorPath（最後に触れた行）を優先する。
+      showEntryMeta(detailTargetEntry(
+        state.renderedEntries, state.selectedPaths, state.focusIndex, state.anchorPath,
+      ));
       return;
     }
     case 'enter': {
@@ -1335,6 +1369,9 @@ const DEMO_ENTRIES = [
   { name: 'src', path: '/demo/src', is_dir: true, size: 0 },
   { name: 'notes.txt', path: '/demo/notes.txt', is_dir: false, size: 512 },
   { name: 'Cargo.toml', path: '/demo/Cargo.toml', is_dir: false, size: 330 },
+  // BO14: core の oversized シグナルをデモでも保持するサンプル。
+  { name: 'huge.png', path: '/demo/huge.png', is_dir: false, size: 8 * 1024 * 1024 + 1,
+    kind: 'oversized' },
 ];
 
 function useDemo(message) {
@@ -1460,6 +1497,7 @@ if (typeof module !== 'undefined' && module.exports) {
     selectionRange,
     nextRangeArmed,
     retainSelectedPaths,
+    resolveFocusIndex,
     detailTargetEntry,
     compareNatural,
     compareNames,

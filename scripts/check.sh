@@ -5,7 +5,8 @@
 #
 #   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
 #   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
-#   pwa: node --check pwa/sw.js + pwa/main.js + PRECACHE asset existence
+#   pwa: node --check pwa/sw.js + node --input-type=module --check < pwa/main.js
+#        + PRECACHE asset existence
 #        (parsed from sw.js) + node --test pwa/main.test.js
 #        (node --check runs whenever node exists; the test suite is SKIPPED
 #        when node:test is unavailable, and the pure-helper subset still runs
@@ -315,14 +316,20 @@ run_pwa_test() {
 	# just as silently when node:test is unavailable; check both files.
 	echo '==> pwa: node --check pwa/sw.js'
 	node --check pwa/sw.js
-	echo '==> pwa: node --check pwa/main.js'
-	node --check pwa/main.js
+	# BO02: index.html loads main.js via <script type="module"> (ESM = strict),
+	# but a plain `node --check` parses it as CommonJS/sloppy. Parsing the same
+	# source with --input-type=module catches strict-only syntax errors that
+	# would otherwise only appear in the browser. sw.js stays classic.
+	echo '==> pwa: node --input-type=module --check < pwa/main.js'
+	node --input-type=module --check < pwa/main.js
 	# BM15/BN04: the PRECACHE string assertions never prove the enumerated
 	# assets are actually on disk, and a hand-maintained list silently drifts
 	# from sw.js (the generated snippet inline0.js was missing entirely).
 	# Parse the PRECACHE array itself and require every entry to exist. Entries
 	# under gitignored pwa/pkg/ are only checked when that tree is present;
-	# the five tracked shell files are always checked.
+	# the five tracked shell files are always checked. BO03: comments are
+	# masked, both quote styles are accepted, absolute/.. paths are rejected
+	# and the required shell asset set must be present.
 	if ! command -v python3 >/dev/null 2>&1; then
 		echo "python3 is not installed; skipping the PRECACHE asset existence gate."
 		record_missing_tool python3
@@ -333,24 +340,95 @@ import sys
 from pathlib import Path
 
 source = Path("pwa/sw.js").read_text(encoding="utf-8")
-start = source.find("const PRECACHE = [")
+
+
+def strip_js_comments(text):
+    """Mask // and block comments while preserving quoted string literals."""
+    out = []
+    index = 0
+    quote = None
+    while index < len(text):
+        char = text[index]
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if quote is not None:
+            out.append(char)
+            if char == "\\" and following:
+                out.append(following)
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in ("'", '"', "`"):
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+        if char == "/" and following == "/":
+            while index < len(text) and text[index] != "\n":
+                out.append(" ")
+                index += 1
+            continue
+        if char == "/" and following == "*":
+            out.append("  ")
+            index += 2
+            while index < len(text) and not (
+                text[index] == "*" and text[index + 1 : index + 2] == "/"
+            ):
+                out.append("\n" if text[index] == "\n" else " ")
+                index += 1
+            if index < len(text):
+                out.append("  ")
+                index += 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+cleaned = strip_js_comments(source)
+start = cleaned.find("const PRECACHE = [")
 if start < 0:
     sys.exit("error: pwa/sw.js に const PRECACHE 配列がありません")
-end = source.find("];", start)
+end = cleaned.find("];", start)
 if end < 0:
     sys.exit("error: pwa/sw.js の PRECACHE 配列が閉じられていません")
-entries = re.findall(r"'([^']+)'", source[start:end])
+block = cleaned[start + len("const PRECACHE = [") : end]
+# BO03: quoted entries may use either quote style; comments are already masked.
+entries = [match.group(2) for match in re.finditer(r"""(['"])(.*?)\1""", block, re.S)]
 if not entries:
     sys.exit("error: pwa/sw.js の PRECACHE 配列が空です")
+
+required = {
+    "./",
+    "./index.html",
+    "./manifest.webmanifest",
+    "./main.js",
+    "./style.css",
+    "./pkg/gfe_core.js",
+    "./pkg/gfe_core_bg.wasm",
+}
+missing_required = sorted(required - set(entries))
+if missing_required:
+    for entry in missing_required:
+        print(f"error: PRECACHE に必須アセットがありません: {entry}", file=sys.stderr)
+    sys.exit(1)
 
 pwa_dir = Path("pwa")
 pkg_generated = (pwa_dir / "pkg").is_dir()
 missing = []
 checked = 0
 for entry in entries:
+    # BO03: reject absolute paths, parent traversal, escapes and control chars
+    # before touching the filesystem; every literal must resolve inside pwa/.
     if not entry.startswith("./"):
         sys.exit(f"error: PRECACHE エントリは ./ 相対である必要があります: {entry}")
     relative = entry[2:]
+    if any(segment == ".." for segment in re.split(r"[/\\]", relative)):
+        sys.exit(f"error: PRECACHE エントリに .. は使用できません: {entry}")
+    if "\\" in entry or any(ord(char) < 0x20 for char in entry):
+        sys.exit(f"error: PRECACHE エントリに不正な文字があります: {entry!r}")
     target = pwa_dir / relative
     # pwa/pkg/ は gitignore 済みの生成物。clean checkout では存在しないため
     # その場合のみ存在照合をスキップする（追跡対象のシェルは常に照合）。
@@ -556,15 +634,29 @@ if manifest_root is not None:
 # in res/values*/*.xml (qualifier directories such as values-night/ and
 # values-v29/ are included). Framework styles (@android:style/...) are not
 # matched by the @style/ pattern and are intentionally out of scope.
+# BO10: keep definitions/references keyed by (resource qualifier, name). An
+# unqualified reference (from the manifest or values/) must resolve to a style
+# defined in the unqualified values/ directory; a values-night/ definition must
+# not silently satisfy it. Framework styles (@android:style/...) stay out of scope.
+STYLE_REF_RE = re.compile(r"@style/([A-Za-z0-9_.]+)")
 style_refs = set()
 style_defs = set()
 
 
-def collect_style_refs(element):
-    for value in element.attrib.values():
-        style_refs.update(re.findall(r"@style/([A-Za-z0-9_.]+)", value))
+def qualifier_of(directory_name):
+    """values -> '', values-night -> 'night', values-v29 -> 'v29'."""
+    return directory_name[len("values") :].lstrip("-")
+
+
+def collect_style_refs(element, qualifier=""):
+    # BO10: references may live in element text/tail (e.g. an <item> body), not
+    # only in attributes; recurse through children with the same qualifier.
+    for value in [element.text, element.tail, *element.attrib.values()]:
+        if value:
+            for name in STYLE_REF_RE.findall(value):
+                style_refs.add((qualifier, name))
     for child in element:
-        collect_style_refs(child)
+        collect_style_refs(child, qualifier)
 
 
 if manifest_root is not None:
@@ -583,15 +675,24 @@ for values_file in values_files:
     except (ET.ParseError, OSError) as exc:
         errors.append(f"{values_file.name} が well-formed ではありません: {exc}")
         continue
-    collect_style_refs(values_root)
+    qualifier = qualifier_of(values_file.parent.name)
+    collect_style_refs(values_root, qualifier)
     for style_node in values_root.iter("style"):
         style_name = style_node.get("name")
         if style_name:
-            style_defs.add(style_name)
+            style_defs.add((qualifier, style_name))
 
-for style_ref in sorted(style_refs - style_defs):
+for qualifier, style_ref in sorted(style_refs):
+    if (qualifier, style_ref) in style_defs:
+        continue
+    # A qualified reference may fall back to the default values/ definition,
+    # but an unqualified reference may never rely on a qualified-only style.
+    if qualifier and ("", style_ref) in style_defs:
+        continue
+    where = f"values-{qualifier}/" if qualifier else "values/"
     errors.append(
-        f"@style/{style_ref} に対応する <style name=\"{style_ref}\"> が res/values*/ にありません"
+        f"@style/{style_ref} に対応する <style name=\"{style_ref}\"> が "
+        f"res/{where} にありません"
     )
 
 root_gradle = (root / "build.gradle.kts").read_text(encoding="utf-8")
@@ -730,25 +831,45 @@ PY
 run_desktop_file_validate() {
 	# BN13: the Exec/TryExec first-token check used to live only in
 	# build-deb.sh --verify, so a clean checkout never ran it. The .desktop is
-	# tracked source: verify it here with bash+grep, independently of any .deb.
+	# tracked source: verify it here with bash, independently of any .deb.
+	# BO12: inspect all Exec/TryExec lines and reject duplicate keys.
 	local desktop="packaging/linux/gpui-file-explorer.desktop"
-	local pkg exec_line try_exec_line exec_program try_program
+	local pkg line program exec_count=0 try_count=0
 	pkg="$(basename -- "${desktop}" .desktop)"
-	exec_line="$(grep -E '^Exec=' "${desktop}" || true)"
-	try_exec_line="$(grep -E '^TryExec=' "${desktop}" || true)"
-	if [ -z "${exec_line}" ] || [ -z "${try_exec_line}" ]; then
+	# BO12: validate *every* Exec / TryExec line (the old grep only inspected
+	# the first one) and reject duplicate keys, which must stay unique in a
+	# desktop entry.
+	while IFS= read -r line || [ -n "${line}" ]; do
+		case "${line}" in
+			Exec=*)
+				exec_count=$((exec_count + 1))
+				program="${line#Exec=}"
+				program="${program%%[[:space:]]*}"
+				if [ "${program}" != "${pkg}" ]; then
+					echo "error: ${desktop} の Exec 先頭トークンが ${pkg} ではありません: ${program}" >&2
+					exit 1
+				fi
+				;;
+			TryExec=*)
+				try_count=$((try_count + 1))
+				program="${line#TryExec=}"
+				program="${program%%[[:space:]]*}"
+				if [ "${program}" != "${pkg}" ]; then
+					echo "error: ${desktop} の TryExec 先頭トークンが ${pkg} ではありません: ${program}" >&2
+					exit 1
+				fi
+				;;
+		esac
+	done < "${desktop}"
+	if [ "${exec_count}" -eq 0 ] || [ "${try_count}" -eq 0 ]; then
 		echo "error: ${desktop} に Exec / TryExec がありません" >&2
 		exit 1
 	fi
-	exec_program="${exec_line#Exec=}"
-	exec_program="${exec_program%%[[:space:]]*}"
-	try_program="${try_exec_line#TryExec=}"
-	try_program="${try_program%%[[:space:]]*}"
-	if [ "${exec_program}" != "${pkg}" ] || [ "${try_program}" != "${pkg}" ]; then
-		echo "error: ${desktop} の Exec / TryExec 先頭トークンが ${pkg} ではありません: ${exec_program} / ${try_program}" >&2
+	if [ "${exec_count}" -gt 1 ] || [ "${try_count}" -gt 1 ]; then
+		echo "error: ${desktop} に Exec / TryExec の重複があります: Exec=${exec_count} TryExec=${try_count}" >&2
 		exit 1
 	fi
-	echo "照合 OK: ${desktop} の Exec / TryExec == ${pkg}"
+	echo "照合 OK: ${desktop} の Exec / TryExec == ${pkg} (重複なし)"
 	if command -v desktop-file-validate >/dev/null 2>&1; then
 		echo '==> desktop: desktop-file-validate packaging/linux/gpui-file-explorer.desktop'
 		desktop-file-validate packaging/linux/gpui-file-explorer.desktop
