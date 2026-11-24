@@ -2168,6 +2168,35 @@ status: current
 - [x] **BH19** PWA 設計文書が React+Worker 前提のまま — 対応: loop21
 - [x] **BH20** 終了時ログが ChangedOnDisk を汎用 Io としてしか記録 — 対応: loop21
 
+## 進行中（ループ22 バックログ）
+
+### 優先度: 高（ループ22・confirmed）
+
+- [x] **BI01** SW navigation の cache.put 失敗が最新 HTML を古いシェルで上書き — 対応: loop22
+- [x] **BI02** save_settings のスナップショットが実質 no-op（BH13 未解消） — 対応: loop22
+- [x] **BI03** 更新通知が aria-live を占有し以降のステータスが永久抑制 — 対応: loop22
+- [x] **BI04** SW precache 失敗オラクルが無関係な throw でも満たされる — 対応: loop22
+- [x] **BI05** CountedPaths の app 側配線にオラクルが無い — 対応: loop22
+
+### 優先度: 中（ループ22・confirmed）
+
+- [x] **BI06** network-first が現行 CACHE_NAME を新 HTML で汚染 — 対応: loop22
+- [x] **BI07** caches.match/delete が全キャッシュ横断し precache を隠蔽/削除 — 対応: loop22
+- [x] **BI08** README の DEB preflight 記述が実装より強い — 対応: loop22
+- [x] **BI09** cargo-audit スキップ文言 (CI runs it) が poc/ で誤り — 対応: loop22
+- [x] **BI10** walked_roots に値を検証するオラクルが無い — 対応: loop22
+- [x] **BI11** SW ライフサイクルテストが文字列存在のみ — 対応: loop22
+- [x] **BI12** snippet ハッシュ整合性が clean checkout で丸ごとスキップ — 対応: loop22
+- [x] **BI13** DEB 鮮度ゲートがホスト生成 native-libs を含む — 対応: loop22
+- [x] **BI14** DEB に desktop database 更新 maintainer script が無い — 対応: loop22
+- [x] **BI15** android/ に .gitignore が無い — 対応: loop22
+- [x] **BI16** check.sh が Android scaffold を検証していない — 対応: loop22
+- [x] **BI17** ChangedOnDisk 旧「再読込」導線のコメントが残存 — 対応: loop22
+
+### 優先度: 低（ループ22・confirmed）
+
+- [x] **BI18** SW snippet ハッシュ直書きと clean checkout の不整合 — 対応: loop22
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

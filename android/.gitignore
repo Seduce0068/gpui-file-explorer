@@ -1,0 +1,7 @@
+# Gradle / Android build outputs and host-specific SDK paths.
+# Keep the tracked Kotlin/Gradle sources and manifest; ignore generated trees.
+/.gradle/
+/local.properties
+/app/build/
+/.idea/
+*.iml

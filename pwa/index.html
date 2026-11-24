@@ -22,6 +22,9 @@
     <header class="app-header">
       <h1>GFE Viewer</h1>
       <p id="status" class="status" role="status" aria-live="polite">初期化中…</p>
+      <!-- BI03: 更新通知は #status と別の aria-live ノードへ書く。
+           通常通知が更新通知を永久に上書きできなくなるのを防ぐ（BH02）。 -->
+      <p id="sw-update" class="status" role="status" aria-live="polite" hidden></p>
       <!-- SW 更新時に main.js が表示する再読込導線（BH02） -->
       <button id="update-reload" type="button" hidden>新しい版を読み込む</button>
     </header>

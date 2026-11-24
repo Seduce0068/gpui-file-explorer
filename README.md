@@ -301,11 +301,15 @@ CI と同じ範囲を手元で回すスクリプトを用意しています（�
   スニペットのハッシュに依存するアサーションのみ `SKIPPED` にします。
 - **DEB**: `packaging/linux/build-deb.sh --verify`（読み取り専用）。
   `packaging/linux/build/` も gitignore 済みのため、ビルド済み `.deb` が無い
-  clean checkout ではゲート列の先頭で `SKIPPED` を表示し、後続のコードゲートを
-  無駄に実行しません。
+  clean checkout ではゲート列の先頭で `SKIPPED` を表示し、DEB 検証ゲート
+  自体は実行しません。ただしコードゲート（Rust / PWA / Android）は通常どおり
+  実行されます（先頭の通知は後続ゲートのスキップを意味しません）。
+- **Android**: `python3` 標準ライブラリで AndroidManifest.xml の well-formedness と
+  build.gradle.kts の固定バージョン文字列を静的に検証します（ビルドは行いません）。
+  scaffold が見つからない場合は `SKIPPED` です。
 
 いずれの `SKIPPED` も `--strict` ではハード失敗になります（後述）。
-CI は Rust 系ゲートのみで、PWA / DEB は対象外です。
+CI は Rust 系ゲートのみで、PWA / DEB / Android は対象外です。
 
 ```bash
 bash scripts/check.sh              # app/poc/core/win32: fmt/check/test/clippy +
@@ -319,9 +323,9 @@ bash scripts/check.sh --no-release # app の release check/test のみ省略。
 bash scripts/check.sh --strict     # 必要なツール／成果物が無い時に失敗
                                    # （既定は SKIPPED）。ツールは cargo
                                    # audit / deny / vet に加え node と
-                                   # node:test、dpkg-deb / dpkg / realpath /
-                                   # tar、成果物はビルド済み .deb と
-                                   # pwa/pkg/ が対象。
+                                   # node:test、python3、dpkg-deb / dpkg /
+                                   # realpath / tar、成果物はビルド済み .deb、
+                                   # pwa/pkg/ と android/ scaffold が対象。
 bash scripts/check.sh --app        # app/ + core/win32 + cross-target checks（release 検証を含む）。
 bash scripts/check.sh --poc        # poc/ に加え、workspace member の core / win32 の
                                    # test+clippy と wasm32 / windows-gnu の
@@ -333,7 +337,9 @@ bash scripts/check.sh --poc        # poc/ に加え、workspace member の core 
   `cargo test` 結果を参照（固定値を記載すると drift するため）。
 - clean checkout では PWA / DEB の成果物ゲートが `SKIPPED` になります
   （`--strict` を付けると両方とも失敗します）。これは生成物が gitignore 済み
-  であることによる想定挙動で、コードゲートの失敗ではありません。
+  であることによる想定挙動で、コードゲートの失敗ではありません。Android の
+  scaffold は追跡対象のため通常は実行されますが、ファイルが欠けた場合は
+  同様に `SKIPPED`（`--strict` では失敗）になります。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
 
 ### OFFLINE / headless 検証

@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# DEBIAN/postrm: drop the removed .desktop entry from the shared desktop
+# database. As in postinst, update-desktop-database may be absent, so the call
+# is guarded and never fails package removal.
+set -e
+if command -v update-desktop-database >/dev/null 2>&1; then
+	update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+exit 0

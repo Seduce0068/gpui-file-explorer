@@ -1170,6 +1170,20 @@ fn settings_with_live_save_error(snapshot: Settings, live: &Settings) -> Setting
     snapshot
 }
 
+/// BH13: restore the in-memory settings from the persisted file after a real
+/// write refusal. `disk` is freshly read from the settings file (see
+/// [`Explorer::save_settings`]); previewed fields such as bookmarks, saved
+/// searches, `last_dir` / `recent_dirs` and tabs must come from it, otherwise
+/// a ChangedOnDisk refusal leaves them in memory and a restart loses them.
+/// Only the live failure Cells are carried over so the status bar keeps the
+/// concrete reason (AW02 / R2-BG01).
+///
+/// Pure over `Settings` values so a regression test can assert that the
+/// previewed values actually return to the disk values without a GPUI context.
+fn settings_reconciled_after_save(disk: Settings, live: &Settings) -> Settings {
+    settings_with_live_save_error(disk, live)
+}
+
 /// Status shown after undoing a trash operation. A zero restore count means
 /// nothing came back, so it is reported as a failure (and the caller keeps the
 /// undo entry) instead of claiming a successful "0 件" restore.
@@ -2892,6 +2906,19 @@ struct SearchRunStats {
     /// Roots the walk actually entered. The cap or cancellation can leave the
     /// remaining roots untouched, so the summary must not show all roots (BH17).
     walked_roots: usize,
+}
+
+/// Number of roots a completed search reports in its scope label (BH17).
+/// A capped or cancelled walk leaves the tail of `active_roots` untouched, so
+/// the walked count wins whenever the walk actually entered a root; the active
+/// list is only the fallback for sessions that recorded no walk stats. Pure so
+/// the "3 active roots, 2 walked" case is directly unit-testable.
+fn walked_root_count(stats: SearchRunStats, active_roots: usize) -> usize {
+    if stats.walked_roots > 0 {
+        stats.walked_roots
+    } else {
+        active_roots
+    }
 }
 
 /// Build the incomplete-search part of the result summary. Kept as a pure
@@ -5333,15 +5360,17 @@ impl Explorer {
         if let Some(bounds) = self.window_bounds {
             self.settings.primary_window_mut().bounds = Some(bounds);
         }
-        // BH13: bookmarks, saved searches, last_dir/recent_dirs and tabs also
-        // preview values in memory before persisting them. Without a snapshot
-        // here a ChangedOnDisk refusal leaves those previews in memory, and a
-        // later reload silently loses the user's last action. The seven paths
-        // that roll back explicitly still win with their earlier snapshot.
-        let snapshot = self.settings.clone();
         let saved = self.settings.save_with_reason().is_ok();
+        // BH13: bookmarks, saved searches, last_dir/recent_dirs and tabs are
+        // previewed in memory *before* this call, so a snapshot taken here is
+        // the preview itself and restoring it is a no-op. On a real refusal the
+        // persisted file (or, for ChangedOnDisk, another instance's newer file)
+        // is the only source of truth for those fields: re-read it so a later
+        // restart does not silently drop the preview that was never written.
+        // The seven paths that snapshot before previewing still apply their
+        // earlier snapshot in `rollback_settings`; both agree on disk fields.
         if settings_write_needs_rollback(saved) && !self.settings.write_was_skipped() {
-            self.settings = settings_with_live_save_error(snapshot, &self.settings);
+            self.settings = settings_reconciled_after_save(Settings::load(), &self.settings);
             self.keymap = KeyMap::from_settings(&self.settings);
         }
         saved
@@ -10408,12 +10437,8 @@ impl Explorer {
                 } else {
                     // BH17: show the roots that were really walked. A capped
                     // search can leave the tail of `active_roots` untouched.
-                    let stats = self.search.last_stats;
-                    let count = if stats.walked_roots > 0 {
-                        stats.walked_roots
-                    } else {
-                        self.search.active_roots.len()
-                    };
+                    let count =
+                        walked_root_count(self.search.last_stats, self.search.active_roots.len());
                     if count > 0 {
                         format!("・{}（{} 箇所）", scope.label(), count)
                     } else {
@@ -13847,32 +13872,33 @@ mod tests {
         saved_search_save_status, search_close_status, search_filter_status,
         search_summary_notices, set_view_status, settings_change_affects_list,
         settings_discard_status, settings_editor_write_failure_reason, settings_read_only_status,
-        settings_reset_status, settings_row_key_is_bare, settings_save_error_status,
-        settings_save_status, settings_sort_next, settings_tab_from_digit_key, settings_tab_step,
-        settings_validation_status, settings_with_live_save_error, settings_write_needs_rollback,
-        settings_write_status, should_clear_clipboard, should_forward_progress, source_presence,
-        split_undo_trash_items, startup_dir_from, startup_save_failure_status, status_color,
-        summarize_op, tab_label, terminal_dir_for, terminal_disabled_status,
-        terminal_failed_status, terminal_process, terminal_started_status, terminal_target_dir,
-        theme_choice_label, thumbnail_eligible, transfer_log_level, transfer_progress_status,
-        transfer_skip_notice, transferable_drop_paths, trash_batch, trash_delete_status,
-        trash_key_action, trash_load_error_status, trash_redo_cancelled_status,
-        trash_undo_outcome_status, trash_undo_status, trashed_ids_from_snapshot,
-        undo_exists_status, undo_history_key_closes, undo_missing_status, upsert_keymap_override,
-        validate_cli_dir, version_label, visible_secondary_slots, AppPalette, CliAction,
-        DebugSettingsOverrides, Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding,
-        KeyMap, KeymapInput, Modifiers, PropertiesErrorReaction, SearchRunStats, SecondarySlot,
-        SettingsTab, SortKey, SourcePresence, TrashKeyAction, UndoAction, ViewLayout, C_BLUE,
-        C_DIM, C_GREEN, C_MUTED, C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX,
-        GRID_ROW_PADDING_PX, KEYMAP_FORMAT_HINT, PROGRESS_THROTTLE, SEARCH_GLOBAL_CAP,
-        SECONDARY_SLOT_PRIORITY, SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED,
-        STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
-        STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
-        STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
-        STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY,
-        STATUS_DROP_NOT_FOUND, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-        STATUS_ERROR_MARKERS, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
-        STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
+        settings_reconciled_after_save, settings_reset_status, settings_row_key_is_bare,
+        settings_save_error_status, settings_save_status, settings_sort_next,
+        settings_tab_from_digit_key, settings_tab_step, settings_validation_status,
+        settings_with_live_save_error, settings_write_needs_rollback, settings_write_status,
+        should_clear_clipboard, should_forward_progress, source_presence, split_undo_trash_items,
+        startup_dir_from, startup_save_failure_status, status_color, summarize_op, tab_label,
+        terminal_dir_for, terminal_disabled_status, terminal_failed_status, terminal_process,
+        terminal_started_status, terminal_target_dir, theme_choice_label, thumbnail_eligible,
+        transfer_log_level, transfer_progress_status, transfer_skip_notice,
+        transferable_drop_paths, trash_batch, trash_delete_status, trash_key_action,
+        trash_load_error_status, trash_redo_cancelled_status, trash_undo_outcome_status,
+        trash_undo_status, trashed_ids_from_snapshot, undo_exists_status, undo_history_key_closes,
+        undo_missing_status, upsert_keymap_override, validate_cli_dir, version_label,
+        visible_secondary_slots, walked_root_count, AppPalette, CliAction, DebugSettingsOverrides,
+        Explorer, FuzzyCandidate, FuzzySource, KeyAction, KeyBinding, KeyMap, KeymapInput,
+        Modifiers, PropertiesErrorReaction, SearchRunStats, SecondarySlot, SettingsTab, SortKey,
+        SourcePresence, TrashKeyAction, UndoAction, ViewLayout, C_BLUE, C_DIM, C_GREEN, C_MUTED,
+        C_RED, C_TEXT, C_YELLOW, GRID_CELL_WIDTH_PX, GRID_GAP_PX, GRID_ROW_PADDING_PX,
+        KEYMAP_FORMAT_HINT, PROGRESS_THROTTLE, SEARCH_GLOBAL_CAP, SECONDARY_SLOT_PRIORITY,
+        SIDEBAR_WIDTH_PX, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+        STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
+        STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+        STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
+        STATUS_CHAR_BUDGET_PER_TIER, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
+        STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_MARKERS,
+        STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_NO_PREVIEW,
+        STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_KEYMAP_INVALID_PREFIX,
         STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
         STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MISSING_COUNT_SUFFIX,
         STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX, STATUS_NO_SELECTION,
@@ -13893,7 +13919,7 @@ mod tests {
         STATUS_WARNING_MARKERS, THEME_LABEL_DARK, THEME_LABEL_LIGHT, THEME_LABEL_SYSTEM,
     };
     use crate::icons::FileKind;
-    use crate::model::{Entry, FsError};
+    use crate::model::{Entry, FsError, SavedSearch};
     use crate::ops::{OpError, OpStats};
     use crate::settings::{Settings, SettingsSaveError, ThemeChoice, MAX_KEYMAP_OVERRIDES};
     use crate::strings::{
@@ -16424,6 +16450,105 @@ mod tests {
         );
     }
 
+    // BH03: the app must hand one shared path set to *every* content walk.
+    // Without this oracle, deleting `counted_paths: Some(...)` from run_root
+    // compiles and all tests stay green while re-scans double-count files.
+    #[test]
+    fn content_search_walks_share_the_counted_path_set() {
+        let source = include_str!("main.rs");
+        let region = guard_region(
+            source,
+            "            let counted_paths = Arc::new(Mutex::new(CountedPaths::default()));",
+            "            let mut batches: Vec<Vec<SearchResult>>",
+        );
+        let setup = region
+            .find("let counted_paths")
+            .expect("shared counted-path set must be allocated");
+        let run_root = region
+            .find("let run_root = |root: &PathBuf")
+            .expect("run_root closure");
+        let wiring = region
+            .find(concat!("counted_paths", ": Some(counted_paths.clone()),"))
+            .expect("run_root must pass the shared set into content searches");
+        assert!(
+            setup < run_root && run_root < wiring,
+            "allocate the set before run_root and wire it inside run_root"
+        );
+        assert_eq!(region.matches("CountedPaths::default()").count(), 1);
+        assert_eq!(
+            region.matches(concat!("counted_paths", ": Some(")).count(),
+            1
+        );
+    }
+
+    // BH17: a fixture with `walked_roots` does not prove the walk increments
+    // the counter or that the status side consumes it. Pin both sites.
+    #[test]
+    fn walked_roots_is_counted_and_used_by_the_status_summary() {
+        let source = include_str!("main.rs");
+        let walk = guard_region(
+            source,
+            "            let mut walked_roots = 0usize;",
+            "            (merged, stats)",
+        );
+        let increment = walk
+            .find("walked_roots += 1;")
+            .expect("each entered root must be counted");
+        let first_walk = walk
+            .find("run_root(root, per_root_cap, 0)")
+            .expect("first-pass walk");
+        let rescans = walk.find("plan_root_rescans(").expect("rescan planning");
+        let store = walk.find("walked_roots,").expect("SearchRunStats field");
+        assert!(increment < first_walk && first_walk < rescans && rescans < store);
+
+        // The status side reads the count through the pure helper; pin the
+        // helper body too so it cannot silently switch to `active_roots`.
+        let helper = guard_region(
+            source,
+            "fn walked_root_count(stats: SearchRunStats, active_roots: usize) -> usize {",
+            "/// Build the incomplete-search part of the result summary.",
+        );
+        assert!(
+            helper.contains("stats.walked_roots"),
+            "the status helper must prefer the walked-root counter"
+        );
+
+        let status = guard_region(
+            source,
+            "    fn apply_search_filter(&mut self, cx: &mut Context<Self>) {",
+            "    /// BF05: repair the search snapshot after a successful undo/redo.",
+        );
+        let folded: String = status.split_whitespace().collect();
+        assert!(
+            folded.contains(concat!(
+                "walked_root_count(self.search.last_stats,",
+                "self.search.active_roots.len())"
+            )),
+            "the completed-search label must use the walked-root helper"
+        );
+    }
+
+    // BH17: 3 active roots but only 2 walked -> the label reports 2 箇所,
+    // never the longer active-root list. Also cover the no-stats fallback.
+    #[test]
+    fn search_scope_label_counts_walked_roots_not_active_roots() {
+        use gfe_core::search::SearchScope;
+
+        let stats = SearchRunStats {
+            walked_roots: 2,
+            ..SearchRunStats::default()
+        };
+        assert_eq!(walked_root_count(stats, 3), 2);
+        let label = format!(
+            "・{}（{} 箇所）",
+            SearchScope::OpenTabs.label(),
+            walked_root_count(stats, 3)
+        );
+        assert_eq!(label, "・開いているタブ（2 箇所）");
+        assert_eq!(walked_root_count(SearchRunStats::default(), 3), 3);
+        assert_eq!(walked_root_count(SearchRunStats::default(), 0), 0);
+    }
+
     #[test]
     fn load_state_is_exclusive_and_tracks_generation() {
         use super::LoadState;
@@ -18159,7 +18284,8 @@ mod tests {
     #[test]
     fn changed_on_disk_reason_reaches_the_user() {
         // BF04: a stale snapshot must not be silently rejected as a generic
-        // I/O failure; the notice must explain the reload recovery path.
+        // I/O failure; the notice must explain the restart recovery path
+        // (BH05: F5 reloads the listing, not the settings file).
         let settings = Settings::default();
         assert_eq!(super::settings_changed_on_disk_status(&settings), None);
         settings.changed_on_disk.set(true);
@@ -18811,22 +18937,26 @@ mod tests {
             "settings_with_live_save_error(",
             "snapshot, &self.settings)"
         );
-        // BH13: `save_settings` now also snapshots itself so the bookmark /
-        // saved-search / navigation write paths roll back on ChangedOnDisk.
-        // All callers must carry the live save-error Cells across a rollback.
-        let guards = source.matches(guard).count();
+        // BH13: `rollback_settings` still carries the live Cells for the seven
+        // caller-side snapshots. `save_settings` now re-reads the disk snapshot
+        // instead of cloning the already-previewed live value (a no-op).
+        let guards = production_text(source).matches(guard).count();
         assert!(
-            guards >= 2,
-            "rollback_settings and save_settings must preserve the failure reason: {guards}"
+            guards >= 1,
+            "rollback_settings must preserve the failure reason: {guards}"
         );
         let save_settings_body = source_region(
             source,
             "    fn save_settings(&mut self) -> bool {",
             "    /// Load a tab's directory/history",
         );
+        let disk_restore = concat!(
+            "settings_reconciled_after_save(",
+            "Settings::load(), &self.settings)"
+        );
         assert!(
-            save_settings_body.contains(guard),
-            "save_settings must restore the pre-write snapshot on failure"
+            save_settings_body.contains(disk_restore),
+            "save_settings must restore the re-read disk snapshot on failure"
         );
         assert!(
             save_settings_body.contains("self.keymap = KeyMap::from_settings"),
@@ -18855,6 +18985,60 @@ mod tests {
             super::STATUS_SETTINGS_SAVE_CHANGED_ON_DISK,
             "one rollback path must keep the ChangedOnDisk notice: {status}"
         );
+    }
+
+    // BH13: the bookmark / saved-search / navigation previews have no caller-
+    // side snapshot, so the refused-write path must restore the values that
+    // are actually on disk. Assert the fields themselves — a late
+    // `self.settings.clone()` snapshot restores the preview and fails here.
+    #[test]
+    fn refused_save_restores_previewed_fields_from_disk() {
+        let search = |name: &str| SavedSearch::new(name, "name:rs").expect("valid saved search");
+        let disk = Settings {
+            last_dir: Some(PathBuf::from("/disk/last")),
+            recent_dirs: vec![PathBuf::from("/disk/recent")],
+            bookmarks: vec![PathBuf::from("/disk/bookmark")],
+            saved_searches: vec![search("disk-search")],
+            tabs: vec![PathBuf::from("/disk/tab")],
+            ..Settings::default()
+        };
+        let live = Settings {
+            last_dir: Some(PathBuf::from("/preview/last")),
+            recent_dirs: vec![PathBuf::from("/preview/recent")],
+            bookmarks: vec![PathBuf::from("/preview/bookmark")],
+            saved_searches: vec![search("preview-search")],
+            tabs: vec![PathBuf::from("/preview/tab")],
+            ..disk.clone()
+        };
+        live.changed_on_disk.set(true);
+        live.last_save_error.set(Some(SettingsSaveError::Io));
+
+        let restored = settings_reconciled_after_save(disk.clone(), &live);
+        assert_eq!(
+            restored.last_dir, disk.last_dir,
+            "last_dir preview must revert to the disk value"
+        );
+        assert_eq!(
+            restored.recent_dirs, disk.recent_dirs,
+            "recent_dirs preview must revert to the disk value"
+        );
+        assert_eq!(
+            restored.bookmarks, disk.bookmarks,
+            "bookmarks preview must revert to the disk value"
+        );
+        assert_eq!(
+            restored.saved_searches, disk.saved_searches,
+            "saved-search preview must revert to the disk value"
+        );
+        assert_eq!(
+            restored.tabs, disk.tabs,
+            "tabs preview must revert to the disk value"
+        );
+        assert!(
+            restored.changed_on_disk.get(),
+            "the ChangedOnDisk reason must survive the restore"
+        );
+        assert_eq!(restored.last_save_error.get(), Some(SettingsSaveError::Io));
     }
 
     #[test]

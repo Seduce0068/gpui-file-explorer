@@ -44,6 +44,8 @@ function precacheAll() {
         await cache.add(asset);
       } catch (error) {
         console.error(`precache failed: ${asset}`, error);
+        // BI04: この throw は install 時の precacheAll 失敗を表す。
+        // fetch ハンドラの network 失敗（shell フォールバック）とは別経路。
         throw error;
       }
     }
@@ -85,10 +87,34 @@ function isCacheable(url) {
   return CACHEABLE_EXTENSIONS.some((ext) => path.endsWith(ext));
 }
 
-function shellResponse() {
-  // ignoreSearch: クエリ付きナビゲーションでも同じシェルを返す。
-  return caches.match('./index.html', { ignoreSearch: true })
-    .then((hit) => hit || caches.match('./', { ignoreSearch: true }));
+async function shellResponse() {
+  // BI07: caches.match() は全キャッシュ横断なので使わず、precache / runtime を
+  // 明示キャッシュ単位で参照する。precache のシェルを優先し、期限切れ runtime
+  // エントリが古いシェルとして返されないようにする。
+  const precache = await caches.open(CACHE_NAME);
+  const pinned = (await precache.match('./index.html', { ignoreSearch: true }))
+    || (await precache.match('./', { ignoreSearch: true }));
+  if (pinned) return pinned;
+
+  try {
+    const runtime = await caches.open(RUNTIME_CACHE);
+    const dynamic = await runtime.match('./index.html', { ignoreSearch: true });
+    if (dynamic && isFresh(dynamic)) return dynamic;
+  } catch (error) {
+    console.warn('runtime shell lookup failed (best-effort)', error);
+  }
+  return null;
+}
+
+async function cachedAsset(request) {
+  // BI07: ここでも全キャッシュ横断の caches.match / caches.delete を避ける。
+  // precache は削除せず、期限切れの runtime エントリだけを呼び出し元が破棄する。
+  const precache = await caches.open(CACHE_NAME);
+  const pinned = await precache.match(request);
+  if (pinned) return { response: pinned, staleCache: null };
+  const runtime = await caches.open(RUNTIME_CACHE);
+  const dynamic = await runtime.match(request);
+  return dynamic ? { response: dynamic, staleCache: runtime } : { response: null, staleCache: null };
 }
 
 function isFresh(response) {
@@ -123,34 +149,43 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     (async () => {
       if (request.mode === 'navigate') {
-        // 静的シェルの更新を永続反映するため navigation は network-first。
-        // オンラインでは最新 HTML を取得し、オフラインでは shell へフォールバック。
+        // 静的シェルの更新は新 SW の precache + reload で反映するため、
+        // navigation は network-first（オフラインでは shell へフォールバック）。
+        // BI01: cache.put の成否にかかわらず network の response を返す。
+        // 以前は put 失敗を同じ catch で拾い、古いシェルへ差し替えていた。
+        let response;
         try {
-          const response = await fetch(request);
-          if (response && response.ok) {
-            const cache = await caches.open(CACHE_NAME);
-            await cache.put('./index.html', response.clone());
-          }
-          return response;
+          response = await fetch(request);
         } catch (error) {
           return (await shellResponse()) || Response.error();
         }
+        // BI06: navigation 応答は現行 CACHE_NAME へ書かない。更新保留中の
+        // precache を汚染し、ロールバック不能になるため。専用 runtime cache へ
+        // best-effort で退避し、失敗しても返すレスポンスは変更しない。
+        if (response && response.ok) {
+          try {
+            await putRuntime('./index.html', response.clone());
+          } catch (error) {
+            console.warn('navigation cache write failed (best-effort)', error);
+          }
+        }
+        return response;
       }
 
       // 静的アセットは cache-first（precache 済みならオフラインでも返す）。
-      const cached = await caches.match(request);
+      const { response: cached, staleCache } = await cachedAsset(request);
       if (cached && isFresh(cached)) return cached;
-      if (cached) await caches.delete(request); // 期限切れエントリは破棄
+      if (staleCache) await staleCache.delete(request); // 期限切れ runtime のみ破棄
 
-      try {
-        const response = await fetch(request);
-        if (response && response.ok && isCacheable(url)) {
+      const response = await fetch(request);
+      if (response && response.ok && isCacheable(url)) {
+        try {
           await putRuntime(request, response);
+        } catch (error) {
+          console.warn('runtime cache write failed (best-effort)', error);
         }
-        return response;
-      } catch (error) {
-        throw error;
       }
+      return response;
     })()
   );
 });

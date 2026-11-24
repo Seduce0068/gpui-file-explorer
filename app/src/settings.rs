@@ -2680,11 +2680,11 @@ impl Settings {
     }
 
     /// Whether the last `save_with_reason()` was refused because the file had
-    /// changed since this snapshot was loaded. The UI status mapper should
-    /// use this to show [`STATUS_SETTINGS_SAVE_CHANGED_ON_DISK`].
-    // Consumed by the UI layer once the reason-specific status arm is wired;
-    // the flag itself is already set and exercised inside this module.
-    #[allow(dead_code)]
+    /// changed since this snapshot was loaded. The UI status mapper shows
+    /// [`STATUS_SETTINGS_SAVE_CHANGED_ON_DISK`] from the same Cell, and the
+    /// quit-time failure log reads this accessor, so the flag is live state
+    /// consumed outside this module. Recovery is a restart, not an F5 reload
+    /// (BH05): a refused save leaves the other instance's values on disk.
     pub fn changed_on_disk(&self) -> bool {
         self.changed_on_disk.get()
     }

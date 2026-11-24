@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const {
   isClickSuppressed,
   secondClickSuppressed,
@@ -662,31 +663,51 @@ test('service worker precaches the shell and every core wasm asset (BG13)', () =
   ]) {
     assert.ok(sw.includes(`'${asset}'`), `sw.js must precache ${asset}`);
   }
-  // snippet のディレクトリは wasm-pack のハッシュ依存なので実配置から導く。
-  // pwa/pkg/ は gitignore 済みのビルド成果物のため clean checkout には無い。
-  // 無い場合はハッシュに依存するアサーションだけをスキップし、sw.js の
-  // 静的な precache 一覧とイベントハンドラは検証し続ける（BH07）。
+  // BI12/BI18: pwa/pkg/ は gitignore 済みで clean checkout には無い。
+  // 実配置の有無にかかわらず、PRECACHE に snippet が「ちょうど 1 件」だけ
+  // 正しい形で書かれていることを常時検証する（以前は pkg が無いと丸ごとスキップされた）。
+  const precache = sourceRegion(sw, 'const PRECACHE = [', '];');
+  const snippets = [...precache.matchAll(/'(\.\/pkg\/snippets\/[^'/]+\/inline0\.js)'/g)];
+  assert.equal(snippets.length, 1, 'PRECACHE must contain exactly one snippet inline0.js');
+  assert.match(
+    snippets[0][1],
+    /^\.\/pkg\/snippets\/[A-Za-z0-9_-]+-[0-9a-f]{16,}\/inline0\.js$/,
+    'the snippet directory must carry the wasm-pack hash suffix'
+  );
+  // ビルド成果物がある環境では、ハッシュが実際の配置と一致することも確認する。
   const snippetDirPath = path.join(__dirname, 'pkg', 'snippets');
   if (fs.existsSync(snippetDirPath)) {
     const snippetDir = fs.readdirSync(snippetDirPath)[0];
     assert.ok(snippetDir, 'pkg/snippets/<hash>/inline0.js must exist');
-    assert.ok(
-      sw.includes(`'./pkg/snippets/${snippetDir}/inline0.js'`),
-      'sw.js must precache the actual generated inline0.js'
-    );
+    assert.equal(snippets[0][1], `./pkg/snippets/${snippetDir}/inline0.js`,
+      'sw.js must precache the actual generated inline0.js');
   }
   for (const listener of ['install', 'activate', 'fetch']) {
     assert.ok(sw.includes(`addEventListener('${listener}'`), `missing ${listener} handler`);
   }
-  assert.ok(sw.includes('caches.match(request)'), 'cache-first lookup is required');
+  // BI07: 全キャッシュ横断の caches.match(request) ではなく明示キャッシュ参照。
+  assert.ok(sw.includes('precache.match(request)'), 'cache-first lookup must be cache-scoped');
+  assert.ok(!/\bcaches\.match\(request\)/.test(sw), 'cross-cache match must not be used');
   assert.ok(sw.includes('self.clients.claim()'), 'activate must claim existing clients');
 });
 
 test('service worker keeps the old shell when precache fails (BH01/BH16)', () => {
   const sw = readPwaFile('sw.js');
+  // BI04: ファイル全体の includes だと別箇所の throw でも誤って満たされる。
+  // precacheAll 本体を sourceRegion で切り出し、その領域内で失敗を再 throw
+  // していることを固定する（fetch 側の best-effort 書き込みとは別経路）。
+  const precacheAll = sourceRegion(
+    sw, 'function precacheAll() {', "self.addEventListener('install'");
+  assert.ok(precacheAll.includes('throw error'),
+    'precacheAll は precache 失敗を再 throw して install を失敗させる必要がある');
+  // 旧 SW / 旧キャッシュを維持するため install は precacheAll を待つ。
+  const install = sourceRegion(
+    sw, "self.addEventListener('install'", "self.addEventListener('message'");
+  assert.ok(install.includes('waitUntil(precacheAll())'),
+    'install は precacheAll() を waitUntil で待つ必要がある');
   // 失敗を console.warn で飲み込まず、install を失敗させること。
-  assert.ok(sw.includes('throw error'), 'precache failure must reject install');
-  assert.ok(!/console\.warn\s*\(/.test(sw), 'precaching failures must not be swallowed');
+  // BI01 で fetch 側に追加した best-effort warn は対象外なので precacheAll に限定。
+  assert.ok(!/console\.warn\s*\(/.test(precacheAll), 'precaching failures must not be swallowed');
   assert.ok(
     !/\.then\(\(\) => self\.skipWaiting\(\)\)/.test(sw),
     'install must not skipWaiting before precache is confirmed'
@@ -733,7 +754,32 @@ test('main.js wires the service worker update flow and reload affordance (BH02)'
   }
   const html = readPwaFile('index.html');
   assert.ok(html.includes('id="update-reload"'), 'a reload button must exist');
-  assert.ok(html.includes('aria-live="polite"'), '#status must announce the update');
+  assert.ok(html.includes('aria-live="polite"'), 'a live region must announce the update');
+  // BI03: 更新通知は #status と別ノード。通常通知を永久抑制しないための分離。
+  assert.match(
+    html,
+    /id="sw-update"[^>]*role="status"[^>]*aria-live="polite"/,
+    'a dedicated aria-live node for SW update notices must exist'
+  );
+});
+
+test('main.js pins the installing-worker wiring, not just marker strings (BI11)', () => {
+  // 文字列存在だけでは watchInstallingWorker の呼び出しが消えても緑だった。
+  // 本番の更新フロー本体を sourceRegion で切り出し、配線を固定する。
+  const updateFlow = sourceRegion(mainSource, 'function announceSwUpdate(', 'function registerServiceWorker()');
+  assert.match(updateFlow, /watchInstallingWorker\(registration, registration\.installing\)/g,
+    'both the current installing worker and updatefound must be watched (2 call sites)');
+  assert.match(updateFlow, /addEventListener\('updatefound'/, 'updatefound must be observed');
+  assert.match(updateFlow, /shouldNotifySwUpdate\(\{/, 'notification must go through the guard');
+  assert.match(updateFlow, /announceSwUpdate\(registration, worker\)/,
+    'the guarded path must actually announce');
+
+  const precacheAll = sourceRegion(readPwaFile('sw.js'), 'function precacheAll() {', "self.addEventListener('install'");
+  assert.match(precacheAll, /caches\.open\(CACHE_NAME\)/, 'precache must use its own cache');
+  assert.match(precacheAll, /cache\.add\(asset\)/, 'each asset must be added individually');
+  assert.match(precacheAll, /throw error/, 'a failed asset must reject install');
+  const install = sourceRegion(readPwaFile('sw.js'), "self.addEventListener('install'", "self.addEventListener('message'");
+  assert.match(install, /event\.waitUntil\(precacheAll\(\)\)/, 'install must await precacheAll');
 });
 
 test('shouldNotifySwUpdate only announces real updates', () => {
@@ -763,4 +809,75 @@ test('manifest name and inline favicon agree (BG19/20)', () => {
     'favicon must reuse the manifest SVG data URI'
   );
   assert.ok(!/\.ico/.test(html), 'no missing .ico request');
+});
+
+test('BI03: DOM モックで更新通知後も #status が通常通知で更新される', () => {
+  // pure helper の再実装ではなく、本番の setStatus / announceSwUpdate 本体を
+  // sourceRegion で切り出して vm 上の DOM モックで実行する。
+  // sourceRegion は開始マーカー自体を除くため、関数シグネチャを先頭へ戻す。
+  const setStatusSource = 'function setStatus(' + sourceRegion(
+    mainSource, 'function setStatus(', '// SW 更新通知の判定を純粋関数にして');
+  const announceSource = 'function announceSwUpdate(' + sourceRegion(
+    mainSource, 'function announceSwUpdate(', 'function watchInstallingWorker(');
+  const messageDecl = mainSource.match(/^const SW_UPDATE_MESSAGE = .*;$/m);
+  assert.ok(messageDecl, 'SW_UPDATE_MESSAGE must be declared in main.js');
+
+  function fakeNode() {
+    return {
+      textContent: '',
+      dataset: {},
+      hidden: true,
+      handlers: {},
+      addEventListener(type, fn) {
+        (this.handlers[type] ||= []).push(fn);
+      },
+    };
+  }
+  const status = fakeNode();
+  const swUpdate = fakeNode();
+  const updateReload = fakeNode();
+  const state = { updateNotified: false };
+  const posted = [];
+  const listenerTypes = [];
+  const sandbox = {
+    console,
+    state,
+    els: { status, swUpdate, updateReload },
+    window: { location: { reload() { sandbox.reloaded = true; } } },
+    navigator: {
+      serviceWorker: {
+        addEventListener(type) { listenerTypes.push(type); },
+      },
+    },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${messageDecl[0]}\n${setStatusSource}\n${announceSource}\n`
+    + 'globalThis.__setStatus = setStatus; globalThis.__announce = announceSwUpdate;',
+    sandbox
+  );
+  const message = vm.runInContext('SW_UPDATE_MESSAGE', sandbox);
+
+  sandbox.__setStatus('一覧を読み込みました');
+  assert.equal(status.textContent, '一覧を読み込みました');
+  assert.equal(status.dataset.level, 'info');
+
+  const worker = { postMessage(msg) { posted.push(msg); } };
+  sandbox.__announce({ waiting: worker }, worker);
+  assert.equal(state.updateNotified, true);
+  assert.equal(swUpdate.hidden, false);
+  assert.equal(swUpdate.textContent, message, '更新通知は専用ノードへ書かれる');
+  assert.equal(status.textContent, '一覧を読み込みました', '更新通知は #status を上書きしない');
+  assert.equal(updateReload.hidden, false);
+
+  // 回帰: 以前は updateNotified=true の間 level!=='error' が永久抑制された。
+  sandbox.__setStatus('検索結果 4 件');
+  assert.equal(status.textContent, '検索結果 4 件', '通常通知は更新通知後も #status へ届く');
+  assert.equal(swUpdate.textContent, message, '更新通知はそのまま残る');
+
+  updateReload.handlers.click[0]();
+  // vm の別 realm で作られた object は deepStrictEqual の prototype 比較に落ちる。
+  assert.equal(posted.length, 1, '再読込ボタンは 1 回だけ postMessage する');
+  assert.equal(posted[0].type, 'SKIP_WAITING', '再読込ボタンは待機 SW を進める');
+  assert.ok(listenerTypes.includes('controllerchange'), 'controllerchange も配線される');
 });

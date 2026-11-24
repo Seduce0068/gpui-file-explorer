@@ -13,12 +13,17 @@ const LONG_PRESS_MS = 500;
 const SWIPE_MIN_DX = 80;
 const SWIPE_EDGE_GUARD = 24;
 const CLICK_SUPPRESS_MS = 700;
+// BI03: 更新通知は #status とは別の aria-live ノードへ書くための文言。
+// 更新後も通常の setStatus が #status を更新し続けられるようにする。
+const SW_UPDATE_MESSAGE = '新しい版が利用可能です。「新しい版を読み込む」を押すと更新されます。';
 
 // Node's `node --test` imports this module to exercise the pure helpers.
 // Only the browser has `document`; skip DOM wiring there.
 const hasDom = typeof document !== 'undefined';
 const els = hasDom ? {
   status: document.getElementById('status'),
+  // BI03: 更新通知専用の aria-live ノード（#status 直下に配置）。
+  swUpdate: document.getElementById('sw-update'),
   // SW 更新通知の再読込導線（index.html の #status 直下に配置）。
   updateReload: document.getElementById('update-reload'),
   search: document.getElementById('search'),
@@ -322,8 +327,9 @@ function updatePickDirAvailability({
 }
 
 function setStatus(message, level = 'info') {
-  // wasm 初期化完了などの通常通知で更新通知を消さない。エラーは重要なので通す。
-  if (state.updateNotified && level !== 'error') return;
+  // BI03: 更新通知は #sw-update へ分離したため、updateNotified に関係なく
+  // 通常通知は #status へ流す。以前はここで永久に抑制され、検索結果や
+  // 選択結果が一切読み上げられなくなっていた。
   els.status.textContent = message;
   els.status.dataset.level = level;
 }
@@ -1098,9 +1104,14 @@ async function onPickDirectory() {
 
 function announceSwUpdate(registration, worker) {
   state.updateNotified = true;
-  // #status は role=status / aria-live=polite。直接書いて更新を読み上げる。
-  els.status.textContent = '新しい版が利用可能です。「新しい版を読み込む」を押すと更新されます。';
-  els.status.dataset.level = 'info';
+  // BI03: 更新通知は専用の aria-live ノードへ書く。#status は通常通知専用のまま。
+  // 旧シェルが #sw-update を持たない場合だけ #status へフォールバックする。
+  const notice = els.swUpdate || els.status;
+  if (notice) {
+    notice.hidden = false;
+    notice.textContent = SW_UPDATE_MESSAGE;
+    notice.dataset.level = 'info';
+  }
 
   if (els.updateReload) {
     els.updateReload.hidden = false;

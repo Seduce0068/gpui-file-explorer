@@ -9,6 +9,8 @@
 #        the pure-helper subset still runs without the gitignored pwa/pkg/)
 #   deb: packaging/linux/build-deb.sh --verify (read-only stage/.deb check;
 #        SKIPPED when no built .deb is present)
+#   android: python3 stdlib static gate (AndroidManifest.xml well-formedness +
+#        pinned build.gradle.kts versions; SKIPPED when the scaffold is absent)
 #
 # The repository is a virtual Cargo workspace with members core, app, poc
 # and win32 (root Cargo.toml). The shared CI workflow
@@ -32,8 +34,9 @@
 #   - cargo vet check: only when <project>/supply-chain/config.toml exists
 #     (run `cargo vet init` in that project to opt in)
 #
-# Missing tools (cargo audit/deny/vet, node/node:test,
-# dpkg-deb/dpkg/realpath/tar) and build artifacts (pwa/pkg/, built .deb):
+# Missing tools (cargo audit/deny/vet, node/node:test, python3,
+# dpkg-deb/dpkg/realpath/tar) and build artifacts (pwa/pkg/, built .deb,
+# android/ scaffold):
 #   - default: reported as `SKIPPED: ...` before the final line
 #   - --strict: the same condition is a hard failure (non-zero exit status)
 # Artifact availability is checked at the FRONT of the gate list so a clean
@@ -51,6 +54,7 @@ Runs the local verification loop for this repository.
   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
   pwa: node --test pwa/main.test.js (pure helpers + service worker registration)
   deb:  packaging/linux/build-deb.sh --verify (read-only; needs an existing stage/.deb)
+  android: python3 stdlib static gate for the tracked scaffold (no build)
 
 The repository is a virtual Cargo workspace with members core, app, poc
 and win32 (root Cargo.toml). The shared CI workflow
@@ -74,6 +78,7 @@ Additional artifact gates (independent of --app/--poc; SKIPPED with a notice
 when their gitignored build inputs are absent, hard failure under --strict):
   - pwa: node --test pwa/main.test.js (pure helpers run even without pwa/pkg/)
   - deb: packaging/linux/build-deb.sh --verify (needs a built .deb)
+  - android: python3 stdlib static gate (tracked scaffold; no build)
 
 Usage:
   bash scripts/check.sh             # full loop (app + release + poc + supply-chain)
@@ -85,8 +90,8 @@ Usage:
   bash scripts/check.sh --poc       # poc/ + core/win32 + cross-target checks (app/ omitted)
   bash scripts/check.sh --no-release # skip the app/ release verification
   bash scripts/check.sh --strict    # fail if a needed tool (incl. node:test /
-                                    # dpkg-deb/dpkg/realpath/tar) or build
-                                    # artifact (.deb) is missing
+                                    # python3, dpkg-deb/dpkg/realpath/tar) or
+                                    # artifact (.deb, android/ scaffold) is missing
 EOF
 }
 
@@ -211,10 +216,33 @@ if [ ! -d "${pwa_snippet_dir}" ]; then
 	record_missing_artifact pwa-wasm-artifact
 fi
 
+# BI16: the Android scaffold is tracked, but it is gated like the other
+# artifact checks (SKIPPED with a notice, hard failure under --strict) so a
+# partially checked-out tree does not silently lose this static verification.
+android_dir="${repo_root}/android"
+android_scaffold_files=(
+	"${android_dir}/app/src/main/AndroidManifest.xml"
+	"${android_dir}/build.gradle.kts"
+	"${android_dir}/app/build.gradle.kts"
+)
+android_scaffold_ready=true
+for android_file in "${android_scaffold_files[@]}"; do
+	if [ ! -f "${android_file}" ]; then
+		android_scaffold_ready=false
+		break
+	fi
+done
+if [ "${android_scaffold_ready}" != true ]; then
+	echo "SKIPPED: android scaffold static gate (android/ scaffold files missing)."
+	record_missing_artifact android-scaffold
+fi
+
 run_audit_check() {
 	local project_dir="$1"
 	if ! command -v cargo-audit >/dev/null 2>&1; then
-		echo "cargo-audit is not installed; skipping the advisory check (CI runs it)."
+		# BI09: CI runs cargo audit only for app/ (rust-gates audit: true);
+		# poc/ has no cargo-audit step, so a fixed "CI runs it" claim is wrong.
+		echo "cargo-audit is not installed; skipping the advisory check for ${project_dir}."
 		record_missing_tool cargo-audit
 		return
 	fi
@@ -274,6 +302,66 @@ run_pwa_test() {
 	fi
 	echo '==> pwa: node --test pwa/main.test.js'
 	node --test pwa/main.test.js
+}
+
+# BI16: static gate for the Android scaffold. No Gradle/SDK is needed: the
+# manifest must be well-formed and the toolchain/dependency versions pinned.
+# CI has no Android step, so a missing python3 is reported as SKIPPED only.
+run_android_scaffold_gate() {
+	if [ "${android_scaffold_ready}" != true ]; then
+		# Already reported as SKIPPED by the front-of-list pre-check.
+		return
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "python3 is not installed; skipping the Android scaffold static gate."
+		record_missing_tool python3
+		return
+	fi
+	echo '==> android: static scaffold gate (python3: XML + pinned versions)'
+	python3 - "${android_dir}" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+root = Path(sys.argv[1])
+errors = []
+
+manifest = root / "app/src/main/AndroidManifest.xml"
+try:
+    ET.parse(manifest)
+except (ET.ParseError, OSError) as exc:
+    errors.append(f"AndroidManifest.xml が well-formed ではありません: {exc}")
+
+root_gradle = (root / "build.gradle.kts").read_text(encoding="utf-8")
+app_gradle = (root / "app/build.gradle.kts").read_text(encoding="utf-8")
+
+pinned = {
+    "build.gradle.kts": (
+        root_gradle,
+        (
+            'id("com.android.application") version "8.6.1"',
+            'id("org.jetbrains.kotlin.android") version "2.0.21"',
+        ),
+    ),
+    "app/build.gradle.kts": (
+        app_gradle,
+        (
+            'platform("androidx.compose:compose-bom:2024.09.02")',
+            'implementation("androidx.activity:activity-compose:1.9.3")',
+        ),
+    ),
+}
+for name, (source, needles) in pinned.items():
+    for needle in needles:
+        if needle not in source:
+            errors.append(f"{name} に固定バージョンがありません: {needle}")
+
+if errors:
+    for error in errors:
+        print(error, file=sys.stderr)
+    sys.exit(1)
+print("照合 OK: android scaffold (AndroidManifest.xml + pinned versions)")
+PY
 }
 
 run_deb_verify() {
@@ -397,6 +485,7 @@ fi
 # 両方とも読み取り専用で高速なので常に実行する。
 run_pwa_test
 run_deb_verify
+run_android_scaffold_gate
 
 if [ "${#skipped_tools[@]}" -gt 0 ]; then
 	echo
