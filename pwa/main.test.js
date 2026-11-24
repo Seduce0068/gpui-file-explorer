@@ -842,6 +842,7 @@ test('BI03: DOM モックで更新通知後も #status が通常通知で更新�
   const state = { updateNotified: false };
   const posted = [];
   const listenerTypes = [];
+  const controllerListeners = [];
   const sandbox = {
     console,
     state,
@@ -849,7 +850,10 @@ test('BI03: DOM モックで更新通知後も #status が通常通知で更新�
     window: { location: { reload() { sandbox.reloaded = true; } } },
     navigator: {
       serviceWorker: {
-        addEventListener(type) { listenerTypes.push(type); },
+        addEventListener(type, fn) {
+          listenerTypes.push(type);
+          controllerListeners.push({ type, fn });
+        },
       },
     },
   };
@@ -865,7 +869,7 @@ test('BI03: DOM モックで更新通知後も #status が通常通知で更新�
   assert.equal(status.textContent, '一覧を読み込みました');
   assert.equal(status.dataset.level, 'info');
 
-  const worker = { postMessage(msg) { posted.push(msg); } };
+  const worker = { state: 'installed', postMessage(msg) { posted.push(msg); } };
   sandbox.__announce({ waiting: worker }, worker);
   assert.equal(state.updateNotified, true);
   assert.equal(swUpdate.hidden, false);
@@ -889,6 +893,24 @@ test('BI03: DOM モックで更新通知後も #status が通常通知で更新�
   assert.equal(posted.length, 2, '2回目クリックでも SKIP_WAITING を再送する');
   assert.equal(updateReload.handlers.click.length, 1, 'click リスナは積まれない');
   assert.equal(state.skipWaitingSent, true, '送信済み状態は state で管理される');
+
+  // BK20: controllerchange 発火を実際に流し、skipWaitingSent が実ガードか固定する。
+  const onControllerChange = controllerListeners.find((h) => h.type === 'controllerchange').fn;
+  assert.ok(onControllerChange, 'controllerchange ハンドラが登録される');
+  state.skipWaitingSent = false;
+  onControllerChange();
+  assert.equal(sandbox.reloaded, undefined, 'SKIP_WAITING 前の controllerchange では再読込しない');
+  state.skipWaitingSent = true;
+  onControllerChange();
+  assert.equal(sandbox.reloaded, true, 'SKIP_WAITING 後の controllerchange で再読込する');
+  assert.equal(state.skipWaitingSent, false, '再読込後に送信状態をリセットする');
+
+  // BK08: worker 状態分岐 — 待機中でなければ postMessage せず再読込へ流す。
+  worker.state = 'activated';
+  sandbox.reloaded = false;
+  updateReload.handlers.click[0]();
+  assert.equal(posted.length, 2, '非待機 worker には SKIP_WAITING を送らない');
+  assert.equal(sandbox.reloaded, true, '非待機 worker は再読込へ流す');
 });
 
 test('BJ01: vm モックで2回目 updatefound を流しても更新通知される', () => {
@@ -999,9 +1021,100 @@ test('BJ01: vm モックで2回目 updatefound を流しても更新通知され
   assert.equal(updateReload.handlers.click.length, 1, 'click リスナは積まれない');
   assert.equal(controllerListeners.length, 1, 'controllerchange リスナは積まれない');
 
+  // BK07: 2回目の更新でも常設 controllerchange リスナが生きていて再読込する
+  // （once だとここでリスナが消えて2回目の更新が再読込されなかった）。
+  updateReload.handlers.click[0]();
+  assert.equal(state.skipWaitingSent, true, '2回目のクリックでも送信状態が立つ');
+  controllerListeners[0].fn();
+  assert.equal(sandbox.reloaded, true, '2回目の controllerchange でも再読込する');
+  assert.equal(state.skipWaitingSent, false, '再読込後に送信状態がリセットされる');
+
   // 同じ worker の statechange が再発しても通知は繰り返さない。
   second.listeners.statechange[0]();
   assert.equal(noticeWrites, 2, '同一 worker の再 statechange は重複通知しない');
+});
+
+test('BK18: 再オープン時の registration.waiting 経路で通知と SKIP_WAITING を検証', () => {
+  // BJ01 は waiting=null で watchServiceWorker を呼ぶため、ページ再オープン時に
+  // 既に待機 worker が居る経路が未実行だった。本番関数を vm で動かして固定する。
+  const guardSource = 'function shouldNotifySwUpdate(' + sourceRegion(
+    mainSource, 'function shouldNotifySwUpdate(', 'function supportsFileSystemAccess(');
+  const announceSource = 'function announceSwUpdate(' + sourceRegion(
+    mainSource, 'function announceSwUpdate(', 'function watchInstallingWorker(');
+  const installingSource = 'function watchInstallingWorker(' + sourceRegion(
+    mainSource, 'function watchInstallingWorker(', 'function watchServiceWorker(');
+  const serviceSource = 'function watchServiceWorker(' + sourceRegion(
+    mainSource, 'function watchServiceWorker(', 'function registerServiceWorker(');
+  const messageDecl = mainSource.match(/^const SW_UPDATE_MESSAGE = .*;$/m);
+
+  const state = {
+    updateNotified: false,
+    notifiedWorker: null,
+    updateReloadWired: false,
+    controllerReloadWired: false,
+    skipWaitingSent: false,
+  };
+  const posted = [];
+  const controllerListeners = [];
+  function fakeNode() {
+    return {
+      textContent: '',
+      dataset: {},
+      hidden: true,
+      handlers: {},
+      addEventListener(type, fn) {
+        (this.handlers[type] ||= []).push(fn);
+      },
+    };
+  }
+  const swUpdate = fakeNode();
+  const updateReload = fakeNode();
+  const waitingWorker = {
+    state: 'installed',
+    listeners: {},
+    addEventListener(type, fn) {
+      (this.listeners[type] ||= []).push(fn);
+    },
+    postMessage(msg) { posted.push(msg); },
+  };
+  const registration = {
+    waiting: waitingWorker,
+    installing: null,
+    listeners: {},
+    addEventListener(type, fn) {
+      (this.listeners[type] ||= []).push(fn);
+    },
+  };
+  const sandbox = {
+    console,
+    state,
+    els: { status: fakeNode(), swUpdate, updateReload },
+    window: { location: { reload() { sandbox.reloaded = true; } } },
+    navigator: {
+      serviceWorker: {
+        controller: { state: 'activated' },
+        addEventListener(type, fn) { controllerListeners.push({ type, fn }); },
+      },
+    },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${messageDecl[0]}\n${guardSource}\n${announceSource}\n`
+    + `${installingSource}\n${serviceSource}\n`
+    + 'globalThis.__watchServiceWorker = watchServiceWorker;',
+    sandbox
+  );
+
+  sandbox.__watchServiceWorker(registration);
+  assert.equal(state.updateNotified, true, 'waiting があるだけで更新通知される');
+  assert.equal(swUpdate.hidden, false, '通知ノードが表示される');
+  assert.equal(state.notifiedWorker, waitingWorker, '通知対象は registration.waiting');
+  assert.equal(updateReload.hidden, false, '再読込ボタンが表示される');
+
+  updateReload.handlers.click[0]();
+  assert.equal(posted.length, 1, 'waiting 経路でも SKIP_WAITING が送られる');
+  assert.equal(posted[0].type, 'SKIP_WAITING');
+  assert.equal(state.skipWaitingSent, true);
 });
 
 test('BJ09/BJ10/BJ11: runtime cache の即時 return・期限切れ削除・put 後削除', () => {
@@ -1014,6 +1127,19 @@ test('BJ09/BJ10/BJ11: runtime cache の即時 return・期限切れ削除・put 
     /putRuntime\('\.\/index\.html', response\.clone\(\)\)\.catch\(/,
     'navigation cache write must be fire-and-forget with a catch'
   );
+
+  // BK20: sourceRegion で waitUntil 登録を必須化する。respondWith 解決後の
+  // waitUntil は InvalidStateError になるため、登録が respondWith より前で
+  // 同期的に行われ、deferred が書き込み promise を受け取ることも固定する。
+  const fetchHandler = sourceRegion(sw, "self.addEventListener('fetch', (event) => {", '// 静的アセットは cache-first');
+  const waitAt = fetchHandler.indexOf('event.waitUntil(');
+  const respondAt = fetchHandler.indexOf('event.respondWith(');
+  assert.ok(waitAt !== -1 && respondAt !== -1 && waitAt < respondAt,
+    'navigation cache write must be registered with waitUntil before respondWith');
+  assert.match(fetchHandler, /settleCacheWrite\(putRuntime\('\.\/index\.html', response\.clone\(\)\)\.catch\(/,
+    'waitUntil must adopt the navigation cache write promise');
+  assert.ok(/settleCacheWrite\(\)/.test(fetchHandler),
+    'the deferred must settle on the no-write and fetch-failure paths');
 
   const shellResponse = sourceRegion(sw, 'async function shellResponse() {', 'async function cachedAsset(');
   const staleBranch = sourceRegion(shellResponse, 'if (dynamic) {', 'return null;');

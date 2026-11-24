@@ -1135,11 +1135,15 @@ function announceSwUpdate(registration, worker) {
       state.updateReloadWired = true;
       els.updateReload.addEventListener('click', () => {
         const waiting = state.notifiedWorker || registration.waiting || worker;
-        if (waiting && typeof waiting.postMessage === 'function') {
+        // BK08: 待機中（installed）の worker にだけ SKIP_WAITING を送る。
+        // 既に activate 済み等で待機していない場合はメッセージを送らず再読込へ流す。
+        if (waiting && waiting.state === 'installed'
+          && typeof waiting.postMessage === 'function') {
           // install では skipWaiting() しない代わりに、ここで待機 SW を進める。
           waiting.postMessage({ type: 'SKIP_WAITING' });
           state.skipWaitingSent = true;
         } else {
+          state.skipWaitingSent = false;
           window.location.reload();
         }
       });
@@ -1147,12 +1151,18 @@ function announceSwUpdate(registration, worker) {
   }
 
   // 新 SW が control を取った時点で再読込し、新しいシェルを反映する。
-  // BJ08: 通知が複数回あってもリロード用リスナは1つだけにする。
+  // BK07: once を外す。再通知で controllerReloadWired が true のままだと
+  // リスナが張り直されず2回目の更新で再読込されないため、常設リスナにする。
+  // BK08: skipWaitingSent を実ガードとして読み取り、SKIP_WAITING を送った
+  // 後の controllerchange だけ再読込する（初回 clients.claim 等では再読込しない）。
   if (!state.controllerReloadWired) {
     state.controllerReloadWired = true;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
-      window.location.reload();
-    }, { once: true });
+      if (state.skipWaitingSent) {
+        state.skipWaitingSent = false;
+        window.location.reload();
+      }
+    });
   }
 }
 

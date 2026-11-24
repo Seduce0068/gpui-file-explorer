@@ -152,8 +152,13 @@ bash packaging/linux/build-deb.sh --skip-build
 - 収録物: `/usr/bin/gpui-file-explorer`、`.desktop`、hicolor アイコン（16〜512px + scalable）、
   `README.md` / `copyright` (DEP-5) / `LICENSE` / `NOTICE.md`（アプリの詳細版） /
   `NOTICE-repo.md`（リポジトリ版の要約） / `NOTICE-app.md` / `app/NOTICE.md` / `app/LICENSE`
-  （後者 2 つは `NOTICE-repo.md` の相対リンクをパッケージ内で解決するための複製）
-- `Depends` は `ldd` + `dpkg -S` から自動生成（Vulkan ローダは dlopen のため `libvulkan1` を明示追加）
+  （後者 2 つは `NOTICE-repo.md` の相対リンクをパッケージ内で解決するための複製）と
+  `DEBIAN/postinst` / `DEBIAN/postrm`（`.desktop` の MimeType を
+  `update-desktop-database` で更新する maintainer script）。
+  ビルド時および `--verify` で両スクリプトの存在・**0755**・ソースとの一致を検証します
+- `Depends` は `ldd` + `dpkg -S` から自動生成（Vulkan ローダは dlopen のため `libvulkan1` を明示追加）。
+  `Recommends` には `libfontconfig1` と `desktop-file-utils`（maintainer script の
+  `update-desktop-database` 用）を含みます
 - `dpkg-deb --root-owner-group` を使うため **sudo 不要**。ホストへのインストールも行いません
 - 再現性: `SOURCE_DATE_EPOCH` を `dpkg-deb` へ渡します（明示値を優先。未設定なら HEAD のコミット時刻）。
   これにより ar のタイムスタンプと tar の mtime が固定され、同一ソースなら `.deb` がバイト単位で再現します
@@ -324,8 +329,10 @@ bash scripts/check.sh --strict     # 必要なツール／成果物が無い時�
                                    # （既定は SKIPPED）。ツールは cargo
                                    # audit / deny / vet に加え node と
                                    # node:test、python3、dpkg-deb / dpkg /
-                                   # realpath / tar、成果物はビルド済み .deb、
-                                   # pwa/pkg/ と android/ scaffold が対象。
+                                   # realpath / tar / stat（--verify が使う
+                                   # 5 コマンド）と desktop-file-validate、
+                                   # 成果物はビルド済み .deb、pwa/pkg/ と
+                                   # android/ scaffold が対象。
 bash scripts/check.sh --app        # app/ + core/win32 + cross-target checks（release 検証を含む）。
 bash scripts/check.sh --poc        # poc/ に加え、workspace member の core / win32 の
                                    # test+clippy と wasm32 / windows-gnu の

@@ -2224,6 +2224,37 @@ status: current
 - [x] **BJ18** Android gate がコメント行の固定バージョンを正当と許容 — 対応: loop23
 - [x] **BJ19** Android マニフェスト検証が well-formed のみで構造を検証しない — 対応: loop23
 
+## 進行中（ループ24 バックログ）
+
+### 優先度: 高（ループ24・confirmed）
+
+- [x] **BK01** search 完了時の保存拒否が disk 再同期を丸ごと巻き戻す — 対応: loop24
+- [x] **BK02** SW fire-and-forget 書き込みが waitUntil に未登録 — 対応: loop24
+- [x] **BK03** check.sh --strict ツール一覧に stat が欠落 — 対応: loop24
+- [x] **BK04** Android 固定バージョンがブロックコメントでバイパス — 対応: loop24
+- [x] **BK05** fingerprint 非上書きオラクルが文字列一致のみ — 対応: loop24
+
+### 優先度: 中（ループ24・confirmed）
+
+- [x] **BK06** theme_resync 判定が theme_choice の変化を見逃す — 対応: loop24
+- [x] **BK07** 再通知経路で controllerchange→reload リスナが張り直されない — 対応: loop24
+- [x] **BK08** skipWaitingSent が未読み取りで activate 済み worker を完了扱い — 対応: loop24
+- [x] **BK09** app/README の --skip-build 鮮度条件が実装と食い違う — 対応: loop24
+- [x] **BK10** maintainer script 同梱/0755 検証が配布ドキュメントに未反映 — 対応: loop24
+- [x] **BK11** Android 構造ゲートが android:exported を検証しない — 対応: loop24
+- [x] **BK12** desktop-file-validate ゲートが存在しない — 対応: loop24
+- [x] **BK13** theme resync オラクルがトリガ条件を検証しない — 対応: loop24
+- [x] **BK14** Android ゲートが android:name 欠落を許容 — 対応: loop24
+
+### 優先度: 低（ループ24・confirmed）
+
+- [x] **BK15** apply_search_filter だけが filtered entries から fingerprint を計算 — 対応: loop24
+- [x] **BK16** desktop-file-utils の Recommends 追加がドキュメント未反映 — 対応: loop24
+- [x] **BK17** --verify が .deb ペイロードの doc/.desktop/アイコンを照合しない — 対応: loop24
+- [x] **BK18** SW 再通知オラクルが registration.waiting 経路を実行しない — 対応: loop24
+- [x] **BK19** BI11 の呼び出し回数オラクルがコメントを数える — 対応: loop24
+- [x] **BK20** SW オラクルが実動作（waitUntil / worker.state）を固定できていない — 対応: loop24
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

@@ -577,8 +577,12 @@ bash packaging/linux/build-deb.sh
 # 出力: packaging/linux/build/gpui-file-explorer_<version>-1_<arch>.deb
 ```
 
-`.desktop`（`StartupWMClass=gpui-file-explorer`）、hicolor アイコン、ドキュメントを同梱します。
-依存パッケージはビルド時に `ldd` + `dpkg -S` から生成します。
+`.desktop`（`StartupWMClass=gpui-file-explorer`）、hicolor アイコン、ドキュメント、
+`DEBIAN/postinst` / `DEBIAN/postrm`（0755、`.desktop` の MimeType を
+`update-desktop-database` で更新する maintainer script）を同梱します。
+依存パッケージはビルド時に `ldd` + `dpkg -S` から生成し、`Recommends` には
+`libfontconfig1` と `desktop-file-utils`（maintainer script の
+`update-desktop-database` 用）を含みます。
 
 ### 出力先の変更と `--skip-build`
 
@@ -588,9 +592,10 @@ bash packaging/linux/build-deb.sh
 - `--skip-build` は既存の `app/target/release/gpui-file-explorer` を再利用します。
   成立条件は次の 2 つです。
   1. バイナリが存在し、`--version` が `app/Cargo.toml` の version と一致する。
-  2. `app/src` / `app/build.rs` / `app/native-libs/` / `app/Cargo.toml` /
-     `core/src` / `core/Cargo.toml` / ルート `Cargo.lock` のいずれより
+  2. `app/src` / `app/build.rs` / `app/Cargo.toml` / `core/src` /
+     `core/Cargo.toml` / ルート `Cargo.toml` / ルート `Cargo.lock` のいずれより
      バイナリが古くない（core だけを変更した場合も検出されます）。
+      `app/native-libs/` は `dev-setup.sh` のホスト生成物のため対象外です。
 
   満たさない場合は再ビルドを促すため、`--skip-build` を外して再実行してください。
   `app/Cargo.lock` は workspace 化前の残骸で未使用（正本はルート `Cargo.lock`）。
@@ -602,10 +607,16 @@ bash packaging/linux/build-deb.sh
   [NOTICE.md](NOTICE.md)（`app/NOTICE.md` を詳細版として配置）の相対リンクが
   ステージ内で解決することも検証します。`DEBIAN/control` と既存 `.deb` 埋め込み
   control の `Package` / `Version` 値も照合します。
+- `--verify` は maintainer script（`DEBIAN/postinst` / `DEBIAN/postrm`）の存在、
+   **0755** の実行権限、および現行ソースとのバイト一致も検証します。これらは
+   `.desktop` の MimeType を `update-desktop-database` で登録するためのものです。
 - `--verify` はバイナリも検証します。ステージの
   `/usr/bin/gpui-file-explorer` が実行可能で `--version` が期待値を返すこと、
   ソースより古くないこと、および既存 `.deb` の `usr/bin/gpui-file-explorer` と
   バイト単位で一致することを、展開なしに読み取り専用で確認します。
+- `--verify` は `.deb` ペイロードのドキュメント / `.desktop` / アイコンも
+   `dpkg-deb --fsys-tarfile | tar -xO` でディスクへ展開せずに読み出し、
+   ステージの対応ファイルとバイト単位で照合します。
 - `.deb` は `SOURCE_DATE_EPOCH` を `dpkg-deb` へ渡して生成します（明示値を優先、
   未設定なら HEAD のコミット時刻）。ar タイムスタンプと tar mtime が固定されるため
   同一ソースならバイト単位で再現します。

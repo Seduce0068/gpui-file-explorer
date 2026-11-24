@@ -166,6 +166,18 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
+  // BK02: navigation の best-effort cache 書き込みを event.waitUntil に登録する。
+  // respondWith が解決した後に waitUntil を呼ぶと InvalidStateError になるため、
+  // respondWith より前に同期して deferred promise を作り、ここで登録する。
+  // 書き込みを await しないので BJ09 の即時 return は維持され、SW は書き込み
+  // 完了まで生き続ける（terminate による書き込み消失を防ぐ）。
+  const navigationRequest = request.mode === 'navigate';
+  let settleCacheWrite = null;
+  if (navigationRequest) {
+    const cacheWriteDone = new Promise((resolve) => { settleCacheWrite = resolve; });
+    event.waitUntil(cacheWriteDone);
+  }
+
   event.respondWith(
     (async () => {
       if (request.mode === 'navigate') {
@@ -177,6 +189,7 @@ self.addEventListener('fetch', (event) => {
         try {
           response = await fetch(request);
         } catch (error) {
+          settleCacheWrite();
           return (await shellResponse()) || Response.error();
         }
         // BI06: navigation 応答は現行 CACHE_NAME へ書かない。更新保留中の
@@ -185,9 +198,12 @@ self.addEventListener('fetch', (event) => {
         if (response && response.ok) {
           // BJ09: putRuntime を await しない。キャッシュ書き込みが完了するまで
           // navigation レスポンスを待たせないため、開始して即 return する。
-          putRuntime('./index.html', response.clone()).catch((error) => {
+          // BK02: 開始した promise を deferred で waitUntil へ受け渡す。
+          settleCacheWrite(putRuntime('./index.html', response.clone()).catch((error) => {
             console.warn('navigation cache write failed (best-effort)', error);
-          });
+          }));
+        } else {
+          settleCacheWrite();
         }
         return response;
       }

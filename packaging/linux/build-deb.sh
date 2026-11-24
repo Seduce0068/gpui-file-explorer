@@ -35,7 +35,8 @@
 # verifies that relative Markdown links inside the staged NOTICE files resolve
 # to files present in the stage (this catches a missing doc/app/LICENSE), and
 # that DEBIAN/postinst and DEBIAN/postrm exist, are 0755 and match the sources
-# (BI14).
+# (BI14), and that every doc/.desktop/icon streamed from the .deb payload is
+# byte-identical to the staged copy (BK17).
 # --dry-run only resolves paths and prints the plan; no directory is created,
 # nothing is deleted, copied or built.
 # SOURCE_DATE_EPOCH is exported for dpkg-deb so the .deb is byte-reproducible
@@ -63,7 +64,7 @@ usage() {
                          （ビルド・コピー・削除なし、出力先も作らない）。
                           NOTICE 内の相対リンクがステージ内で解決するかも検証
                           （BI14: DEBIAN/postinst と postrm の存在・実行権限・
-                          ソースとの一致も検証）
+                          ソースとの一致も検証）。.deb ペイロードのドキュメント/.desktop/アイコンもステージと照合
       --dry-run         解決済みパスと実行計画のみ表示
                          （削除・コピー・ビルドせず、出力先も作らない）
   -h, --help            このヘルプを表示
@@ -396,6 +397,31 @@ verify_staged_binary() {
   fi
 }
 
+# BK17: the binary check above is not enough -- a .deb can still ship stale
+# docs, a stale .desktop or stale icons even when its usr/bin binary matches.
+# Stream every doc_pairs member straight out of the existing .deb with
+# `dpkg-deb --fsys-tarfile | tar -xO` and compare it with the staged copy; no
+# extraction to disk and no temp file, so --verify stays read-only.
+verify_deb_payload_files() {
+  [ -f "${deb}" ] || die "既存 .deb がありません: ${deb}"
+  local pair installed deb_member mismatches=0
+  for pair in "${doc_pairs[@]}"; do
+    installed="${pair#*|}"
+    deb_member=".${installed#"${stage}"}"
+    if cmp -s -- "${installed}" \
+        <(dpkg-deb --fsys-tarfile "${deb}" | tar -xO "${deb_member}" 2>/dev/null); then
+      echo "照合 OK: ${deb} の ${deb_member} == ${installed}"
+    else
+      echo "照合 NG: ${deb} の ${deb_member} != ${installed}" >&2
+      mismatches=$((mismatches + 1))
+    fi
+  done
+  if [ "${mismatches}" -ne 0 ]; then
+    die "${mismatches} 件の .deb ペイロード（doc/.desktop/アイコン）不一致があります"
+  fi
+  echo "すべての .deb ペイロードがステージと一致しました: ${deb}"
+}
+
 # Dry-run: print the resolved paths and the exact plan, but never create a
 # directory, delete a file, copy anything or invoke cargo/dpkg-deb.
 if [ "${dry_run}" -eq 1 ]; then
@@ -433,6 +459,7 @@ if [ "${verify}" -eq 1 ]; then
   verify_notice_links
   verify_control
   verify_staged_binary
+  verify_deb_payload_files
   exit 0
 fi
 

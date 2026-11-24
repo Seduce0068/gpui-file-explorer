@@ -36,8 +36,8 @@
 #     (run `cargo vet init` in that project to opt in)
 #
 # Missing tools (cargo audit/deny/vet, node/node:test, python3,
-# dpkg-deb/dpkg/realpath/tar) and build artifacts (pwa/pkg/, built .deb,
-# android/ scaffold):
+# dpkg-deb/dpkg/realpath/tar/stat, desktop-file-validate) and build artifacts
+# (pwa/pkg/, built .deb, android/ scaffold):
 #   - default: reported as `SKIPPED: ...` before the final line
 #   - --strict: the same condition is a hard failure (non-zero exit status)
 # Artifact availability is checked at the FRONT of the gate list so a clean
@@ -91,7 +91,7 @@ Usage:
   bash scripts/check.sh --poc       # poc/ + core/win32 + cross-target checks (app/ omitted)
   bash scripts/check.sh --no-release # skip the app/ release verification
   bash scripts/check.sh --strict    # fail if a needed tool (incl. node:test /
-                                    # python3, dpkg-deb/dpkg/realpath/tar) or
+                                    # python3, dpkg-deb/dpkg/realpath/tar/stat, desktop-file-validate) or
                                     # artifact (.deb, android/ scaffold) is missing
 EOF
 }
@@ -335,12 +335,75 @@ ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 NAME = ANDROID_NS + "name"
 
 
+def strip_comments(source):
+    """Mask // and (possibly nested) /* */ comments, preserving newlines.
+
+    Kotlin block comments nest, so a line comment marker inside a block comment
+    (or a block marker inside a line comment) must not change the state. String
+    literals are copied verbatim: pinned version strings such as
+    'id("...") version "8.6.1"' must remain searchable (BJ18/BK04).
+    """
+    out = []
+    i = 0
+    size = len(source)
+    block_depth = 0
+    in_line_comment = False
+    quote = None
+    while i < size:
+        char = source[i]
+        following = source[i + 1] if i + 1 < size else ""
+        if in_line_comment:
+            if char == "\n":
+                in_line_comment = False
+                out.append("\n")
+            else:
+                out.append(" ")
+            i += 1
+            continue
+        if block_depth:
+            if char == "/" and following == "*":
+                out.append("  ")
+                block_depth += 1
+                i += 2
+                continue
+            if char == "*" and following == "/":
+                out.append("  ")
+                block_depth -= 1
+                i += 2
+                continue
+            out.append("\n" if char == "\n" else " ")
+            i += 1
+            continue
+        if quote is not None:
+            out.append(char)
+            if char == "\\" and following:
+                out.append(following)
+                i += 2
+                continue
+            if char == quote:
+                quote = None
+            i += 1
+            continue
+        if char == "/" and following == "/":
+            in_line_comment = True
+            out.append("  ")
+            i += 2
+            continue
+        if char == "/" and following == "*":
+            block_depth = 1
+            out.append("  ")
+            i += 2
+            continue
+        if char in ('"', "'"):
+            quote = char
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
 def has_active_line(source, needle):
-    """A pinned value that only appears in a // comment is not a declaration (BJ18)."""
-    return any(
-        needle in line and not line.lstrip().startswith("//")
-        for line in source.splitlines()
-    )
+    """A pinned value that only appears in a comment is not a declaration (BJ18)."""
+    return any(needle in line for line in strip_comments(source).splitlines())
 
 
 # BJ19: ET.parse alone only proves well-formedness. Also verify the structure
@@ -368,11 +431,23 @@ if manifest_root is not None:
                 categories = [node.get(NAME) for node in intent_filter.findall("category")]
                 if ("android.intent.action.MAIN" in actions
                         and "android.intent.category.LAUNCHER" in categories):
-                    launcher_activities.append(activity.get(NAME) or "(name なし)")
+                    launcher_activities.append(activity)
         if not launcher_activities:
             errors.append(
                 "AndroidManifest.xml に MAIN/LAUNCHER intent-filter を持つ <activity> がありません"
             )
+        else:
+            # BK11: Android 12 (targetSdk 31+) requires an explicit
+            # android:exported on every component with an intent-filter. Without
+            # it the launcher entry is either rejected at install time or the
+            # export becomes ambiguous, so require a literal true/false.
+            for activity in launcher_activities:
+                name = activity.get(NAME) or "(name なし)"
+                exported = activity.get(ANDROID_NS + "exported")
+                if exported not in ("true", "false"):
+                    errors.append(
+                        f"launcher activity {name} に android:exported の明示指定（true/false）がありません"
+                    )
 
 root_gradle = (root / "build.gradle.kts").read_text(encoding="utf-8")
 app_gradle = (root / "app/build.gradle.kts").read_text(encoding="utf-8")
@@ -436,14 +511,14 @@ run_deb_verify() {
 		# Already reported as SKIPPED by the front-of-list pre-check.
 		return
 	fi
-	# build-deb.sh --verify shells out to all four commands (dpkg-deb for the
+	# build-deb.sh --verify shells out to all five commands (dpkg-deb for the
 	# archive, dpkg for the architecture, realpath for NOTICE links, tar for
-	# the embedded control/payload). Check every one of them, not just
-	# dpkg-deb, so a missing tool is reported as SKIPPED instead of crashing
-	# halfway through verification (BH14).
+	# the embedded control/payload, stat for the 0755 maintainer-script mode).
+	# Check every one of them, not just dpkg-deb, so a missing tool is reported
+	# as SKIPPED instead of crashing halfway through verification (BH14/BJ14).
 	local missing=0
 	local tool
-	for tool in dpkg-deb dpkg realpath tar; do
+	for tool in dpkg-deb dpkg realpath tar stat; do
 		if ! command -v "${tool}" >/dev/null 2>&1; then
 			echo "${tool} is not installed; skipping the .deb verification."
 			record_missing_tool "${tool}"
@@ -452,6 +527,18 @@ run_deb_verify() {
 	done
 	if [ "${missing}" -ne 0 ]; then
 		return
+	fi
+	# BK12: validate the shipped .desktop entry as a separate gate. The tool
+	# comes from desktop-file-utils (also a Recommends of the built package);
+	# a missing validator is SKIPPED by default and a hard failure in --strict,
+	# exactly like the packaging tools above. The environment used for the
+	# release build has /usr/bin/desktop-file-validate installed.
+	if command -v desktop-file-validate >/dev/null 2>&1; then
+		echo '==> deb: desktop-file-validate packaging/linux/gpui-file-explorer.desktop'
+		desktop-file-validate packaging/linux/gpui-file-explorer.desktop
+	else
+		echo "desktop-file-validate is not installed; skipping the .desktop validation."
+		record_missing_tool desktop-file-validate
 	fi
 	echo '==> deb: packaging/linux/build-deb.sh --verify'
 	bash packaging/linux/build-deb.sh --verify
