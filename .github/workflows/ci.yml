@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   gates:
-    # 共有ワークフローは実アカウント名（旧 onoderakeita からリネーム済み）で参照する。
+    # 共有ワークフローは現行アカウント名で参照する。
     uses: Seduce0068/workflows/.github/workflows/rust-gates.yml@v1
     with:
       # AGENTS.md §5: まず共通ワークフロー側を確認。rust-gates.yml は既に
