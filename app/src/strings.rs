@@ -615,14 +615,15 @@ macro_rules! search_history_chips_description {
 pub(crate) use search_history_chips_description;
 pub const SEARCH_HISTORY_CHIPS_DESCRIPTION: &str = search_history_chips_description!();
 
-/// 列幅の変更先案内（AP03）。
+/// 列幅の変更先案内（AP03 / BN07）。
 ///
-/// 設定 UI の列幅は保存済みの値を表示するだけなので、変更先を明示する。
+/// 列幅は一覧ヘッダの列境界をドラッグすれば GUI で変更でき、自動保存される。
+/// 設定 UI は保存済みの値を表示するが、そこから編集はしない。上級者向けの
+/// settings.json 直接編集も「可能」として併記するが、主導線はドラッグである。
 /// F1 の「一覧の列」行と設定ダイアログのファイルタブ行で共用する。
-/// F1 は設定ダイアログ内で無効なので、後者の行説明が唯一の手掛かりになる。
 macro_rules! column_width_settings_note {
     () => {
-        "幅は設定UIでは表示のみ。変更は settings.json の column_prefs.widths を編集"
+        "幅は一覧ヘッダの列境界をドラッグして変更でき、自動保存されます。上級者は settings.json の column_prefs.widths を直接編集することも可能"
     };
 }
 pub(crate) use column_width_settings_note;
@@ -1364,7 +1365,7 @@ pub const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             // R41/AN03: ファイルタブの列カスタマイズを F1 にも掲載。キー列を
             // 持たない散文行なので settings_ui.rs の HELP_KEY_EXCEPTIONS に
             // `"一覧の列"` の登録が必要（親担当）。
-            // AP03: 列幅は表示のみなので、変更先を正規文言で追記する。
+            // AP03 / BN07: GUI ヘッダドラッグで変更・自動保存される旨を正規文言で追記する。
             (
                 "一覧の列",
                 concat!(
@@ -4325,7 +4326,8 @@ mod tests {
                 "README files-column note must mention {token}"
             );
         }
-        // AP03: 列幅は設定 UI では表示のみ。変更先を F1 と README で共有する。
+        // AP03 / BN07: 主導線はヘッダドラッグと自動保存。上級者向けの
+        // settings.json キーは F1 と README でも共有する（「表示のみ」は撤回）。
         let width_note = COLUMN_WIDTH_SETTINGS_NOTE;
         assert!(
             description.contains(width_note),
@@ -4335,7 +4337,18 @@ mod tests {
             .lines()
             .map(|line| line.trim().replace('`', ""))
             .collect();
-        for token in ["表示のみ", "settings.json", "column_prefs.widths"] {
+        assert!(
+            !width_note.contains("表示のみ"),
+            "BN07: drop the stale display-only guidance"
+        );
+        for token in ["ドラッグ", "自動保存"] {
+            assert!(
+                width_note.contains(token),
+                "canonical width note must mention {token}"
+            );
+        }
+        // app/README.md の列幅節は他担当の所有範囲なので、ここでは共通キーのみ固定する。
+        for token in ["settings.json", "column_prefs.widths"] {
             assert!(
                 width_note.contains(token) && readme_flat.contains(token),
                 "F1 and README must share the column-width token {token}"

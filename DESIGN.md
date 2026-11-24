@@ -925,6 +925,10 @@ pub fn confirm_and_trash(
   欠落時は Lucide へフォールバック（§8.3、`system_icons.rs`）。
 - **P0 の OS 統合は「GPUI core の API のみ」**で構成する（`open_with_system` / `reveal_path` / クリップボード text）。`opener` / `arboard` / `freedesktop-icons` の追加依存は P2 まで入れない（依存と検証面積を最小化、ADR-007）。
 - KDE 固有: `WindowOptions::app_id = "gpui-file-explorer"` を必ず設定（Wayland の app_id → KWin の resourceClass/desktopFile に反映されることを POC で確認、[`notes/poc-report.md`](notes/poc-report.md) §3-3）。タイトルバーはネイティブ（CSD を自前実装しない）。
+- **既知制限（as-built）**: 上記マトリクスの `prompt_for_paths`（XDG ポータル）は
+  P1 の設計項目だが未配線。gpui-pre の API 調査とポータル要件の確認が必要なため、
+  今回の変更では実装せず、既知制限として記録するのみとする
+  （[`README.md`](README.md)「既知の制限」も参照）。
 
 ---
 
@@ -1093,8 +1097,9 @@ app/
   （全チェック）を `app/` と `poc/` の両方に、`cargo vet check`
   （`app/supply-chain/config.toml` 存在時のみ）を **`app/` のみ**に実行し、
   `gates` ジョブが `cargo audit` を実行する。ローカルの `scripts/check.sh`
-  （`--no-release` / `--strict` 対応）は両プロジェクトで `cargo vet` の
-  store 有無を試行し、`cargo audit` も `app/` と `poc/` の両方へ実行する。
+  （`--no-release` / `--strict` 対応）は両プロジェクトで
+  `supply-chain/config.toml` の有無で `cargo vet check` の実行を決め、
+  `cargo audit` も `app/` と `poc/` の両方へ実行する。
   一方 CI のゲートは `app/` のみ（`supply-chain` ジョブは audit を再実行しない）。
   この差分は [`README.md`](README.md)「CI の検証範囲」に記載する。
 

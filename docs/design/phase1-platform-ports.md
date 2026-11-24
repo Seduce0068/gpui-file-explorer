@@ -86,6 +86,8 @@ R1 で確認済みの事実を、本設計の前提として引用する。
   `Dispatchers.Main`。
 - PWA（iOS / Android 共通 Web）: Web Worker + `postMessage`。
   進捗は `postMessage` を受けて React state を更新する（trait は未採用）。
+  ※ これは Phase 1 の設計案であり、実装は React / Worker を採用していない。
+  後述の「PWA」節の as-built 注記（2026-11-24）を参照。
 
 ブロッキングport（Trash / Volume / Image）はコアを同期のまま呼び、
 アダプタがバックグラウンド実行系へ退避してから結果をコアへ戻す。

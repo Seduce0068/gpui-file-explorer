@@ -155,7 +155,10 @@ bash packaging/linux/build-deb.sh --skip-build
   （後者 2 つは `NOTICE-repo.md` の相対リンクをパッケージ内で解決するための複製）と
   `DEBIAN/postinst` / `DEBIAN/postrm`（`.desktop` の MimeType を
   `update-desktop-database` で更新する maintainer script）。
-  ビルド時および `--verify` で両スクリプトの存在・**0755**・ソースとの一致を検証します
+  ビルド時および `--verify` で両スクリプトの存在・**0755**・ソースとの一致を検証します。
+  `--verify` はさらに `.deb` の control tarfile から `./postinst` / `./postrm` を
+  取り出してステージとのバイト照合と tar 上のモード **0755** の確認も行います
+  （BK18）
 - `Depends` は `ldd` + `dpkg -S` から自動生成（Vulkan ローダは dlopen のため `libvulkan1` を明示追加）。
   `Recommends` には `libfontconfig1` と `desktop-file-utils`（maintainer script の
   `update-desktop-database` 用）を含みます
@@ -211,6 +214,10 @@ sudo dpkg -r gpui-file-explorer
   [review-report.md](review-report.md) の検証記録に記載）。macOS は
   上流 `gpui-pre-apple` のクロスビルド制約で check 不可。
 - 配布パッケージは Linux amd64 の DEB のみ（署名・AppImage/Flatpak・Windows/macOS は未対応）
+- ネイティブフォルダ選択（`prompt_for_paths`、XDG ポータル）は API 調査と
+  ポータル要件の確認が必要なため未配線です。P1 の設計項目ではあるものの
+  今回は実装せず、既知制限として記録のみとします
+  （[DESIGN.md](DESIGN.md) §7 の OS 統合マトリクスも参照）
 - 詳細は [app/README.md](app/README.md) の「既知の制限」
 
 ## 新要件（2026-11-22）
@@ -301,9 +308,13 @@ CI と同じ範囲を手元で回すスクリプトを用意しています（�
 
 `--app` / `--poc` の scope に関わらず、配布成果物のゲートも実行します。
 
-- **PWA**: `node --test pwa/main.test.js`。pure ヘルパーは常に検証し、
+- **PWA**: `node --check pwa/sw.js` と `node --check pwa/main.js`（node が有れば
+  `node:test` 非対応でも構文検証）に加え、`sw.js` の `PRECACHE` 配列を `python3` で
+  パースして列挙された全アセットの実在を照合し、`node --test pwa/main.test.js`
+  を実行します。pure ヘルパーと snippet の形式・一意性、および
+  `pkg/snippets/<hash>/inline0.js` の `existsSync` は常に検証し、
   `pwa/pkg/`（wasm-pack の生成物・gitignore 済み）が無い clean checkout では
-  スニペットのハッシュに依存するアサーションのみ `SKIPPED` にします。
+  生成物のハッシュ一致と pkg 配下のアセット存在確認のみ `SKIPPED` にします。
 - **DEB**: `packaging/linux/build-deb.sh --verify`（読み取り専用）。
   `packaging/linux/build/` も gitignore 済みのため、ビルド済み `.deb` が無い
   clean checkout ではゲート列の先頭で `SKIPPED` を表示し、DEB 検証ゲート
@@ -313,10 +324,14 @@ CI と同じ範囲を手元で回すスクリプトを用意しています（�
   依存せず常に実行します。
 - **Android**: `python3` 標準ライブラリで AndroidManifest.xml の well-formedness と
   構造（`<manifest>` / `<application>` / MAIN+LAUNCHER intent-filter と
-  `android:exported` の明示）を検証し、`settings.gradle.kts` /
-  `build.gradle.kts` / `app/build.gradle.kts` の固定バージョン文字列と
-  Kotlin Android と Compose compiler のバージョン一致も静的に検証します
-  （ビルドは行いません）。scaffold が見つからない場合は `SKIPPED` です。
+  `android:exported` の明示）を検証します。さらに `@style/...` 参照が
+  `res/values*/*.xml` の `<style>` で解決すること（修飾子ディレクトリを含む）、
+  相対 Activity 名が `namespace`（無ければ `applicationId`）で解決し、
+  `src/main/{java,kotlin}/` の Kotlin ファイルと package 宣言が一致することも
+  静的に検証します。`settings.gradle.kts` / `build.gradle.kts` /
+  `app/build.gradle.kts` の固定バージョン文字列と Kotlin Android と
+  Compose compiler のバージョン一致も確認します（ビルドは行いません）。
+  scaffold が見つからない場合は `SKIPPED` です。
 
 いずれの `SKIPPED` も `--strict` ではハード失敗になります（後述）。
 CI は Rust 系ゲートのみで、PWA / DEB / Android は対象外です。
@@ -338,8 +353,10 @@ bash scripts/check.sh --strict     # 必要なツール／成果物が無い時�
                                    # node:test、python3、dpkg-deb / dpkg /
                                    # realpath / tar / stat（--verify が使う
                                    # 5 コマンド）と desktop-file-validate、
-                                   # 成果物はビルド済み .deb、pwa/pkg/ と
-                                   # android/ scaffold が対象。
+                                   # 成果物はビルド済み .deb、
+                                   # pwa/pkg/snippets/（PRECACHE の生成物）
+                                   # と android/ scaffold が対象。追跡済みの
+                                   # .desktop は成果物ではなく常に検証します。
 bash scripts/check.sh --app        # app/ + core/win32 + cross-target checks（release 検証を含む）。
 bash scripts/check.sh --poc        # poc/ に加え、workspace member の core / win32 の
                                    # test+clippy と wasm32 / windows-gnu の

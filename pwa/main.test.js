@@ -17,6 +17,7 @@ const {
   emptyStateText,
   shouldShowClearSearch,
   shouldSwipeBack,
+  shouldClearSearchOnSwipeBack,
   canTrackSwipe,
   listKeyCommand,
   updatePickDirAvailability,
@@ -28,6 +29,7 @@ const {
   selectionRange,
   nextRangeArmed,
   retainSelectedPaths,
+  detailTargetEntry,
   compareNatural,
   compareNames,
   sortEntries,
@@ -372,6 +374,69 @@ test('shouldSwipeBack ignores moved and uses only edge guard plus dx/dy', () => 
   assert.equal(shouldSwipeBack(enabled, Number.POSITIVE_INFINITY, 0), false);
 });
 
+// --- BN10: スワイプバックは検索モードだけ検索をクリアする -------------------
+
+test('BN10: shouldClearSearchOnSwipeBack は検索モードだけ clearSearch を選ぶ', () => {
+  assert.equal(shouldClearSearchOnSwipeBack('search'), true);
+  assert.equal(shouldClearSearchOnSwipeBack('list'), false, '通常一覧では選択を維持する');
+  assert.equal(shouldClearSearchOnSwipeBack(undefined), false, '初期 lastRender でも誤消去しない');
+  assert.equal(shouldClearSearchOnSwipeBack(null), false);
+  assert.equal(shouldClearSearchOnSwipeBack('SEARCH'), false, '完全一致のみ');
+});
+
+test('BN10: vm で一覧のスワイプが選択を維持し検索だけクリアする', async () => {
+  // 本番の shouldClearSearchOnSwipeBack / onSwipeBack を vm で動かし、
+  // モード無関係に clearSearch() を呼ぶ回帰と誤通知を実行経路で固定する。
+  const guardSource = 'function shouldClearSearchOnSwipeBack(' + sourceRegion(
+    mainSource, 'function shouldClearSearchOnSwipeBack(', '// BM11: スワイプ追跡の可否');
+  const swipeBackSource = 'async function onSwipeBack() {' + sourceRegion(
+    mainSource, 'async function onSwipeBack() {', 'function onListKeyDown(');
+
+  const statuses = [];
+  let clearCalls = 0;
+  const state = {
+    lastRender: { entries: [], options: { mode: 'list' } },
+    selectedPaths: ['/a.txt', '/c.txt'],
+    suppressClickUntil: 0,
+  };
+  const sandbox = {
+    console,
+    state,
+    CLICK_SUPPRESS_MS: 700,
+    performance: { now: () => 1000 },
+    setStatus(message) { statuses.push(message); },
+    async clearSearch() {
+      clearCalls += 1;
+      state.selectedPaths = [];
+      statuses.push('検索をクリアして一覧へ戻りました');
+    },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${guardSource}\n${swipeBackSource}\nglobalThis.__onSwipeBack = onSwipeBack;`,
+    sandbox
+  );
+
+  // 通常一覧: 選択も通知も触らず、後続 click の抑止だけ行う。
+  await sandbox.__onSwipeBack();
+  assert.equal(clearCalls, 0, '一覧では clearSearch を呼ばない');
+  assert.deepEqual(state.selectedPaths, ['/a.txt', '/c.txt'], '複数選択を維持する');
+  assert.deepEqual(statuses, [], '「検索をクリア」と誤通知しない');
+  assert.equal(state.suppressClickUntil, 1700, 'スワイプ後の click 抑止は維持');
+
+  // 検索モード: 従来どおり検索をクリアして一覧へ戻る。
+  state.lastRender.options.mode = 'search';
+  await sandbox.__onSwipeBack();
+  assert.equal(clearCalls, 1, '検索モードでは clearSearch を呼ぶ');
+  assert.deepEqual(state.selectedPaths, [], '検索クリア時は選択も解除する');
+  assert.deepEqual(statuses, ['検索をクリアして一覧へ戻りました']);
+
+  // 未初期化の lastRender.options でも一覧扱い（誤消去しない）。
+  state.lastRender.options = {};
+  await sandbox.__onSwipeBack();
+  assert.equal(clearCalls, 1, 'mode 不明では search 扱いにしない');
+});
+
 test('BM11: canTrackSwipe は検索フォーカス中でも左端以外なら追跡する', () => {
   // 非フォーカス時は従来どおり（左端除外は swipeEnabled 側で行う）。
   assert.equal(canTrackSwipe(10, false), true, '非フォーカス時は左端も追跡して swipeEnabled=false にする');
@@ -690,11 +755,18 @@ test('service worker precaches the shell and every core wasm asset (BG13)', () =
     'the snippet directory must carry the wasm-pack hash suffix'
   );
   // ビルド成果物がある環境では、ハッシュが実際の配置と一致することも確認する。
+  // BN11: readdirSync()[0] だけ見ると、古いハッシュのディレクトリが残っていても
+  // 気づけなかった。全エントリを走査し、inline0.js を実際に持つディレクトリが
+  // PRECACHE の 1 件と一致すること（複数残存していないこと）を明示的に検証する。
   const snippetDirPath = path.join(__dirname, 'pkg', 'snippets');
   if (fs.existsSync(snippetDirPath)) {
-    const snippetDir = fs.readdirSync(snippetDirPath)[0];
-    assert.ok(snippetDir, 'pkg/snippets/<hash>/inline0.js must exist');
-    assert.equal(snippets[0][1], `./pkg/snippets/${snippetDir}/inline0.js`,
+    const actualSnippets = fs.readdirSync(snippetDirPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((name) => fs.existsSync(path.join(snippetDirPath, name, 'inline0.js')));
+    assert.equal(actualSnippets.length, 1,
+      `pkg/snippets/ に inline0.js を持つディレクトリは 1 つだけである必要があります: ${actualSnippets.join(', ')}`);
+    assert.equal(snippets[0][1], `./pkg/snippets/${actualSnippets[0]}/inline0.js`,
       'sw.js must precache the actual generated inline0.js');
   }
   for (const listener of ['install', 'activate', 'fetch']) {
@@ -832,11 +904,14 @@ test('BM02: [hidden] が author display より優先され一括操作行が隠�
 });
 
 test('BM03: vm DOM モックで「詳細」ボタンが選択行/フォーカス行の詳細を表示する', () => {
-  // 本番の humanSize / entryAt / isPathSelected / selectedEntries / showEntryMeta /
-  // wireSelectDetailsButton を sourceRegion で切り出し、vm 上の DOM モックで
-  // ボタン配線そのものを検証する（文字列マーカーだけでは配線解除を検出できない）。
+  // 本番の humanSize / entryAt / isPathSelected / selectedEntries /
+  // detailTargetEntry / showEntryMeta / wireSelectDetailsButton を sourceRegion で
+  // 切り出し、vm 上の DOM モックでボタン配線そのものを検証する
+  // （文字列マーカーだけでは配線解除を検出できない）。
   const humanSizeSource = 'function humanSize(bytes) {' + sourceRegion(
     mainSource, 'function humanSize(bytes) {', '// --- 描画（テキストはすべて textContent');
+  const detailTargetSource = 'function detailTargetEntry(' + sourceRegion(
+    mainSource, 'function detailTargetEntry(', '// --- 自然順ソートの pure helper');
   const selectionHelpers = 'function entryAt(index) {' + sourceRegion(
     mainSource, 'function entryAt(index) {', '// 複数選択 listbox では aria-selected');
   const showEntryMetaSource = 'function showEntryMeta(entry) {' + sourceRegion(
@@ -869,7 +944,8 @@ test('BM03: vm DOM モックで「詳細」ボタンが選択行/フォーカス
   };
   vm.createContext(sandbox);
   vm.runInContext(
-    `${humanSizeSource}\n${selectionHelpers}\n${showEntryMetaSource}\n${wireSource}\n`
+    `${humanSizeSource}\n${selectionHelpers}\n${detailTargetSource}\n`
+    + `${showEntryMetaSource}\n${wireSource}\n`
     + 'globalThis.__wire = wireSelectDetailsButton;',
     sandbox
   );
@@ -894,6 +970,109 @@ test('BM03: vm DOM モックで「詳細」ボタンが選択行/フォーカス
   state.focusIndex = 99;
   button.handlers.click[0]();
   assert.equal(messages.length, 2, '対象行が無ければ通知しない');
+});
+
+// --- BN05: 「詳細」ボタンが最後に触れた行を表示する ------------------------
+
+test('BN05: detailTargetEntry は描画順の先頭選択行より最後に触れた行を優先する', () => {
+  const entries = [
+    { name: 'a.txt', path: '/a.txt' },
+    { name: 'b.txt', path: '/b.txt' },
+    { name: 'c.txt', path: '/c.txt' },
+    { name: 'd.txt', path: '/d.txt' },
+  ];
+  // 複数選択: selectedEntries()[0] は /a.txt だが最後に触れたのは /c.txt。
+  assert.equal(
+    detailTargetEntry(entries, ['/a.txt', '/c.txt'], 2, '/c.txt').path,
+    '/c.txt',
+    '選択中フォーカス行が最優先'
+  );
+  // 範囲選択: 終端行が選択されていればそちらを表示する。
+  assert.equal(
+    detailTargetEntry(entries, ['/a.txt', '/b.txt', '/c.txt'], 2, '/a.txt').path,
+    '/c.txt',
+    '範囲選択の終端が選択されていれば優先'
+  );
+  // 範囲選択後に矢印で未選択行へフォーカスが移動しても、アンカーへ戻る。
+  assert.equal(
+    detailTargetEntry(entries, ['/a.txt', '/b.txt', '/c.txt'], 3, '/a.txt').path,
+    '/a.txt',
+    '未選択フォーカス行は anchorPath を解決'
+  );
+  // アンカーが再描画で一覧から消えた場合は先頭選択行へフォールバック。
+  assert.equal(
+    detailTargetEntry(entries, ['/b.txt', '/c.txt'], 3, '/gone.txt').path,
+    '/b.txt',
+    '消えたアンカーは先頭選択行へ安全にフォールバック'
+  );
+  // 選択が無ければフォーカス行、それも無ければ null。
+  assert.equal(detailTargetEntry(entries, [], 1, null).path, '/b.txt');
+  assert.equal(detailTargetEntry(entries, [], 99, null), null);
+  assert.equal(detailTargetEntry(null, null, -1, null), null, '欠損入力でも例外に落ちない');
+});
+
+test('BN05: vm の詳細ボタンで複数/範囲選択の最後に触れた行が表示される', () => {
+  // 本番の wireSelectDetailsButton が detailTargetEntry を実際に呼ぶことを
+  // 実行経路で固定する（pure helper だけのテストでは配線解除を検出できない）。
+  const humanSizeSource = 'function humanSize(bytes) {' + sourceRegion(
+    mainSource, 'function humanSize(bytes) {', '// --- 描画（テキストはすべて textContent');
+  const detailTargetSource = 'function detailTargetEntry(' + sourceRegion(
+    mainSource, 'function detailTargetEntry(', '// --- 自然順ソートの pure helper');
+  const showEntryMetaSource = 'function showEntryMeta(entry) {' + sourceRegion(
+    mainSource, 'function showEntryMeta(entry) {', '// BM03: 選択操作行の「詳細」ボタン');
+  const wireSource = 'function wireSelectDetailsButton(button) {' + sourceRegion(
+    mainSource, 'function wireSelectDetailsButton(button) {', 'function entryFromEvent(');
+
+  const messages = [];
+  const state = {
+    renderedEntries: [
+      { name: 'a.txt', path: '/a.txt', size: 10, isDir: false },
+      { name: 'b.txt', path: '/b.txt', size: 20, isDir: false },
+      { name: 'c.txt', path: '/c.txt', size: 30, isDir: false },
+      { name: 'd.txt', path: '/d.txt', size: 40, isDir: false },
+    ],
+    selectedPaths: [],
+    anchorPath: null,
+    focusIndex: 0,
+    suppressClickUntil: 0,
+  };
+  const button = {
+    handlers: {},
+    addEventListener(type, fn) { (this.handlers[type] ||= []).push(fn); },
+  };
+  const sandbox = {
+    console,
+    state,
+    CLICK_SUPPRESS_MS: 700,
+    setStatus(message) { messages.push(message); },
+    performance: { now: () => 1000 },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${humanSizeSource}\n${detailTargetSource}\n${showEntryMetaSource}\n${wireSource}\n`
+    + 'globalThis.__wire = wireSelectDetailsButton;',
+    sandbox
+  );
+  sandbox.__wire(button);
+
+  // 複数選択: 先頭選択行 /a.txt ではなく最後に触れた /c.txt。
+  state.selectedPaths = ['/a.txt', '/c.txt'];
+  state.anchorPath = '/c.txt';
+  state.focusIndex = 2;
+  button.handlers.click[0]();
+  assert.match(messages.at(-1), /^詳細: \/c\.txt · size: 30 B/);
+
+  // 範囲選択: 終端行へフォーカスがあるならその行。
+  state.selectedPaths = ['/a.txt', '/b.txt', '/c.txt'];
+  state.anchorPath = '/a.txt';
+  state.focusIndex = 2;
+  button.handlers.click[0]();
+  assert.match(messages.at(-1), /^詳細: \/c\.txt · size: 30 B/);
+
+  // 未選択行へフォーカスが動いたらアンカーの /a.txt を表示する。
+  state.focusIndex = 3;
+  button.handlers.click[0]();
+  assert.match(messages.at(-1), /^詳細: \/a\.txt · size: 10 B/);
 });
 
 test('manifest name and inline favicon agree (BG19/20)', () => {
@@ -1317,6 +1496,76 @@ test('BM12: vm で2タブ分の state を作り SW の RELOAD で両タブが再
   assert.match(activate, /await notifyClientsReload\(\)/, 'activate で全クライアント通知する');
   assert.match(sw, /clients\.matchAll\(\{[^}]*type:\s*'window'[^}]*includeUncontrolled:\s*true/);
   assert.match(sw, /postMessage\(\{ type: 'RELOAD' \}\)/);
+});
+
+test('BN03: vm で旧シェル相当タブにも client.navigate が届く（RELOAD リスナ無し）', async () => {
+  // 本番の notifyClientsReload を vm で動かし、postMessage だけでは再読込しない
+  // 旧シェルタブも同一 URL への navigate で確実に更新されることを固定する。
+  const notifySource = 'async function notifyClientsReload() {' + sourceRegion(
+    readPwaFile('sw.js'), 'async function notifyClientsReload() {', "self.addEventListener('activate'");
+  const posted = [];
+  const navigated = [];
+
+  function fakeClient(url, { navigate = true, navigateFails = false } = {}) {
+    const client = {
+      url,
+      postMessage(msg) { posted.push({ url, type: msg.type }); },
+    };
+    if (navigate) {
+      client.navigate = (target) => {
+        navigated.push({ url, target });
+        return navigateFails
+          ? Promise.reject(new Error('navigate failed'))
+          : Promise.resolve(client);
+      };
+    }
+    return client;
+  }
+  const newShell = fakeClient('https://example.test/new');
+  const oldShell = fakeClient('https://example.test/old');
+  const legacy = fakeClient('https://example.test/legacy', { navigate: false });
+  const failing = fakeClient('https://example.test/failing', { navigateFails: true });
+  let matchQuery = null;
+  const sandbox = {
+    console: { warn() {}, error() {} },
+    self: {
+      clients: {
+        async matchAll(query) {
+          matchQuery = query;
+          return [newShell, oldShell, legacy, failing];
+        },
+      },
+    },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${notifySource}\nglobalThis.__notify = notifyClientsReload;`,
+    sandbox
+  );
+  await sandbox.__notify();
+
+  // vm 別 realm の object は prototype 比較に落ちるためプロパティで確認する。
+  assert.equal(matchQuery.type, 'window');
+  assert.equal(matchQuery.includeUncontrolled, true);
+  // 全ウィンドウへ RELOAD の postMessage が届く（新シェルはリスナで再読込）。
+  assert.deepEqual(posted.map((p) => p.type), ['RELOAD', 'RELOAD', 'RELOAD', 'RELOAD']);
+  assert.deepEqual(posted.map((p) => p.url), [
+    'https://example.test/new', 'https://example.test/old',
+    'https://example.test/legacy', 'https://example.test/failing',
+  ]);
+  // 旧シェル相当タブも navigate される（ここが BN03 の回帰）。
+  assert.deepEqual(navigated.map((n) => n.target), [
+    'https://example.test/new',
+    'https://example.test/old',
+    'https://example.test/failing',
+  ]);
+  assert.ok(!navigated.some((n) => n.url.includes('legacy')),
+    'navigate 非対応クライアントでも postMessage は届き例外に落ちない');
+  // navigate が 1 タブで失敗しても await が完了し、waitUntil は解決する。
+
+  // matchAll 自体が失敗しても best-effort で飲み込まれる。
+  sandbox.self.clients.matchAll = async () => { throw new Error('matchAll failed'); };
+  await sandbox.__notify();
 });
 
 test('BJ09/BJ10/BJ11: runtime cache の即時 return・期限切れ削除・put 後削除', () => {

@@ -117,6 +117,13 @@ function shouldSwipeBack(touchState, dx, dy) {
   return dx > SWIPE_MIN_DX && Math.abs(dx) > Math.abs(dy) * 1.2;
 }
 
+// BN10: スワイプバックの後始末を描画モードから決める pure helper。
+// 検索結果から一覧へ戻るときだけ検索をクリアする。通常一覧では選択を維持し、
+// 「検索をクリアして一覧へ戻りました」と誤通知しない。
+function shouldClearSearchOnSwipeBack(mode) {
+  return mode === 'search';
+}
+
 // BM11: スワイプ追跡の可否。検索欄フォーカス中でも左端以外なら追跡する。
 // 旧実装はフォーカス中に touchstart 全体を返していたため右スワイプまで
 // ブロックされていた。OS の戻るジェスチャと競合するのは左端だけなので、
@@ -245,6 +252,26 @@ function retainSelectedPaths(prev, next) {
   const previous = Array.isArray(prev) ? prev : [];
   const nextSet = new Set(Array.isArray(next) ? next : []);
   return previous.filter((path) => nextSet.has(path));
+}
+
+// BN05: 選択操作行の「詳細」ボタンが表示する行を決める pure helper。
+// selectedEntries()[0] は描画順の先頭にすぎず、最後に触れた行とは限らない。
+// フォーカス行が選択されていればそれを優先し、そうでなければ anchorPath
+// （toggleAt / selectRangeTo / selectSingle が更新する最後に触れた行）を解決する。
+function detailTargetEntry(entries, selectedPaths, focusIndex, anchorPath) {
+  const list = Array.isArray(entries) ? entries : [];
+  const selected = new Set(Array.isArray(selectedPaths) ? selectedPaths : []);
+  const focus = Number.isInteger(focusIndex) && focusIndex >= 0 && focusIndex < list.length
+    ? list[focusIndex]
+    : null;
+  if (focus && selected.has(focus.path)) return focus;
+  if (typeof anchorPath === 'string' && anchorPath.length > 0) {
+    const anchored = list.find((entry) => entry && entry.path === anchorPath);
+    if (anchored && selected.has(anchored.path)) return anchored;
+  }
+  // アンカーが一覧外へ消えた場合の安全網（従来の selectedEntries()[0] 相当）。
+  const firstSelected = list.find((entry) => entry && selected.has(entry.path));
+  return firstSelected ?? focus ?? null;
 }
 
 // --- 自然順ソートの pure helper --------------------------------------------
@@ -766,11 +793,13 @@ function showEntryMeta(entry) {
 
 // BM03: 選択操作行の「詳細」ボタンを配線する。長押しは選択モード突入へ変更され、
 // Space / i はキーボード専用なので、タッチだけで詳細へ到達できる導線が必要。
-// 選択行を優先し、未選択ならフォーカス行の path / size / isDir を表示する。
+// BN05: 描画順の先頭ではなく、最後に触れた行（フォーカス行 or anchorPath）を表示する。
 function wireSelectDetailsButton(button) {
   if (!button) return;
   button.addEventListener('click', () => {
-    showEntryMeta(selectedEntries()[0] ?? entryAt(state.focusIndex));
+    showEntryMeta(detailTargetEntry(
+      state.renderedEntries, state.selectedPaths, state.focusIndex, state.anchorPath,
+    ));
   });
 }
 
@@ -942,6 +971,9 @@ async function clearSearch() {
 async function onSwipeBack() {
   // スワイプ後の click が行選択として誤処理されないようにする（ボタン側は不要）。
   state.suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
+  // BN10: 検索モードのときだけ clearSearch() する。通常一覧では検索も選択も
+  // 触らず、誤った「検索をクリア」通知も出さない。
+  if (!shouldClearSearchOnSwipeBack(state.lastRender?.options?.mode)) return;
   await clearSearch();
 }
 
@@ -1414,6 +1446,7 @@ if (typeof module !== 'undefined' && module.exports) {
     emptyStateText,
     shouldShowClearSearch,
     shouldSwipeBack,
+    shouldClearSearchOnSwipeBack,
     // BM11: 検索フォーカス中でも左端以外ならスワイプ追跡を有効にする判定。
     canTrackSwipe,
     listKeyCommand,
@@ -1427,6 +1460,7 @@ if (typeof module !== 'undefined' && module.exports) {
     selectionRange,
     nextRangeArmed,
     retainSelectedPaths,
+    detailTargetEntry,
     compareNatural,
     compareNames,
     sortEntries,

@@ -2318,6 +2318,38 @@ status: current
 - [x] **BM21** DEB .desktop Exec/TryExec とパッケージ名の整合が未検証 — 対応: loop26
 - [x] **BM22** デュアルペイン UI が要件化のみ（ADR draft・承認待ち） — 対応: loop26
 
+## 進行中（ループ27 バックログ）
+
+### 優先度: 高（ループ27・confirmed）
+
+- [x] **BN01** 名前列の幅ドラッグ基準が240px固定で実幅と不一致 — 対応: loop27
+- [x] **BN02** 空き領域メニューの新規フォルダが Trash/Search でも旧 cwd に作成 — 対応: loop27
+- [x] **BN03** BM12 の全タブ再読込が旧シェル実行中のタブに届かない — 対応: loop27
+- [x] **BN04** PRECACHE 存在ゲートが sw.js 配列と結合せず snippet real 存在も未検証 — 対応: loop27
+- [x] **BN05** BM03 詳細ボタンが複数選択時に先頭行を表示し最後の行を無視 — 対応: loop27
+
+### 優先度: 中（ループ27・confirmed）
+
+- [x] **BN06** 空き領域メニューの再読込が Search で no-op — 対応: loop27
+- [x] **BN07** 列幅 GUI 変更後も設定UI/F1が「settings.json 編集」と案内 — 対応: loop27
+- [x] **BN08** ボリューム空き容量が未実装（DESIGN P2 ◎） — 対応: loop27
+- [x] **BN09** 検索結果のソース表示（由来ラベル）が未実装 — 対応: loop27
+- [x] **BN10** BM11 右スワイプが一覧でも選択を破棄し誤通知 — 対応: loop27
+- [x] **BN11** snippet precache 検証が先頭ディレクトリしか見ない — 対応: loop27
+- [x] **BN12** node --check が main.js をカバーしない — 対応: loop27
+- [x] **BN13** desktop Exec ゲートが .deb 未ビルド時に走らない — 対応: loop27
+- [x] **BN14** Android 相対 Activity 解決が applicationId 優先で誤検知 — 対応: loop27
+- [x] **BN15** Android @style 解決が修飾子リソースを無視 — 対応: loop27
+- [x] **BN16** README Android/PWA ゲート説明が BM16/17 等を未反映 — 対応: loop27
+- [x] **BN17** DESIGN cargo vet 条件と配布 --verify 説明の不一致 — 対応: loop27
+
+### 優先度: 低（ループ27・confirmed）
+
+- [x] **BN18** 列幅ドラッグ毎に settings.json 同期書き込み — 対応: loop27
+- [x] **BN19** ネイティブフォルダ選択（prompt_for_paths）未配線（P1） — 対応: loop27
+- [x] **BN20** pwa/README の SW 更新フローがマルチタブ経路と不一致 — 対応: loop27
+- [x] **BN21** phase1-platform-ports の React/Worker 記載が as-built と矛盾 — 対応: loop27
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

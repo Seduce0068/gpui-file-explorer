@@ -5,10 +5,11 @@
 #
 #   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
 #   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
-#   pwa: node --check pwa/sw.js + PRECACHE asset existence + node --test
-#        pwa/main.test.js (node --check runs whenever node exists; the test
-#        suite is SKIPPED when node:test is unavailable, and the pure-helper
-#        subset still runs without the gitignored pwa/pkg/)
+#   pwa: node --check pwa/sw.js + pwa/main.js + PRECACHE asset existence
+#        (parsed from sw.js) + node --test pwa/main.test.js
+#        (node --check runs whenever node exists; the test suite is SKIPPED
+#        when node:test is unavailable, and the pure-helper subset still runs
+#        without the gitignored pwa/pkg/)
 #   deb: packaging/linux/build-deb.sh --verify (read-only stage/.deb check;
 #        SKIPPED when no built .deb is present)
 #   android: python3 stdlib static gate (AndroidManifest.xml structure,
@@ -58,7 +59,7 @@ Runs the local verification loop for this repository.
 
   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
-  pwa: node --check pwa/sw.js + PRECACHE asset existence + node --test pwa/main.test.js
+  pwa: node --check pwa/sw.js + pwa/main.js + PRECACHE asset existence + node --test pwa/main.test.js
   deb:  packaging/linux/build-deb.sh --verify (read-only; needs an existing stage/.deb)
   android: python3 stdlib static gate for the tracked scaffold (XML/style/Activity resolution + pinned versions; no build)
 
@@ -82,7 +83,7 @@ Supply-chain gates:
 
 Additional artifact gates (independent of --app/--poc; SKIPPED with a notice
 when their gitignored build inputs are absent, hard failure under --strict):
-  - pwa: node --check pwa/sw.js + PRECACHE asset existence + node --test pwa/main.test.js
+  - pwa: node --check pwa/sw.js + pwa/main.js + PRECACHE asset existence + node --test pwa/main.test.js
          (pure helpers run even without pwa/pkg/)
   - deb: packaging/linux/build-deb.sh --verify (needs a built .deb)
   - android: python3 stdlib static gate (@style / launcher Activity resolution,
@@ -310,29 +311,61 @@ run_pwa_test() {
 	# the script without executing it and works even where node:test is absent,
 	# so run it immediately after the node presence check (before the capability
 	# gate below) to keep the syntax gate independent of node:test support.
+	# BN12: main.js is the other half of the PWA runtime and can fail to parse
+	# just as silently when node:test is unavailable; check both files.
 	echo '==> pwa: node --check pwa/sw.js'
 	node --check pwa/sw.js
-	# BM15: the PRECACHE string assertions never prove the enumerated assets
-	# are actually on disk. Check the five tracked shell files unconditionally
-	# and the two gitignored wasm-pack outputs whenever pwa/pkg/ is present.
-	# (The equivalent fs.existsSync assertions belong in pwa/main.test.js;
-	# this gate keeps the same guarantee for check.sh runs.)
-	local precache_asset
-	for precache_asset in index.html manifest.webmanifest main.js style.css sw.js; do
-		if [ ! -f "pwa/${precache_asset}" ]; then
-			echo "error: PRECACHE アセットがありません: pwa/${precache_asset}" >&2
-			exit 1
-		fi
-	done
-	if [ -d pwa/pkg ]; then
-		for precache_asset in gfe_core.js gfe_core_bg.wasm; do
-			if [ ! -f "pwa/pkg/${precache_asset}" ]; then
-				echo "error: PRECACHE アセットがありません: pwa/pkg/${precache_asset}" >&2
-				exit 1
-			fi
-		done
+	echo '==> pwa: node --check pwa/main.js'
+	node --check pwa/main.js
+	# BM15/BN04: the PRECACHE string assertions never prove the enumerated
+	# assets are actually on disk, and a hand-maintained list silently drifts
+	# from sw.js (the generated snippet inline0.js was missing entirely).
+	# Parse the PRECACHE array itself and require every entry to exist. Entries
+	# under gitignored pwa/pkg/ are only checked when that tree is present;
+	# the five tracked shell files are always checked.
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "python3 is not installed; skipping the PRECACHE asset existence gate."
+		record_missing_tool python3
+	else
+		python3 - <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path("pwa/sw.js").read_text(encoding="utf-8")
+start = source.find("const PRECACHE = [")
+if start < 0:
+    sys.exit("error: pwa/sw.js に const PRECACHE 配列がありません")
+end = source.find("];", start)
+if end < 0:
+    sys.exit("error: pwa/sw.js の PRECACHE 配列が閉じられていません")
+entries = re.findall(r"'([^']+)'", source[start:end])
+if not entries:
+    sys.exit("error: pwa/sw.js の PRECACHE 配列が空です")
+
+pwa_dir = Path("pwa")
+pkg_generated = (pwa_dir / "pkg").is_dir()
+missing = []
+checked = 0
+for entry in entries:
+    if not entry.startswith("./"):
+        sys.exit(f"error: PRECACHE エントリは ./ 相対である必要があります: {entry}")
+    relative = entry[2:]
+    target = pwa_dir / relative
+    # pwa/pkg/ は gitignore 済みの生成物。clean checkout では存在しないため
+    # その場合のみ存在照合をスキップする（追跡対象のシェルは常に照合）。
+    if not pkg_generated and relative.startswith("pkg/"):
+        continue
+    checked += 1
+    if not target.exists():
+        missing.append(entry)
+if missing:
+    for entry in missing:
+        print(f"error: PRECACHE アセットがありません: pwa/{entry[2:]}", file=sys.stderr)
+    sys.exit(1)
+print(f"照合 OK: pwa PRECACHE アセットの存在 ({checked}/{len(entries)} 件)")
+PY
 	fi
-	echo '照合 OK: pwa PRECACHE アセットの存在'
 	# `node --test` / node:test needs Node 18+. An older Node would otherwise
 	# fail the gate; treat the missing capability like a missing tool (BH15).
 	if ! node -e "require('node:test')" >/dev/null 2>&1; then
@@ -517,11 +550,12 @@ if manifest_root is not None:
                         f"launcher activity {name} に android:exported の明示指定（true/false）がありません"
                     )
 
-# BM16: ET.parse alone does not prove that every @style/... reference in the
-# manifest or the value resources resolves. Collect the references from all
-# attribute values and require a matching <style name="..."> definition in
-# res/values/*.xml. Framework styles (@android:style/...) are not matched by
-# the @style/ pattern and are intentionally out of scope.
+# BM16/BN15: ET.parse alone does not prove that every @style/... reference in
+# the manifest or the value resources resolves. Collect the references from
+# all attribute values and require a matching <style name="..."> definition
+# in res/values*/*.xml (qualifier directories such as values-night/ and
+# values-v29/ are included). Framework styles (@android:style/...) are not
+# matched by the @style/ pattern and are intentionally out of scope.
 style_refs = set()
 style_defs = set()
 
@@ -536,8 +570,14 @@ def collect_style_refs(element):
 if manifest_root is not None:
     collect_style_refs(manifest_root)
 
-values_dir = root / "app/src/main/res/values"
-for values_file in sorted(values_dir.glob("*.xml")):
+# BN15: scan res/values*/*.xml, not only res/values/*.xml. A style may be
+# defined (or referenced) in a qualified resource directory, and limiting the
+# scan to the unqualified directory produced false failures on such scaffolds.
+res_dir = root / "app/src/main/res"
+values_files = sorted(
+    candidate for candidate in res_dir.glob("values*/*.xml") if candidate.is_file()
+)
+for values_file in values_files:
     try:
         values_root = ET.parse(values_file).getroot()
     except (ET.ParseError, OSError) as exc:
@@ -551,16 +591,18 @@ for values_file in sorted(values_dir.glob("*.xml")):
 
 for style_ref in sorted(style_refs - style_defs):
     errors.append(
-        f"@style/{style_ref} に対応する <style name=\"{style_ref}\"> が res/values/ にありません"
+        f"@style/{style_ref} に対応する <style name=\"{style_ref}\"> が res/values*/ にありません"
     )
 
 root_gradle = (root / "build.gradle.kts").read_text(encoding="utf-8")
 app_gradle = (root / "app/build.gradle.kts").read_text(encoding="utf-8")
 settings_gradle = (root / "settings.gradle.kts").read_text(encoding="utf-8")
 
-# BM17: a launcher android:name that starts with '.' is only a relative class
-# name. Resolve it against applicationId (falling back to namespace), then
-# require the matching Kotlin source under src/main/{java,kotlin}/ and a
+# BM17/BN14: a launcher android:name that starts with '.' is only a relative
+# class name. Resolve it against namespace first (that is the compile-time
+# package of the Kotlin sources), then fall back to applicationId; both
+# candidates are accepted so a project where they differ is not rejected.
+# Require the matching Kotlin source under src/main/{java,kotlin}/ and a
 # package declaration equal to the resolved class's package. Without this a
 # renamed/moved Activity still passes the manifest structure gate but cannot
 # be launched.
@@ -569,44 +611,63 @@ def gradle_string(source, key):
     return match.group(1) if match else None
 
 
-package_name = (gradle_string(app_gradle, "applicationId")
-                or gradle_string(app_gradle, "namespace"))
-if launcher_activities and not package_name:
-    errors.append("app/build.gradle.kts から applicationId / namespace を取得できません")
+namespace = gradle_string(app_gradle, "namespace")
+application_id = gradle_string(app_gradle, "applicationId")
+package_candidates = [value for value in (namespace, application_id) if value]
+if launcher_activities and not package_candidates:
+    errors.append("app/build.gradle.kts から namespace / applicationId を取得できません")
 for activity in launcher_activities:
-    if not package_name:
-        break
     activity_name = activity.get(NAME)
     if not activity_name:
         continue  # 名前欠落は manifest 構造ゲート側で既に報告済み
-    if activity_name.startswith("."):
-        fqcn = package_name + activity_name
-    elif "." in activity_name:
-        fqcn = activity_name
-    else:
-        fqcn = package_name + "." + activity_name
-    relative_kt = fqcn.replace(".", "/") + ".kt"
-    kt_candidates = (
-        root / "app/src/main/java" / relative_kt,
-        root / "app/src/main/kotlin" / relative_kt,
-    )
-    kt_path = next((candidate for candidate in kt_candidates if candidate.is_file()), None)
-    if kt_path is None:
-        errors.append(
-            f"launcher activity {activity_name} に対応する Kotlin ファイルがありません: "
-            f"app/src/main/java/{relative_kt}"
+    if not package_candidates:
+        break
+    resolved = None
+    primary_relative_kt = None
+    mismatch_report = None
+    for index, package_name in enumerate(package_candidates):
+        if activity_name.startswith("."):
+            fqcn = package_name + activity_name
+        elif "." in activity_name:
+            fqcn = activity_name
+        else:
+            fqcn = package_name + "." + activity_name
+        relative_kt = fqcn.replace(".", "/") + ".kt"
+        if index == 0:
+            primary_relative_kt = relative_kt
+        kt_candidates = (
+            root / "app/src/main/java" / relative_kt,
+            root / "app/src/main/kotlin" / relative_kt,
         )
+        kt_path = next((candidate for candidate in kt_candidates if candidate.is_file()), None)
+        if kt_path is None:
+            continue
+        package_decl = re.search(
+            r"^\s*package\s+([A-Za-z0-9_.]+)",
+            kt_path.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        expected_pkg = fqcn.rsplit(".", 1)[0]
+        if not package_decl or package_decl.group(1) != expected_pkg:
+            if mismatch_report is None:
+                mismatch_report = (
+                    f"{kt_path.relative_to(root)} の package 宣言が {expected_pkg} ではありません"
+                )
+            continue
+        resolved = (kt_path, expected_pkg)
+        break
+    if resolved is None:
+        if mismatch_report is not None:
+            errors.append(mismatch_report)
+        else:
+            errors.append(
+                f"launcher activity {activity_name} に対応する Kotlin ファイルがありません: "
+                f"app/src/main/java/{primary_relative_kt}"
+            )
         continue
-    package_decl = re.search(
-        r"^\s*package\s+([A-Za-z0-9_.]+)",
-        kt_path.read_text(encoding="utf-8"),
-        re.MULTILINE,
-    )
-    expected_pkg = fqcn.rsplit(".", 1)[0]
-    if not package_decl or package_decl.group(1) != expected_pkg:
-        errors.append(
-            f"{kt_path.relative_to(root)} の package 宣言が {expected_pkg} ではありません"
-        )
+    kt_path, expected_pkg = resolved
+    # 解決済み候補の package 宣言は上で検証済み。ここでは採用した候補を
+    # 報告するだけで、一致しない候補を理由に失敗させない。
 
 pinned = {
     "build.gradle.kts": (
@@ -667,6 +728,27 @@ PY
 # not a build artifact, so it must be checked unconditionally; only a missing
 # validator is SKIPPED (hard failure under --strict), like the other tools.
 run_desktop_file_validate() {
+	# BN13: the Exec/TryExec first-token check used to live only in
+	# build-deb.sh --verify, so a clean checkout never ran it. The .desktop is
+	# tracked source: verify it here with bash+grep, independently of any .deb.
+	local desktop="packaging/linux/gpui-file-explorer.desktop"
+	local pkg exec_line try_exec_line exec_program try_program
+	pkg="$(basename -- "${desktop}" .desktop)"
+	exec_line="$(grep -E '^Exec=' "${desktop}" || true)"
+	try_exec_line="$(grep -E '^TryExec=' "${desktop}" || true)"
+	if [ -z "${exec_line}" ] || [ -z "${try_exec_line}" ]; then
+		echo "error: ${desktop} に Exec / TryExec がありません" >&2
+		exit 1
+	fi
+	exec_program="${exec_line#Exec=}"
+	exec_program="${exec_program%%[[:space:]]*}"
+	try_program="${try_exec_line#TryExec=}"
+	try_program="${try_program%%[[:space:]]*}"
+	if [ "${exec_program}" != "${pkg}" ] || [ "${try_program}" != "${pkg}" ]; then
+		echo "error: ${desktop} の Exec / TryExec 先頭トークンが ${pkg} ではありません: ${exec_program} / ${try_program}" >&2
+		exit 1
+	fi
+	echo "照合 OK: ${desktop} の Exec / TryExec == ${pkg}"
 	if command -v desktop-file-validate >/dev/null 2>&1; then
 		echo '==> desktop: desktop-file-validate packaging/linux/gpui-file-explorer.desktop'
 		desktop-file-validate packaging/linux/gpui-file-explorer.desktop

@@ -622,10 +622,12 @@ const FILES_COLUMN_KEYWORDS: &[&str] = &[
     "column",
     "columns",
     "column_prefs",
-    // AQ04: the canonical width note rendered in this row names the exact
-    // settings.json path. Searching that visible word must surface this tab
-    // instead of routing only to Personalize.
+    // AQ04 / BN07: the canonical width note still names the advanced
+    // settings.json path, and now also advertises drag / auto-save words.
+    // Searching any of those visible words must surface this tab.
     "settings.json",
+    "ドラッグ",
+    "自動保存",
     // AR04: the note spells the full key `column_prefs.widths` (and README
     // quotes it too), so searching the whole visible key must also match —
     // `matches_query` uses `candidate.contains(needle)` and would otherwise
@@ -917,13 +919,13 @@ const FILES_SORT_DESCRIPTION: &str = concat!(
     "。",
     crate::strings::directory_view_only_note!()
 );
-/// AP03: 列幅は表示のみなので、変更先を正規文言で追記する（F1 はダイアログ内で
-/// 無効のため、この行がアプリ内で唯一の手掛かりになる）。
+/// AP03 / BN07: 列幅は一覧ヘッダのドラッグで変更・自動保存される。旧「設定 UI
+/// では表示のみ」という案内は撤回し、正規文言を F1 と共有する。
 /// AQ07: 「最後の 1 列は非表示にできません」も F1 と同じ正規マクロから埋め込む。
 const FILES_COLUMN_DESCRIPTION: &str = concat!(
     "一覧ヘッダに出す列と順番を選びます（チェックボックスで表示/非表示、↑↓で並べ替え。",
     crate::strings::last_column_visibility_note!(),
-    "。幅は保存済みの値を表示）。",
+    "）。",
     crate::strings::column_width_settings_note!()
 );
 /// NW09: description of the thumbnail toggle. Kept as a constant so the search
@@ -2998,11 +3000,11 @@ mod tests {
                 rendered_in: &[SETTINGS_KEYMAP_INPUT_HINT],
                 keyword_arrays: &[SHORTCUTS_KEYMAP_KEYWORDS],
             },
-            // AQ04: the column-width note embedded in the Files row prints the
-            // exact settings.json path; searching it must reach that row too.
+            // AQ04 / BN07: the column-width note embedded in the Files row
+            // advertises drag + auto-save; both visible words must reach it.
             CanonicalNoteCase {
                 note: crate::strings::COLUMN_WIDTH_SETTINGS_NOTE,
-                words: &["settings.json"],
+                words: &["ドラッグ", "自動保存"],
                 rendered_in: &[FILES_COLUMN_DESCRIPTION],
                 keyword_arrays: &[FILES_COLUMN_KEYWORDS],
             },
@@ -4718,12 +4720,20 @@ mod column_prefs_ui_tests {
 
     #[test]
     fn column_width_note_is_shared_by_row_and_f1_help() {
-        // AP03: 列幅の変更先を正規文言で共有する。F1 は設定ダイアログ内で
-        // 無効なので、設定行の説明にも同じ案内が必要。
+        // AP03 / BN07: ヘッダドラッグと自動保存を正規文言で共有する。F1 は
+        // 設定ダイアログ内で無効なので、設定行の説明にも同じ案内が必要。
         let note = crate::strings::COLUMN_WIDTH_SETTINGS_NOTE;
         assert!(
+            note.contains("ドラッグ") && note.contains("自動保存"),
+            "canonical width note must advertise GUI drag and auto-save: {note}"
+        );
+        assert!(
+            !note.contains("表示のみ"),
+            "the stale display-only guidance must be gone: {note}"
+        );
+        assert!(
             note.contains("column_prefs.widths") && note.contains("settings.json"),
-            "canonical width note must name the settings.json key: {note}"
+            "canonical width note must keep the advanced settings.json key: {note}"
         );
         assert!(
             FILES_COLUMN_DESCRIPTION.contains(note),

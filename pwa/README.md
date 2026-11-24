@@ -97,8 +97,10 @@ precache は 1 ファイルでも失敗したら install を失敗させ、旧 S
 3. ボタンは待機中の SW へ `SKIP_WAITING` を送り、`controllerchange` で再読込する。
    通知を無視しても、次回ページを開いたときに待機 SW を検出して再通知する。
 
-再読込の判定は r25 の BL05 / BL06 ガードで守られている（実装は `main.js` の
-`announceSwUpdate()`、回帰は `node --test pwa/main.test.js`）:
+再読込の判定は r25 の BL05 / BL06 ガードで守られている。自タブ側の実装は
+`main.js` の `announceSwUpdate()`、全タブ通知の受信は `main.js` の
+`wireSwReloadMessage()`、送信は `sw.js` の `notifyClientsReload()` が担う。
+回帰は `node --test pwa/main.test.js`:
 
 - **60 秒の有効窓**: `SKIP_WAITING` 送信時刻から 60 秒を超えた `controllerchange`
   は古い送信として破棄し、`skipWaitingSent` を戻す。フラグが無期限に立ったまま
@@ -109,11 +111,14 @@ precache は 1 ファイルでも失敗したら install を失敗させ、旧 S
 - **前回送信状態の保持**: 別 worker の新しい更新通知が来ても `skipWaitingSent` は
   リセットしない。前回の送信に対する `controllerchange` の再読込を失わないため。
   `updateNotified` は通知対象 worker が差し替わったときだけ戻る。
-- **複数タブ同時更新（BM12）**: 新 SW は `activate` で `clients.claim()` の後に
+- **複数タブ同時更新（BM12 / BN03）**: 新 SW は `activate` で `clients.claim()` の後に
+  `notifyClientsReload()` から
   `clients.matchAll({ type: 'window', includeUncontrolled: true })` で全ウィンドウへ
   `{ type: 'RELOAD' }` を postMessage する。各タブの `main.js` は常設の `message`
-  リスナでこれを受け取り、`reloadRequested` ガードにより自タブの
-  `controllerchange` と合わせて 1 回だけ再読込する。複数タブを開いていても全タブが
+  リスナ（`wireSwReloadMessage()`）でこれを受け取り、`reloadRequested` ガードにより
+  自タブの `controllerchange` と合わせて 1 回だけ再読込する。旧シェルのタブには
+  RELOAD リスナが無いため、postMessage に加えて `client.navigate(client.url)` も
+  best-effort で呼び、確実に新しいシェルへ移行させる。複数タブを開いていても全タブが
   同じ新しいシェルへ揃う。
 
 `activate` が削除するのは `gfe-viewer-` で始まる自アプリのキャッシュだけ。

@@ -68,17 +68,36 @@ self.addEventListener('message', (event) => {
 // 他のタブは古いシェルのまま残っていた。ack は不要（再読込は各タブ側で
 // reloadRequested ガードにより 1 回だけ実行される）。通知失敗は更新そのものを
 // 失敗させないため best-effort とする。
+// BN03: postMessage(RELOAD) は新しいシェルの wireSwReloadMessage() を持たない
+// 旧タブには届かない。同一 URL への client.navigate() も best-effort で重ね、
+// リスナの無いタブでも確実に新しいシェルへ移行させる。新シェルでは
+// RELOAD と二重になるが、ページ側の reloadRequested ガードと同一 URL への
+// ナビゲーションで実害は出ない（片方が失敗しても他方が再読込を完了する）。
 async function notifyClientsReload() {
   try {
     if (!self.clients || typeof self.clients.matchAll !== 'function') return;
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const navigations = [];
     for (const client of windows) {
       try {
         if (typeof client.postMessage === 'function') client.postMessage({ type: 'RELOAD' });
       } catch (error) {
         console.warn('reload notice failed for one client (best-effort)', error);
       }
+      try {
+        if (typeof client.navigate === 'function'
+          && typeof client.url === 'string' && client.url.length > 0) {
+          // navigate は同期呼び出しで開始し、失敗は個別に飲み込む（best-effort）。
+          navigations.push(Promise.resolve(client.navigate(client.url)).catch((error) => {
+            console.warn('client navigate failed (best-effort)', error);
+          }));
+        }
+      } catch (error) {
+        console.warn('client navigate failed for one client (best-effort)', error);
+      }
     }
+    // 1 タブの遅延 / 失敗で他タブの通知が止まらないよう、待ちは最後に集約する。
+    await Promise.all(navigations);
   } catch (error) {
     console.warn('reload notice failed (best-effort)', error);
   }

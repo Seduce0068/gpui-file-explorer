@@ -207,6 +207,9 @@ const RECONCILE_INTERVAL: Duration = Duration::from_secs(10);
 const SELF_OP_SUPPRESS: Duration = Duration::from_millis(1500);
 /// Throttle progress-bar updates so a fast copy does not flood the UI.
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(80);
+/// BN18: a column-width drag only updates memory; the settings file is written
+/// once after the pointer has settled for this long (the drag has ended).
+const COLUMN_WIDTH_SAVE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// Layout metrics shared by the list page-step and the icon grid. Keeping
 /// them named avoids drift between the row height and the grid cell height.
@@ -3868,9 +3871,15 @@ struct Explorer {
     bookmarks: Vec<PathBuf>,
     /// BM18: next index used by the Ctrl+Shift+L sidebar-location cycle.
     sidebar_focus_index: usize,
-    /// BM09: x position where the current header-boundary drag started. Kept
-    /// on the entity because a width change re-renders the header mid-drag.
-    column_drag_start_x: Option<f32>,
+    /// BN01: pointer offset inside the header cell when the drag began, and the
+    /// measured `(width, window_x)` baseline captured on the first move. Both
+    /// live on the entity because a width change re-renders the header mid-drag.
+    column_drag_grab_offset_x: Option<f32>,
+    column_drag_baseline: Option<(f32, f32)>,
+    /// BN18: pending debounced settings write for a column-width drag. Dropping
+    /// the task on the next move cancels the previous timer, so one drag writes
+    /// the settings file once, after the pointer settles.
+    column_width_save_task: Option<Task<()>>,
     /// Internal cut/copy clipboard (may hold multiple selected paths).
     clipboard: Option<ClipboardSlot>,
     /// Bumped on every clipboard replacement; an in-flight move may only clear
@@ -4039,12 +4048,36 @@ fn column_width(prefs: &ColumnPrefs, key: &str, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
-/// BM09: payload of a header-boundary drag. `start_width` is captured when the
-/// handle is painted, so a resize never accumulates drift across mouse moves.
+/// BN01: payload of a header-boundary drag. The width baseline is *not*
+/// captured at paint time: the Name column is `flex_1` and its real width is
+/// only known once the header has been laid out, so the first drag-move event
+/// measures it instead.
 #[derive(Clone, Debug)]
 struct ColumnDrag {
     key: String,
-    start_width: f32,
+}
+
+/// BN01: baseline `(start_width, start_pointer_x)` for a header resize.
+///
+/// `measured_width` and `cell_origin_x` come from `DragMoveEvent.bounds` on the
+/// first move, before any width change re-renders the cell. This is the actual
+/// laid-out width, so a stretched Name column of 600 px starts at 600 rather
+/// than the stale 240 px fallback. `grab_offset_x` is the pointer offset inside
+/// the cell captured by `on_drag`; GPUI reports that offset in element space
+/// while `DragMoveEvent::event.position` is in window space, so adding it to the
+/// cell's window-space origin yields the comparable drag start coordinate.
+///
+/// Returns `None` when no plausible layout was measured (pre-layout frame), so
+/// a bogus baseline can never shrink a column on the first move.
+fn column_drag_baseline(
+    measured_width: f32,
+    cell_origin_x: f32,
+    grab_offset_x: f32,
+) -> Option<(f32, f32)> {
+    if !measured_width.is_finite() || measured_width <= 0.0 || !cell_origin_x.is_finite() {
+        return None;
+    }
+    Some((measured_width, cell_origin_x + grab_offset_x))
 }
 
 /// BM09: width after dragging a column boundary by `delta` pixels.
@@ -4512,7 +4545,9 @@ impl Explorer {
             recent: Vec::new(),
             bookmarks: Vec::new(),
             sidebar_focus_index: 0,
-            column_drag_start_x: None,
+            column_drag_grab_offset_x: None,
+            column_drag_baseline: None,
+            column_width_save_task: None,
             clipboard: None,
             clipboard_generation: 0,
             op_task: None,
@@ -4577,6 +4612,17 @@ impl Explorer {
     }
 
     // ---------------------------------------------------------------- loading
+
+    /// BN06: the single reload path for F5 and the empty-area context menu.
+    /// `reload()` deliberately no-ops in Search to protect the result listing,
+    /// so that view re-runs the query instead (see `reload_reruns_search`).
+    fn reload_for_view(&mut self, cx: &mut Context<Self>) {
+        if reload_reruns_search(self.view) {
+            self.run_search(cx);
+        } else {
+            self.reload(cx);
+        }
+    }
 
     /// Kick off an asynchronous directory read. The blocking `read_dir` runs
     /// on the GPUI background executor; the result is applied on the
@@ -6061,9 +6107,10 @@ impl Explorer {
         cx.notify();
     }
 
-    /// BM09: persist a column width changed by dragging its header boundary.
-    /// Uses the same preview/rollback save pattern as `set_view`, and skips a
-    /// no-op write so a drag does not flood the settings file.
+    /// BM09 / BN18: apply a column width changed by dragging its header
+    /// boundary. During a drag this only updates memory and notifies; the disk
+    /// write is debounced by [`Self::schedule_column_width_save`] so one drag
+    /// produces one settings write instead of one per mouse-move event.
     fn set_column_width(&mut self, key: &str, width: f32, cx: &mut Context<Self>) {
         if !crate::settings::is_known_column_key(key) {
             return;
@@ -6072,11 +6119,29 @@ impl Explorer {
         if self.settings.column_prefs.widths.get(key) == Some(&next) {
             return;
         }
-        let snapshot = self.settings.clone();
         self.settings
             .column_prefs
             .widths
             .insert(key.to_string(), next);
+        cx.notify();
+        self.schedule_column_width_save(cx);
+    }
+
+    /// BN18: restart the debounce timer. Cancelling the previous `Task` drops
+    /// its pending write, so rapid moves collapse into a single flush after the
+    /// drag ends.
+    fn schedule_column_width_save(&mut self, cx: &mut Context<Self>) {
+        let timer = cx.background_executor().timer(COLUMN_WIDTH_SAVE_DEBOUNCE);
+        self.column_width_save_task = Some(cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |this, cx| this.flush_column_widths(cx));
+        }));
+    }
+
+    /// BN18: the single settings write for a finished column-width drag.
+    /// Keeps the same preview/rollback pattern as `set_view`.
+    fn flush_column_widths(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.settings.clone();
         let saved = self.save_settings();
         if settings_write_needs_rollback(saved) {
             self.rollback_settings(snapshot, cx);
@@ -6939,18 +7004,10 @@ impl Explorer {
             SelectLast => self.select_last(shift, cx),
             OpenSelected => self.open_selected(cx),
             GoParent => self.go_parent(cx),
-            // AC10: F5 is reachable in the Search view (see
-            // `search_view_action_allowed`), but `reload()` deliberately
-            // early-returns there to keep the search listing intact. Re-run
-            // the current query instead, so the advertised "F5 で再読込"
-            // recovery hint actually works while searching.
-            Reload => {
-                if reload_reruns_search(self.view) {
-                    self.run_search(cx);
-                } else {
-                    self.reload(cx);
-                }
-            }
+            // AC10 / BN06: F5 and the empty-area "再読込" menu item share this
+            // entry point, so the advertised "F5 で再読込" recovery hint also
+            // works while searching (where `reload()` is a deliberate no-op).
+            Reload => self.reload_for_view(cx),
             OpenPreview => self.open_preview_selected(cx),
             StartRename => {
                 if self.view == ViewSource::Trash {
@@ -7289,6 +7346,14 @@ impl Explorer {
     /// Name-collision probing and `create_dir` are both blocking I/O, so they
     /// run on the background executor; the UI only updates afterwards.
     fn new_folder(&mut self, cx: &mut Context<Self>) {
+        // BN02: the toolbar button is disabled outside Directory, but the row
+        // and empty-area context menus (and the keyboard action) reach here
+        // too. Keep one Directory guard at the action so a stale menu in
+        // Trash/Search can never create a folder under the previous cwd.
+        if self.view != ViewSource::Directory {
+            cx.notify();
+            return;
+        }
         let dir = self.cwd.clone();
         let expected_dir = dir.clone();
         self.status = STATUS_FOLDER_CREATING.to_string();
@@ -11345,6 +11410,7 @@ impl Explorer {
         path: PathBuf,
         is_dir: bool,
         batch_paths: Vec<PathBuf>,
+        view: ViewSource,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let weak = entity.downgrade();
         let batch_count = batch_paths.len();
@@ -11485,14 +11551,20 @@ impl Explorer {
                             });
                         }),
                 )
-                .separator()
-                .item(
+                .separator();
+            // BN02: keep the row menu and the empty-area menu consistent: the
+            // "新規フォルダ" item is only offered in the Directory view (the
+            // same condition as the toolbar button). `new_folder` also guards
+            // internally for any caller that bypasses both menus.
+            if view == ViewSource::Directory {
+                menu = menu.item(
                     PopupMenuItem::new("新規フォルダ")
                         .icon(Icon::new(IconName::FolderPlus))
                         .on_click(move |_, _window, cx| {
                             let _ = new_folder_weak.update(cx, |this, cx| this.new_folder(cx));
                         }),
                 );
+            }
             if is_dir {
                 // Personalization entries (F6-49): bookmarks and their labels
                 // are resolved by path at click time, just like the actions
@@ -11543,30 +11615,40 @@ impl Explorer {
     ///
     /// Deliberately smaller than [`Self::entry_menu`]: there is no row target,
     /// so only the directory-wide actions (new folder / reload) are offered.
+    /// The new-folder item follows the toolbar's Directory-view guard (BN02),
+    /// and reload shares F5's path (BN06).
     /// Rows install their own `ContextMenu` inside this element; GPUI dispatches
     /// the innermost trigger first and it stops propagation, so a right-click
     /// on a row still shows the row menu (regression-tested below).
     fn empty_area_menu(
         entity: Entity<Self>,
+        view: ViewSource,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let weak = entity.downgrade();
         let new_folder_weak = weak.clone();
         let reload_weak = weak;
         move |menu, _window, _menu_cx| {
-            let new_folder_weak = new_folder_weak.clone();
+            let mut menu = menu;
+            // BN02: Trash/Search have no cwd to create into. Match the toolbar
+            // (and the row menu) by hiding the item outside Directory.
+            if view == ViewSource::Directory {
+                let new_folder_weak = new_folder_weak.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(EMPTY_AREA_MENU_NEW_FOLDER)
+                        .icon(Icon::new(IconName::FolderPlus))
+                        .on_click(move |_, _window, cx| {
+                            let _ = new_folder_weak.update(cx, |this, cx| this.new_folder(cx));
+                        }),
+                );
+            }
+            // BN06: share F5's reload path so the item re-runs a search instead
+            // of being a no-op in the Search view.
             let reload_weak = reload_weak.clone();
             menu.item(
-                PopupMenuItem::new(EMPTY_AREA_MENU_NEW_FOLDER)
-                    .icon(Icon::new(IconName::FolderPlus))
-                    .on_click(move |_, _window, cx| {
-                        let _ = new_folder_weak.update(cx, |this, cx| this.new_folder(cx));
-                    }),
-            )
-            .item(
                 PopupMenuItem::new(EMPTY_AREA_MENU_RELOAD)
                     .icon(Icon::new(IconName::RefreshCw))
                     .on_click(move |_, _window, cx| {
-                        let _ = reload_weak.update(cx, |this, cx| this.reload(cx));
+                        let _ = reload_weak.update(cx, |this, cx| this.reload_for_view(cx));
                     }),
             )
         }
@@ -11644,30 +11726,51 @@ impl Explorer {
             .text_color(if active { rgb(p.text) } else { rgb(p.muted) })
             .hover(|style| style.text_color(rgb(p.text)));
         let drag_key = column_key(key).to_string();
-        let start_width = width.unwrap_or_else(|| {
-            // The Name column stretches (`flex_1`), so its effective px width
-            // is not in the header spec. Use the stored override or a neutral
-            // width as the drag baseline.
-            self.settings
-                .column_prefs
-                .widths
-                .get(&drag_key)
-                .copied()
-                .filter(|value| crate::settings_ui::is_valid_column_width(*value))
-                .unwrap_or(240.0)
-        });
         let base = match width {
             Some(width) => base.w(px(width)).text_right(),
             None => base.flex_1(),
         };
-        // The press position lives on the entity, not in a per-render cell:
-        // the first move changes the width and re-renders this header, so a
-        // render-local cell would be replaced mid-drag and freeze the resize.
+        // BN01: the drag is bound to the whole cell so `DragMoveEvent.bounds`
+        // reports the *laid-out* column (including the stretched Name column).
+        // A 6 px visual grip still marks the boundary; binding to the cell also
+        // keeps the pointer offset in the same coordinate space as those bounds.
+        // Baselines live on the entity because the first move re-renders the
+        // header, and GPUI reports drag-start offsets in element space while
+        // move events carry window coordinates.
         let drag_weak = cx.entity().downgrade();
         base.on_click(cx.listener(move |this, _event, window, cx| {
             this.focus_handle.focus(window, cx);
             this.set_sort(key, cx);
         }))
+        .on_drag(
+            ColumnDrag { key: drag_key },
+            move |_drag, offset, _window, cx| {
+                let _ = drag_weak.update(cx, |this, _| {
+                    this.column_drag_grab_offset_x = Some(offset.x.as_f32());
+                    this.column_drag_baseline = None;
+                });
+                cx.new(|_| Empty)
+            },
+        )
+        .on_drag_move(cx.listener(
+            move |this, event: &DragMoveEvent<ColumnDrag>, _window, cx| {
+                let Some(drag) = event.dragged_item().downcast_ref::<ColumnDrag>() else {
+                    return;
+                };
+                if this.column_drag_baseline.is_none() {
+                    this.column_drag_baseline = column_drag_baseline(
+                        event.bounds.size.width.as_f32(),
+                        event.bounds.origin.x.as_f32(),
+                        this.column_drag_grab_offset_x.unwrap_or(0.0),
+                    );
+                }
+                let Some((start_width, start_x)) = this.column_drag_baseline else {
+                    return;
+                };
+                let delta = event.event.position.x.as_f32() - start_x;
+                this.set_column_width(&drag.key, start_width + delta, cx);
+            },
+        ))
         .child(format!("{arrow} {label}"))
         .child(
             div()
@@ -11678,31 +11781,7 @@ impl Explorer {
                 .h_full()
                 .w(px(6.0))
                 .cursor_col_resize()
-                .hover(|style| style.bg(rgb(p.blue)))
-                .on_drag(
-                    ColumnDrag {
-                        key: drag_key,
-                        start_width,
-                    },
-                    move |_drag, position, _window, cx| {
-                        let _ = drag_weak.update(cx, |this, _| {
-                            this.column_drag_start_x = Some(position.x.as_f32());
-                        });
-                        cx.new(|_| Empty)
-                    },
-                )
-                .on_drag_move(cx.listener(
-                    move |this, event: &DragMoveEvent<ColumnDrag>, _window, cx| {
-                        let (Some(start_x), Some(drag)) = (
-                            this.column_drag_start_x,
-                            event.dragged_item().downcast_ref::<ColumnDrag>(),
-                        ) else {
-                            return;
-                        };
-                        let delta = event.event.position.x.as_f32() - start_x;
-                        this.set_column_width(&drag.key, drag.start_width + delta, cx);
-                    },
-                )),
+                .hover(|style| style.bg(rgb(p.blue))),
         )
     }
 
@@ -11910,6 +11989,7 @@ impl Explorer {
                 entry.path.clone(),
                 is_dir,
                 batch_paths,
+                this.view,
             ))
         };
         // U-09: the truncated name cell needs a tooltip carrying the full
@@ -12208,6 +12288,7 @@ impl Explorer {
                 entry.path.clone(),
                 is_dir,
                 batch_paths,
+                this.view,
             ))
         };
         Some(
@@ -13427,7 +13508,7 @@ impl Render for Explorer {
                     this.focus_handle.focus(window, cx);
                 }),
             )
-            .context_menu(Self::empty_area_menu(entity));
+            .context_menu(Self::empty_area_menu(entity, self.view));
         if let Some(overlay) = self.overlay(cx) {
             list_area = list_area.child(overlay);
         }
@@ -22455,7 +22536,7 @@ mod tests {
             "the list background needs its own right-click handler"
         );
         assert!(
-            list.contains(".context_menu(Self::empty_area_menu(entity))"),
+            list.contains(".context_menu(Self::empty_area_menu(entity, self.view))"),
             "the background menu must be a distinct, dedicated menu"
         );
         let row = source_region(
@@ -22573,8 +22654,8 @@ mod tests {
         assert!(header.contains(".on_drag_move("));
         assert!(header.contains("set_column_width("));
         assert!(
-            header.contains("this.column_drag_start_x"),
-            "the drag origin must survive the re-render caused by the first width change"
+            header.contains("this.column_drag_baseline"),
+            "the measured drag baseline must survive the re-render caused by the first width change"
         );
         let save = source_region(
             source,
@@ -22584,6 +22665,116 @@ mod tests {
         assert!(save.contains("column_prefs"));
         assert!(save.contains("save_settings()"));
         assert!(save.contains("settings_write_needs_rollback("));
+    }
+
+    #[test]
+    fn bn01_column_drag_baseline_uses_laid_out_width() {
+        use super::{column_drag_baseline, resize_column_width};
+        // The Name column is `flex_1`: a 600 px layout must start at 600, so a
+        // -10 px drag lands on 590 instead of the old 240 -> 230 collapse.
+        let (width, start_x) = column_drag_baseline(600.0, 140.0, 593.0).unwrap();
+        assert_eq!(width, 600.0);
+        assert_eq!(start_x, 733.0);
+        assert_eq!(resize_column_width(width, 723.0 - start_x), 590.0);
+        // Below the 600 px cap the same drag grows from the measured width.
+        let (width, start_x) = column_drag_baseline(500.0, 140.0, 493.0).unwrap();
+        assert_eq!(resize_column_width(width, 643.0 - start_x), 510.0);
+        // Fixed columns also take their measured width, not the spec fallback.
+        let (width, start_x) = column_drag_baseline(180.0, 740.0, 177.0).unwrap();
+        assert_eq!((width, start_x), (180.0, 917.0));
+        assert_eq!(resize_column_width(width, 907.0 - start_x), 170.0);
+        assert!(column_drag_baseline(f32::NAN, 140.0, 0.0).is_none());
+        assert!(column_drag_baseline(0.0, 140.0, 0.0).is_none());
+
+        let source = include_str!("main.rs");
+        let header = source_region(source, "    fn sort_header_cell(", "    fn sort_header(");
+        assert!(header.contains("column_drag_baseline("));
+        assert!(
+            !header.contains("240.0"),
+            "the fixed 240 px drag fallback must be gone"
+        );
+        assert!(
+            header.contains("event.bounds.size.width.as_f32()"),
+            "the baseline must come from the measured layout"
+        );
+    }
+
+    #[test]
+    fn bn02_and_bn06_context_menus_share_the_action_guards() {
+        let source = include_str!("main.rs");
+        let new_folder = source_region(
+            source,
+            "    fn new_folder(&mut self, cx: &mut Context<Self>) {",
+            "    fn copy_path(",
+        );
+        assert!(
+            new_folder.contains("self.view != ViewSource::Directory"),
+            "new_folder itself must enforce the toolbar's Directory guard"
+        );
+        let row_menu = source_region(source, "    fn entry_menu(", "    /// BM01");
+        let empty_menu = source_region(
+            source,
+            "    fn empty_area_menu(",
+            "    /// Context menu for trash rows",
+        );
+        for menu in [row_menu, empty_menu] {
+            assert!(
+                menu.contains("view == ViewSource::Directory"),
+                "both context menus must gate 新規フォルダ on Directory"
+            );
+            assert!(
+                menu.contains("this.new_folder(cx)"),
+                "both menus must reach the guarded new_folder action"
+            );
+        }
+        assert!(
+            empty_menu.contains("this.reload_for_view(cx)"),
+            "the empty-area reload item must share F5's path"
+        );
+        assert!(!empty_menu.contains("this.reload(cx)"));
+        let reload = source_region(
+            source,
+            "    fn reload_for_view(&mut self, cx: &mut Context<Self>) {",
+            "    /// Kick off an asynchronous directory read",
+        );
+        assert!(reload.contains("reload_reruns_search(self.view)"));
+        assert!(reload.contains("self.run_search(cx)"));
+        assert!(reload.contains("self.reload(cx)"));
+        let key_action = source_region(
+            source,
+            "            Reload =>",
+            "            OpenPreview =>",
+        );
+        assert!(key_action.contains("Reload => self.reload_for_view(cx)"));
+    }
+
+    #[test]
+    fn bn18_column_width_save_is_debounced_until_the_drag_settles() {
+        let source = include_str!("main.rs");
+        let apply = source_region(
+            source,
+            "    fn set_column_width(",
+            "    /// BN18: restart the debounce timer",
+        );
+        assert!(apply.contains("schedule_column_width_save(cx)"));
+        assert!(
+            !apply.contains("save_settings()"),
+            "no synchronous settings write per drag move"
+        );
+        let schedule = source_region(
+            source,
+            "    fn schedule_column_width_save(",
+            "    /// BN18: the single settings write",
+        );
+        assert!(schedule.contains("COLUMN_WIDTH_SAVE_DEBOUNCE"));
+        assert!(schedule.contains("column_width_save_task"));
+        let flush = source_region(
+            source,
+            "    fn flush_column_widths(",
+            "    /// Switch between the details list",
+        );
+        assert_eq!(flush.matches("save_settings()").count(), 1);
+        assert!(flush.contains("settings_write_needs_rollback("));
     }
 
     #[test]
