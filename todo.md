@@ -2285,6 +2285,39 @@ status: current
 - [x] **BL16** strip_comments が Kotlin raw string を active と誤判定 — 対応: loop25
 - [x] **BL17** strip_comments がインラインコメントで needle を壊す — 対応: loop25
 
+## 進行中（ループ26 バックログ・本来の UX 要件）
+
+### 優先度: 高（ループ26・confirmed）
+
+- [x] **BM01** 空き領域の右クリックメニュー（新規フォルダ／更新）が未実装 — 対応: loop26
+- [x] **BM02** #select-actions の hidden が CSS で無効化され常時表示 — 対応: loop26
+- [x] **BM03** タッチ専用デバイスに行詳細を表示する導線が無い — 対応: loop26
+- [x] **BM04** sw.js が構文チェックされず構文エラーがゲートを通過 — 対応: loop26
+- [x] **BM05** 却下: r25 で BL02 として実装済み（build-deb.sh:411 で ctrl-tarfile 照合）
+
+### 優先度: 中（ループ26・confirmed）
+
+- [x] **BM06** エラー状態の「親フォルダへ」ボタンが未実装 — 対応: loop26
+- [x] **BM07** 複数選択を Enter/「開く」で一括オープンできない — 対応: loop26
+- [x] **BM08** サイドバー場所へファイルをドロップできない — 対応: loop26
+- [x] **BM09** 一覧ヘッダーの列境界ドラッグで幅変更できない — 対応: loop26
+- [x] **BM10** ディレクトリ一覧をその場で名前フィルタできない — 対応: loop26
+- [x] **BM11** 検索欄フォーカス中に右スワイプ戻りが発火しない — 対応: loop26
+- [x] **BM12** SW 更新後の再読込が他タブへ伝播しない — 対応: loop26
+- [x] **BM13** phase1-core-extraction に陳腐化した行アンカーが残存 — 対応: loop26
+- [x] **BM14** pwa/README の SW 更新フローが BL05/06 ガード未反映 — 対応: loop26
+- [x] **BM15** PRECACHE 列挙アセットの存在が未検証 — 対応: loop26
+- [x] **BM16** Android @style 参照と themes.xml 定義の整合が未検証 — 対応: loop26
+- [x] **BM17** Android ランチャー Activity のクラス解決が未検証 — 対応: loop26
+
+### 優先度: 低（ループ26・confirmed）
+
+- [x] **BM18** サイドバーのホーム以外へキーボードで移動できない — 対応: loop26
+- [x] **BM19** check.sh --strict usage が PWA 生成物を漏らす — 対応: loop26
+- [x] **BM20** phase1-core-extraction 受入条件に実在しない関数名 — 対応: loop26
+- [x] **BM21** DEB .desktop Exec/TryExec とパッケージ名の整合が未検証 — 対応: loop26
+- [x] **BM22** デュアルペイン UI が要件化のみ（ADR draft・承認待ち） — 対応: loop26
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

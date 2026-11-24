@@ -5,13 +5,16 @@
 #
 #   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
 #   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
-#   pwa: node --test pwa/main.test.js (SKIPPED when node:test is unavailable;
-#        the pure-helper subset still runs without the gitignored pwa/pkg/)
+#   pwa: node --check pwa/sw.js + PRECACHE asset existence + node --test
+#        pwa/main.test.js (node --check runs whenever node exists; the test
+#        suite is SKIPPED when node:test is unavailable, and the pure-helper
+#        subset still runs without the gitignored pwa/pkg/)
 #   deb: packaging/linux/build-deb.sh --verify (read-only stage/.deb check;
 #        SKIPPED when no built .deb is present)
-#   android: python3 stdlib static gate (AndroidManifest.xml structure + pinned
-#        Gradle versions incl. settings.gradle.kts and Compose compiler; SKIPPED
-#        when the scaffold is absent)
+#   android: python3 stdlib static gate (AndroidManifest.xml structure,
+#        @style reference resolution, launcher Activity class resolution and
+#        pinned Gradle versions incl. settings.gradle.kts and Compose compiler;
+#        SKIPPED when the scaffold is absent)
 #
 # The repository is a virtual Cargo workspace with members core, app, poc
 # and win32 (root Cargo.toml). The shared CI workflow
@@ -55,9 +58,9 @@ Runs the local verification loop for this repository.
 
   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
-  pwa: node --test pwa/main.test.js (pure helpers + service worker registration)
+  pwa: node --check pwa/sw.js + PRECACHE asset existence + node --test pwa/main.test.js
   deb:  packaging/linux/build-deb.sh --verify (read-only; needs an existing stage/.deb)
-  android: python3 stdlib static gate for the tracked scaffold (no build)
+  android: python3 stdlib static gate for the tracked scaffold (XML/style/Activity resolution + pinned versions; no build)
 
 The repository is a virtual Cargo workspace with members core, app, poc
 and win32 (root Cargo.toml). The shared CI workflow
@@ -79,9 +82,11 @@ Supply-chain gates:
 
 Additional artifact gates (independent of --app/--poc; SKIPPED with a notice
 when their gitignored build inputs are absent, hard failure under --strict):
-  - pwa: node --test pwa/main.test.js (pure helpers run even without pwa/pkg/)
+  - pwa: node --check pwa/sw.js + PRECACHE asset existence + node --test pwa/main.test.js
+         (pure helpers run even without pwa/pkg/)
   - deb: packaging/linux/build-deb.sh --verify (needs a built .deb)
-  - android: python3 stdlib static gate (tracked scaffold; no build)
+  - android: python3 stdlib static gate (@style / launcher Activity resolution,
+             tracked scaffold; no build)
   - desktop: desktop-file-validate on the tracked .desktop file (tool gate;
     runs even when no .deb is present)
 
@@ -96,7 +101,7 @@ Usage:
   bash scripts/check.sh --no-release # skip the app/ release verification
   bash scripts/check.sh --strict    # fail if a needed tool (incl. node:test /
                                     # python3, dpkg-deb/dpkg/realpath/tar/stat, desktop-file-validate) or
-                                    # artifact (.deb, android/ scaffold) is missing
+                                    # artifact (.deb, pwa/pkg/snippets/, android/ scaffold) is missing
 EOF
 }
 
@@ -300,6 +305,34 @@ run_pwa_test() {
 		record_missing_tool node
 		return
 	fi
+	# BM04: main.test.js only reads sw.js as a *string*, so a syntax error in
+	# the service worker would still pass `node --test`. `node --check` parses
+	# the script without executing it and works even where node:test is absent,
+	# so run it immediately after the node presence check (before the capability
+	# gate below) to keep the syntax gate independent of node:test support.
+	echo '==> pwa: node --check pwa/sw.js'
+	node --check pwa/sw.js
+	# BM15: the PRECACHE string assertions never prove the enumerated assets
+	# are actually on disk. Check the five tracked shell files unconditionally
+	# and the two gitignored wasm-pack outputs whenever pwa/pkg/ is present.
+	# (The equivalent fs.existsSync assertions belong in pwa/main.test.js;
+	# this gate keeps the same guarantee for check.sh runs.)
+	local precache_asset
+	for precache_asset in index.html manifest.webmanifest main.js style.css sw.js; do
+		if [ ! -f "pwa/${precache_asset}" ]; then
+			echo "error: PRECACHE アセットがありません: pwa/${precache_asset}" >&2
+			exit 1
+		fi
+	done
+	if [ -d pwa/pkg ]; then
+		for precache_asset in gfe_core.js gfe_core_bg.wasm; do
+			if [ ! -f "pwa/pkg/${precache_asset}" ]; then
+				echo "error: PRECACHE アセットがありません: pwa/pkg/${precache_asset}" >&2
+				exit 1
+			fi
+		done
+	fi
+	echo '照合 OK: pwa PRECACHE アセットの存在'
 	# `node --test` / node:test needs Node 18+. An older Node would otherwise
 	# fail the gate; treat the missing capability like a missing tool (BH15).
 	if ! node -e "require('node:test')" >/dev/null 2>&1; then
@@ -444,6 +477,7 @@ def has_active_line(source, needle):
 # that actually defines a launchable launcher activity.
 manifest = root / "app/src/main/AndroidManifest.xml"
 manifest_root = None
+launcher_activities = []
 try:
     manifest_root = ET.parse(manifest).getroot()
 except (ET.ParseError, OSError) as exc:
@@ -483,9 +517,96 @@ if manifest_root is not None:
                         f"launcher activity {name} に android:exported の明示指定（true/false）がありません"
                     )
 
+# BM16: ET.parse alone does not prove that every @style/... reference in the
+# manifest or the value resources resolves. Collect the references from all
+# attribute values and require a matching <style name="..."> definition in
+# res/values/*.xml. Framework styles (@android:style/...) are not matched by
+# the @style/ pattern and are intentionally out of scope.
+style_refs = set()
+style_defs = set()
+
+
+def collect_style_refs(element):
+    for value in element.attrib.values():
+        style_refs.update(re.findall(r"@style/([A-Za-z0-9_.]+)", value))
+    for child in element:
+        collect_style_refs(child)
+
+
+if manifest_root is not None:
+    collect_style_refs(manifest_root)
+
+values_dir = root / "app/src/main/res/values"
+for values_file in sorted(values_dir.glob("*.xml")):
+    try:
+        values_root = ET.parse(values_file).getroot()
+    except (ET.ParseError, OSError) as exc:
+        errors.append(f"{values_file.name} が well-formed ではありません: {exc}")
+        continue
+    collect_style_refs(values_root)
+    for style_node in values_root.iter("style"):
+        style_name = style_node.get("name")
+        if style_name:
+            style_defs.add(style_name)
+
+for style_ref in sorted(style_refs - style_defs):
+    errors.append(
+        f"@style/{style_ref} に対応する <style name=\"{style_ref}\"> が res/values/ にありません"
+    )
+
 root_gradle = (root / "build.gradle.kts").read_text(encoding="utf-8")
 app_gradle = (root / "app/build.gradle.kts").read_text(encoding="utf-8")
 settings_gradle = (root / "settings.gradle.kts").read_text(encoding="utf-8")
+
+# BM17: a launcher android:name that starts with '.' is only a relative class
+# name. Resolve it against applicationId (falling back to namespace), then
+# require the matching Kotlin source under src/main/{java,kotlin}/ and a
+# package declaration equal to the resolved class's package. Without this a
+# renamed/moved Activity still passes the manifest structure gate but cannot
+# be launched.
+def gradle_string(source, key):
+    match = re.search(r"\b" + re.escape(key) + r'\s*=\s*"([^"]+)"', source)
+    return match.group(1) if match else None
+
+
+package_name = (gradle_string(app_gradle, "applicationId")
+                or gradle_string(app_gradle, "namespace"))
+if launcher_activities and not package_name:
+    errors.append("app/build.gradle.kts から applicationId / namespace を取得できません")
+for activity in launcher_activities:
+    if not package_name:
+        break
+    activity_name = activity.get(NAME)
+    if not activity_name:
+        continue  # 名前欠落は manifest 構造ゲート側で既に報告済み
+    if activity_name.startswith("."):
+        fqcn = package_name + activity_name
+    elif "." in activity_name:
+        fqcn = activity_name
+    else:
+        fqcn = package_name + "." + activity_name
+    relative_kt = fqcn.replace(".", "/") + ".kt"
+    kt_candidates = (
+        root / "app/src/main/java" / relative_kt,
+        root / "app/src/main/kotlin" / relative_kt,
+    )
+    kt_path = next((candidate for candidate in kt_candidates if candidate.is_file()), None)
+    if kt_path is None:
+        errors.append(
+            f"launcher activity {activity_name} に対応する Kotlin ファイルがありません: "
+            f"app/src/main/java/{relative_kt}"
+        )
+        continue
+    package_decl = re.search(
+        r"^\s*package\s+([A-Za-z0-9_.]+)",
+        kt_path.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    expected_pkg = fqcn.rsplit(".", 1)[0]
+    if not package_decl or package_decl.group(1) != expected_pkg:
+        errors.append(
+            f"{kt_path.relative_to(root)} の package 宣言が {expected_pkg} ではありません"
+        )
 
 pinned = {
     "build.gradle.kts": (

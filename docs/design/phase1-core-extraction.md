@@ -158,9 +158,11 @@ R2-SIGNAL の並列ロード検証で削除済みである（後述の as-built 
 
 **Phase 1 は案3、Phase 2 で案2へ収束する** ことを推奨する。
 
-- 案3の具体: `model.rs:542,544` の `#[serde(deserialize_with = ...)]` と `:348,507` の
-   2関数を app の `PersistedSortSpec` へ移し、core の `SortKey` / `SortDir` は
-   `rename_all = "snake_case"` と安全なデフォルトだけを持つ。thread_local は app 内に残る。
+- 案3の具体: `SortSpec` の `key` / `dir` フィールドに付いた
+   `#[serde(deserialize_with = ...)]` 属性と、`deserialize_sort_key` /
+   `deserialize_sort_dir` の 2関数を app の `PersistedSortSpec` へ移し、core の
+   `SortKey` / `SortDir` は `rename_all = "snake_case"` と安全なデフォルトだけを持つ。
+   thread_local は app 内に残る（行アンカーは並行変更で陳腐化するため使わない）。
 - 理由: 第1スコープの目的は「core を GPUI/settings 非依存にして一覧・検索を試作で出す」こと。
    案3なら2フックを消すだけで逆参照が完全に断てる。
 - 案1は短期安全だが隠れ状態を core に持ち込むため採用しない。
@@ -299,7 +301,10 @@ use core::{model, ops, search, strings};
    （同条件 (3)、`docs/adr/adr-20261122-mobile-android-ios-support.md:218`）。
 4. `core/src/lib.rs` に `#![forbid(unsafe_code)]` があること。
 5. `cargo tree -p gpui-file-explorer-core` に `gpui-*` が含まれないこと。
-6. `app/src/settings.rs` の `detect_unknown_persisted_enum_*` と
+6. `app/src/settings.rs` の
+   `detect_unknown_persisted_enum_checks_every_persisted_enum_site` /
+   `detect_unknown_persisted_enum_scans_every_window_bounds_mode` /
+   `detect_unknown_persisted_enum_registers_every_enum_field` と
    `parallel_loads_keep_read_only_scoped_to_each_file` が通ること（行アンカーは使わない）。
 7. fmt / check / test / clippy / deny / audit の全ゲートが green であること。
 
@@ -325,4 +330,5 @@ use core::{model, ops, search, strings};
 - `app/src/model.rs`, `app/src/ops.rs`, `app/src/search.rs`, `app/src/error.rs`
 - `app/src/strings.rs`, `app/src/trash_view.rs`, `app/src/settings.rs`
 - `app/Cargo.toml`, `poc/Cargo.toml`
-- `README.md:170-172`, `DESIGN.md:57-62,1274-1276`（古い draft・未承認表記は別スコープで修正）
+- `README.md`「インストール / 検証 / アンインストール」節、`DESIGN.md`「1.3 対象 OS（優先順位）」節と
+  「10.9 Linux DEB パッケージ」節（古い draft・未承認表記は別スコープで修正）

@@ -129,6 +129,19 @@ pub const ERROR_RECOVERY_HELP: &str = error_recovery_help!();
 
 const _: () = assert!(ERROR_RECOVERY_HELP.len() == error_recovery_help!().len());
 
+/// DESIGN §6.4 の読み込み失敗文言（一覧中央の overlay 専用）。
+///
+/// `core::FsError` のステータス文言（「見つかりません」/「アクセスが拒否されました」）は
+/// 通知側で維持し、ユーザーが次に取れる操作を添える overlay でのみ DESIGN 規定の
+/// 「削除されました」/「アクセスできません」へ寄せる。
+pub const LOAD_ERROR_NOT_FOUND_DISPLAY: &str = "削除されました";
+pub const LOAD_ERROR_PERMISSION_DISPLAY: &str = "アクセスできません";
+
+/// 一覧の空き領域（行以外）を右クリックしたときの専用メニュー項目。
+/// 行メニューにはない「新規フォルダ／再読込」だけを並べる（DESIGN §3.2 / AC-12）。
+pub const EMPTY_AREA_MENU_NEW_FOLDER: &str = "新規フォルダ";
+pub const EMPTY_AREA_MENU_RELOAD: &str = "再読込 (F5)";
+
 // ---------------------------------------------------------------------------
 // AC07 / AC08 / AC09: 追加の正規文言
 //

@@ -65,6 +65,8 @@ usage() {
                          メタデータと非破壊で照合し、usr/bin/<pkg> の
                          実行可否・バージョン・鮮度・.deb との一致も検証
                          （ビルド・コピー・削除なし、出力先も作らない）。
+                          ステージの .desktop の Exec / TryExec 先頭トークンが
+                          <pkg> と一致することも検証（BM21）。
                           NOTICE 内の相対リンクがステージ内で解決するかも検証
                           （BI14: DEBIAN/postinst と postrm の存在・実行権限・
                           ソースとの一致も検証）。.deb ペイロードのドキュメント/.desktop/アイコンに加え、
@@ -368,6 +370,29 @@ verify_control() {
   fi
 }
 
+# BM21: a byte-identical .desktop is not enough if its Exec/TryExec still
+# point at a renamed binary. The first token of each entry (the program before
+# any %f field code) must be exactly ${pkg}, otherwise the shipped launcher
+# cannot start the installed binary. Read-only, like the other --verify gates.
+verify_desktop_exec() {
+  local desktop="${stage}/usr/share/applications/${pkg}.desktop"
+  local exec_line try_exec_line exec_program try_program
+  [ -f "${desktop}" ] || die "ステージに .desktop がありません: ${desktop}"
+  exec_line="$(grep -E '^Exec=' "${desktop}" || true)"
+  try_exec_line="$(grep -E '^TryExec=' "${desktop}" || true)"
+  [ -n "${exec_line}" ] || die ".desktop に Exec がありません: ${desktop}"
+  [ -n "${try_exec_line}" ] || die ".desktop に TryExec がありません: ${desktop}"
+  exec_program="${exec_line#Exec=}"
+  exec_program="${exec_program%%[[:space:]]*}"
+  try_program="${try_exec_line#TryExec=}"
+  try_program="${try_program%%[[:space:]]*}"
+  grep -Fqx -- "${pkg}" <<<"${exec_program}" ||
+    die ".desktop の Exec 先頭トークンが ${pkg} ではありません: ${exec_program}"
+  grep -Fqx -- "${pkg}" <<<"${try_program}" ||
+    die ".desktop の TryExec 先頭トークンが ${pkg} ではありません: ${try_program}"
+  echo "照合 OK: ${desktop} の Exec / TryExec == ${pkg}"
+}
+
 # AX15: --verify must also check the packaged binary itself, not only docs and
 # control metadata. Everything here is read-only: the staged file is executed
 # with --version, its mtime is compared with the shared source freshness list,
@@ -494,6 +519,7 @@ if [ "${verify}" -eq 1 ]; then
   verify_maintainer_scripts
   verify_notice_links
   verify_control
+  verify_desktop_exec
   verify_staged_binary
   verify_deb_payload_files
   exit 0

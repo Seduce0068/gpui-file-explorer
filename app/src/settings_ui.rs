@@ -1386,7 +1386,7 @@ pub fn column_reordered(visible: &[String], key: &str, delta: isize) -> Option<V
 /// `settings.rs::ColumnPrefs::validate`: only finite values inside the supported
 /// pixel range are usable; NaN, infinities and out-of-range values fall back to
 /// the built-in default instead of being rendered verbatim.
-fn is_valid_column_width(width: f32) -> bool {
+pub(crate) fn is_valid_column_width(width: f32) -> bool {
     width.is_finite() && (COLUMN_MIN_WIDTH..=COLUMN_MAX_WIDTH).contains(&width)
 }
 

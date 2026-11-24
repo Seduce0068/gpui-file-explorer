@@ -60,7 +60,7 @@ use gfe_core::model::{
     fingerprint, first_index, grid_columns, grid_row_count, human_age, human_datetime, human_size,
     is_hidden_name, last_index, parent_dir, read_entries, read_entries_with_failures,
     resolve_location_input, sort_entries, step_selection, visible_entries, Entry, FsError,
-    FsErrorKind, ReadEntriesOutcome, Selection, SortKey, SortSpec,
+    FsErrorKind, ReadEntriesOutcome, Selection, SortKey, SortOrder, SortSpec,
 };
 use gfe_core::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use gfe_core::search::{
@@ -1458,6 +1458,23 @@ fn load_error_display_text(error: &str) -> String {
     }
 }
 
+/// DESIGN §6.4: 一覧中央の overlay でのみエラー文言を規定語へ寄せる。
+///
+/// 通知（status bar）は `FsError::message_ja()` の「見つかりません」/
+/// 「アクセスが拒否されました」を維持し、ここでは「削除されました」/
+/// 「アクセスできません」へ置き換える。曖昧な文言や未知のエラーはそのまま
+/// 表示し、接頭辞が二重にならないよう `load_error_display_text` を通す。
+fn load_error_overlay_text(error: &str) -> String {
+    let text = load_error_display_text(error);
+    if text.contains("アクセスが拒否されました") {
+        text.replace("アクセスが拒否されました", LOAD_ERROR_PERMISSION_DISPLAY)
+    } else if text.contains("見つかりません") {
+        text.replace("見つかりません", LOAD_ERROR_NOT_FOUND_DISPLAY)
+    } else {
+        text
+    }
+}
+
 /// Compose the missing-target undo refusal so its wording and red colour can
 /// be regression-tested without a live GPUI `Context`.
 fn undo_missing_status(path: &std::path::Path) -> String {
@@ -2615,7 +2632,7 @@ fn empty_state_message(
         // U06: some load errors (notably the trash path) already carry
         // STATUS_ERROR_PREFIX at their source. Route through the shared
         // helper so the overlay never prints "エラー: エラー: …".
-        return Some((load_error_display_text(error), Some(hint.to_string())));
+        return Some((load_error_overlay_text(error), Some(hint.to_string())));
     }
     if loading {
         return Some((LOADING.to_string(), None));
@@ -2646,40 +2663,42 @@ fn empty_state_message(
 }
 
 use crate::strings::{
-    DIALOG_FOOTER_DELETE_SUFFIX, DIALOG_FOOTER_HINT, DIALOG_FOOTER_HINT_READ_ONLY, EMPTY_DIRECTORY,
-    EMPTY_FILTERED, EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL,
-    FUZZY_JUMP_OVERLAY_FOOTER_HINT, HELP_SECTIONS, KEYMAP_DIALOG_FOOTER_GUIDANCE,
-    KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT, LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY,
-    LOAD_ERROR_HINT_SEARCH, LOAD_ERROR_HINT_TRASH, OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX,
-    OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL, PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD,
-    SEARCH_IN_PROGRESS_LABEL, SEARCH_SUMMARY_LIMIT_PREFIX, SEARCH_SUMMARY_LIMIT_SUFFIX,
-    SEARCH_SUMMARY_NON_UTF8_PREFIX, SEARCH_SUMMARY_NON_UTF8_SUFFIX,
-    SEARCH_SUMMARY_SKIPPED_LARGE_PREFIX, SEARCH_SUMMARY_SKIPPED_LARGE_SUFFIX, STATUS_ACCESS_DENIED,
-    STATUS_BOOKMARKS_ONLY_DIRECTORY, STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX,
-    STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL, STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH,
-    STATUS_BOOKMARK_LABEL_REASON_LIMIT, STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX,
-    STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED, STATUS_CANCELLING, STATUS_CANCEL_HINT,
-    STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED, STATUS_CORE_INVALID_TARGET_PREFIX,
-    STATUS_CORE_IO_FAILED, STATUS_CORE_IS_A_DIRECTORY, STATUS_CORE_NOT_FOUND_PREFIX,
-    STATUS_CORE_READ_ONLY_FS, STATUS_CORE_STORAGE_FULL, STATUS_CORE_UNKNOWN_ERROR,
-    STATUS_CORE_UNSUPPORTED_PREFIX, STATUS_DROP_EMPTY, STATUS_DROP_NOT_FOUND,
-    STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY, STATUS_DROP_SAME_DIRECTORY,
-    STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX, STATUS_FOLDER_CREATED,
-    STATUS_FOLDER_CREATED_ELSEWHERE_HINT, STATUS_FOLDER_CREATING, STATUS_FOLDER_NO_PREVIEW,
-    STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR, STATUS_KEYMAP_FORMAT_INVALID,
-    STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX, STATUS_KEYMAP_LIMIT_SUFFIX,
-    STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX, STATUS_LAST_TAB,
-    STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX, STATUS_MAX_TABS_SUFFIX,
-    STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY, STATUS_NOT_FOUND_SUFFIX,
-    STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION, STATUS_OPENED_DEFAULT_SUFFIX,
-    STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX, STATUS_OP_RUNNING,
-    STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE, STATUS_PLACE_GONE_HINT,
-    STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY, STATUS_PROPERTIES_ONLY_DIRECTORY,
-    STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET, STATUS_RENAME_EXISTS_PREFIX,
-    STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR, STATUS_RENAME_INVALID_DOT,
-    STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL, STATUS_RENAME_INVALID_RESERVED_PREFIX,
-    STATUS_RENAME_INVALID_SEPARATOR, STATUS_RENAME_NO_PARENT, STATUS_RENAME_SAVED_PREFIX,
-    STATUS_RESCAN_FAILED, STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
+    DIALOG_FOOTER_DELETE_SUFFIX, DIALOG_FOOTER_HINT, DIALOG_FOOTER_HINT_READ_ONLY,
+    EMPTY_AREA_MENU_NEW_FOLDER, EMPTY_AREA_MENU_RELOAD, EMPTY_DIRECTORY, EMPTY_FILTERED,
+    EMPTY_SEARCH, EMPTY_TRASH, ERR_FOLDER_CREATE, FUZZY_JUMP_LABEL, FUZZY_JUMP_OVERLAY_FOOTER_HINT,
+    HELP_SECTIONS, KEYMAP_DIALOG_FOOTER_GUIDANCE, KEYMAP_FORMAT_HINT, KEYMAP_INPUT_HINT,
+    LABEL_CANCEL, LOADING, LOAD_ERROR_HINT_DIRECTORY, LOAD_ERROR_HINT_SEARCH,
+    LOAD_ERROR_HINT_TRASH, LOAD_ERROR_NOT_FOUND_DISPLAY, LOAD_ERROR_PERMISSION_DISPLAY,
+    OP_DIRS_SUFFIX, OP_DONE_SUFFIX, OP_FILES_SUFFIX, OP_SKIPPED_SUFFIX, PARENT_FOLDER_LABEL,
+    PREVIEW_OVERLAY_FOOTER_HINT, RELOAD_WORD, SEARCH_IN_PROGRESS_LABEL,
+    SEARCH_SUMMARY_LIMIT_PREFIX, SEARCH_SUMMARY_LIMIT_SUFFIX, SEARCH_SUMMARY_NON_UTF8_PREFIX,
+    SEARCH_SUMMARY_NON_UTF8_SUFFIX, SEARCH_SUMMARY_SKIPPED_LARGE_PREFIX,
+    SEARCH_SUMMARY_SKIPPED_LARGE_SUFFIX, STATUS_ACCESS_DENIED, STATUS_BOOKMARKS_ONLY_DIRECTORY,
+    STATUS_BOOKMARK_LABEL_NOT_SET_PREFIX, STATUS_BOOKMARK_LABEL_REASON_INVALID_LABEL,
+    STATUS_BOOKMARK_LABEL_REASON_INVALID_PATH, STATUS_BOOKMARK_LABEL_REASON_LIMIT,
+    STATUS_BOOKMARK_LABEL_SET_FAILED_PREFIX, STATUS_BOOKMARK_NOT_PERSISTABLE, STATUS_CANCELLED,
+    STATUS_CANCELLING, STATUS_CANCEL_HINT, STATUS_CANNOT_OPEN_SUFFIX, STATUS_CHANGED,
+    STATUS_CORE_INVALID_TARGET_PREFIX, STATUS_CORE_IO_FAILED, STATUS_CORE_IS_A_DIRECTORY,
+    STATUS_CORE_NOT_FOUND_PREFIX, STATUS_CORE_READ_ONLY_FS, STATUS_CORE_STORAGE_FULL,
+    STATUS_CORE_UNKNOWN_ERROR, STATUS_CORE_UNSUPPORTED_PREFIX, STATUS_DROP_EMPTY,
+    STATUS_DROP_NOT_FOUND, STATUS_DROP_NO_DESTINATION, STATUS_DROP_ONLY_DIRECTORY,
+    STATUS_DROP_SAME_DIRECTORY, STATUS_ERROR_PREFIX, STATUS_FILE_NO_NEW_TAB_PREFIX,
+    STATUS_FOLDER_CREATED, STATUS_FOLDER_CREATED_ELSEWHERE_HINT, STATUS_FOLDER_CREATING,
+    STATUS_FOLDER_NO_PREVIEW, STATUS_FUZZY_JUMP_ONLY_DIRECTORY, STATUS_INVALID_CLI_DIR,
+    STATUS_KEYMAP_FORMAT_INVALID, STATUS_KEYMAP_INVALID_PREFIX, STATUS_KEYMAP_LIMIT_PREFIX,
+    STATUS_KEYMAP_LIMIT_SUFFIX, STATUS_KEYMAP_NO_UNBIND_HINT, STATUS_KEYMAP_NO_UNBIND_PREFIX,
+    STATUS_LAST_TAB, STATUS_LOCATION_ONLY_DIRECTORY, STATUS_MAX_TABS_PREFIX,
+    STATUS_MAX_TABS_SUFFIX, STATUS_MISSING_COUNT_SUFFIX, STATUS_NOT_DIRECTORY,
+    STATUS_NOT_FOUND_SUFFIX, STATUS_NO_CLIPBOARD, STATUS_NO_SELECTION,
+    STATUS_OPENED_DEFAULT_SUFFIX, STATUS_OP_FAILED_SUFFIX, STATUS_OP_IN_PROGRESS_SUFFIX,
+    STATUS_OP_RUNNING, STATUS_PARTIAL_FAILURE_SUFFIX, STATUS_PATH_COPIED, STATUS_PATH_GONE,
+    STATUS_PLACE_GONE_HINT, STATUS_PREVIEW_ONLY_DIRECTORY, STATUS_PRIORITY,
+    STATUS_PROPERTIES_ONLY_DIRECTORY, STATUS_REDO_EMPTY, STATUS_REDO_FAILED, STATUS_REDO_NO_TARGET,
+    STATUS_RENAME_EXISTS_PREFIX, STATUS_RENAME_FAILED, STATUS_RENAME_INVALID_CHAR,
+    STATUS_RENAME_INVALID_DOT, STATUS_RENAME_INVALID_EMPTY, STATUS_RENAME_INVALID_NUL,
+    STATUS_RENAME_INVALID_RESERVED_PREFIX, STATUS_RENAME_INVALID_SEPARATOR,
+    STATUS_RENAME_NO_PARENT, STATUS_RENAME_SAVED_PREFIX, STATUS_RESCAN_FAILED,
+    STATUS_RESTORE_EMPTY, STATUS_RESTORE_FAILED, STATUS_REVEALED_PREFIX,
     STATUS_SAME_DIRECTORY_NO_MOVE, STATUS_SAVED_SEARCH_CAP_HINT, STATUS_SAVED_SEARCH_NAME_REQUIRED,
     STATUS_SAVED_SEARCH_QUERY_REQUIRED, STATUS_SAVED_SEARCH_SAVE_FAILED_PREFIX,
     STATUS_SEARCH_EMPTY_QUERY, STATUS_SEARCH_NOT_OPEN, STATUS_SEARCH_ONLY_DIRECTORY,
@@ -2717,6 +2736,39 @@ struct Place {
     exists: bool,
     /// Special entry: opens the system trash view instead of a directory.
     trash: bool,
+}
+
+/// BM18: keyboard-cycleable sidebar destinations in display order.
+///
+/// Places (excluding Trash, which is a view rather than a path), bookmarks,
+/// recent directories and mounts, with duplicate paths collapsed so a cycle
+/// never visits the same row twice in a row. Pure for regression testing.
+fn sidebar_destinations(
+    places: &[Place],
+    bookmarks: &[PathBuf],
+    recent: &[PathBuf],
+    mounts: &[MountPoint],
+) -> Vec<PathBuf> {
+    let mut destinations: Vec<PathBuf> = Vec::new();
+    let mut push = |path: &PathBuf| {
+        if !destinations.contains(path) {
+            destinations.push(path.clone());
+        }
+    };
+    for place in places {
+        if !place.trash && place.exists {
+            if let Some(path) = &place.path {
+                push(path);
+            }
+        }
+    }
+    for path in bookmarks.iter().chain(recent.iter()) {
+        push(path);
+    }
+    for mount in mounts {
+        push(&mount.path);
+    }
+    destinations
 }
 
 fn build_places() -> Vec<Place> {
@@ -2952,6 +3004,33 @@ fn should_clear_clipboard(
 /// Global result cap shared by every search root (the per-root fair share and
 /// the summary's 「上限 … 件に達しました」 notice both derive from this).
 const SEARCH_GLOBAL_CAP: usize = 2_000;
+
+/// BM07: 同時に既定アプリへ渡す項目数の上限。検索の `SEARCH_GLOBAL_CAP` と同じ
+/// 「上限を超えた件数を通知する」パターンを使い、誤操作で数十件のアプリが
+/// 起動しないようにする。
+const OPEN_SELECTED_CAP: usize = 20;
+
+/// `OPEN_SELECTED_CAP` 適用の純粋ヘルパー。除外件数も返して通知に使う。
+fn capped_open_paths(paths: &[PathBuf], cap: usize) -> (Vec<PathBuf>, usize) {
+    let keep = paths.len().min(cap);
+    (paths[..keep].to_vec(), paths.len() - keep)
+}
+
+/// BM10: directory listing after the incremental name filter.
+///
+/// `filter_results` supplies the same case-insensitive substring rule as the
+/// search bar; `visible_entries` then applies the hidden-file rule and the
+/// shared comparator. Callers keep fingerprinting the **unfiltered**
+/// `all_entries`, so a filter change is never mistaken for an on-disk change.
+fn directory_view_entries(
+    all: &[Entry],
+    show_hidden: bool,
+    order: SortOrder,
+    name_filter: Option<&str>,
+) -> Vec<Entry> {
+    let filtered = filter_results(all, SearchKind::All, None, name_filter);
+    visible_entries(&filtered, show_hidden, order)
+}
 
 /// Incomplete-search counters collected by the background walk and shown in
 /// the result summary (BC09 / BC10).
@@ -3713,6 +3792,12 @@ struct Explorer {
     trash_items: Vec<trash_view::TrashItem>,
     /// Recursive search state (active only while `view == Search`).
     search: SearchState,
+    /// BM10: toolbar input for the directory-view incremental name filter.
+    dir_name_filter: Option<Entity<InputState>>,
+    dir_name_filter_subscription: Option<Subscription>,
+    /// Mirror of the input text: `rebuild_view` has no GPUI context, so the
+    /// filter is applied from this plain value.
+    dir_name_filter_text: String,
     /// Content-search line numbers keyed by path (display concern, not Entry).
     search_lines: std::collections::HashMap<PathBuf, u32>,
     history: History,
@@ -3781,6 +3866,11 @@ struct Explorer {
     recent: Vec<PathBuf>,
     /// Existing bookmarked directories (pruned on reload; never probed in render).
     bookmarks: Vec<PathBuf>,
+    /// BM18: next index used by the Ctrl+Shift+L sidebar-location cycle.
+    sidebar_focus_index: usize,
+    /// BM09: x position where the current header-boundary drag started. Kept
+    /// on the entity because a width change re-renders the header mid-drag.
+    column_drag_start_x: Option<f32>,
     /// Internal cut/copy clipboard (may hold multiple selected paths).
     clipboard: Option<ClipboardSlot>,
     /// Bumped on every clipboard replacement; an in-flight move may only clear
@@ -3947,6 +4037,35 @@ fn column_width(prefs: &ColumnPrefs, key: &str, default: f32) -> f32 {
         .copied()
         .filter(|width| width.is_finite() && (COLUMN_MIN_WIDTH..=COLUMN_MAX_WIDTH).contains(width))
         .unwrap_or(default)
+}
+
+/// BM09: payload of a header-boundary drag. `start_width` is captured when the
+/// handle is painted, so a resize never accumulates drift across mouse moves.
+#[derive(Clone, Debug)]
+struct ColumnDrag {
+    key: String,
+    start_width: f32,
+}
+
+/// BM09: width after dragging a column boundary by `delta` pixels.
+///
+/// Both the range constants and the shared acceptance predicate come from the
+/// existing settings code, so a dragged width can always be persisted (a
+/// value rejected here would be dropped by `ColumnPrefs::validate` on load).
+fn resize_column_width(start: f32, delta: f32) -> f32 {
+    let raw = start + delta;
+    let clamped = if raw.is_finite() {
+        raw.clamp(COLUMN_MIN_WIDTH, COLUMN_MAX_WIDTH)
+    } else {
+        start
+    };
+    if crate::settings_ui::is_valid_column_width(clamped) {
+        clamped
+    } else if crate::settings_ui::is_valid_column_width(start) {
+        start
+    } else {
+        COLUMN_MIN_WIDTH
+    }
 }
 
 /// Header cell specification: `(column, width)` in render order. `None` width
@@ -4360,6 +4479,9 @@ impl Explorer {
             view: ViewSource::Directory,
             trash_items: Vec::new(),
             search: SearchState::default(),
+            dir_name_filter: None,
+            dir_name_filter_subscription: None,
+            dir_name_filter_text: String::new(),
             search_lines: std::collections::HashMap::new(),
             history,
             focus_handle: cx.focus_handle(),
@@ -4389,6 +4511,8 @@ impl Explorer {
             window_bounds: restored_bounds,
             recent: Vec::new(),
             bookmarks: Vec::new(),
+            sidebar_focus_index: 0,
+            column_drag_start_x: None,
             clipboard: None,
             clipboard_generation: 0,
             op_task: None,
@@ -4690,7 +4814,15 @@ impl Explorer {
     /// Re-filter and re-sort the cached listing.
     fn rebuild_view(&mut self, keep: Option<PathBuf>) {
         let order = self.settings.sort.order();
-        let view = visible_entries(&self.all_entries, self.settings.show_hidden, order);
+        let name_filter = (self.view == ViewSource::Directory)
+            .then_some(self.dir_name_filter_text.as_str())
+            .filter(|value| !value.trim().is_empty());
+        let view = directory_view_entries(
+            &self.all_entries,
+            self.settings.show_hidden,
+            order,
+            name_filter,
+        );
         let paths: Vec<PathBuf> = view.iter().map(|entry| entry.path.clone()).collect();
         // Paths are the stable key: keep what still exists after a reload and
         // drop the rest, then derive the focused row.
@@ -5837,7 +5969,19 @@ impl Explorer {
             self.restore_selected(cx);
             return;
         }
-        self.open_index(self.selected, cx);
+        // BM07: Enter must honour the whole multi-selection, not just the
+        // focused row. Paths are captured up front (a directory open reloads
+        // the listing), and the cap keeps an accidental Ctrl+A + Enter from
+        // launching an unbounded number of external applications.
+        let (paths, dropped) = capped_open_paths(&self.action_paths(), OPEN_SELECTED_CAP);
+        for path in paths {
+            self.open_path(path, cx);
+        }
+        if dropped > 0 {
+            self.status =
+                format!("上限 {OPEN_SELECTED_CAP} 件まで開きます（{dropped} 件を除外しました）");
+            cx.notify();
+        }
     }
 
     fn open_index(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -5917,6 +6061,29 @@ impl Explorer {
         cx.notify();
     }
 
+    /// BM09: persist a column width changed by dragging its header boundary.
+    /// Uses the same preview/rollback save pattern as `set_view`, and skips a
+    /// no-op write so a drag does not flood the settings file.
+    fn set_column_width(&mut self, key: &str, width: f32, cx: &mut Context<Self>) {
+        if !crate::settings::is_known_column_key(key) {
+            return;
+        }
+        let next = resize_column_width(width, 0.0);
+        if self.settings.column_prefs.widths.get(key) == Some(&next) {
+            return;
+        }
+        let snapshot = self.settings.clone();
+        self.settings
+            .column_prefs
+            .widths
+            .insert(key.to_string(), next);
+        let saved = self.save_settings();
+        if settings_write_needs_rollback(saved) {
+            self.rollback_settings(snapshot, cx);
+        }
+        cx.notify();
+    }
+
     /// Switch between the details list and the icon grid (persisted).
     fn set_view(&mut self, mode: ViewLayout, cx: &mut Context<Self>) {
         if self.settings.view == mode {
@@ -5975,20 +6142,20 @@ impl Explorer {
         self.entries.get(self.selected)
     }
 
-    /// U-07: keyboard access to the sidebar. Sidebar rows are click-only
-    /// (`on_click`) and have no per-row `FocusHandle`; making them tab-focusable
-    /// would be invasive, so the minimal safe path jumps straight to the first
-    /// sidebar place (Home). Limitation: bookmarks, recent, drives and trash
-    /// sidebar entries remain mouse-only.
+    /// U-07 / BM18: keyboard access to the sidebar. Sidebar rows are click-only
+    /// (`on_click`) and have no per-row `FocusHandle`; Ctrl+Shift+L therefore
+    /// walks the cached destinations directly. The first press still lands on
+    /// Home, and repeated presses cycle through places, bookmarks, recent and
+    /// mounts (Trash stays view-only).
     fn focus_sidebar(&mut self, cx: &mut Context<Self>) {
-        let home = self
-            .places
-            .first()
-            .filter(|place| place.exists)
-            .and_then(|place| place.path.clone());
-        if let Some(path) = home {
-            self.navigate_to(path, cx);
+        let destinations =
+            sidebar_destinations(&self.places, &self.bookmarks, &self.recent, &self.mounts);
+        if destinations.is_empty() {
+            return;
         }
+        let index = self.sidebar_focus_index % destinations.len();
+        self.sidebar_focus_index = (index + 1) % destinations.len();
+        self.navigate_to(destinations[index].clone(), cx);
     }
 
     /// U-08: toggle the focused row in the non-contiguous selection from the
@@ -7566,6 +7733,32 @@ impl Explorer {
     /// Copy files/directories dropped from the OS into the current directory.
     fn drop_external(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         self.drop_external_into(self.cwd.clone(), paths, cx);
+    }
+
+    /// BM08: make a sidebar location row a drop destination.
+    ///
+    /// Reuses the exact row-drop pipeline (`drop_internal_into` /
+    /// `drop_external_into`), so OS drops are copies with rename-on-conflict,
+    /// internal drags are filtered the same way, and drops are refused outside
+    /// the directory view or while an operation is running. Trash rows are
+    /// deliberately never passed here.
+    fn sidebar_drop_handlers(
+        &self,
+        row: Stateful<Div>,
+        target: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let external = target.clone();
+        row.on_drop::<ExternalPaths>(cx.listener(
+            move |this, paths: &ExternalPaths, _window, cx| {
+                this.drop_external_into(external.clone(), paths.paths().to_vec(), cx);
+            },
+        ))
+        .on_drop::<Vec<PathBuf>>(cx.listener(
+            move |this, paths: &Vec<PathBuf>, _window, cx| {
+                this.drop_internal_into(paths.clone(), target.clone(), cx);
+            },
+        ))
     }
 
     /// Copy paths dragged from another row (possibly a whole multi-selection)
@@ -10112,6 +10305,7 @@ impl Explorer {
             self.search.ext.as_ref(),
             self.search.name_filter.as_ref(),
             self.search.save_name.as_ref(),
+            self.dir_name_filter.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -11345,6 +11539,39 @@ impl Explorer {
         }
     }
 
+    /// BM01 / DESIGN §3.2 / AC-12: context menu for the empty list background.
+    ///
+    /// Deliberately smaller than [`Self::entry_menu`]: there is no row target,
+    /// so only the directory-wide actions (new folder / reload) are offered.
+    /// Rows install their own `ContextMenu` inside this element; GPUI dispatches
+    /// the innermost trigger first and it stops propagation, so a right-click
+    /// on a row still shows the row menu (regression-tested below).
+    fn empty_area_menu(
+        entity: Entity<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let weak = entity.downgrade();
+        let new_folder_weak = weak.clone();
+        let reload_weak = weak;
+        move |menu, _window, _menu_cx| {
+            let new_folder_weak = new_folder_weak.clone();
+            let reload_weak = reload_weak.clone();
+            menu.item(
+                PopupMenuItem::new(EMPTY_AREA_MENU_NEW_FOLDER)
+                    .icon(Icon::new(IconName::FolderPlus))
+                    .on_click(move |_, _window, cx| {
+                        let _ = new_folder_weak.update(cx, |this, cx| this.new_folder(cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(EMPTY_AREA_MENU_RELOAD)
+                    .icon(Icon::new(IconName::RefreshCw))
+                    .on_click(move |_, _window, cx| {
+                        let _ = reload_weak.update(cx, |this, cx| this.reload(cx));
+                    }),
+            )
+        }
+    }
+
     /// Context menu for trash rows: restore only (no permanent deletion).
     fn trash_entry_menu(
         entity: Entity<Self>,
@@ -11408,6 +11635,7 @@ impl Explorer {
         let base = div()
             .id(id)
             .aria_label(format!("{} で並び替え", label))
+            .relative()
             .h_full()
             .flex()
             .items_center()
@@ -11415,15 +11643,67 @@ impl Explorer {
             .cursor_pointer()
             .text_color(if active { rgb(p.text) } else { rgb(p.muted) })
             .hover(|style| style.text_color(rgb(p.text)));
+        let drag_key = column_key(key).to_string();
+        let start_width = width.unwrap_or_else(|| {
+            // The Name column stretches (`flex_1`), so its effective px width
+            // is not in the header spec. Use the stored override or a neutral
+            // width as the drag baseline.
+            self.settings
+                .column_prefs
+                .widths
+                .get(&drag_key)
+                .copied()
+                .filter(|value| crate::settings_ui::is_valid_column_width(*value))
+                .unwrap_or(240.0)
+        });
         let base = match width {
             Some(width) => base.w(px(width)).text_right(),
             None => base.flex_1(),
         };
+        // The press position lives on the entity, not in a per-render cell:
+        // the first move changes the width and re-renders this header, so a
+        // render-local cell would be replaced mid-drag and freeze the resize.
+        let drag_weak = cx.entity().downgrade();
         base.on_click(cx.listener(move |this, _event, window, cx| {
             this.focus_handle.focus(window, cx);
             this.set_sort(key, cx);
         }))
         .child(format!("{arrow} {label}"))
+        .child(
+            div()
+                .id(id.wrapping_add(1_000))
+                .absolute()
+                .top_0()
+                .right_0()
+                .h_full()
+                .w(px(6.0))
+                .cursor_col_resize()
+                .hover(|style| style.bg(rgb(p.blue)))
+                .on_drag(
+                    ColumnDrag {
+                        key: drag_key,
+                        start_width,
+                    },
+                    move |_drag, position, _window, cx| {
+                        let _ = drag_weak.update(cx, |this, _| {
+                            this.column_drag_start_x = Some(position.x.as_f32());
+                        });
+                        cx.new(|_| Empty)
+                    },
+                )
+                .on_drag_move(cx.listener(
+                    move |this, event: &DragMoveEvent<ColumnDrag>, _window, cx| {
+                        let (Some(start_x), Some(drag)) = (
+                            this.column_drag_start_x,
+                            event.dragged_item().downcast_ref::<ColumnDrag>(),
+                        ) else {
+                            return;
+                        };
+                        let delta = event.event.position.x.as_f32() - start_x;
+                        this.set_column_width(&drag.key, drag.start_width + delta, cx);
+                    },
+                )),
+        )
     }
 
     fn sort_header(&self, cx: &mut Context<Self>) -> Div {
@@ -11450,7 +11730,7 @@ impl Explorer {
         header
     }
 
-    fn overlay(&self) -> Option<Div> {
+    fn overlay(&self, cx: &mut Context<Self>) -> Option<Div> {
         let (message, hint) = empty_state_message(
             self.view,
             self.load.is_loading(),
@@ -11459,11 +11739,8 @@ impl Explorer {
             self.entries.len(),
         )?;
         let p = self.palette;
-        let color = if self.load.error_message().is_some() {
-            p.red
-        } else {
-            p.muted
-        };
+        let is_error = self.load.error_message().is_some();
+        let color = if is_error { p.red } else { p.muted };
         Some(
             div()
                 .absolute()
@@ -11484,7 +11761,17 @@ impl Explorer {
                         .child(div().text_sm().text_color(rgb(color)).child(message))
                         .children(
                             hint.map(|hint| div().text_xs().text_color(rgb(p.muted)).child(hint)),
-                        ),
+                        )
+                        // BM06: an error must always offer the next action even
+                        // when the failed directory itself cannot be listed.
+                        .children(is_error.then(|| {
+                            Button::new("overlay-go-parent")
+                                .label(format!("{PARENT_FOLDER_LABEL}へ"))
+                                .on_click(cx.listener(|this, _event, window, cx| {
+                                    this.focus_handle.focus(window, cx);
+                                    this.go_parent(cx);
+                                }))
+                        })),
                 ),
         )
     }
@@ -12089,13 +12376,17 @@ impl Explorer {
                         this.enter_trash(cx);
                     }));
             } else if let Some(target) = place.path.clone().filter(|_| existing) {
+                let click_target = target.clone();
                 row = row
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(p.surface)))
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.focus_handle.focus(window, cx);
-                        this.navigate_to(target.clone(), cx);
+                        this.navigate_to(click_target.clone(), cx);
                     }));
+                // BM08: a file dropped on a location goes into that folder,
+                // not into the currently displayed directory.
+                row = self.sidebar_drop_handlers(row, target, cx);
             }
             scroll_area = scroll_area.child(row);
         }
@@ -12113,28 +12404,27 @@ impl Explorer {
                 let label =
                     labeled_display_name(&tab_label(path), self.settings.bookmark_label(path));
                 let target = path.clone();
-                scroll_area = scroll_area.child(
-                    div()
-                        .id(32_000 + index as u64)
-                        .mx_2()
-                        .px_2()
-                        .h(px(30.0))
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_sm()
-                        .text_color(rgb(p.subtext))
-                        .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgb(p.surface)))
-                        .on_click(cx.listener(move |this, _event, window, cx| {
-                            this.focus_handle.focus(window, cx);
-                            this.navigate_to(target.clone(), cx);
-                        }))
-                        .child(Icon::new(IconName::Star))
-                        .child(div().min_w_0().truncate().child(label)),
-                );
+                let row = div()
+                    .id(32_000 + index as u64)
+                    .mx_2()
+                    .px_2()
+                    .h(px(30.0))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(rgb(p.subtext))
+                    .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(p.surface)))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.navigate_to(target.clone(), cx);
+                    }))
+                    .child(Icon::new(IconName::Star))
+                    .child(div().min_w_0().truncate().child(label));
+                scroll_area = scroll_area.child(self.sidebar_drop_handlers(row, path.clone(), cx));
             }
         }
         let recent = &self.recent;
@@ -12152,28 +12442,27 @@ impl Explorer {
                 let label =
                     labeled_display_name(&tab_label(path), self.settings.bookmark_label(path));
                 let target = path.clone();
-                scroll_area = scroll_area.child(
-                    div()
-                        .id(31_000 + index as u64)
-                        .mx_2()
-                        .px_2()
-                        .h(px(30.0))
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_sm()
-                        .text_color(rgb(p.subtext))
-                        .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgb(p.surface)))
-                        .on_click(cx.listener(move |this, _event, window, cx| {
-                            this.focus_handle.focus(window, cx);
-                            this.navigate_to(target.clone(), cx);
-                        }))
-                        .child(Icon::new(IconName::Clock))
-                        .child(div().min_w_0().truncate().child(label)),
-                );
+                let row = div()
+                    .id(31_000 + index as u64)
+                    .mx_2()
+                    .px_2()
+                    .h(px(30.0))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(rgb(p.subtext))
+                    .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(p.surface)))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.navigate_to(target.clone(), cx);
+                    }))
+                    .child(Icon::new(IconName::Clock))
+                    .child(div().min_w_0().truncate().child(label));
+                scroll_area = scroll_area.child(self.sidebar_drop_handlers(row, path.clone(), cx));
             }
         }
         if !self.mounts.is_empty() {
@@ -12203,36 +12492,50 @@ impl Explorer {
                     mount.source
                 );
                 let target = mount.path.clone();
-                scroll_area = scroll_area.child(
-                    div()
-                        .id(30_000 + index as u64)
-                        .mx_2()
-                        .px_2()
-                        .h(px(30.0))
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_sm()
-                        .text_color(rgb(p.subtext))
-                        .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgb(p.surface)))
-                        .on_click(cx.listener(move |this, _event, window, cx| {
-                            this.focus_handle.focus(window, cx);
-                            this.navigate_to(target.clone(), cx);
-                        }))
-                        .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
-                        .child(Icon::new(IconName::HardDrive))
-                        .child(div().min_w_0().truncate().child(label)),
-                );
+                let row = div()
+                    .id(30_000 + index as u64)
+                    .mx_2()
+                    .px_2()
+                    .h(px(30.0))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(rgb(p.subtext))
+                    .when(active, |row| row.bg(rgb(p.surface)).text_color(rgb(p.text)))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(p.surface)))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.navigate_to(target.clone(), cx);
+                    }))
+                    .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
+                    .child(Icon::new(IconName::HardDrive))
+                    .child(div().min_w_0().truncate().child(label));
+                scroll_area =
+                    scroll_area.child(self.sidebar_drop_handlers(row, mount.path.clone(), cx));
             }
         }
         sidebar.child(scroll_area)
     }
 
-    fn toolbar(&self, cx: &mut Context<Self>) -> Div {
+    fn toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
+        // BM10: create the filter input on first render, exactly like the
+        // search bar inputs, so re-renders never replace its entity.
+        if self.dir_name_filter.is_none() {
+            let input = cx.new(|cx| InputState::new(window, cx));
+            let subscription = cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.dir_name_filter_text = _input.read(cx).value().to_string();
+                    this.rebuild_view(None);
+                    cx.notify();
+                }
+            });
+            self.dir_name_filter = Some(input);
+            self.dir_name_filter_subscription = Some(subscription);
+        }
         let mut breadcrumb = div()
             .flex()
             .items_center()
@@ -12419,6 +12722,13 @@ impl Explorer {
             }),
         );
 
+        let name_filter = if self.view == ViewSource::Directory {
+            self.dir_name_filter
+                .as_ref()
+                .map(|input| div().w(px(150.0)).child(Input::new(input)))
+        } else {
+            None
+        };
         div()
             .flex()
             .items_center()
@@ -12437,6 +12747,7 @@ impl Explorer {
             .child(view_details)
             .child(view_grid)
             .child(breadcrumb)
+            .children(name_filter)
             .child(new_folder)
             .child(toggle_hidden)
             .child(help)
@@ -13088,7 +13399,9 @@ impl Render for Explorer {
         .track_scroll(&self.scroll_handle);
 
         let p = self.palette;
+        let entity = cx.entity();
         let mut list_area = div()
+            .id("explorer-list-area")
             .relative()
             .flex_1()
             .min_h_0()
@@ -13104,8 +13417,18 @@ impl Render for Explorer {
             .on_drop::<Vec<PathBuf>>(cx.listener(|this, paths: &Vec<PathBuf>, _window, cx| {
                 let cwd = this.cwd.clone();
                 this.drop_internal_into(paths.clone(), cwd, cx);
-            }));
-        if let Some(overlay) = self.overlay() {
+            }))
+            // BM01: right-clicking the background (no row under the pointer)
+            // opens the dedicated new-folder / reload menu. A row is a nested
+            // ContextMenu trigger, so its own menu wins and stops propagation.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _event, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                }),
+            )
+            .context_menu(Self::empty_area_menu(entity));
+        if let Some(overlay) = self.overlay(cx) {
             list_area = list_area.child(overlay);
         }
 
@@ -13134,7 +13457,7 @@ impl Render for Explorer {
             .flex_col()
             .bg(rgb(p.base))
             .text_color(rgb(p.text))
-            .child(self.toolbar(cx))
+            .child(self.toolbar(window, cx))
             .children(tab_bar)
             .children(search_bar)
             .children(search_history_bar)
@@ -14698,7 +15021,8 @@ mod tests {
             before_main_tests
                 .matches(concat!("self", ".rollback_settings("))
                 .count(),
-            7,
+            // BM09 adds one legitimate rollback call in `set_column_width`.
+            8,
             "small test blocks must not add rollback literals"
         );
         let missing = std::panic::catch_unwind(|| production_text("fn production() {}"));
@@ -22109,6 +22433,256 @@ mod tests {
         assert!(
             grid.contains(".tooltip("),
             "the truncated grid name must expose a tooltip"
+        );
+    }
+
+    // ------------------------------------------------------------- R2-UX items
+
+    #[test]
+    fn bm01_empty_area_menu_is_separate_and_row_menu_keeps_priority() {
+        use crate::strings::{EMPTY_AREA_MENU_NEW_FOLDER, EMPTY_AREA_MENU_RELOAD};
+        assert_eq!(EMPTY_AREA_MENU_NEW_FOLDER, "新規フォルダ");
+        assert!(EMPTY_AREA_MENU_RELOAD.contains("F5"));
+
+        let source = include_str!("main.rs");
+        let list = source_region(
+            source,
+            "        let mut list_area = div()",
+            "        let body = div()",
+        );
+        assert!(
+            list.contains("MouseButton::Right"),
+            "the list background needs its own right-click handler"
+        );
+        assert!(
+            list.contains(".context_menu(Self::empty_area_menu(entity))"),
+            "the background menu must be a distinct, dedicated menu"
+        );
+        let row = source_region(
+            source,
+            "    fn list_row(this: &mut Self",
+            "    fn grid_cell(",
+        );
+        assert!(
+            row.contains(".on_mouse_down(MouseButton::Right, right_click)"),
+            "row right-click selection logic must stay intact"
+        );
+        assert!(
+            row.contains(".context_menu(context_menu)"),
+            "the nested row menu is installed first and stops propagation"
+        );
+    }
+
+    #[test]
+    fn bm06_error_overlay_uses_design_wording_and_offers_parent() {
+        use super::{empty_state_message, load_error_overlay_text, ViewSource};
+        assert_eq!(
+            load_error_overlay_text("見つかりません: /tmp/x"),
+            "エラー: 削除されました: /tmp/x"
+        );
+        assert_eq!(
+            load_error_overlay_text("アクセスが拒否されました: /tmp/x"),
+            "エラー: アクセスできません: /tmp/x"
+        );
+        let (title, hint) = empty_state_message(
+            ViewSource::Directory,
+            false,
+            Some("アクセスが拒否されました: /tmp/x"),
+            0,
+            0,
+        )
+        .unwrap();
+        assert!(title.contains("アクセスできません"));
+        assert!(hint.unwrap().contains("Ctrl+L"));
+
+        let source = include_str!("main.rs");
+        let overlay = source_region(
+            source,
+            "    fn overlay(&self, cx: &mut Context<Self>) -> Option<Div> {",
+            "    fn list_row(",
+        );
+        assert!(overlay.contains("overlay-go-parent"));
+        assert!(overlay.contains("this.go_parent(cx)"));
+    }
+
+    #[test]
+    fn bm07_open_selected_opens_capped_multi_selection() {
+        use super::{capped_open_paths, OPEN_SELECTED_CAP};
+        let paths: Vec<PathBuf> = (0..25)
+            .map(|index| PathBuf::from(format!("/tmp/{index}")))
+            .collect();
+        let (kept, dropped) = capped_open_paths(&paths, OPEN_SELECTED_CAP);
+        assert_eq!(kept.len(), OPEN_SELECTED_CAP);
+        assert_eq!(dropped, 5);
+        assert_eq!(capped_open_paths(&paths[..3], OPEN_SELECTED_CAP).1, 0);
+
+        let source = include_str!("main.rs");
+        let function = source_region(
+            source,
+            "    fn open_selected(&mut self, cx: &mut Context<Self>) {",
+            "    fn open_index(",
+        );
+        assert!(function.contains("self.action_paths()"));
+        assert!(function.contains("for path in paths"));
+        assert!(function.contains("self.open_path(path, cx)"));
+        assert!(!function.contains("self.open_index(self.selected"));
+    }
+
+    #[test]
+    fn bm08_sidebar_locations_accept_drops_except_trash() {
+        let source = include_str!("main.rs");
+        let sidebar = source_region(source, "    fn sidebar(&self", "    fn toolbar(");
+        assert_eq!(
+            sidebar.matches("self.sidebar_drop_handlers(").count(),
+            4,
+            "place, bookmark, recent and mount rows must each be a drop target"
+        );
+        let trash = source_region(
+            sidebar,
+            "            if is_trash {",
+            "            } else if let Some(target)",
+        );
+        assert!(
+            !trash.contains("sidebar_drop_handlers"),
+            "Trash is a view, not a directory drop destination"
+        );
+        let helper = source_region(
+            source,
+            "    fn sidebar_drop_handlers(",
+            "    /// Copy OS-dropped paths into `destination`",
+        );
+        assert!(helper.contains("on_drop::<ExternalPaths>"));
+        assert!(helper.contains("on_drop::<Vec<PathBuf>>"));
+        assert!(helper.contains("drop_external_into("));
+        assert!(helper.contains("drop_internal_into("));
+    }
+
+    #[test]
+    fn bm09_column_drag_clamps_and_persists() {
+        use super::resize_column_width;
+        use crate::settings::{COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH};
+        assert_eq!(resize_column_width(100.0, 20.0), 120.0);
+        assert_eq!(resize_column_width(100.0, -20.0), 80.0);
+        assert_eq!(resize_column_width(100.0, -1_000.0), COLUMN_MIN_WIDTH);
+        assert_eq!(resize_column_width(100.0, 1_000.0), COLUMN_MAX_WIDTH);
+        assert_eq!(resize_column_width(100.0, f32::NAN), 100.0);
+
+        let source = include_str!("main.rs");
+        let header = source_region(source, "    fn sort_header_cell(", "    fn sort_header(");
+        assert!(header.contains(".on_drag("));
+        assert!(header.contains(".on_drag_move("));
+        assert!(header.contains("set_column_width("));
+        assert!(
+            header.contains("this.column_drag_start_x"),
+            "the drag origin must survive the re-render caused by the first width change"
+        );
+        let save = source_region(
+            source,
+            "    fn set_column_width(",
+            "    /// Switch between the details list",
+        );
+        assert!(save.contains("column_prefs"));
+        assert!(save.contains("save_settings()"));
+        assert!(save.contains("settings_write_needs_rollback("));
+    }
+
+    #[test]
+    fn bm10_directory_name_filter_reuses_filter_and_sort() {
+        use super::directory_view_entries;
+        use gfe_core::model::SortSpec;
+        let entry = |name: &str| super::Entry {
+            name: name.into(),
+            name_text: name.to_string(),
+            sort_key: name.to_lowercase(),
+            path: PathBuf::from(format!("/tmp/{name}")),
+            is_dir: false,
+            is_symlink: false,
+            size: 1,
+            modified: None,
+        };
+        let all = vec![entry("alpha.txt"), entry("beta.md"), entry(".hidden-alpha")];
+        let order = SortSpec::default().order();
+        let names = |entries: Vec<super::Entry>| {
+            entries
+                .iter()
+                .map(|entry| entry.name_text.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(directory_view_entries(&all, true, order, Some("ALP"))),
+            vec![".hidden-alpha".to_string(), "alpha.txt".to_string()]
+        );
+        assert_eq!(
+            names(directory_view_entries(&all, true, order, None)),
+            vec![
+                ".hidden-alpha".to_string(),
+                "alpha.txt".to_string(),
+                "beta.md".to_string()
+            ]
+        );
+        assert_eq!(
+            names(directory_view_entries(&all, false, order, Some("alpha"))),
+            vec!["alpha.txt".to_string()]
+        );
+
+        let source = include_str!("main.rs");
+        let rebuild = source_region(
+            source,
+            "    fn rebuild_view(",
+            "    /// Apply a freshly loaded listing",
+        );
+        assert!(rebuild.contains("directory_view_entries("));
+        assert!(rebuild.contains("dir_name_filter_text"));
+        let filter = source_region(
+            source,
+            "fn directory_view_entries(",
+            "/// Header cell specification",
+        );
+        assert!(filter.contains("filter_results("));
+        assert!(filter.contains("visible_entries("));
+    }
+
+    #[test]
+    fn bm18_sidebar_cycle_covers_locations_and_deduplicates() {
+        use super::{sidebar_destinations, Place};
+        let place = |path: &str, trash: bool| Place {
+            label: "場所",
+            icon: super::IconName::House,
+            path: Some(PathBuf::from(path)),
+            exists: true,
+            trash,
+        };
+        let destinations = sidebar_destinations(
+            &[
+                place("/home/user", false),
+                place("/home/user/documents", false),
+                place("trash-id", true),
+            ],
+            &[PathBuf::from("/home/user/bookmark")],
+            &[
+                PathBuf::from("/home/user/documents"),
+                PathBuf::from("/tmp/recent"),
+            ],
+            &[super::MountPoint {
+                source: "/dev/sda1".to_string(),
+                path: PathBuf::from("/mnt/data"),
+                fs_type: "ext4".to_string(),
+            }],
+        );
+        assert_eq!(
+            destinations,
+            vec![
+                PathBuf::from("/home/user"),
+                PathBuf::from("/home/user/documents"),
+                PathBuf::from("/home/user/bookmark"),
+                PathBuf::from("/tmp/recent"),
+                PathBuf::from("/mnt/data"),
+            ]
+        );
+        assert!(sidebar_destinations(&[], &[], &[], &[]).is_empty());
+        assert_eq!(
+            KeyMap::default_keymap().resolve("l", true, true, false),
+            KeyAction::FocusSidebar
         );
     }
 }

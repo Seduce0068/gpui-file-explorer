@@ -38,6 +38,8 @@ const els = hasDom ? {
   selectAll: document.getElementById('select-all'),
   selectRange: document.getElementById('select-range'),
   selectClear: document.getElementById('select-clear'),
+  // BM03: タッチ専用の詳細表示ボタン（選択操作行に配置）。
+  selectDetails: document.getElementById('select-details'),
   selectCount: document.getElementById('select-count'),
   // ソート関連（core wasm API の既定値に依存せず JS 側で並べ替える）。
   sortKey: document.getElementById('sort-key'),
@@ -62,6 +64,10 @@ const state = {
   // click は once にしない（activate 失敗時に再送できるようにするため）。
   updateReloadWired: false,
   controllerReloadWired: false,
+  // BM12: SW が activate 後に全クライアントへ送る RELOAD の配線状態。
+  // 自タブの controllerchange と二重になっても 1 回だけ再読込する。
+  reloadMessageWired: false,
+  reloadRequested: false,
   skipWaitingSent: false,
   // BL05/BL06: 送信先 worker と送信時刻。前回更新の保留リロードを新しい通知で
   // 失わないため、また別由来の controllerchange で誤リロードしないための追跡。
@@ -109,6 +115,18 @@ function shouldSwipeBack(touchState, dx, dy) {
   if (!touchState || !touchState.swipeEnabled) return false;
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
   return dx > SWIPE_MIN_DX && Math.abs(dx) > Math.abs(dy) * 1.2;
+}
+
+// BM11: スワイプ追跡の可否。検索欄フォーカス中でも左端以外なら追跡する。
+// 旧実装はフォーカス中に touchstart 全体を返していたため右スワイプまで
+// ブロックされていた。OS の戻るジェスチャと競合するのは左端だけなので、
+// 無効化すべきは長押しタイマー（呼び出し側の !searchFocused）のみ。
+function canTrackSwipe(startX, searchFocused = false) {
+  if (!Number.isFinite(startX)) return false;
+  // 非フォーカス時は従来どおり追跡し、swipeEnabled 側で左端を除外する。
+  if (!searchFocused) return true;
+  // フォーカス中は左端のジェスチャだけ OS へ譲る。
+  return startX > SWIPE_EDGE_GUARD;
 }
 
 // 一覧の keydown をコマンドへ変換する。修飾キー付きはブラウザ / OS の
@@ -746,6 +764,16 @@ function showEntryMeta(entry) {
   state.suppressClickUntil = performance.now() + CLICK_SUPPRESS_MS;
 }
 
+// BM03: 選択操作行の「詳細」ボタンを配線する。長押しは選択モード突入へ変更され、
+// Space / i はキーボード専用なので、タッチだけで詳細へ到達できる導線が必要。
+// 選択行を優先し、未選択ならフォーカス行の path / size / isDir を表示する。
+function wireSelectDetailsButton(button) {
+  if (!button) return;
+  button.addEventListener('click', () => {
+    showEntryMeta(selectedEntries()[0] ?? entryAt(state.focusIndex));
+  });
+}
+
 function entryFromEvent(event) {
   const li = event.target instanceof Element
     ? event.target.closest('li[data-index]')
@@ -810,10 +838,14 @@ function clearLongPress() {
 }
 
 function onListTouchStart(event) {
-  // 検索入力中は無効化（iOS Safari の標準スワイプバックとの競合を避ける）。
-  // 2 本目の指が触れた場合もここを通る。state.touch を捨てる前にタイマーを
-  // キャンセルしないと、長押しコールバックが残って選択モードへ誤突入する。
-  if (document.activeElement === els.search || event.touches.length !== 1) {
+  // BM11: 2 本目の指は従来どおり無視。検索欄フォーカス中は長押しタイマーだけを
+  // 止め、右スワイプの追跡は canTrackSwipe で維持する（旧実装はここで全体を
+  // 返していたため、フォーカス中に右スワイプが効かなかった）。
+  // state.touch を捨てる前にタイマーをキャンセルしないと、長押しコールバックが
+  // 残って選択モードへ誤突入する。
+  const searchFocused = document.activeElement === els.search;
+  if (event.touches.length !== 1
+    || !canTrackSwipe(event.touches[0].clientX, searchFocused)) {
     clearLongPress();
     state.touch = null;
     return;
@@ -835,9 +867,11 @@ function onListTouchStart(event) {
     swipeEnabled: touch.clientX > SWIPE_EDGE_GUARD,
     timer: 0,
   };
-  if (entry) {
+  if (entry && !searchFocused) {
     // 長押しは詳細表示ではなく「選択モードへ突入 + 当該行をトグル」へ変更（BA19）。
-    // 詳細表示はキーボードの Space / i とマウスの右クリックに退避する。
+    // 詳細表示はキーボードの Space / i、マウスの右クリック、
+    // タッチは選択操作行の「詳細」ボタン（BM03）へ退避する。
+    // BM11: 検索欄フォーカス中はこのタイマーだけを張らず、スワイプは追跡する。
     state.touch.timer = window.setTimeout(() => {
       state.touch = null;
       // 現在の一覧から path の位置を再解決する。旧 index のままトグルすると
@@ -874,7 +908,10 @@ function onListTouchEnd(event) {
   const dy = touch.clientY - current.startY;
   // moved は touchmove の 10px 超過で立つ。スワイプ判定を後に置くと 80px の
   // 右スワイプが毎回 moved に潰されるため、ここで先に判定して return する。
-  if (document.activeElement !== els.search && shouldSwipeBack(current, dx, dy)) {
+  // BM11: フォーカス中でも canTrackSwipe で追跡を始めている以上、
+  // ここで activeElement を見てスワイプを捨ててはいけない。左右判定は
+  // shouldSwipeBack の swipeEnabled（左端ガード）に一本化する。
+  if (shouldSwipeBack(current, dx, dy)) {
     onSwipeBack().catch((error) =>
       setStatus(`一覧へ戻る処理に失敗: ${errorMessage(error)}`, 'error'));
     return;
@@ -1187,9 +1224,30 @@ function announceSwUpdate(registration, worker) {
       }
       state.skipWaitingSent = false;
       state.skipWaitingWorker = null;
+      // BM12: 自タブは controllerchange で再読込する。SW 側の全クライアント通知
+      // （RELOAD）が同じタブへ届いても reloadRequested ガードで 1 回だけにする。
+      if (state.reloadRequested) return;
+      state.reloadRequested = true;
       window.location.reload();
     });
   }
+}
+
+// BM12: SW が activate 後に clients.matchAll() で全ウィンドウへ送る RELOAD を
+// 受け取る常設リスナ。更新通知が無いタブでも早期から配線しておかないと、
+// 他タブだけが再読込される（自タブのみ再読込の問題が直らない）。
+// controllerchange の BL06 ガードとは独立した経路だが、送信元は登録済みの自 SW
+// だけなので信頼できる。reloadRequested で controllerchange との二重を防ぐ。
+function wireSwReloadMessage() {
+  if (state.reloadMessageWired) return;
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  state.reloadMessageWired = true;
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (!event || !event.data || event.data.type !== 'RELOAD') return;
+    if (state.reloadRequested) return;
+    state.reloadRequested = true;
+    window.location.reload();
+  });
 }
 
 function watchInstallingWorker(registration, worker) {
@@ -1228,6 +1286,9 @@ function watchServiceWorker(registration) {
 
 function registerServiceWorker() {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  // BM12: 更新通知の有無にかかわらず、全クライアント宛 RELOAD を受け取れるように
+  // 最初からリスナを張っておく（activate 後の通知を取りこぼさないため）。
+  wireSwReloadMessage();
   navigator.serviceWorker.register('./sw.js')
     .then((registration) => watchServiceWorker(registration))
     .catch((error) => {
@@ -1295,6 +1356,8 @@ async function boot() {
   }
   if (els.selectAll) els.selectAll.addEventListener('click', selectAllEntries);
   if (els.selectClear) els.selectClear.addEventListener('click', clearSelection);
+  // BM03: タッチ専用の詳細導線を選択操作行へ接続する。
+  wireSelectDetailsButton(els.selectDetails);
   if (els.selectRange) {
     els.selectRange.addEventListener('click', () => {
       state.rangeArmed = nextRangeArmed(state.rangeArmed);
@@ -1351,6 +1414,8 @@ if (typeof module !== 'undefined' && module.exports) {
     emptyStateText,
     shouldShowClearSearch,
     shouldSwipeBack,
+    // BM11: 検索フォーカス中でも左端以外ならスワイプ追跡を有効にする判定。
+    canTrackSwipe,
     listKeyCommand,
     updatePickDirAvailability,
     toEntry,

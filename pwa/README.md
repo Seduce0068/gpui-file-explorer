@@ -97,6 +97,25 @@ precache は 1 ファイルでも失敗したら install を失敗させ、旧 S
 3. ボタンは待機中の SW へ `SKIP_WAITING` を送り、`controllerchange` で再読込する。
    通知を無視しても、次回ページを開いたときに待機 SW を検出して再通知する。
 
+再読込の判定は r25 の BL05 / BL06 ガードで守られている（実装は `main.js` の
+`announceSwUpdate()`、回帰は `node --test pwa/main.test.js`）:
+
+- **60 秒の有効窓**: `SKIP_WAITING` 送信時刻から 60 秒を超えた `controllerchange`
+  は古い送信として破棄し、`skipWaitingSent` を戻す。フラグが無期限に立ったまま
+  別由来の制御権変更で誤再読込するのを防ぐ。
+- **送信先 worker の照合**: `controllerchange` が発火しても、送信先として記録した
+  worker が `activated` でなければ再読込しない（初回 `clients.claim()` 等による
+  別由来の変更は無視し、自 worker の activate を待つ）。
+- **前回送信状態の保持**: 別 worker の新しい更新通知が来ても `skipWaitingSent` は
+  リセットしない。前回の送信に対する `controllerchange` の再読込を失わないため。
+  `updateNotified` は通知対象 worker が差し替わったときだけ戻る。
+- **複数タブ同時更新（BM12）**: 新 SW は `activate` で `clients.claim()` の後に
+  `clients.matchAll({ type: 'window', includeUncontrolled: true })` で全ウィンドウへ
+  `{ type: 'RELOAD' }` を postMessage する。各タブの `main.js` は常設の `message`
+  リスナでこれを受け取り、`reloadRequested` ガードにより自タブの
+  `controllerchange` と合わせて 1 回だけ再読込する。複数タブを開いていても全タブが
+  同じ新しいシェルへ揃う。
+
 `activate` が削除するのは `gfe-viewer-` で始まる自アプリのキャッシュだけ。
 他 SW のキャッシュは残す。ナビゲーション要求は network-first（失敗時は
 `ignoreSearch` 付きで `index.html` へフォールバック）のため、オンラインでは
@@ -147,7 +166,9 @@ precache パスも更新してください（`ls pwa/pkg/snippets` で確認）�
 | `Escape` | 範囲選択の arm → 選択モード → 選択状態の順に一段ずつ解除 |
 
 詳細表示はタッチの長押しから `Space` / `i`（マウスは右クリック）へ退避した。
-長押しは「選択モードへ突入 + 当該行をトグル」として扱う。
+長押しは「選択モードへ突入 + 当該行をトグル」として扱う。タッチ専用の詳細
+導線として選択操作行の「詳細」ボタンがあり、選択行（無ければフォーカス行）の
+`path` / `size` / `isDir` を表示する（BM03）。
 `Ctrl` / `Cmd` / `Alt` との同時押しはブラウザ / OS のショートカットへ譲り、
 一覧のハンドラは横取りしない。`Shift` はナビゲーションキー（`↑` / `↓` /
 `Home` / `End`）だけを譲り、`Shift+I`（大文字入力）は詳細表示として受理する。
@@ -176,6 +197,7 @@ precache パスも更新してください（`ls pwa/pkg/snippets` で確認）�
 | 「すべて選択」 | Ctrl+A | `selectionSelectAll` で表示中の全行を選択 |
 | 「選択を解除」 | 選択クリア | `selectionClear` で全解除 |
 | 行を長押し | — | 選択モードへ突入し、当該行をトグル |
+| 「詳細」ボタン | — | 選択行（無ければフォーカス行）の `path` / `size` / `isDir` を表示（タッチ専用） |
 | `Escape` | Esc | 範囲 arm → 選択モード → 選択の順に脱出 |
 
 「範囲選択」はトグルで arm するが、**1 回の範囲選択で必ず解除**される

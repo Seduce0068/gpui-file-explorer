@@ -33,6 +33,14 @@
   box-sizing: border-box;
 }
 
+/* BM02: UA の [hidden] { display:none } は author の display:flex に負けて
+   #select-actions / #update-reload 等が常時表示されていた。選択モード外でも
+   一括操作行が見える回帰を防ぐため、hidden 属性を !important で強制する。
+   aria-hidden とは無関係（歴史的な hidden 属性のみを対象にする）。 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;

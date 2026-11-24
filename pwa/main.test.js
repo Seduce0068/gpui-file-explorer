@@ -17,6 +17,7 @@ const {
   emptyStateText,
   shouldShowClearSearch,
   shouldSwipeBack,
+  canTrackSwipe,
   listKeyCommand,
   updatePickDirAvailability,
   toEntry,
@@ -369,6 +370,20 @@ test('shouldSwipeBack ignores moved and uses only edge guard plus dx/dy', () => 
   assert.equal(shouldSwipeBack(null, 90, 10), false, 'no active touch');
   assert.equal(shouldSwipeBack(enabled, Number.NaN, 0), false);
   assert.equal(shouldSwipeBack(enabled, Number.POSITIVE_INFINITY, 0), false);
+});
+
+test('BM11: canTrackSwipe は検索フォーカス中でも左端以外なら追跡する', () => {
+  // 非フォーカス時は従来どおり（左端除外は swipeEnabled 側で行う）。
+  assert.equal(canTrackSwipe(10, false), true, '非フォーカス時は左端も追跡して swipeEnabled=false にする');
+  assert.equal(canTrackSwipe(100, false), true);
+  // フォーカス中でも左端でなければ有効（旧実装はここで false を返していた）。
+  assert.equal(canTrackSwipe(100, true), true, '検索フォーカス中でも左端以外は追跡する');
+  assert.equal(canTrackSwipe(25, true), true, '24px 境界の外側は有効');
+  assert.equal(canTrackSwipe(24, true), false, '左端 24px は OS の戻る操作へ譲る');
+  assert.equal(canTrackSwipe(10, true), false);
+  assert.equal(canTrackSwipe(Number.NaN, true), false);
+  assert.equal(canTrackSwipe(Number.POSITIVE_INFINITY, false), false);
+  assert.equal(canTrackSwipe(undefined), false);
 });
 
 test('listKeyCommand yields to modifier shortcuts and maps list keys', () => {
@@ -801,6 +816,86 @@ test('shouldNotifySwUpdate only announces real updates', () => {
   assert.equal(shouldNotifySwUpdate(), false, 'missing context is not an update');
 });
 
+test('BM02: [hidden] が author display より優先され一括操作行が隠れる', () => {
+  const css = readPwaFile('style.css').replace(/\/\*[\s\S]*?\*\//g, '');
+  const hiddenRule = css.match(/\[hidden\]\s*\{([^}]*)\}/);
+  assert.ok(hiddenRule, 'style.css must define an explicit [hidden] rule');
+  assert.match(hiddenRule[1], /display:\s*none\s*!important/,
+    '[hidden] must force display:none over author display:flex');
+  const hiddenAt = css.indexOf('[hidden]');
+  const controlsAt = css.indexOf('.controls {');
+  assert.ok(hiddenAt !== -1 && controlsAt !== -1 && hiddenAt < controlsAt,
+    'the hidden rule must be declared before .controls for readable cascade order');
+  const html = readPwaFile('index.html');
+  assert.match(html, /id="select-actions"[^>]*\bhidden\b/,
+    '#select-actions must start hidden until select mode is entered');
+});
+
+test('BM03: vm DOM モックで「詳細」ボタンが選択行/フォーカス行の詳細を表示する', () => {
+  // 本番の humanSize / entryAt / isPathSelected / selectedEntries / showEntryMeta /
+  // wireSelectDetailsButton を sourceRegion で切り出し、vm 上の DOM モックで
+  // ボタン配線そのものを検証する（文字列マーカーだけでは配線解除を検出できない）。
+  const humanSizeSource = 'function humanSize(bytes) {' + sourceRegion(
+    mainSource, 'function humanSize(bytes) {', '// --- 描画（テキストはすべて textContent');
+  const selectionHelpers = 'function entryAt(index) {' + sourceRegion(
+    mainSource, 'function entryAt(index) {', '// 複数選択 listbox では aria-selected');
+  const showEntryMetaSource = 'function showEntryMeta(entry) {' + sourceRegion(
+    mainSource, 'function showEntryMeta(entry) {', '// BM03: 選択操作行の「詳細」ボタン');
+  const wireSource = 'function wireSelectDetailsButton(button) {' + sourceRegion(
+    mainSource, 'function wireSelectDetailsButton(button) {', 'function entryFromEvent(');
+
+  const messages = [];
+  const state = {
+    renderedEntries: [
+      { name: 'a.txt', path: '/a.txt', size: 10, isDir: false },
+      { name: 'b.txt', path: '/b.txt', size: 2048, isDir: false },
+    ],
+    selectedPaths: [],
+    focusIndex: 0,
+    suppressClickUntil: 0,
+  };
+  const button = {
+    handlers: {},
+    addEventListener(type, fn) {
+      (this.handlers[type] ||= []).push(fn);
+    },
+  };
+  const sandbox = {
+    console,
+    state,
+    CLICK_SUPPRESS_MS: 700,
+    setStatus(message, level = 'info') { messages.push({ message, level }); },
+    performance: { now: () => 1000 },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${humanSizeSource}\n${selectionHelpers}\n${showEntryMetaSource}\n${wireSource}\n`
+    + 'globalThis.__wire = wireSelectDetailsButton;',
+    sandbox
+  );
+
+  sandbox.__wire(button);
+  assert.equal(button.handlers.click.length, 1, 'click リスナは 1 回だけ配線される');
+
+  // 選択が無ければフォーカス行（index 0）の詳細を表示する。
+  button.handlers.click[0]();
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].message, /^詳細: \/a\.txt · size: 10 B \(10 B\) · isDir: false · ファイル$/);
+  assert.equal(state.suppressClickUntil, 1700, '長押し/右クリックと同様に後続 click を抑止する');
+
+  // 選択行があればフォーカス行より優先される。
+  state.selectedPaths = ['/b.txt'];
+  button.handlers.click[0]();
+  assert.equal(messages.length, 2);
+  assert.match(messages[1].message, /^詳細: \/b\.txt · size: 2048 B \(2\.0 K\) · isDir: false · ファイル$/);
+
+  // 対象が無いときは何も表示しない（空一覧で押しても例外に落ちない）。
+  state.selectedPaths = [];
+  state.focusIndex = 99;
+  button.handlers.click[0]();
+  assert.equal(messages.length, 2, '対象行が無ければ通知しない');
+});
+
 test('manifest name and inline favicon agree (BG19/20)', () => {
   const manifest = JSON.parse(readPwaFile('manifest.webmanifest'));
   assert.equal(manifest.name, 'GFE Viewer');
@@ -1026,7 +1121,9 @@ test('BJ01: vm モックで2回目 updatefound を流しても更新通知され
   // controllerchange の再読込が失われるため保持されなければならない。
   assert.equal(state.skipWaitingSent, true, '新しい通知でも前回の送信状態を保持する');
   assert.equal(updateReload.handlers.click.length, 1, 'click リスナは積まれない');
-  assert.equal(controllerListeners.length, 1, 'controllerchange リスナは積まれない');
+  // BM12: message リスナも増えたため種別で数える（controllerchange は 1 つのまま）。
+  assert.equal(controllerListeners.filter((h) => h.type === 'controllerchange').length, 1,
+    'controllerchange リスナは積まれない');
 
   // BK07: 2回目の更新でも常設 controllerchange リスナが生きていて再読込する
   // （once だとここでリスナが消えて2回目の更新が再読込されなかった）。
@@ -1127,6 +1224,99 @@ test('BK18: 再オープン時の registration.waiting 経路で通知と SKIP_W
   assert.equal(posted.length, 1, 'waiting 経路でも SKIP_WAITING が送られる');
   assert.equal(posted[0].type, 'SKIP_WAITING');
   assert.equal(state.skipWaitingSent, true);
+});
+
+test('BM12: vm で2タブ分の state を作り SW の RELOAD で両タブが再読込する', () => {
+  // 本番の announceSwUpdate / wireSwReloadMessage を vm 上で2回（別タブとして）
+  // 動かし、activate 後の全クライアント通知で自タブ以外も再読込することを
+  // 実行経路で固定する。
+  const setStatusSource = 'function setStatus(' + sourceRegion(
+    mainSource, 'function setStatus(', '// SW 更新通知の判定を純粋関数にして');
+  const announceSource = 'function announceSwUpdate(' + sourceRegion(
+    mainSource, 'function announceSwUpdate(', 'function watchInstallingWorker(');
+  const wireMessageSource = 'function wireSwReloadMessage() {' + sourceRegion(
+    mainSource, 'function wireSwReloadMessage() {', 'function watchInstallingWorker(');
+  const messageDecl = mainSource.match(/^const SW_UPDATE_MESSAGE = .*;$/m);
+  assert.ok(messageDecl, 'SW_UPDATE_MESSAGE must be declared in main.js');
+
+  function fakeNode() {
+    return {
+      textContent: '',
+      dataset: {},
+      hidden: true,
+      handlers: {},
+      addEventListener(type, fn) {
+        (this.handlers[type] ||= []).push(fn);
+      },
+    };
+  }
+  function makeTab() {
+    const state = {
+      updateNotified: false,
+      notifiedWorker: null,
+      updateReloadWired: false,
+      controllerReloadWired: false,
+      reloadMessageWired: false,
+      reloadRequested: false,
+      skipWaitingSent: false,
+      skipWaitingWorker: null,
+      skipWaitingAt: 0,
+    };
+    const listeners = {};
+    const sandbox = {
+      console,
+      state,
+      els: { status: fakeNode(), swUpdate: fakeNode(), updateReload: fakeNode() },
+      reloadCount: 0,
+      window: { location: { reload() { sandbox.reloadCount += 1; } } },
+      navigator: {
+        serviceWorker: {
+          addEventListener(type, fn) {
+            (listeners[type] ||= []).push(fn);
+          },
+        },
+      },
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(
+      `${messageDecl[0]}\n${setStatusSource}\n${announceSource}\n${wireMessageSource}\n`
+      + 'globalThis.__announce = announceSwUpdate;'
+      + 'globalThis.__wireMessage = wireSwReloadMessage;',
+      sandbox
+    );
+    // 実ブラウザと同じく更新通知の有無にかかわらず message リスナを張る。
+    sandbox.__wireMessage();
+    const worker = { state: 'installed', postMessage() {} };
+    sandbox.__announce({ waiting: worker }, worker);
+    return { sandbox, listeners, state };
+  }
+
+  const tabA = makeTab();
+  const tabB = makeTab();
+  assert.equal(tabA.listeners.message.length, 1, 'message リスナが1回だけ配線される');
+  assert.equal(tabA.listeners.controllerchange.length, 1, 'controllerchange も残る');
+
+  // 無関係なメッセージでは再読込しない。
+  tabA.listeners.message[0]({ data: { type: 'OTHER' } });
+  assert.equal(tabA.sandbox.reloadCount, 0);
+
+  // SW の activate 後ブロードキャストを両タブへ届ける（自タブのみではない）。
+  tabA.listeners.message[0]({ data: { type: 'RELOAD' } });
+  tabB.listeners.message[0]({ data: { type: 'RELOAD' } });
+  assert.equal(tabA.sandbox.reloadCount, 1, 'タブAが再読込する');
+  assert.equal(tabB.sandbox.reloadCount, 1, 'タブBも再読込する');
+
+  // 自タブの controllerchange と重複しても reloadRequested ガードで1回だけ。
+  tabA.listeners.message[0]({ data: { type: 'RELOAD' } });
+  assert.equal(tabA.sandbox.reloadCount, 1, '重複 RELOAD は無視する');
+  assert.equal(tabA.state.reloadRequested, true);
+
+  // sw.js 側が claim の後に全ウィンドウへ RELOAD を送ることを固定する。
+  const sw = readPwaFile('sw.js');
+  const activate = sourceRegion(sw, "self.addEventListener('activate'", 'function isCacheable');
+  assert.match(activate, /await notifyClientsReload\(\)/, 'activate で全クライアント通知する');
+  assert.match(sw, /clients\.matchAll\(\{[^}]*type:\s*'window'[^}]*includeUncontrolled:\s*true/);
+  assert.match(sw, /postMessage\(\{ type: 'RELOAD' \}\)/);
 });
 
 test('BJ09/BJ10/BJ11: runtime cache の即時 return・期限切れ削除・put 後削除', () => {

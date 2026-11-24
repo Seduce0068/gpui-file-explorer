@@ -57,6 +57,10 @@
         <button id="select-all" type="button">すべて選択</button>
         <button id="select-range" type="button" aria-pressed="false">範囲選択</button>
         <button id="select-clear" type="button">選択を解除</button>
+        <!-- BM03: タッチ専用の詳細導線。長押しは選択モードへ変更済み、
+             Space / i はキーボード専用のため、選択行（無ければフォーカス行）の
+             path / size / isDir をこのボタンから表示する。 -->
+        <button id="select-details" type="button">詳細</button>
         <span id="select-count" class="select-count" aria-live="polite" aria-atomic="true"></span>
       </div>
 

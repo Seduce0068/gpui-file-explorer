@@ -63,6 +63,27 @@ self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
+// BM12: 新 SW が control を取った後に、開いている全ウィンドウへ再読込を通知する。
+// 旧実装では SKIP_WAITING を送ったタブだけが controllerchange で再読込し、
+// 他のタブは古いシェルのまま残っていた。ack は不要（再読込は各タブ側で
+// reloadRequested ガードにより 1 回だけ実行される）。通知失敗は更新そのものを
+// 失敗させないため best-effort とする。
+async function notifyClientsReload() {
+  try {
+    if (!self.clients || typeof self.clients.matchAll !== 'function') return;
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of windows) {
+      try {
+        if (typeof client.postMessage === 'function') client.postMessage({ type: 'RELOAD' });
+      } catch (error) {
+        console.warn('reload notice failed for one client (best-effort)', error);
+      }
+    }
+  } catch (error) {
+    console.warn('reload notice failed (best-effort)', error);
+  }
+}
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
@@ -75,7 +96,10 @@ self.addEventListener('activate', (event) => {
           .filter((key) => key.startsWith(CACHE_PREFIX) && !keep.has(key))
           .map((key) => caches.delete(key))
       );
+      // claim() が完了してから全クライアントへ通知する（controller 更新後に
+      // message が届く順序を保つ）。
       await self.clients.claim();
+      await notifyClientsReload();
     })()
   );
 });
