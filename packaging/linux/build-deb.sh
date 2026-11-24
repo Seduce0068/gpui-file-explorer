@@ -36,7 +36,10 @@
 # to files present in the stage (this catches a missing doc/app/LICENSE), and
 # that DEBIAN/postinst and DEBIAN/postrm exist, are 0755 and match the sources
 # (BI14), and that every doc/.desktop/icon streamed from the .deb payload is
-# byte-identical to the staged copy (BK17).
+# byte-identical to the staged copy (BK17). The maintainer scripts live in the
+# .deb control tarfile, so --verify also streams ./postinst and ./postrm from
+# it, byte-compares them with the staged copies and checks their tar mode is
+# 0755 (BK18).
 # --dry-run only resolves paths and prints the plan; no directory is created,
 # nothing is deleted, copied or built.
 # SOURCE_DATE_EPOCH is exported for dpkg-deb so the .deb is byte-reproducible
@@ -64,7 +67,9 @@ usage() {
                          （ビルド・コピー・削除なし、出力先も作らない）。
                           NOTICE 内の相対リンクがステージ内で解決するかも検証
                           （BI14: DEBIAN/postinst と postrm の存在・実行権限・
-                          ソースとの一致も検証）。.deb ペイロードのドキュメント/.desktop/アイコンもステージと照合
+                          ソースとの一致も検証）。.deb ペイロードのドキュメント/.desktop/アイコンに加え、
+                          ctrl-tarfile の ./postinst / ./postrm もステージとバイト照合し、
+                          モード 0755 も検証（BK18）
       --dry-run         解決済みパスと実行計画のみ表示
                          （削除・コピー・ビルドせず、出力先も作らない）
   -h, --help            このヘルプを表示
@@ -402,9 +407,14 @@ verify_staged_binary() {
 # Stream every doc_pairs member straight out of the existing .deb with
 # `dpkg-deb --fsys-tarfile | tar -xO` and compare it with the staged copy; no
 # extraction to disk and no temp file, so --verify stays read-only.
+# BK18: maintainer scripts are NOT in the filesystem tarfile: they live in the
+# control tarfile as ./postinst and ./postrm. Stream those too, compare bytes
+# with the staged copies and check the tar member mode is 0755 (a byte-matching
+# but non-executable script would leave the .desktop MimeType unregistered).
 verify_deb_payload_files() {
   [ -f "${deb}" ] || die "既存 .deb がありません: ${deb}"
   local pair installed deb_member mismatches=0
+  local name deb_ctrl_listing member_mode
   for pair in "${doc_pairs[@]}"; do
     installed="${pair#*|}"
     deb_member=".${installed#"${stage}"}"
@@ -416,8 +426,34 @@ verify_deb_payload_files() {
       mismatches=$((mismatches + 1))
     fi
   done
+
+  # The tar listing is needed for the mode check; read it once for both scripts.
+  deb_ctrl_listing="$(dpkg-deb --ctrl-tarfile "${deb}" | tar -tvf - 2>/dev/null)" ||
+    die "既存 .deb から control tarfile の一覧を読み取れません: ${deb}"
+  for name in "${maintainer_scripts[@]}"; do
+    installed="${stage}/DEBIAN/${name}"
+    deb_member="./${name}"
+    if cmp -s -- "${installed}" \
+        <(dpkg-deb --ctrl-tarfile "${deb}" | tar -xO "${deb_member}" 2>/dev/null); then
+      echo "照合 OK: ${deb} の control tarfile ${deb_member} == ${installed}"
+    else
+      echo "照合 NG: ${deb} の control tarfile ${deb_member} != ${installed}" >&2
+      mismatches=$((mismatches + 1))
+    fi
+    # GNU tar prints symbolic mode in the first column (e.g. -rwxr-xr-x = 0755).
+    member_mode="$(awk -v member="${deb_member}" \
+      '$NF == member { print $1; exit }' <<<"${deb_ctrl_listing}")"
+    case "${member_mode}" in
+      -rwxr-xr-x) ;;
+      *)
+        echo "照合 NG (モード): ${deb} の ${deb_member} が 0755 ではありません (${member_mode:-<欠落>})" >&2
+        mismatches=$((mismatches + 1))
+        ;;
+    esac
+  done
+
   if [ "${mismatches}" -ne 0 ]; then
-    die "${mismatches} 件の .deb ペイロード（doc/.desktop/アイコン）不一致があります"
+    die "${mismatches} 件の .deb ペイロード（doc/.desktop/アイコン/postinst/postrm）不一致があります"
   fi
   echo "すべての .deb ペイロードがステージと一致しました: ${deb}"
 }

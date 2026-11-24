@@ -42,6 +42,8 @@
 #   - --strict: the same condition is a hard failure (non-zero exit status)
 # Artifact availability is checked at the FRONT of the gate list so a clean
 # checkout is not surprised by a .deb failure only after every code gate ran.
+# The .desktop validator is a TOOL gate, not an artifact gate: the .desktop
+# file is tracked, so it runs unconditionally even when no .deb was built.
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -80,6 +82,8 @@ when their gitignored build inputs are absent, hard failure under --strict):
   - pwa: node --test pwa/main.test.js (pure helpers run even without pwa/pkg/)
   - deb: packaging/linux/build-deb.sh --verify (needs a built .deb)
   - android: python3 stdlib static gate (tracked scaffold; no build)
+  - desktop: desktop-file-validate on the tracked .desktop file (tool gate;
+    runs even when no .deb is present)
 
 Usage:
   bash scripts/check.sh             # full loop (app + release + poc + supply-chain)
@@ -209,11 +213,12 @@ else
 	record_missing_artifact deb-artifact
 fi
 
-# The wasm/snippet assertions in pwa/main.test.js read the gitignored pwa/pkg/
-# tree. main.test.js guards those assertions, so the pure helpers still run;
-# report the reduced coverage here as well (BH07).
+# Only the generated-hash equality check in pwa/main.test.js (sw.js PRECACHE
+# vs. the actual pwa/pkg/snippets/<hash>/ directory) is guarded on the
+# gitignored tree. The snippet presence/format assertions run unconditionally;
+# do not describe this as skipping all wasm/snippet tests (BH07/BL15).
 if [ ! -d "${pwa_snippet_dir}" ]; then
-	echo "SKIPPED: PWA wasm/snippet assertions (no pwa/pkg/snippets/; pure helpers still run)."
+	echo "SKIPPED: PWA snippet generated-hash match against pwa/pkg/snippets/ (no generated tree; snippet format and all other tests still run)."
 	record_missing_artifact pwa-wasm-artifact
 fi
 
@@ -336,22 +341,37 @@ NAME = ANDROID_NS + "name"
 
 
 def strip_comments(source):
-    """Mask // and (possibly nested) /* */ comments, preserving newlines.
+    """Mask comments and Kotlin raw strings, preserving newlines.
 
     Kotlin block comments nest, so a line comment marker inside a block comment
-    (or a block marker inside a line comment) must not change the state. String
-    literals are copied verbatim: pinned version strings such as
-    'id("...") version "8.6.1"' must remain searchable (BJ18/BK04).
+    (or a block marker inside a line comment) must not change the state. Regular
+    string literals are copied verbatim: pinned version strings such as
+    'id("...") version "8.6.1"' must remain searchable (BJ18/BK04). Raw strings
+    (\\\"\\\"\\\") are masked instead: their content is data (test fixtures, docs),
+    so a version-like token appearing only there is not an active declaration
+    (BL16). Inline block comments are masked with one space per character and
+    normalized by has_active_line, so they cannot split a needle (BL17).
     """
     out = []
     i = 0
     size = len(source)
     block_depth = 0
     in_line_comment = False
+    in_raw_string = False
     quote = None
     while i < size:
         char = source[i]
         following = source[i + 1] if i + 1 < size else ""
+        third = source[i + 2] if i + 2 < size else ""
+        if in_raw_string:
+            if char == '"' and following == '"' and third == '"':
+                out.append("   ")
+                in_raw_string = False
+                i += 3
+                continue
+            out.append("\n" if char == "\n" else " ")
+            i += 1
+            continue
         if in_line_comment:
             if char == "\n":
                 in_line_comment = False
@@ -384,6 +404,13 @@ def strip_comments(source):
                 quote = None
             i += 1
             continue
+        # BL16: a Kotlin raw string starts with exactly three quotes. Handle it
+        # before the comment/quote branches so `//` and `/*` inside it are data.
+        if char == '"' and following == '"' and third == '"':
+            in_raw_string = True
+            out.append("   ")
+            i += 3
+            continue
         if char == "/" and following == "/":
             in_line_comment = True
             out.append("  ")
@@ -402,8 +429,15 @@ def strip_comments(source):
 
 
 def has_active_line(source, needle):
-    """A pinned value that only appears in a comment is not a declaration (BJ18)."""
-    return any(needle in line for line in strip_comments(source).splitlines())
+    """A pinned value that only appears in a comment is not a declaration (BJ18).
+
+    Comment masking replaces each comment character with a space, which can
+    break a needle that had an inline comment in the middle; collapse runs of
+    spaces before matching (BL17). Newlines are kept by strip_comments, so the
+    per-line search still cannot join two separate declarations.
+    """
+    masked = re.sub(r' +', ' ', strip_comments(source))
+    return any(needle in line for line in masked.splitlines())
 
 
 # BJ19: ET.parse alone only proves well-formedness. Also verify the structure
@@ -506,6 +540,21 @@ print("照合 OK: android scaffold (manifest structure + pinned versions)")
 PY
 }
 
+# BK12/BL11: validate the tracked .desktop file as a standalone TOOL gate.
+# It used to live inside run_deb_verify, whose early return on a missing .deb
+# meant a clean checkout never ran it at all. The .desktop is tracked source,
+# not a build artifact, so it must be checked unconditionally; only a missing
+# validator is SKIPPED (hard failure under --strict), like the other tools.
+run_desktop_file_validate() {
+	if command -v desktop-file-validate >/dev/null 2>&1; then
+		echo '==> desktop: desktop-file-validate packaging/linux/gpui-file-explorer.desktop'
+		desktop-file-validate packaging/linux/gpui-file-explorer.desktop
+	else
+		echo "desktop-file-validate is not installed; skipping the .desktop validation."
+		record_missing_tool desktop-file-validate
+	fi
+}
+
 run_deb_verify() {
 	if [ "${deb_artifact_ready}" != true ]; then
 		# Already reported as SKIPPED by the front-of-list pre-check.
@@ -513,7 +562,8 @@ run_deb_verify() {
 	fi
 	# build-deb.sh --verify shells out to all five commands (dpkg-deb for the
 	# archive, dpkg for the architecture, realpath for NOTICE links, tar for
-	# the embedded control/payload, stat for the 0755 maintainer-script mode).
+	# the embedded control/payload and control tarfile maintainer scripts,
+	# stat for the 0755 maintainer-script mode).
 	# Check every one of them, not just dpkg-deb, so a missing tool is reported
 	# as SKIPPED instead of crashing halfway through verification (BH14/BJ14).
 	local missing=0
@@ -527,18 +577,6 @@ run_deb_verify() {
 	done
 	if [ "${missing}" -ne 0 ]; then
 		return
-	fi
-	# BK12: validate the shipped .desktop entry as a separate gate. The tool
-	# comes from desktop-file-utils (also a Recommends of the built package);
-	# a missing validator is SKIPPED by default and a hard failure in --strict,
-	# exactly like the packaging tools above. The environment used for the
-	# release build has /usr/bin/desktop-file-validate installed.
-	if command -v desktop-file-validate >/dev/null 2>&1; then
-		echo '==> deb: desktop-file-validate packaging/linux/gpui-file-explorer.desktop'
-		desktop-file-validate packaging/linux/gpui-file-explorer.desktop
-	else
-		echo "desktop-file-validate is not installed; skipping the .desktop validation."
-		record_missing_tool desktop-file-validate
 	fi
 	echo '==> deb: packaging/linux/build-deb.sh --verify'
 	bash packaging/linux/build-deb.sh --verify
@@ -638,6 +676,7 @@ fi
 # PWA / DEB は scope（--app / --poc）に依存しない配布成果物のゲート。
 # 両方とも読み取り専用で高速なので常に実行する。
 run_pwa_test
+run_desktop_file_validate
 run_deb_verify
 run_android_scaffold_gate
 

@@ -63,6 +63,10 @@ const state = {
   updateReloadWired: false,
   controllerReloadWired: false,
   skipWaitingSent: false,
+  // BL05/BL06: 送信先 worker と送信時刻。前回更新の保留リロードを新しい通知で
+  // 失わないため、また別由来の controllerchange で誤リロードしないための追跡。
+  skipWaitingWorker: null,
+  skipWaitingAt: 0,
   rootName: '.',
   // 現在描画中の一覧と選択状態（タップ / 長押し / スワイプ / キーボードで共有）。
   // 選択は object 参照ではなく path で保持する。再描画 / 検索 / 再ソートで
@@ -1111,12 +1115,16 @@ async function onPickDirectory() {
 // --- Service Worker の更新ライフサイクル（BH02 / BH16） ---------------------
 
 function announceSwUpdate(registration, worker) {
+  // BL06: 送信後の controllerchange が有効なのはこの窓だけ。activate しない
+  // worker を待ち続けて無期限にフラグが立つと、別由来の制御権変更で誤再読込する。
+  const SW_RELOAD_WINDOW_MS = 60_000;
   state.updateNotified = true;
   // BJ01: どの worker を通知したかを記録する。別 worker が installed に
   // なったときだけ updateNotified を戻し、次の更新も通知できるようにする。
   state.notifiedWorker = worker;
-  // BJ08: 新しい通知なら送信状態をリセットする（再送自体は常に許可）。
-  state.skipWaitingSent = false;
+  // BL05: skipWaitingSent はここでリセットしない。前回の SKIP_WAITING がまだ
+  // controllerchange を待っている場合、その再読込を失ってしまうため。
+  // false に戻すのは controllerchange の消化時と再読込時だけ。
   // BI03: 更新通知は専用の aria-live ノードへ書く。#status は通常通知専用のまま。
   // 旧シェルが #sw-update を持たない場合だけ #status へフォールバックする。
   const notice = els.swUpdate || els.status;
@@ -1142,8 +1150,13 @@ function announceSwUpdate(registration, worker) {
           // install では skipWaiting() しない代わりに、ここで待機 SW を進める。
           waiting.postMessage({ type: 'SKIP_WAITING' });
           state.skipWaitingSent = true;
+          // BL06: 送信先と送信時刻を記録し、controllerchange が自 worker の
+          // activate によるものかを照合できるようにする。
+          state.skipWaitingWorker = waiting;
+          state.skipWaitingAt = Date.now();
         } else {
           state.skipWaitingSent = false;
+          state.skipWaitingWorker = null;
           window.location.reload();
         }
       });
@@ -1155,13 +1168,26 @@ function announceSwUpdate(registration, worker) {
   // リスナが張り直されず2回目の更新で再読込されないため、常設リスナにする。
   // BK08: skipWaitingSent を実ガードとして読み取り、SKIP_WAITING を送った
   // 後の controllerchange だけ再読込する（初回 clients.claim 等では再読込しない）。
+  // BL06: さらに送信先 worker が activate していることと有効期限内であることを
+  // 照合し、無関係な制御権変更での誤再読込を防ぐ。
   if (!state.controllerReloadWired) {
     state.controllerReloadWired = true;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (state.skipWaitingSent) {
+      if (!state.skipWaitingSent) return;
+      const target = state.skipWaitingWorker;
+      if (Date.now() - state.skipWaitingAt > SW_RELOAD_WINDOW_MS) {
+        // 期限切れの送信は破棄し、無期限 true による誤再読込を防ぐ。
         state.skipWaitingSent = false;
-        window.location.reload();
+        state.skipWaitingWorker = null;
+        return;
       }
+      if (!target || target.state !== 'activated') {
+        // 別由来の制御権変更。フラグは維持して自 worker の activate を待つ。
+        return;
+      }
+      state.skipWaitingSent = false;
+      state.skipWaitingWorker = null;
+      window.location.reload();
     });
   }
 }

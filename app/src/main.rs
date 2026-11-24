@@ -6979,13 +6979,24 @@ impl Explorer {
     /// `apply_theme_mode` entry point every other theme change uses. This keeps
     /// `settings.theme`, the palette, the icon resolver and GPUI Component in
     /// sync even on the write paths that have no caller-side rollback.
+    ///
+    /// BL01: `settings.theme` is only the mode observed when the file was
+    /// reloaded. A `System` preference must be resolved against the *current*
+    /// `cx.window_appearance()` instead, because GPUI adopts that appearance via
+    /// `sync_system_appearance`. Passing the reloaded value through unchanged
+    /// would leave the hand-drawn palette light while GPUI renders dark (or the
+    /// reverse).
     fn apply_pending_theme_resync(&mut self, cx: &mut Context<Self>) {
         if !self.theme_resync_pending {
             return;
         }
         self.theme_resync_pending = false;
-        let mode = self.settings.theme;
         let follow_system = self.settings.theme_choice == ThemeChoice::System;
+        let mode = if follow_system {
+            resolve_theme(ThemeChoice::System, cx.window_appearance().into())
+        } else {
+            self.settings.theme
+        };
         self.apply_theme_mode(mode, follow_system, cx);
     }
 
@@ -14062,6 +14073,7 @@ mod tests {
         STATUS_WATCH_INIT_FAILED, STATUS_WATCH_PARTIAL,
     };
     use crate::trash_view;
+    use gpui_kit::component::ThemeMode;
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
@@ -14532,6 +14544,101 @@ mod tests {
         unique_source_marker(production, start);
         unique_source_marker(production, end);
         source_region(source, start, end)
+    }
+
+    /// BL03: `guard_region` delegates to `source_region`, whose slice still
+    /// contains comments. A commented-out statement can therefore satisfy a
+    /// naive `contains` oracle while the real production code does not do the
+    /// thing the comment claims. Strip `//` line comments and `/* … */` block
+    /// comments before asserting, while leaving string / char literals intact.
+    #[derive(Clone, Copy, PartialEq)]
+    enum SliceState {
+        Code,
+        LineComment,
+        BlockComment,
+        StringLiteral,
+        CharLiteral,
+    }
+
+    fn without_comments(region: &str) -> String {
+        let mut out = String::with_capacity(region.len());
+        let mut chars = region.chars().peekable();
+        let mut state = SliceState::Code;
+        while let Some(c) = chars.next() {
+            match state {
+                SliceState::Code => match c {
+                    '/' if chars.peek() == Some(&'/') => {
+                        chars.next();
+                        state = SliceState::LineComment;
+                    }
+                    '/' if chars.peek() == Some(&'*') => {
+                        chars.next();
+                        state = SliceState::BlockComment;
+                    }
+                    '"' => {
+                        out.push(c);
+                        state = SliceState::StringLiteral;
+                    }
+                    '\'' => {
+                        out.push(c);
+                        state = SliceState::CharLiteral;
+                    }
+                    _ => out.push(c),
+                },
+                SliceState::LineComment => {
+                    if c == '\n' {
+                        out.push(c);
+                        state = SliceState::Code;
+                    }
+                }
+                SliceState::BlockComment => {
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        state = SliceState::Code;
+                    } else if c == '\n' {
+                        out.push(c);
+                    }
+                }
+                SliceState::StringLiteral | SliceState::CharLiteral => {
+                    out.push(c);
+                    match c {
+                        '\\' => {
+                            if let Some(escaped) = chars.next() {
+                                out.push(escaped);
+                            }
+                        }
+                        '"' if state == SliceState::StringLiteral => state = SliceState::Code,
+                        '\'' if state == SliceState::CharLiteral => state = SliceState::Code,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn without_comments_removes_line_and_block_comments_only() {
+        let input = concat!(
+            "let live = 1; // carry_over = dead();\n",
+            "/* carry_over = dead(); */\n",
+            "let carry_over = alive();\n",
+            "let literal = \"// not a comment\";\n"
+        );
+        let stripped = without_comments(input);
+        assert!(
+            !stripped.contains("dead();"),
+            "both comment styles must be removed: {stripped}"
+        );
+        assert_eq!(
+            stripped.matches("carry_over = alive();").count(),
+            1,
+            "real production code must survive: {stripped}"
+        );
+        assert!(
+            stripped.contains("\"// not a comment\""),
+            "comment markers inside literals must not be stripped: {stripped}"
+        );
     }
 
     #[test]
@@ -16667,18 +16774,39 @@ mod tests {
         assert_eq!(walked_root_count(SearchRunStats::default(), 0), 0);
     }
 
-    // BK15: every fingerprint assignment must use the unfiltered `all_entries`
-    // set, so changing a search filter cannot look like an on-disk change to
-    // the watcher / reload lost-update guard.
+    // BK15/BL07: every fingerprint assignment must use the unfiltered
+    // `all_entries` set, so changing a search filter cannot look like an
+    // on-disk change to the watcher / reload lost-update guard. Both the
+    // direct `&self` form and the `&this` form used inside GPUI async callbacks
+    // are covered, and the two expected counts are pinned so a new assignment
+    // cannot silently switch back to the filtered set.
     #[test]
     fn all_fingerprint_assignments_use_all_entries() {
         let source = include_str!("main.rs");
         let production = production_text(source);
-        let filtered = concat!("fingerprint(&self.", "entries)");
+        for filtered in [
+            concat!("fingerprint(&self.", "entries)"),
+            concat!("fingerprint(&this.", "entries)"),
+        ] {
+            assert_eq!(
+                production.matches(filtered).count(),
+                0,
+                "no production code may fingerprint the filtered entry set: {filtered}"
+            );
+        }
         assert_eq!(
-            production.matches(filtered).count(),
-            0,
-            "no production code may fingerprint the filtered entry set"
+            production
+                .matches(concat!("fingerprint(&self.", "all_entries)"))
+                .count(),
+            4,
+            "all four direct assignments must fingerprint the unfiltered set"
+        );
+        assert_eq!(
+            production
+                .matches(concat!("fingerprint(&this.", "all_entries)"))
+                .count(),
+            3,
+            "all three callback assignments must fingerprint the unfiltered set"
         );
         let filter = guard_region(
             source,
@@ -19140,13 +19268,15 @@ mod tests {
         // The shared helper must carry the live fingerprint, not the fresh one
         // a re-read `Settings::load()` supplies — otherwise a later save passes
         // the conflict check and silently overwrites another instance (BJ06).
-        // BK05: use guard_region (production-only, markers must be unique) so
-        // a commented-out carry-over line cannot satisfy the oracle.
-        let helper = guard_region(
+        // BK05/BL03: `guard_region` returns the raw source slice, comments
+        // included, so a commented-out carry-over line used to satisfy this
+        // oracle. Strip `//` and `/* */` comments before the `contains` check so
+        // it only reports real production code.
+        let helper = without_comments(guard_region(
             source,
             "fn settings_with_live_save_error(",
             "/// BH13: restore the in-memory settings",
-        );
+        ));
         let carry_over = concat!(
             "snapshot.load_fingerprint = ",
             "live.load_fingerprint.clone();"
@@ -19297,24 +19427,44 @@ mod tests {
             render.contains("self.apply_pending_theme_resync(cx);"),
             "render must consume the pending theme resync"
         );
-        let apply = source_region(
+        let apply = guard_region(
             source,
             "    fn apply_pending_theme_resync(",
             "    /// Single entry point for a persisted theme",
         );
+        // BL01: a reloaded `System` theme is only a stale snapshot. The resync
+        // must re-resolve it against the live window appearance before handing
+        // it to the shared application path, or the palette drifts from GPUI's
+        // `sync_system_appearance` result. The negative check runs on
+        // comment-stripped text so a doc comment cannot satisfy it.
+        let apply_code = without_comments(apply);
         assert!(
-            apply.contains("self.apply_theme_mode(mode, follow_system, cx);"),
+            apply_code
+                .contains("resolve_theme(ThemeChoice::System, cx.window_appearance().into())"),
+            "the resync must re-resolve System against the live window appearance"
+        );
+        assert!(
+            !apply_code.contains("self.apply_theme_mode(self.settings.theme,"),
+            "the resync must not pass the reloaded theme through unchanged"
+        );
+        assert!(
+            apply_code.contains("self.apply_theme_mode(mode, follow_system, cx);"),
             "the resync must reuse the single theme application path"
         );
     }
 
-    // BK06/BK13: Dark -> System (or the reverse) while the system appearance
-    // keeps the resolved mode identical must still request a resync: the
-    // palette cannot see that GPUI switched between pinned `Theme::change` and
-    // `Theme::sync_system_appearance`.
+    // BK06/BK13/BL14: any flip between System and an explicit choice at the
+    // same resolved mode must still request a resync: the palette cannot see
+    // that GPUI switched between pinned `Theme::change` and
+    // `Theme::sync_system_appearance`. Both the Dark and Light sides are
+    // covered, and Light <-> Dark is explicitly pinned as *not* a resync — the
+    // helper compares against System only, not against the whole choice.
     #[test]
     fn theme_resync_detects_choice_flip_at_the_same_resolved_mode() {
         let dark_palette = AppPalette::dark();
+        let light_palette = AppPalette::light();
+
+        // Disk holds System with the mode resolved to Dark.
         let system_disk = Settings {
             theme_choice: ThemeChoice::System,
             ..Settings::default()
@@ -19325,13 +19475,20 @@ mod tests {
             ThemeChoice::Dark,
             &system_disk
         ));
+        assert!(settings_theme_resync_needed(
+            &dark_palette,
+            ThemeChoice::Light,
+            &system_disk
+        ));
         assert!(!settings_theme_resync_needed(
             &dark_palette,
             ThemeChoice::System,
             &system_disk
         ));
 
+        // Disk holds an explicit Dark choice; live switched to System.
         let dark_disk = Settings::default();
+        assert_eq!(dark_disk.theme_choice, ThemeChoice::Dark);
         assert!(settings_theme_resync_needed(
             &dark_palette,
             ThemeChoice::System,
@@ -19343,9 +19500,56 @@ mod tests {
             &dark_disk
         ));
 
+        // BL14: mirror image on the Light side — disk System resolved to Light
+        // and an explicit Light disk with a live System preference.
+        let system_disk_light = Settings {
+            theme: ThemeMode::Light,
+            theme_choice: ThemeChoice::System,
+            ..Settings::default()
+        };
+        assert_eq!(AppPalette::for_mode(system_disk_light.theme), light_palette);
+        assert!(settings_theme_resync_needed(
+            &light_palette,
+            ThemeChoice::Light,
+            &system_disk_light
+        ));
+        assert!(settings_theme_resync_needed(
+            &light_palette,
+            ThemeChoice::Dark,
+            &system_disk_light
+        ));
+        assert!(!settings_theme_resync_needed(
+            &light_palette,
+            ThemeChoice::System,
+            &system_disk_light
+        ));
+
+        let light_disk = Settings {
+            theme: ThemeMode::Light,
+            theme_choice: ThemeChoice::Light,
+            ..Settings::default()
+        };
+        assert!(settings_theme_resync_needed(
+            &light_palette,
+            ThemeChoice::System,
+            &light_disk
+        ));
+        assert!(!settings_theme_resync_needed(
+            &light_palette,
+            ThemeChoice::Light,
+            &light_disk
+        ));
+        // The comparison target is System only: Light -> Dark at the same
+        // resolved mode is not a derived-state resync.
+        assert!(!settings_theme_resync_needed(
+            &light_palette,
+            ThemeChoice::Dark,
+            &light_disk
+        ));
+
         // A genuine resolved-mode change is still caught by the palette half.
         assert!(settings_theme_resync_needed(
-            &AppPalette::light(),
+            &light_palette,
             ThemeChoice::Light,
             &dark_disk
         ));

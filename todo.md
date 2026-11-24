@@ -2256,6 +2256,34 @@ status: current
 - [x] **BK19** BI11 の呼び出し回数オラクルがコメントを数える — 対応: loop24
 - [x] **BK20** SW オラクルが実動作（waitUntil / worker.state）を固定できていない — 対応: loop24
 
+## 進行中（ループ25 バックログ）
+
+### 優先度: 高（ループ25・confirmed）
+
+- [x] **BL01** theme_resync 消費側が保存済み古い theme を再適用し System で乖離 — 対応: loop25
+- [x] **BL02** .deb が postinst/postrm（control tarfile）を照合していない — 対応: loop25
+- [x] **BL03** fingerprint 引継ぎオラクルがコメントアウト行にも満たされる（自作誤修正） — 対応: loop25
+- [x] **BL04** 書き込み成功後の fingerprint 取得失敗が Lost-update ガードを無効化 — 対応: loop25
+
+### 優先度: 中（ループ25・confirmed）
+
+- [x] **BL05** 再通知が skipWaitingSent を上書きし前回の controllerchange 再読込を失う — 対応: loop25
+- [x] **BL06** activate しない場合に常設 controllerchange が誤リロード — 対応: loop25
+- [x] **BL07** fingerprint オラクルが this.entries 変体を検査しない — 対応: loop25
+- [x] **BL08** phase1-core-extraction の as-built が削除済み関数を現状と記載 — 対応: loop25
+- [x] **BL09** README の Android ゲート説明が実際より過小 — 対応: loop25
+- [x] **BL10** cargo vet 使用例が無条件実行と記載（BF17 取り残し） — 対応: loop25
+- [x] **BL11** desktop-file-validate が .deb 成果物に入れ子で clean checkout で動かない — 対応: loop25
+- [x] **BL12** deferred waitUntil オラクルが promise 結線を検証しない — 対応: loop25
+- [x] **BL13** deferred settle オラクルが2経路の片方しか確認しない — 対応: loop25
+- [x] **BL14** theme resync 純粋テストが Dark/System 反転のみ（light 側欠落） — 対応: loop25
+
+### 優先度: 低（ループ25・confirmed）
+
+- [x] **BL15** PWA スキップ通知がアサーション範囲と不一致 — 対応: loop25
+- [x] **BL16** strip_comments が Kotlin raw string を active と誤判定 — 対応: loop25
+- [x] **BL17** strip_comments がインラインコメントで needle を壊す — 対応: loop25
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

@@ -894,7 +894,8 @@ test('BI03: DOM モックで更新通知後も #status が通常通知で更新�
   assert.equal(updateReload.handlers.click.length, 1, 'click リスナは積まれない');
   assert.equal(state.skipWaitingSent, true, '送信済み状態は state で管理される');
 
-  // BK20: controllerchange 発火を実際に流し、skipWaitingSent が実ガードか固定する。
+  // BK20/BL06: controllerchange 発火を実際に流し、skipWaitingSent が実ガードか
+  // 固定する。送信先が activate していない別由来の変更では再読込しない。
   const onControllerChange = controllerListeners.find((h) => h.type === 'controllerchange').fn;
   assert.ok(onControllerChange, 'controllerchange ハンドラが登録される');
   state.skipWaitingSent = false;
@@ -902,7 +903,11 @@ test('BI03: DOM モックで更新通知後も #status が通常通知で更新�
   assert.equal(sandbox.reloaded, undefined, 'SKIP_WAITING 前の controllerchange では再読込しない');
   state.skipWaitingSent = true;
   onControllerChange();
-  assert.equal(sandbox.reloaded, true, 'SKIP_WAITING 後の controllerchange で再読込する');
+  assert.equal(sandbox.reloaded, undefined, '送信先が activate 前の別由来 controllerchange では再読込しない');
+  assert.equal(state.skipWaitingSent, true, '別由来の変更では送信状態を保持する');
+  worker.state = 'activated';
+  onControllerChange();
+  assert.equal(sandbox.reloaded, true, '送信先 worker が activate した controllerchange で再読込する');
   assert.equal(state.skipWaitingSent, false, '再読込後に送信状態をリセットする');
 
   // BK08: worker 状態分岐 — 待機中でなければ postMessage せず再読込へ流す。
@@ -1017,7 +1022,9 @@ test('BJ01: vm モックで2回目 updatefound を流しても更新通知され
   fireUpdatefound(second);
   assert.equal(noticeWrites, 2, '別 worker の2回目 updatefound でも通知される');
   assert.equal(state.notifiedWorker, second, '通知対象 worker が差し替わる');
-  assert.equal(state.skipWaitingSent, false, '新しい通知で送信状態がリセットされる');
+  // BL05: 新しい通知で skipWaitingSent をリセットすると、前回送信に対する
+  // controllerchange の再読込が失われるため保持されなければならない。
+  assert.equal(state.skipWaitingSent, true, '新しい通知でも前回の送信状態を保持する');
   assert.equal(updateReload.handlers.click.length, 1, 'click リスナは積まれない');
   assert.equal(controllerListeners.length, 1, 'controllerchange リスナは積まれない');
 
@@ -1025,6 +1032,11 @@ test('BJ01: vm モックで2回目 updatefound を流しても更新通知され
   // （once だとここでリスナが消えて2回目の更新が再読込されなかった）。
   updateReload.handlers.click[0]();
   assert.equal(state.skipWaitingSent, true, '2回目のクリックでも送信状態が立つ');
+  // BL06: 送信先が activate する前の別由来 controllerchange では再読込しない。
+  controllerListeners[0].fn();
+  assert.equal(sandbox.reloaded, undefined, 'activate 前の別由来 controllerchange では再読込しない');
+  assert.equal(state.skipWaitingSent, true, '別由来の変更では送信状態を保持する');
+  second.state = 'activated';
   controllerListeners[0].fn();
   assert.equal(sandbox.reloaded, true, '2回目の controllerchange でも再読込する');
   assert.equal(state.skipWaitingSent, false, '再読込後に送信状態がリセットされる');
@@ -1136,10 +1148,28 @@ test('BJ09/BJ10/BJ11: runtime cache の即時 return・期限切れ削除・put 
   const respondAt = fetchHandler.indexOf('event.respondWith(');
   assert.ok(waitAt !== -1 && respondAt !== -1 && waitAt < respondAt,
     'navigation cache write must be registered with waitUntil before respondWith');
+
+  // BL12: waitUntil に渡る promise と settleCacheWrite の resolver が同一の
+  // deferred であることを固定する。片方の存在だけでは緑になっていた。
+  const deferred = fetchHandler.match(
+    /const (\w+) = new Promise\(\(resolve\) => \{ (\w+) = resolve; \}\)/);
+  assert.ok(deferred, 'navigation must build a deferred cache-write promise');
+  const [doneVar, settleVar] = deferred.slice(1);
+  assert.equal(settleVar, 'settleCacheWrite', 'the deferred resolver must be settleCacheWrite');
+  const waitArg = fetchHandler.match(/event\.waitUntil\((\w+)\)/);
+  assert.ok(waitArg, 'waitUntil must be called with a single deferred promise');
+  assert.equal(waitArg[1], doneVar,
+    'waitUntil must adopt the very promise that settleCacheWrite resolves');
   assert.match(fetchHandler, /settleCacheWrite\(putRuntime\('\.\/index\.html', response\.clone\(\)\)\.catch\(/,
-    'waitUntil must adopt the navigation cache write promise');
-  assert.ok(/settleCacheWrite\(\)/.test(fetchHandler),
-    'the deferred must settle on the no-write and fetch-failure paths');
+    'the write promise must flow into that same deferred resolver');
+
+  // BL13: 引数なし settleCacheWrite() は fetch 失敗と non-ok 応答の2経路。
+  const settleCalls = (fetchHandler.match(/settleCacheWrite\(\)/g) || []).length;
+  assert.equal(settleCalls, 2, 'both no-write paths must settle the deferred');
+  const catchPath = sourceRegion(navigation, '} catch (error) {', '// BI06:');
+  assert.match(catchPath, /settleCacheWrite\(\)/, 'fetch failure must settle the deferred');
+  const notOkPath = sourceRegion(navigation, '} else {', 'return response;');
+  assert.match(notOkPath, /settleCacheWrite\(\)/, 'non-ok response must settle the deferred');
 
   const shellResponse = sourceRegion(sw, 'async function shellResponse() {', 'async function cachedAsset(');
   const staleBranch = sourceRegion(shellResponse, 'if (dynamic) {', 'return null;');

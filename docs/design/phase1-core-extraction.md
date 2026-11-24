@@ -114,17 +114,19 @@ strip = true
 
 ### settings の扱い（完全移行は別スコープ）
 
-`Settings` 本体・`load_from`（`settings.rs:1275`）/ `save_to`（`:1750`）は app に残す。
-理由は `settings.rs:71-72` の `gpui_kit::ThemeMode / Window / WindowBounds` 直依存と、
-`:74,76` の `history` / `tabs::Tab` 型依存で、そのまま入れると GPUI-free が壊れるため。
+`Settings` 本体・`Settings::load_from` / `Settings::save_to`
+（`app/src/settings.rs`）は app に残す。
+理由は同ファイルの `gpui_kit::ThemeMode / Window / WindowBounds` 直依存と、
+`history` / `tabs::Tab` 型依存で、そのまま入れると GPUI-free が壊れるため。
+（行番号は並行変更で陳腐化し得るため、ここではシンボル名で参照する。）
 
 Phase 1 で core へ切り出すのは純粋な判定部分に限定する。
 
-- `SCHEMA_VERSION` / `LEGACY_SCHEMA_VERSION`（`:92,95`）と `schema_status` 相当の
+- `SCHEMA_VERSION` / `LEGACY_SCHEMA_VERSION` と `schema_status` 相当の
    バージョン判定。
-- `deserialize_theme_choice`（`:266-280`）/ `deserialize_theme`（`:296-310`）の
-   文字列分類を、GPUI 型を受け取らない `classify_theme_*(&str) -> ThemeValue` として抽出。
-- `migrate`（`:1410-1421`）のバージョン判定を
+- `deserialize_theme_choice` / `deserialize_theme` の文字列分類を、
+   GPUI 型を受け取らない `classify_theme_*(&str) -> ThemeValue` として抽出。
+- `Settings::migrate` のバージョン判定を
    `migrate_version(loaded: u32, current: u32) -> MigrationStatus` として抽出。
 
 承認済みADR:215の「settings を抽出対象とする」は、型・判定を core へ置き、
@@ -136,13 +138,15 @@ I/O と gpui_kit 型変換を app アダプタへ残す形で充足する（条�
 
 ## 3. model → settings 逆参照の解消
 
-現状: `model.rs:348-363` の `deserialize_sort_key` と
-`:507-520` の `deserialize_sort_dir` が
-`crate::settings::note_unknown_persisted_enum()`（`settings.rs:222`）を呼び、
-thread_local `UNKNOWN_ENUM_SEEN`（`:205,213`）を立てる。
-`load_from_with_backup`（`:1281`）が `:1382-1390` でこれを消費して
-`read_only` を決定する。model を core へ移すと依存が逆転し、
-core が app（ひいては GPUI）を参照するため解消が必須。
+現状（as-built、2026-11-24 確認。下記の案1〜3は設計時点の選択肢）:
+`core/src/model.rs` の `deserialize_sort_key` と `deserialize_sort_dir` は
+素の fallback のみで、未知 enum を app へ通知するシグナルは持たない。
+旧来の `note_unknown_persisted_enum()` と thread_local `UNKNOWN_ENUM_SEEN` は
+R2-SIGNAL の並列ロード検証で削除済みである（後述の as-built 節を参照）。
+現在は `app/src/settings.rs` の純関数 `detect_unknown_persisted_enum(&Value)` が
+当該ロードの生 JSON から未知 enum を算出し、`Settings::load_from_with_backup` が
+`read_only` へ反映する。したがって model が core にあっても依存は逆転せず、
+この節の逆参照問題は解消済みである。
 
 | 案 | 概要 | 長所 | 短所 |
 | --- | --- | --- | --- |

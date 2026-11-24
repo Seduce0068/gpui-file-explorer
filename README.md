@@ -309,9 +309,14 @@ CI と同じ範囲を手元で回すスクリプトを用意しています（�
   clean checkout ではゲート列の先頭で `SKIPPED` を表示し、DEB 検証ゲート
   自体は実行しません。ただしコードゲート（Rust / PWA / Android）は通常どおり
   実行されます（先頭の通知は後続ゲートのスキップを意味しません）。
+  追跡対象の `.desktop` に対する `desktop-file-validate` は `.deb` の有無に
+  依存せず常に実行します。
 - **Android**: `python3` 標準ライブラリで AndroidManifest.xml の well-formedness と
-  build.gradle.kts の固定バージョン文字列を静的に検証します（ビルドは行いません）。
-  scaffold が見つからない場合は `SKIPPED` です。
+  構造（`<manifest>` / `<application>` / MAIN+LAUNCHER intent-filter と
+  `android:exported` の明示）を検証し、`settings.gradle.kts` /
+  `build.gradle.kts` / `app/build.gradle.kts` の固定バージョン文字列と
+  Kotlin Android と Compose compiler のバージョン一致も静的に検証します
+  （ビルドは行いません）。scaffold が見つからない場合は `SKIPPED` です。
 
 いずれの `SKIPPED` も `--strict` ではハード失敗になります（後述）。
 CI は Rust 系ゲートのみで、PWA / DEB / Android は対象外です。
@@ -320,7 +325,9 @@ CI は Rust 系ゲートのみで、PWA / DEB / Android は対象外です。
 bash scripts/check.sh              # app/poc/core/win32: fmt/check/test/clippy +
                                    # app の release check/test +
                                    # wasm32 / windows-gnu の cross check +
-                                   # cargo audit / deny / vet
+                                   # cargo audit / deny / desktop-file-validate
+                                   # + cargo vet（各 supply-chain/config.toml が
+                                   # 存在する場合のみ）
 bash scripts/check.sh --fast       # audit と vet を省略。deny は advisories を
                                    # 省きオフラインで licenses/bans/sources のみ。
                                    # --no-release も暗示（release 検証を省略）。

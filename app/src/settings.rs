@@ -1407,6 +1407,18 @@ impl LoadFingerprint {
         };
     }
 
+    /// BL04: record the baseline produced by our *own* successful save.
+    /// A failed post-write re-read yields `None`; capturing that would erase the
+    /// previous baseline and make `conflicts_with` always return false — i.e.
+    /// permanently disable the lost-update guard. Keep the stale baseline
+    /// instead, so writes keep conflicting until a fresh load establishes a new
+    /// one (the same restart recovery a refused save already uses, R2/BJ06).
+    fn capture_after_save(&self, path: &Path, fingerprint: Option<DiskFingerprint>) {
+        if let Some(fingerprint) = fingerprint {
+            self.capture(path, Some(fingerprint));
+        }
+    }
+
     /// Whether writing `path` would overwrite a file that changed since this
     /// snapshot was loaded. No baseline (fresh install, backup already taken,
     /// or a different injectable path) means no conflict to report.
@@ -2864,11 +2876,16 @@ impl Settings {
                 }
             }
             // BF04: our own write becomes the baseline for later saves.
+            // BL04: a failed re-read must NOT replace that baseline with `None`;
+            // that would turn every later `conflicts_with` into `false` and
+            // silently disable the lost-update guard. Keeping the previous
+            // baseline makes writes conflict until the view is restarted.
             let new_fingerprint = std::fs::File::open(path).ok().and_then(|saved| {
                 let meta = saved.metadata().ok()?;
                 Some(Self::disk_fingerprint(&meta, text.as_bytes()))
             });
-            self.load_fingerprint.capture(path, new_fingerprint);
+            self.load_fingerprint
+                .capture_after_save(path, new_fingerprint);
             Ok(())
         })();
         heartbeat.stop();
@@ -3333,6 +3350,40 @@ mod tests {
             "a different hash must be a conflict even when len and mtime match"
         );
         assert!(!fingerprint.conflicts_with(&path, Some(base)));
+    }
+
+    #[test]
+    fn failed_post_save_fingerprint_keeps_lost_update_guard() {
+        // BL04: after a successful write whose post-write fingerprint re-read
+        // failed, capturing `None` used to disable `conflicts_with` forever.
+        let path = PathBuf::from("/tmp/settings-fingerprint-guard.json");
+        let base = DiskFingerprint {
+            len: 10,
+            modified_ns: Some(1),
+            hash: 0x1111_1111_1111_1111,
+        };
+        let rewritten = DiskFingerprint {
+            len: 10,
+            modified_ns: Some(2),
+            hash: 0x2222_2222_2222_2222,
+        };
+        let fingerprint = LoadFingerprint::default();
+        fingerprint.capture(&path, Some(base));
+
+        // The re-read after our own write failed: no new fingerprint.
+        fingerprint.capture_after_save(&path, None);
+        assert!(
+            fingerprint.conflicts_with(&path, Some(rewritten)),
+            "the stale baseline must keep the lost-update guard active"
+        );
+
+        // A successful capture still refreshes the baseline normally.
+        fingerprint.capture_after_save(&path, Some(rewritten));
+        assert!(
+            !fingerprint.conflicts_with(&path, Some(rewritten)),
+            "a successful post-write capture must establish the new baseline"
+        );
+        assert!(fingerprint.conflicts_with(&path, Some(base)));
     }
 
     #[test]
