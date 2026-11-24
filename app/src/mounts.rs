@@ -244,7 +244,7 @@ proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
 sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
 tmpfs /run tmpfs rw,nosuid,nodev 0 0
 /dev/nvme0n1p1 /boot/efi vfat rw,relatime,fmask=0077 0 0
-/dev/sdb1 /media/koppe/USB\040Drive exfat rw,nosuid,nodev 0 0
+/dev/sdb1 /media/testuser/USB\040Drive exfat rw,nosuid,nodev 0 0
 /dev/nvme0n1p7 /mnt/timeshift ext4 rw,relatime 0 0
 /snap/core24/1643 /snap/core24/1643 squashfs ro,nodev 0 0
 overlay /var/lib/docker/overlay2/abc overlay rw 0 0
@@ -266,7 +266,7 @@ overlay /var/lib/docker/overlay2/abc overlay rw 0 0
             .collect();
         assert_eq!(
             paths,
-            vec!["/", "/boot/efi", "/media/koppe/USB Drive", "/mnt/timeshift"]
+            vec!["/", "/boot/efi", "/media/testuser/USB Drive", "/mnt/timeshift"]
         );
         assert_eq!(mounts[0].fs_type, "ext4");
         assert_eq!(mounts[2].fs_type, "exfat");
@@ -406,7 +406,7 @@ overlay /var/lib/docker/overlay2/abc overlay rw 0 0
                 .iter()
                 .map(|mount| mount.path.display().to_string())
                 .collect::<Vec<_>>(),
-            vec!["/", "/boot/efi", "/media/koppe/USB Drive", "/mnt/timeshift"]
+            vec!["/", "/boot/efi", "/media/testuser/USB Drive", "/mnt/timeshift"]
         );
 
         let _ = std::fs::remove_dir_all(&dir);

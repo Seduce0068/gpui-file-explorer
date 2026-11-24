@@ -3,7 +3,7 @@ Upstream-Name: gpui-file-explorer
 Source: https://github.com/Seduce0068/gpui-file-explorer
 
 Files: *
-Copyright: 2026 koppe <keitaonodera0903@gmail.com>
+Copyright: 2026 Developer <developer@example.com>
 License: AGPL-3.0+
  This program is free software: you can redistribute it and/or modify it
  under the terms of the GNU Affero General Public License as published by
@@ -24,7 +24,7 @@ License: AGPL-3.0+
  LICENSE in this package.
 
 Files: app/screenshot/*, packaging/linux/icons/*
-Copyright: 2026 koppe <keitaonodera0903@gmail.com>
+Copyright: 2026 Developer <developer@example.com>
 License: AGPL-3.0+
 
 License: AGPL-3.0+

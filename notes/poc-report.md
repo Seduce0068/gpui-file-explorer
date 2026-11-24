@@ -136,7 +136,7 @@ Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.94s
 
 ```text
 $ ls -la target/debug/gpui-file-explorer-poc
--rwxrwxr-x 2 koppe koppe 781161720 Nov 11 12:09 target/debug/gpui-file-explorer-poc
+-rwxrwxr-x 2 testuser testuser 781161720 Nov 11 12:09 target/debug/gpui-file-explorer-poc
 $ du -sh target/
 12G   target/     # debug 8.3G → release ビルド追加後
 ```
@@ -213,7 +213,7 @@ $ gdbus call --session --dest org.freedesktop.portal.Desktop \
     --object-path /org/freedesktop/portal/desktop \
     --method org.freedesktop.portal.Screenshot.Screenshot "" "{}"
 (objectpath '/org/freedesktop/portal/desktop/request/1_1889/t',)
-# 保存: /home/koppe/picture/Screenshot_20261111_120500.png (2560x1440)
+# 保存: /home/testuser/picture/Screenshot_20261111_120500.png (2560x1440)
 $ cp ~/picture/Screenshot_20261111_120500.png poc/screenshot/wayland-window.png
 $ convert ... -crop 820x620+870+390 +repage poc/screenshot/window-crop.png
 ```
@@ -221,7 +221,7 @@ $ convert ... -crop 820x620+870+390 +repage poc/screenshot/window-crop.png
 スクリーンショット（`poc/screenshot/window-crop.png`）で確認できた内容:
 
 - タイトルバー: `GPUI File Explorer PoC`
-- ヘッダ: `GPUI File Explorer PoC — /home/koppe` / 右に `gpui-kit 0.9.1 / gpui-pre 0.3.12`
+- ヘッダ: `GPUI File Explorer PoC — /home/testuser` / 右に `gpui-kit 0.9.1 / gpui-pre 0.3.12`
 - リスト: `DIR .agents / .aitk / .amazon-q.dotfiles.bak / .android / .antigravity-ide ...`
   （ディレクトリ優先ソート、サイズ列はディレクトリ `-`、更新時刻は `2d ago` 等の相対表示）
 - 先頭行 `.agents` が選択ハイライト表示

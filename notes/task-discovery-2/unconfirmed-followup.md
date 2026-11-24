@@ -404,7 +404,7 @@ status: complete
 
 - DEP-5 形式の `copyright` は対応済み（2026-11-18 追記、
   `packaging/linux/copyright`）。著作権者は git author と
-  Maintainer から `2026 koppe <keitaonodera0903@gmail.com>`
+  Maintainer から 汎用の著作権者・連絡先
   を記載している。
 - Debian アーカイブ登録は現時点では行わない（ユーザー判断、
   2026-11-19）。将来的に配布方針を決める際に、Debian Policy

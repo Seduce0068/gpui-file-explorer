@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "version": 1,
-//!   "last_dir": "/home/koppe/document",
+//!   "last_dir": "/home/testuser/document",
 //!   "sort": { "key": "name", "dir": "asc", "dirs_first": true },
 //!   "show_hidden": false,
 //!   "show_thumbnails": true,
@@ -15,9 +15,9 @@
 //!   "theme_choice": "dark",
 //!   "terminal_command": "konsole",
 //!   "recent_dirs": ["/tmp"],
-//!   "bookmarks": ["/home/koppe"],
-//!   "bookmark_labels": [{ "path": "/home/koppe", "label": "home" }],
-//!   "tabs": ["/home/koppe", "/tmp"],
+//!   "bookmarks": ["/home/testuser"],
+//!   "bookmark_labels": [{ "path": "/home/testuser", "label": "home" }],
+//!   "tabs": ["/home/testuser", "/tmp"],
 //!   "active_tab": 0,
 //!   "recent_searches": ["TODO"],
 //!   "saved_searches": [{ "name": "todos", "query": "TODO" }],
@@ -25,7 +25,7 @@
 //!     {
 //!       "bounds": { "x": 80, "y": 60, "width": 1100, "height": 700, "mode": "windowed" },
 //!       "tabs": [
-//!         { "cwd": "/home/koppe", "back": ["/tmp"], "forward": [] },
+//!         { "cwd": "/home/testuser", "back": ["/tmp"], "forward": [] },
 //!         { "cwd": "/tmp", "back": [], "forward": [] }
 //!       ],
 //!       "active_tab": 0
@@ -3676,7 +3676,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let path = dir.join("settings.json");
         let settings = Settings {
-            last_dir: Some(PathBuf::from("/home/koppe/document")),
+            last_dir: Some(PathBuf::from("/home/testuser/document")),
             sort: SortSpec {
                 key: SortKey::Size,
                 dir: SortDir::Desc,
@@ -3698,7 +3698,7 @@ mod tests {
             serde_json::from_str(&text).expect("settings JSON must parse");
         let expected = serde_json::json!({
             "version": 1,
-            "last_dir": "/home/koppe/document",
+            "last_dir": "/home/testuser/document",
             "sort": {
                 "key": "size",
                 "dir": "desc",
@@ -4289,15 +4289,15 @@ mod tests {
                     ],
                     "active_tab": "not-usize",
                 },
-                { "tabs": [{ "cwd": "/home/koppe", "back": [], "forward": [] }] },
+                { "tabs": [{ "cwd": "/home/testuser", "back": [], "forward": [] }] },
                 "not-a-window",
             ],
             "saved_searches": [{ "name": "ok", "query": "TODO" }, "not-a-search"],
             "bookmark_labels": [
-                { "path": "/home/koppe", "label": "home" },
+                { "path": "/home/testuser", "label": "home" },
                 { "path": 7, "label": "broken" },
             ],
-            "bookmarks": ["/home/koppe", 42, "/tmp"],
+            "bookmarks": ["/home/testuser", 42, "/tmp"],
         });
         let SalvageResult {
             kept,
@@ -4334,13 +4334,13 @@ mod tests {
         assert_eq!(settings.windows[0].bounds, None);
         assert_eq!(
             settings.windows[1].tabs[0].cwd,
-            PathBuf::from("/home/koppe")
+            PathBuf::from("/home/testuser")
         );
         assert_eq!(settings.saved_searches.len(), 1);
         assert_eq!(settings.bookmark_labels.len(), 1);
         assert_eq!(
             settings.bookmarks,
-            vec![PathBuf::from("/home/koppe"), PathBuf::from("/tmp")]
+            vec![PathBuf::from("/home/testuser"), PathBuf::from("/tmp")]
         );
     }
 
@@ -4413,7 +4413,7 @@ mod tests {
         let original = serde_json::json!({
             "version": SCHEMA_VERSION,
             "show_hidden": true,
-            "bookmarks": ["/home/koppe"],
+            "bookmarks": ["/home/testuser"],
             "windows": [
                 {
                     "tabs": [
@@ -4422,7 +4422,7 @@ mod tests {
                     ],
                     "active_tab": 0,
                 },
-                { "tabs": [{ "cwd": "/home/koppe", "back": [], "forward": [] }] },
+                { "tabs": [{ "cwd": "/home/testuser", "back": [], "forward": [] }] },
             ],
         });
         fs::write(&path, original.to_string()).unwrap();
@@ -4435,9 +4435,9 @@ mod tests {
             loaded.windows[0].tabs[0].back,
             vec![PathBuf::from("/tmp/kept")]
         );
-        assert_eq!(loaded.windows[1].tabs[0].cwd, PathBuf::from("/home/koppe"));
+        assert_eq!(loaded.windows[1].tabs[0].cwd, PathBuf::from("/home/testuser"));
         assert!(loaded.show_hidden);
-        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
+        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/testuser")]);
         assert!(!loaded.read_only && loaded.load_error.is_none());
 
         // The discarded session element is real user data: the original bytes
@@ -5264,25 +5264,25 @@ mod schema_validation_tests {
         for (tag, text, bad_key, expect_hidden) in [
             (
                 "version-string",
-                r#"{"version":"1","show_hidden":true,"bookmarks":["/home/koppe"]}"#,
+                r#"{"version":"1","show_hidden":true,"bookmarks":["/home/testuser"]}"#,
                 "version",
                 true,
             ),
             (
                 "version-float",
-                r#"{"version":1.5,"show_hidden":true,"bookmarks":["/home/koppe"]}"#,
+                r#"{"version":1.5,"show_hidden":true,"bookmarks":["/home/testuser"]}"#,
                 "version",
                 true,
             ),
             (
                 "bool-string",
-                r#"{"version":1,"show_hidden":"yes","bookmarks":["/home/koppe"]}"#,
+                r#"{"version":1,"show_hidden":"yes","bookmarks":["/home/testuser"]}"#,
                 "show_hidden",
                 false,
             ),
             (
                 "negative-tab",
-                r#"{"version":1,"active_tab":-1,"show_hidden":true,"bookmarks":["/home/koppe"]}"#,
+                r#"{"version":1,"active_tab":-1,"show_hidden":true,"bookmarks":["/home/testuser"]}"#,
                 "active_tab",
                 true,
             ),
@@ -5310,7 +5310,7 @@ mod schema_validation_tests {
             );
             assert_eq!(
                 loaded.bookmarks,
-                vec![PathBuf::from("/home/koppe")],
+                vec![PathBuf::from("/home/testuser")],
                 "{text}"
             );
             fs::remove_dir_all(&dir).unwrap();
@@ -5325,12 +5325,12 @@ mod schema_validation_tests {
         for (tag, text, dropped) in [
             (
                 "view-number",
-                r#"{"version":1,"view":5,"show_hidden":true,"bookmarks":["/home/koppe"],"theme":"light"}"#,
+                r#"{"version":1,"view":5,"show_hidden":true,"bookmarks":["/home/testuser"],"theme":"light"}"#,
                 "view",
             ),
             (
                 "sort-key-number",
-                r#"{"version":1,"sort":{"key":42,"dir":"desc","dirs_first":false},"show_hidden":true,"bookmarks":["/home/koppe"],"theme":"light"}"#,
+                r#"{"version":1,"sort":{"key":42,"dir":"desc","dirs_first":false},"show_hidden":true,"bookmarks":["/home/testuser"],"theme":"light"}"#,
                 "sort",
             ),
         ] {
@@ -5352,7 +5352,7 @@ mod schema_validation_tests {
             assert!(loaded.show_hidden, "{text}: unrelated bool must survive");
             assert_eq!(
                 loaded.bookmarks,
-                vec![PathBuf::from("/home/koppe")],
+                vec![PathBuf::from("/home/testuser")],
                 "{text}"
             );
             assert_eq!(
@@ -5569,7 +5569,7 @@ mod schema_validation_tests {
                 "show_hidden": true,
                 "theme": "light",
                 "terminal_command": "konsole --title build",
-                "bookmarks": ["/home/koppe"],
+                "bookmarks": ["/home/testuser"],
                 "tabs": ["/a", "/a"],
             })
             .to_string(),
@@ -5589,7 +5589,7 @@ mod schema_validation_tests {
         assert!(loaded.show_hidden);
         assert_eq!(loaded.theme, ThemeMode::Light);
         assert_eq!(loaded.terminal_command, "konsole --title build");
-        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
+        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/testuser")]);
         assert_eq!(loaded.tabs, vec![PathBuf::from("/a"); 2]);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -5648,7 +5648,7 @@ mod schema_validation_tests {
                 "sort": { "key": "date", "dir": "desc", "dirs_first": false },
                 "show_hidden": true,
                 "view": "icons",
-                "bookmarks": ["/home/koppe"],
+                "bookmarks": ["/home/testuser"],
             })
             .to_string(),
         )
@@ -5675,7 +5675,7 @@ mod schema_validation_tests {
         );
         assert!(loaded.show_hidden);
         assert_eq!(loaded.view, ViewLayout::Icons);
-        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
+        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/testuser")]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -5690,7 +5690,7 @@ mod schema_validation_tests {
                 "show_hidden": true,
                 "view": "icons",
                 "sort": { "key": "size", "dir": "asc", "dirs_first": true },
-                "bookmarks": ["/home/koppe"],
+                "bookmarks": ["/home/testuser"],
             })
             .to_string(),
         )
@@ -5707,7 +5707,7 @@ mod schema_validation_tests {
         assert!(loaded.show_hidden);
         assert_eq!(loaded.view, ViewLayout::Icons);
         assert_eq!(loaded.sort.key, SortKey::Size);
-        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/koppe")]);
+        assert_eq!(loaded.bookmarks, vec![PathBuf::from("/home/testuser")]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -5854,7 +5854,7 @@ mod schema_validation_tests {
                             "theme": "dark",
                             "sort": { "key": "name", "dir": "asc", "dirs_first": true },
                             "show_hidden": true,
-                            "bookmarks": ["/home/koppe"],
+                            "bookmarks": ["/home/testuser"],
                         });
                         if expect_unknown {
                             doc["view"] = serde_json::json!("list");

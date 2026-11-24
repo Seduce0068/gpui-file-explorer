@@ -16293,7 +16293,7 @@ mod tests {
     fn tab_label_uses_last_component_or_root() {
         use std::path::Path;
         assert_eq!(tab_label(Path::new("/")), "ルート");
-        assert_eq!(tab_label(Path::new("/home/koppe")), "koppe");
+        assert_eq!(tab_label(Path::new("/home/testuser")), "testuser");
         assert_eq!(tab_label(Path::new("relative/dir")), "dir");
         // AE06: `.` / `..` have no `file_name()`, so the previously untested
         // fallback must keep the literal path via `display_path` instead of

@@ -22,8 +22,8 @@ status: complete
 | r4-dist-07 | 更新・アンインストール・バージョン追跡・CHANGELOG が存在しない | 機能追加案 | `README.md:77,87`; `Cargo.toml:4` | 署名・リポジトリ公開・タグ付け未実施で更新導線・削除手順・リリースノートが無い。 | 継続配信 | M | 新規 | 高 |
 | r4-dist-08 | 設定スキーマに v1→v2 移行経路とダウングレード検出が無い | 残タスク | `settings.rs:209-224`; `app/README.md:363-364` | migrate() は v0/v1 で何もせず未知 version は read_only にするだけ。 | バージョン間移行 | M | 既知(ドキュメント記載あり) | 高 |
 | r4-dist-09 | 保存タブが CLI 引数を黙って上書きし .desktop %f が死ぬ | 残タスク | `main.rs:5683-5688`; `README.md:27,69` | restore_session は保存タブがあれば cli_dir を見ず early return。root/app README 同士も矛盾。 | CLI 契約 | M | round1/2/3と重複(r3-config-02) | 高 |
-| r4-dist-10 | DEB control の Maintainer に個人 Gmail が混入 | 調査項目 | `build-deb.sh:178,182`; staged control:6,10 | `Maintainer: koppe <keitaonodera0903@gmail.com>` が成果物に固定埋め込み。公開方針は要確認。 | プライバシー | S | 新規 | 中 |
-| r4-dist-11 | `/home/koppe/...` とユーザー名が source/証跡に残存 | 残タスク | `settings.rs:9,14,15,335,348`; `model.rs:699`; `DESIGN.md:119`; `notes/poc-report.md:216` | 個人パスがドキュメント例・fixture・スクショ説明に多数残る。 | 個人情報露出の低減 | S | round1/2/3と重複(r1-sec-15) | 高 |
+| r4-dist-10 | DEB control の Maintainer に個人 Gmail が混入 | 調査項目 | `build-deb.sh:178,182`; staged control:6,10 | `Maintainer` に個人メールが固定埋め込みされていたが、汎用値へ置換済み。公開方針は要確認。 | プライバシー | S | 新規 | 中 |
+| r4-dist-11 | `/home/testuser/...` とユーザー名が source/証跡に残存 | 残タスク | `settings.rs:9,14,15,335,348`; `model.rs:699`; `DESIGN.md:119`; `notes/poc-report.md:216` | 個人パスがドキュメント例・fixture・スクショ説明に多数残る。 | 個人情報露出の低減 | S | round1/2/3と重複(r1-sec-15) | 高 |
 | r4-dist-12 | `ldd`+`dpkg -S` 生成の Depends がビルドホスト依存で脆い | 調査項目 | `build-deb.sh:140-165,168-169` | dlopen 分は libvulkan1 のみ手追加。Wayland/X11/ポータルの実効依存が漏れる/過剰に入り、Depends がビルドマシンで変わりうる。 | 他環境での install 成功率 | M | 新規 | 中 |
 | r4-dist-13 | copyright が AGPL 全文のコピーで DEP-5 形式でない | 残タスク | `build-deb.sh:136`; staged copyright:1-661 | Format/Files/Copyright/License スタンザが無く Debian Policy 違反・lintian 警告対象。 | Debian 規約適合 | S | 新規 | 中 |
 | r4-dist-14 | README が DEB のバージョン・アーキをハードコード | 構造改善 | `README.md:65`; `app/README.md:348`; `build-deb.sh:69-74` | スクリプトは動的計算するのに README は固定記載で次バージョンで陳腐化。 | ドキュメント自己整合 | S | 新規 | 高 |

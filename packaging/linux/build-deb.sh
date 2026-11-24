@@ -694,7 +694,7 @@ Version: ${deb_version}
 Section: utils
 Priority: optional
 Architecture: ${arch}
-Maintainer: koppe <keitaonodera0903@gmail.com>
+Maintainer: Developer <developer@example.com>
 Installed-Size: ${installed_size}
 Depends: ${depends}
 Recommends: libfontconfig1, desktop-file-utils

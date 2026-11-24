@@ -46,9 +46,9 @@ status: "draft"
 主要出力は次のとおりです（3 ツールは前回実行時に導入済みのため再ダウンロードは発生しませんでした）。
 
 ```text
-wtype: already installed in /home/koppe/.local/e2e-tools/bin
-xdotool: already installed in /home/koppe/.local/e2e-tools/bin
-ydotool: already installed in /home/koppe/.local/e2e-tools/bin
+wtype: already installed in /home/testuser/.local/e2e-tools/bin
+xdotool: already installed in /home/testuser/.local/e2e-tools/bin
+ydotool: already installed in /home/testuser/.local/e2e-tools/bin
 
 === [A] Binary-install / link check (expected: PASS) ===
 ldd OK   : wtype (all shared libraries resolved)
@@ -64,7 +64,7 @@ smoke OK   : ydotool help (exit 0)
              Usage: ydotool <cmd> <args>
 
 === Shell setup ===
-  export PATH="/home/koppe/.local/e2e-tools/bin:${PATH}"
+  export PATH="/home/testuser/.local/e2e-tools/bin:${PATH}"
 ```
 
 ## 個別スモーク / プローブの観測値

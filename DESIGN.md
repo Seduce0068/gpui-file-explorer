@@ -169,7 +169,7 @@ symlink 拒否・ゴミ箱ビュー除外。カスタム LRU / ローダ側バ�
 ├───────────────────────────────────────────────────────────────────────────────┤
 │ [←] [→] [↑] [⟳]  │  隠しファイル: オフ  │  1,180 / 1,234 件      [設定?]      │ ← toolbar (36px)
 ├───────────────────────────────────────────────────────────────────────────────┤
-│ /  home  koppe  document  deepseek-harness  default-workspace  work  app      │ ← breadcrumb (28px)
+│ /  home  testuser  document  deepseek-harness  default-workspace  work  app      │ ← breadcrumb (28px)
 ├───────────────┬───────────────────────────────────────────────────────────────┤
 │ 場所          │ 名前                              │ サイズ  │ 更新日時           │ ← 列ヘッダ (24px)
 │ ───────────── │ ───────────────────────────────────────────────────────────── │
@@ -943,7 +943,7 @@ pub fn confirm_and_trash(
 ```json
 {
   "version": 1,
-  "last_dir": "/home/koppe/document",
+  "last_dir": "/home/testuser/document",
   "sort": { "key": "name", "dir": "asc", "dirs_first": true },
   "show_hidden": false,
   "view": "details"

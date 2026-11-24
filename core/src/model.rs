@@ -907,7 +907,7 @@ pub fn is_root_path(path: &Path) -> bool {
     path.has_root() && path.parent().is_none()
 }
 
-/// Breadcrumb segments: `("/", "/"), ("home", "/home"), ("koppe", "/home/koppe")`.
+/// Breadcrumb segments: `("/", "/"), ("home", "/home"), ("testuser", "/home/testuser")`.
 /// The root segment label is OS-specific via [`root_display_for_platform`].
 pub fn breadcrumb_segments(path: &Path) -> Vec<(String, PathBuf)> {
     use std::path::Component;
@@ -1741,13 +1741,13 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn breadcrumb_segments_build_accumulated_paths() {
-        let segments = breadcrumb_segments(Path::new("/home/koppe"));
+        let segments = breadcrumb_segments(Path::new("/home/testuser"));
         assert_eq!(segments.len(), 3);
         assert_eq!(segments[0], ("/".to_string(), PathBuf::from("/")));
         assert_eq!(segments[1], ("home".to_string(), PathBuf::from("/home")));
         assert_eq!(
             segments[2],
-            ("koppe".to_string(), PathBuf::from("/home/koppe"))
+            ("testuser".to_string(), PathBuf::from("/home/testuser"))
         );
 
         // CurDir / ParentDir produce no label, but remain in the accumulated
@@ -1794,7 +1794,7 @@ mod tests {
     #[test]
     fn breadcrumb_root_segment_uses_platform_root_label() {
         let root = root_path_for_platform();
-        let destination = root.join("home").join("koppe");
+        let destination = root.join("home").join("testuser");
         let segments = breadcrumb_segments(&destination);
         assert_eq!(segments[0].0, root_display_for_platform(&root));
         assert_eq!(segments[0].1, root);
@@ -2259,8 +2259,8 @@ mod personalization_tests {
 
     #[test]
     fn bookmark_label_new_trims_and_rejects_invalid_input() {
-        let entry = BookmarkLabel::new(Path::new("/home/koppe"), " home ").unwrap();
-        assert_eq!(entry.path, Path::new("/home/koppe"));
+        let entry = BookmarkLabel::new(Path::new("/home/testuser"), " home ").unwrap();
+        assert_eq!(entry.path, Path::new("/home/testuser"));
         assert_eq!(entry.label, "home");
         assert!(entry.is_valid());
 
@@ -2275,9 +2275,9 @@ mod personalization_tests {
 
     #[test]
     fn bookmark_label_json_roundtrip_and_partial_defaults() {
-        let entry = BookmarkLabel::new(Path::new("/home/koppe"), "home").unwrap();
+        let entry = BookmarkLabel::new(Path::new("/home/testuser"), "home").unwrap();
         let text = serde_json::to_string(&entry).unwrap();
-        assert!(text.contains("\"path\":\"/home/koppe\""));
+        assert!(text.contains("\"path\":\"/home/testuser\""));
         assert!(text.contains("\"label\":\"home\""));
         assert_eq!(serde_json::from_str::<BookmarkLabel>(&text).unwrap(), entry);
 
