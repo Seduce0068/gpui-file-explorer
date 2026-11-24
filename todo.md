@@ -2137,6 +2137,37 @@ status: current
 - [x] **BG19** PWA マニフェスト名に開発者向け語が入る — 対応: loop20
 - [x] **BG20** PWA に favicon が無く 404 — 対応: loop20
 
+## 進行中（ループ21 バックログ）
+
+### 優先度: 高（ループ21・confirmed）
+
+- [x] **BH01** SW precache 失敗が握りつぶされ空キャッシュで旧キャッシュを削除 — 対応: loop21
+- [x] **BH02** SW 更新ライフサイクル未実装でシェル変更が永続反映されない — 対応: loop21
+- [x] **BH03** 再走査が skip 前ファイルを再カウントし不完全検索カウンタ倍増 — 対応: loop21
+- [x] **BH04** 検索完了時の設定保存失敗がログのみで通知へ出ない — 対応: loop21
+- [x] **BH05** ChangedOnDisk の「再読込」回復導線が UI に存在しない — 対応: loop21
+- [x] **BH06** DEB ゲートが clean checkout で必ず失敗（順序・再現性） — 対応: loop21
+- [x] **BH07** PWA ゲートが gitignore 済み生成物 pwa/pkg を要求 — 対応: loop21
+- [x] **BH08** check.sh の「CI runs it」が実態と食い違う — 対応: loop21
+
+### 優先度: 中（ループ21・confirmed）
+
+- [x] **BH09** SW fetch が同一オリジン GET を無条件永久キャッシュ — 対応: loop21
+- [x] **BH10** SW activate が同一オリジンの他 SW キャッシュを削除 — 対応: loop21
+- [x] **BH11** 重複ルート（親子）がグローバル予算を食う — 対応: loop21
+- [x] **BH12** README の検証ループ記述が PWA/DEB ゲートに未追従 — 対応: loop21
+- [x] **BH13** ChangedOnDisk 時にロールバック対象外経路でメモリ値が残る — 対応: loop21
+- [x] **BH14** DEB ゲートのツール事前チェックが dpkg-deb のみ — 対応: loop21
+- [x] **BH15** PWA ゲートが旧 Node の存在だけを確認 — 対応: loop21
+
+### 優先度: 低（ループ21・confirmed）
+
+- [x] **BH16** skipWaiting/claim が動的 import と競合し得る — 対応: loop21
+- [x] **BH17** 上限打ち切りでも active_roots は全ルート数を表示 — 対応: loop21
+- [x] **BH18** DESIGN 変更履歴に 2026-11-24 の更新が未記録 — 対応: loop21
+- [x] **BH19** PWA 設計文書が React+Worker 前提のまま — 対応: loop21
+- [x] **BH20** 終了時ログが ChangedOnDisk を汎用 Io としてしか記録 — 対応: loop21
+
 ## メモ
 
 - **既知の制限（実装しないと判断済み）**: キーマップ一括リセット UI は未配線。

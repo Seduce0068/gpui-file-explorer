@@ -294,6 +294,19 @@ CI と同じ範囲を手元で回すスクリプトを用意しています（�
 既定では release 検証も
 実行します。
 
+`--app` / `--poc` の scope に関わらず、配布成果物のゲートも実行します。
+
+- **PWA**: `node --test pwa/main.test.js`。pure ヘルパーは常に検証し、
+  `pwa/pkg/`（wasm-pack の生成物・gitignore 済み）が無い clean checkout では
+  スニペットのハッシュに依存するアサーションのみ `SKIPPED` にします。
+- **DEB**: `packaging/linux/build-deb.sh --verify`（読み取り専用）。
+  `packaging/linux/build/` も gitignore 済みのため、ビルド済み `.deb` が無い
+  clean checkout ではゲート列の先頭で `SKIPPED` を表示し、後続のコードゲートを
+  無駄に実行しません。
+
+いずれの `SKIPPED` も `--strict` ではハード失敗になります（後述）。
+CI は Rust 系ゲートのみで、PWA / DEB は対象外です。
+
 ```bash
 bash scripts/check.sh              # app/poc/core/win32: fmt/check/test/clippy +
                                    # app の release check/test +
@@ -303,7 +316,12 @@ bash scripts/check.sh --fast       # audit と vet を省略。deny は advisori
                                    # 省きオフラインで licenses/bans/sources のみ。
                                    # --no-release も暗示（release 検証を省略）。
 bash scripts/check.sh --no-release # app の release check/test のみ省略。
-bash scripts/check.sh --strict     # 監査ツール未導入時に失敗（既定は SKIPPED）。
+bash scripts/check.sh --strict     # 必要なツール／成果物が無い時に失敗
+                                   # （既定は SKIPPED）。ツールは cargo
+                                   # audit / deny / vet に加え node と
+                                   # node:test、dpkg-deb / dpkg / realpath /
+                                   # tar、成果物はビルド済み .deb と
+                                   # pwa/pkg/ が対象。
 bash scripts/check.sh --app        # app/ + core/win32 + cross-target checks（release 検証を含む）。
 bash scripts/check.sh --poc        # poc/ に加え、workspace member の core / win32 の
                                    # test+clippy と wasm32 / windows-gnu の
@@ -313,6 +331,9 @@ bash scripts/check.sh --poc        # poc/ に加え、workspace member の core 
 - 検証（Runtime Proof）: 完全ループが **exit 0**（clippy 警告 0 /
   `cargo audit` は既知 8 件の allowed warnings のみ）。テスト数の現在値は
   `cargo test` 結果を参照（固定値を記載すると drift するため）。
+- clean checkout では PWA / DEB の成果物ゲートが `SKIPPED` になります
+  （`--strict` を付けると両方とも失敗します）。これは生成物が gitignore 済み
+  であることによる想定挙動で、コードゲートの失敗ではありません。
 - CI が正であることに変わりはなく、このスクリプトは push 前の確認用です。
 
 ### OFFLINE / headless 検証

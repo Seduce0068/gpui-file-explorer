@@ -5,8 +5,10 @@
 #
 #   app: fmt -> check -> test -> clippy -> release(check/test) -> (optional) cargo audit / cargo deny / cargo vet
 #   poc: fmt -> check -> test -> clippy -> (optional) cargo deny
-#   pwa: node --test pwa/main.test.js
-#   deb: packaging/linux/build-deb.sh --verify (read-only stage/.deb check)
+#   pwa: node --test pwa/main.test.js (SKIPPED when node:test is unavailable;
+#        the pure-helper subset still runs without the gitignored pwa/pkg/)
+#   deb: packaging/linux/build-deb.sh --verify (read-only stage/.deb check;
+#        SKIPPED when no built .deb is present)
 #
 # The repository is a virtual Cargo workspace with members core, app, poc
 # and win32 (root Cargo.toml). The shared CI workflow
@@ -30,9 +32,12 @@
 #   - cargo vet check: only when <project>/supply-chain/config.toml exists
 #     (run `cargo vet init` in that project to opt in)
 #
-# Missing tools (cargo audit/deny/vet, node, dpkg-deb):
-#   - default: reported as `SKIPPED: <tool> not installed` before the final line
+# Missing tools (cargo audit/deny/vet, node/node:test,
+# dpkg-deb/dpkg/realpath/tar) and build artifacts (pwa/pkg/, built .deb):
+#   - default: reported as `SKIPPED: ...` before the final line
 #   - --strict: the same condition is a hard failure (non-zero exit status)
+# Artifact availability is checked at the FRONT of the gate list so a clean
+# checkout is not surprised by a .deb failure only after every code gate ran.
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -65,9 +70,10 @@ Supply-chain gates:
   - cargo vet check: only when <project>/supply-chain/config.toml exists
     (run `cargo vet init` in that project to opt in)
 
-Additional artifact gates (always run, independent of --app/--poc):
-  - pwa: node --test pwa/main.test.js
-  - deb: packaging/linux/build-deb.sh --verify
+Additional artifact gates (independent of --app/--poc; SKIPPED with a notice
+when their gitignored build inputs are absent, hard failure under --strict):
+  - pwa: node --test pwa/main.test.js (pure helpers run even without pwa/pkg/)
+  - deb: packaging/linux/build-deb.sh --verify (needs a built .deb)
 
 Usage:
   bash scripts/check.sh             # full loop (app + release + poc + supply-chain)
@@ -78,7 +84,9 @@ Usage:
                                     # (includes release verification)
   bash scripts/check.sh --poc       # poc/ + core/win32 + cross-target checks (app/ omitted)
   bash scripts/check.sh --no-release # skip the app/ release verification
-  bash scripts/check.sh --strict    # fail if a needed tool (incl. node/dpkg-deb) is missing
+  bash scripts/check.sh --strict    # fail if a needed tool (incl. node:test /
+                                    # dpkg-deb/dpkg/realpath/tar) or build
+                                    # artifact (.deb) is missing
 EOF
 }
 
@@ -92,6 +100,7 @@ fast_mode=false
 strict_mode=false
 selected_scope=false
 skipped_tools=()
+skipped_artifacts=()
 strict_failures=()
 
 for argument in "$@"; do
@@ -158,6 +167,50 @@ record_missing_tool() {
 	fi
 }
 
+# Record a missing build artifact once (gitignored build output absent in a
+# clean checkout). Reported as SKIPPED by default and as a hard failure under
+# --strict, exactly like a missing tool, but tracked separately so the summary
+# can say "not present" instead of "not installed".
+record_missing_artifact() {
+	local artifact="$1"
+	local seen_artifact
+	if [ "${#skipped_artifacts[@]}" -gt 0 ]; then
+		for seen_artifact in "${skipped_artifacts[@]}"; do
+			if [ "${seen_artifact}" = "${artifact}" ]; then
+				return 0
+			fi
+		done
+	fi
+	skipped_artifacts+=("${artifact}")
+	if [ "${strict_mode}" = true ]; then
+		strict_failures+=("${artifact}")
+	fi
+}
+
+# --- Artifact availability pre-check (front of the gate list) -------------
+# PWA and DEB gates consume gitignored build outputs (pwa/pkg/ and
+# packaging/linux/build/). Detect them once up front so a clean checkout is
+# told immediately that the DEB gate is SKIPPED, instead of paying for every
+# code gate first and only then failing in build-deb.sh --verify (BH06/BH07).
+pwa_snippet_dir="${repo_root}/pwa/pkg/snippets"
+deb_build_dir="${repo_root}/packaging/linux/build"
+
+deb_artifact_ready=false
+if compgen -G "${deb_build_dir}/*.deb" >/dev/null 2>&1; then
+	deb_artifact_ready=true
+else
+	echo "SKIPPED: deb --verify (no built .deb in packaging/linux/build/; run packaging/linux/build-deb.sh)."
+	record_missing_artifact deb-artifact
+fi
+
+# The wasm/snippet assertions in pwa/main.test.js read the gitignored pwa/pkg/
+# tree. main.test.js guards those assertions, so the pure helpers still run;
+# report the reduced coverage here as well (BH07).
+if [ ! -d "${pwa_snippet_dir}" ]; then
+	echo "SKIPPED: PWA wasm/snippet assertions (no pwa/pkg/snippets/; pure helpers still run)."
+	record_missing_artifact pwa-wasm-artifact
+fi
+
 run_audit_check() {
 	local project_dir="$1"
 	if ! command -v cargo-audit >/dev/null 2>&1; then
@@ -206,8 +259,17 @@ run_vet_check() {
 
 run_pwa_test() {
 	if ! command -v node >/dev/null 2>&1; then
-		echo "node is not installed; skipping the PWA test suite (CI runs it)."
+		# The CI workflow intentionally has no PWA step, so do not claim that
+		# CI covers this gate when node is absent (BH08).
+		echo "node is not installed; skipping the PWA test suite."
 		record_missing_tool node
+		return
+	fi
+	# `node --test` / node:test needs Node 18+. An older Node would otherwise
+	# fail the gate; treat the missing capability like a missing tool (BH15).
+	if ! node -e "require('node:test')" >/dev/null 2>&1; then
+		echo "node lacks node:test support; skipping the PWA test suite."
+		record_missing_tool node:test
 		return
 	fi
 	echo '==> pwa: node --test pwa/main.test.js'
@@ -215,9 +277,25 @@ run_pwa_test() {
 }
 
 run_deb_verify() {
-	if ! command -v dpkg-deb >/dev/null 2>&1; then
-		echo "dpkg-deb is not installed; skipping the .deb verification."
-		record_missing_tool dpkg-deb
+	if [ "${deb_artifact_ready}" != true ]; then
+		# Already reported as SKIPPED by the front-of-list pre-check.
+		return
+	fi
+	# build-deb.sh --verify shells out to all four commands (dpkg-deb for the
+	# archive, dpkg for the architecture, realpath for NOTICE links, tar for
+	# the embedded control/payload). Check every one of them, not just
+	# dpkg-deb, so a missing tool is reported as SKIPPED instead of crashing
+	# halfway through verification (BH14).
+	local missing=0
+	local tool
+	for tool in dpkg-deb dpkg realpath tar; do
+		if ! command -v "${tool}" >/dev/null 2>&1; then
+			echo "${tool} is not installed; skipping the .deb verification."
+			record_missing_tool "${tool}"
+			missing=1
+		fi
+	done
+	if [ "${missing}" -ne 0 ]; then
 		return
 	fi
 	echo '==> deb: packaging/linux/build-deb.sh --verify'
@@ -291,7 +369,6 @@ else
 	echo 'SKIPPED: core/win32 member tests and cross-target checks (no scope selected)'
 fi
 
-
 if [ "${run_poc}" = true ]; then
 	echo '==> poc: cargo fmt --all -- --check'
 	(cd poc && cargo fmt --all -- --check)
@@ -329,8 +406,16 @@ if [ "${#skipped_tools[@]}" -gt 0 ]; then
 	done
 fi
 
+if [ "${#skipped_artifacts[@]}" -gt 0 ]; then
+	echo
+	echo 'Skipped checks (build artifact not present):'
+	for skipped_artifact in "${skipped_artifacts[@]}"; do
+		echo "SKIPPED: ${skipped_artifact} not present"
+	done
+fi
+
 if [ "${#strict_failures[@]}" -gt 0 ]; then
-	echo "error: --strict: required tool(s) not installed: ${strict_failures[*]}" >&2
+	echo "error: --strict: required tool(s)/artifact(s) not available: ${strict_failures[*]}" >&2
 	exit 1
 fi
 

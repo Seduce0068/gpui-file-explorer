@@ -1809,14 +1809,10 @@ pub const STATUS_SETTINGS_SAVE_TOO_LARGE: &str =
 pub const STATUS_SETTINGS_SAVE_LOCKED: &str =
     "設定を保存できませんでした（別の gpui-file-explorer が設定を編集中です。少し待ってから再試行してください）";
 /// ロック取得直後にディスク上の設定が読み込み時と異なっていたときの理由（BF04）。
-/// 古いスナップショットでの上書きを避け、{RELOAD_WORD}してやり直す導線を示す。
-/// 再読込語は `reload_word!()` に一元化するため、静的文字列は `concat!` で
-/// 組み立てる（R2/BG17）。
-pub const STATUS_SETTINGS_SAVE_CHANGED_ON_DISK: &str = concat!(
-    "設定を保存できませんでした（別の gpui-file-explorer が設定を変更しました。",
-    reload_word!(),
-    "してやり直してください）"
-);
+/// BH05: F5 はディレクトリ／検索の再読込であり設定ファイルの再読込ではないため、
+/// 到達できない「再読込」導線を案内せず、確実に recover できる再起動を案内する。
+pub const STATUS_SETTINGS_SAVE_CHANGED_ON_DISK: &str =
+    "設定を保存できませんでした（別の gpui-file-explorer が設定を変更しました。アプリを再起動してやり直してください）";
 pub const STATUS_SETTINGS_READ_ONLY: &str = "設定を読み取り専用で開きました";
 /// 読み取り専用通知に添える回復導線（W08）。読み込み失敗の理由を連結した後ろに
 /// 置き、設定を確認する操作を案内する。
@@ -3850,19 +3846,17 @@ mod tests {
         assert!(STATUS_SETTINGS_SAVE_TOO_LARGE.contains("減らしてから再試行"));
         assert!(STATUS_SETTINGS_SAVE_LOCKED.contains("編集中です"));
         assert!(STATUS_SETTINGS_SAVE_LOCKED.contains("少し待ってから再試行"));
-        // BF04: a lost-update refusal must tell the user to reload first,
-        // otherwise retrying the stale snapshot would keep failing.
+        // BF04: a lost-update refusal must explain how to recover from the
+        // stale snapshot. BH05: the advertised action must actually exist —
+        // F5 reloads the listing, not the settings file, so the only safe
+        // recovery hint is restarting the app.
         assert!(STATUS_SETTINGS_SAVE_CHANGED_ON_DISK.contains("変更しました"));
-        // R2/BG17: 再読込語は RELOAD_WORD / reload_word!() に一元化する。
         assert_eq!(
             STATUS_SETTINGS_SAVE_CHANGED_ON_DISK,
-            concat!(
-                "設定を保存できませんでした（別の gpui-file-explorer が設定を変更しました。",
-                reload_word!(),
-                "してやり直してください）"
-            )
+            "設定を保存できませんでした（別の gpui-file-explorer が設定を変更しました。アプリを再起動してやり直してください）"
         );
-        assert!(STATUS_SETTINGS_SAVE_CHANGED_ON_DISK.contains(RELOAD_WORD));
+        assert!(STATUS_SETTINGS_SAVE_CHANGED_ON_DISK.contains("アプリを再起動"));
+        assert!(!STATUS_SETTINGS_SAVE_CHANGED_ON_DISK.contains(RELOAD_WORD));
         let source = include_str!("main.rs");
         assert!(
             !source.contains("権限や空き容量を確認して再試行してください"),

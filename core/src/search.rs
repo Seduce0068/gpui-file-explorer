@@ -16,9 +16,10 @@
 //! This module is GPUI-free so it can be unit tested headlessly.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::model::{entry_for_path, extension_of, is_hidden_name, Entry};
 
@@ -262,23 +263,34 @@ pub fn search_roots(
     tabs: &[PathBuf],
     bookmarks: &[PathBuf],
 ) -> SearchRoots {
-    use std::collections::HashSet;
     let candidates: Vec<PathBuf> = match scope {
         SearchScope::Current => vec![cwd.to_path_buf()],
         SearchScope::OpenTabs => tabs.to_vec(),
         SearchScope::Bookmarks => bookmarks.to_vec(),
     };
-    let mut seen = HashSet::new();
-    let mut roots = Vec::new();
-    for path in candidates {
-        if !path.is_dir() {
+    // BH11: exact-path dedupe alone still lets a parent and one of its
+    // children consume two shares of the global result budget although the
+    // child's hits are already covered by the parent's walk. Canonicalize
+    // best-effort, accept the outermost roots first (a stable sort keeps the
+    // first spelling of an alias), and drop every key contained in one of them.
+    let mut candidates: Vec<(PathBuf, PathBuf)> = candidates
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .map(|path| {
+            let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+            (path, key)
+        })
+        .collect();
+    candidates.sort_by_key(|(_, key)| key.as_os_str().len());
+
+    let mut accepted: Vec<PathBuf> = Vec::new();
+    let mut roots = Vec::with_capacity(candidates.len());
+    for (path, key) in candidates {
+        if accepted.iter().any(|root| key.starts_with(root)) {
             continue;
         }
-        // canonicalize best-effort for dedupe; fall back to original path
-        let key = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if seen.insert(key) {
-            roots.push(path);
-        }
+        accepted.push(key);
+        roots.push(path);
     }
     if roots.is_empty() {
         // Keep a safe fallback so a search still runs somewhere meaningful.
@@ -317,7 +329,6 @@ pub fn merge_search_results_capped(
     max_total: usize,
     limit_reached: &AtomicBool,
 ) -> Vec<SearchResult> {
-    use std::collections::HashSet;
     let mut seen = HashSet::new();
     let mut merged = Vec::new();
     for batch in batches {
@@ -357,6 +368,12 @@ pub struct ContentSearchOptions {
     /// Set when a further collectable content match is detected after
     /// `max_results` are already in hand (see [`SearchOptions::limit_reached`]).
     pub limit_reached: Arc<AtomicBool>,
+    /// BH03: paths already counted by an earlier walk of the same root. When a
+    /// caller re-scans with a non-zero `skip`, sharing this set across the walks
+    /// makes the oversized / non-UTF-8 totals describe *files*, not walk
+    /// invocations. `None` keeps the legacy per-walk counting for standalone
+    /// callers.
+    pub counted_paths: Option<Arc<Mutex<CountedPaths>>>,
 }
 
 impl Default for ContentSearchOptions {
@@ -370,7 +387,59 @@ impl Default for ContentSearchOptions {
             skipped_large_files: Arc::new(AtomicUsize::new(0)),
             non_utf8_files: Arc::new(AtomicUsize::new(0)),
             limit_reached: Arc::new(AtomicBool::new(false)),
+            counted_paths: None,
         }
+    }
+}
+
+/// Path-level identity of the two incomplete-search counters (BH03).
+///
+/// A re-scan starts at the search root again and re-reads files that the first
+/// walk already inspected. Without a shared set those files inflate
+/// `skipped_large_files` / `non_utf8_files` a second time.
+#[derive(Debug, Default)]
+pub struct CountedPaths {
+    large: HashSet<PathBuf>,
+    non_utf8: HashSet<PathBuf>,
+}
+
+impl CountedPaths {
+    fn note_large(&mut self, path: &Path) -> bool {
+        self.large.insert(path.to_path_buf())
+    }
+
+    fn note_non_utf8(&mut self, path: &Path) -> bool {
+        self.non_utf8.insert(path.to_path_buf())
+    }
+}
+
+fn note_skipped_large(
+    path: &Path,
+    counter: &AtomicUsize,
+    counted: Option<&Arc<Mutex<CountedPaths>>>,
+) {
+    let fresh = match counted {
+        Some(shared) => shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .note_large(path),
+        None => true,
+    };
+    if fresh {
+        counter.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn note_non_utf8(path: &Path, counter: &AtomicUsize, counted: Option<&Arc<Mutex<CountedPaths>>>) {
+    let fresh = match counted {
+        Some(shared) => shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .note_non_utf8(path),
+        None => true,
+    };
+    if fresh {
+        counter.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -442,7 +511,7 @@ fn first_matching_line_in_file(
     // Standalone callers take their own identity right before opening.
     let identity = FileIdentity::of(&std::fs::symlink_metadata(path)?);
     let non_utf8 = AtomicUsize::new(0);
-    first_matching_line_in_file_checked(path, needle, max_bytes, cancel, identity, &non_utf8)
+    first_matching_line_in_file_checked(path, needle, max_bytes, cancel, identity, &non_utf8, None)
 }
 
 /// Decode one logical line. Invalid UTF-8 is rejected unless the caller
@@ -465,6 +534,7 @@ fn first_matching_line_in_file_checked(
     cancel: &AtomicBool,
     expected: FileIdentity,
     non_utf8: &AtomicUsize,
+    counted: Option<&Arc<Mutex<CountedPaths>>>,
 ) -> std::io::Result<Option<u32>> {
     use std::io::Read;
 
@@ -522,7 +592,7 @@ fn first_matching_line_in_file_checked(
             return Ok(None);
         }
         let Some(text) = line_text(line, false) else {
-            non_utf8.fetch_add(1, Ordering::SeqCst);
+            note_non_utf8(path, non_utf8, counted);
             return Ok(None);
         };
         if first_match.is_none() && text.to_lowercase().contains(needle) {
@@ -538,7 +608,7 @@ fn first_matching_line_in_file_checked(
         }
         let line = &bytes[start..len];
         let Some(text) = line_text(line, cut_at_limit) else {
-            non_utf8.fetch_add(1, Ordering::SeqCst);
+            note_non_utf8(path, non_utf8, counted);
             return Ok(None);
         };
         if first_match.is_none() && text.to_lowercase().contains(needle) {
@@ -623,7 +693,13 @@ pub fn search_contents(
                 continue;
             }
             if link_metadata.len() > options.max_file_size {
-                options.skipped_large_files.fetch_add(1, Ordering::SeqCst);
+                // BH03: a re-scan shares the set with the first pass, so a file
+                // already reported there is not reported a second time.
+                note_skipped_large(
+                    &path,
+                    &options.skipped_large_files,
+                    options.counted_paths.as_ref(),
+                );
                 continue;
             }
             // Reuse the identity from the symlink_metadata check above: if the
@@ -637,6 +713,7 @@ pub fn search_contents(
                 cancel,
                 identity,
                 &options.non_utf8_files,
+                options.counted_paths.as_ref(),
             ) {
                 if let Some(entry) = entry_for_path(&path) {
                     if skipped < options.skip {
@@ -1218,10 +1295,11 @@ mod filter_tests {
 
 #[cfg(test)]
 mod content_tests {
-    use super::{search_contents, ContentSearchOptions, SWAP_OPEN_WITH};
+    use super::{search_contents, ContentSearchOptions, CountedPaths, SWAP_OPEN_WITH};
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1665,6 +1743,75 @@ mod content_tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// BH03: a re-scan of the same root must not inflate the incomplete-search
+    /// totals with files the first walk already counted. Only files that the
+    /// first walk never reached may add to the shared totals.
+    #[test]
+    fn rescan_counts_each_skipped_file_only_once() {
+        let dir = scratch("rescan-stats");
+        // Oversized (> 16 bytes), invalid UTF-8, and plain matches. Sorted
+        // order is a-large, b-large, c-bad, d-bad, e.txt, f.txt, g-large,
+        // h-bad; the first walk stops at f.txt after finding its second match.
+        write(&dir.join("a-large.txt"), b"TARGET 12345678901234567890");
+        write(&dir.join("b-large.txt"), b"TARGET 12345678901234567890");
+        write(&dir.join("c-bad.txt"), b"TARGET \xff\n");
+        write(&dir.join("d-bad.txt"), b"TARGET \xff\n");
+        write(&dir.join("e.txt"), b"TARGET\n");
+        write(&dir.join("f.txt"), b"TARGET\n");
+        write(&dir.join("g-large.txt"), b"TARGET 12345678901234567890");
+        write(&dir.join("h-bad.txt"), b"TARGET \xff\n");
+
+        let counted = Arc::new(Mutex::new(CountedPaths::default()));
+        let first_large = Arc::new(AtomicUsize::new(0));
+        let first_non_utf8 = Arc::new(AtomicUsize::new(0));
+        let first = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions {
+                max_file_size: 16,
+                max_results: 1,
+                skipped_large_files: first_large.clone(),
+                non_utf8_files: first_non_utf8.clone(),
+                counted_paths: Some(counted.clone()),
+                ..Default::default()
+            },
+            &AtomicBool::new(false),
+        );
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].entry.name_text, "e.txt");
+
+        let rescan_large = Arc::new(AtomicUsize::new(0));
+        let rescan_non_utf8 = Arc::new(AtomicUsize::new(0));
+        let rescan = search_contents(
+            &dir,
+            "target",
+            ContentSearchOptions {
+                max_file_size: 16,
+                max_results: 1,
+                skip: 1,
+                skipped_large_files: rescan_large.clone(),
+                non_utf8_files: rescan_non_utf8.clone(),
+                counted_paths: Some(counted),
+                ..Default::default()
+            },
+            &AtomicBool::new(false),
+        );
+        assert_eq!(rescan.len(), 1);
+        assert_eq!(rescan[0].entry.name_text, "f.txt");
+
+        // Three oversized and three non-UTF-8 files exist; the fold must add
+        // up to the real file count, not to the number of walk invocations.
+        assert_eq!(
+            first_large.load(Ordering::SeqCst) + rescan_large.load(Ordering::SeqCst),
+            3
+        );
+        assert_eq!(
+            first_non_utf8.load(Ordering::SeqCst) + rescan_non_utf8.load(Ordering::SeqCst),
+            3
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn take_boundary_splitting_multibyte_is_not_treated_as_binary() {
         use super::first_matching_line_in_file;
@@ -1810,6 +1957,30 @@ mod scope_tests {
         // fail (missing path, dangling link, ELOOP, invalid bytes) also makes
         // `is_dir()` fail. Reaching it needs a filesystem race or a production
         // test seam, so it is reported as deferred instead of refactored.
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// BH11: a child root is already covered by its parent's walk. Keeping both
+    /// would spend two shares of the global result budget on the same files.
+    #[test]
+    fn search_roots_drops_roots_contained_in_another_root() {
+        let dir = scratch("roots-nested");
+        let parent = dir.join("parent");
+        let child = parent.join("child");
+        let sibling = dir.join("sibling");
+        fs::create_dir_all(&child).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+
+        // The child is listed first on purpose: containment must win over
+        // candidate order.
+        let resolved = search_roots(
+            SearchScope::OpenTabs,
+            &dir,
+            &[child, parent.clone(), sibling.clone()],
+            &[],
+        );
+        assert_eq!(resolved.roots, vec![parent, sibling]);
+        assert!(!resolved.fell_back_to_cwd);
         let _ = fs::remove_dir_all(&dir);
     }
 

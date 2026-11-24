@@ -324,6 +324,13 @@ UniFFI のようなバインディング生成は選択肢として残すが、�
   （`app/src/trash_view.rs:78-125` と同じ方針）。監視は手動リロードで代替する。
 - iOS アプリ版は提供しないため、SwiftUI / UIKit のアダプタは対象外。
 
+> as-built（2026-11-24）: 上記の React / Web Worker 前提は Phase 1 の設計案
+> であり、実装はこれを採用していない。現行の PWA は Vanilla JS
+> （`pwa/main.js`）で、`wasm-bindgen` が生成した `pkg/gfe_core.js` を
+> `await import()` して `CoreViewer` を直接生成し、一覧・検索結果を DOM へ
+> 反映する（Worker / `postMessage` / React state は不使用）。
+> Service Worker は静的資産とシェルのキャッシュのみを担う。
+
 ### Android
 
 - UI: Jetpack Compose の `LazyColumn` + `ViewModel` 1 画面のみ。

@@ -29,7 +29,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
@@ -65,8 +65,8 @@ use gfe_core::model::{
 use gfe_core::ops::{CancelFlag, ConflictPolicy, OpError, OpStats};
 use gfe_core::search::{
     filter_results, merge_search_results_capped, name_matches, normalized_query, search_by_name,
-    search_contents, search_roots, ContentSearchOptions, SearchKind, SearchMode, SearchOptions,
-    SearchResult, SearchScope,
+    search_contents, search_roots, ContentSearchOptions, CountedPaths, SearchKind, SearchMode,
+    SearchOptions, SearchResult, SearchScope,
 };
 use gfe_core::trash_view::{
     missing_restore_ids, partition_restore_ids, partition_restore_outcome, redo_trash_targets,
@@ -2889,6 +2889,9 @@ struct SearchRunStats {
     skipped_large_files: usize,
     /// Files that could not be searched exactly because they are not UTF-8.
     non_utf8_files: usize,
+    /// Roots the walk actually entered. The cap or cancellation can leave the
+    /// remaining roots untouched, so the summary must not show all roots (BH17).
+    walked_roots: usize,
 }
 
 /// Build the incomplete-search part of the result summary. Kept as a pure
@@ -5330,7 +5333,18 @@ impl Explorer {
         if let Some(bounds) = self.window_bounds {
             self.settings.primary_window_mut().bounds = Some(bounds);
         }
-        self.settings.save_with_reason().is_ok()
+        // BH13: bookmarks, saved searches, last_dir/recent_dirs and tabs also
+        // preview values in memory before persisting them. Without a snapshot
+        // here a ChangedOnDisk refusal leaves those previews in memory, and a
+        // later reload silently loses the user's last action. The seven paths
+        // that roll back explicitly still win with their earlier snapshot.
+        let snapshot = self.settings.clone();
+        let saved = self.settings.save_with_reason().is_ok();
+        if settings_write_needs_rollback(saved) && !self.settings.write_was_skipped() {
+            self.settings = settings_with_live_save_error(snapshot, &self.settings);
+            self.keymap = KeyMap::from_settings(&self.settings);
+        }
+        saved
     }
 
     /// Load a tab's directory/history into the explorer. Returns whether the
@@ -6758,6 +6772,7 @@ impl Explorer {
                     // locked / oversized settings file is diagnosable.
                     tracing::error!(
                         reason = ?self.settings.last_save_error.get(),
+                        changed_on_disk = self.settings.changed_on_disk(),
                         "failed to save settings before quitting"
                     );
                 }
@@ -10150,6 +10165,13 @@ impl Explorer {
             // and fold the totals into the summary afterwards.
             let rescan_skipped_large = Arc::new(AtomicUsize::new(0));
             let rescan_non_utf8 = Arc::new(AtomicUsize::new(0));
+            // BH03: first pass and re-scans share one path set. A file already
+            // reported by an earlier walk of the same root must not inflate the
+            // folded total a second time.
+            let counted_paths = Arc::new(Mutex::new(CountedPaths::default()));
+            // BH17: report how many roots were actually walked, which can be
+            // fewer than `active_roots` once the global cap or cancel hits.
+            let mut walked_roots = 0usize;
             // BD15/BC/BG02: every walker invocation owns its own flag. A root
             // that hit its fair share in the first pass may be re-walked with
             // `skip` to collect the matches it dropped; a single shared flag
@@ -10193,6 +10215,7 @@ impl Explorer {
                                 rescan_non_utf8.clone()
                             },
                             limit_reached: call_limit.clone(),
+                            counted_paths: Some(counted_paths.clone()),
                             ..Default::default()
                         },
                         &cancel_for_task,
@@ -10208,6 +10231,7 @@ impl Explorer {
                 if cancel_for_task.load(Ordering::SeqCst) || total >= SEARCH_GLOBAL_CAP {
                     break;
                 }
+                walked_roots += 1;
                 let (batch, flag) = run_root(root, per_root_cap, 0);
                 total += batch.len();
                 batches.push(batch);
@@ -10246,6 +10270,7 @@ impl Explorer {
                     + rescan_skipped_large.load(Ordering::SeqCst),
                 non_utf8_files: non_utf8.load(Ordering::SeqCst)
                     + rescan_non_utf8.load(Ordering::SeqCst),
+                walked_roots,
             };
             (merged, stats)
         });
@@ -10287,20 +10312,32 @@ impl Explorer {
                 this.all_entries = entries.into_iter().map(|result| result.entry).collect();
                 this.bump_listing_revision();
                 this.apply_search_filter(cx);
+                // BH04: `apply_search_filter` owns the status bar. Capture the
+                // completed search summary before touching settings so a write
+                // failure can be merged into it instead of being lost in a log.
+                let summary_status = this.status.clone();
+                let snapshot = this.settings.clone();
                 this.settings.record_search(&this.search.query);
                 // `write_was_skipped()` covers read-only and ephemeral sessions,
                 // both of which make `save()` a no-op. Log a real failure
                 // instead of silently discarding the result (Bug L01).
-                if !this.settings.write_was_skipped() {
-                    let saved = this.save_settings();
-                    if !saved {
-                        // V10: keep the recorded reason in the log as well.
-                        tracing::error!(
-                            reason = ?this.settings.last_save_error.get(),
-                            "failed to save search history"
-                        );
-                    }
+                let saved = this.save_settings();
+                if !saved && !this.settings.write_was_skipped() {
+                    // BH04/BH13: disk still holds the old history. Do not keep a
+                    // preview that would be lost on the next reload.
+                    this.settings = settings_with_live_save_error(snapshot, &this.settings);
+                    tracing::error!(
+                        reason = ?this.settings.last_save_error.get(),
+                        changed_on_disk = this.settings.changed_on_disk.get(),
+                        "failed to save search history"
+                    );
                 }
+                let notice = settings_write_status(&this.settings, saved, true, String::new());
+                this.status = if notice.is_empty() {
+                    summary_status
+                } else {
+                    format!("{summary_status} {notice}")
+                };
             });
         });
         self.search.task = Some(task);
@@ -10369,7 +10406,14 @@ impl Explorer {
                 if self.search.fell_back_to_cwd {
                     format!("・{}（現在のフォルダ）", scope.label())
                 } else {
-                    let count = self.search.active_roots.len();
+                    // BH17: show the roots that were really walked. A capped
+                    // search can leave the tail of `active_roots` untouched.
+                    let stats = self.search.last_stats;
+                    let count = if stats.walked_roots > 0 {
+                        stats.walked_roots
+                    } else {
+                        self.search.active_roots.len()
+                    };
                     if count > 0 {
                         format!("・{}（{} 箇所）", scope.label(), count)
                     } else {
@@ -13757,6 +13801,7 @@ fn main() {
                         // V10: include why the write failed.
                         tracing::error!(
                             reason = ?this.settings.last_save_error.get(),
+                            changed_on_disk = this.settings.changed_on_disk(),
                             "failed to save settings before closing window"
                         );
                     }
@@ -16309,6 +16354,7 @@ mod tests {
             limit_reached: true,
             skipped_large_files: 3,
             non_utf8_files: 2,
+            walked_roots: 2,
         });
         assert_eq!(
             all,
@@ -16318,12 +16364,14 @@ mod tests {
             limit_reached: false,
             skipped_large_files: 1,
             non_utf8_files: 0,
+            walked_roots: 1,
         })
         .contains("1MiB 超の 1 ファイルを除外"));
         assert!(search_summary_notices(SearchRunStats {
             limit_reached: false,
             skipped_large_files: 0,
             non_utf8_files: 1,
+            walked_roots: 1,
         })
         .contains("非 UTF-8 のため 1 件を正確に検索できませんでした"));
     }
@@ -18763,10 +18811,26 @@ mod tests {
             "settings_with_live_save_error(",
             "snapshot, &self.settings)"
         );
-        assert_eq!(
-            source.matches(guard).count(),
-            1,
-            "rollback_settings must preserve the failure reason"
+        // BH13: `save_settings` now also snapshots itself so the bookmark /
+        // saved-search / navigation write paths roll back on ChangedOnDisk.
+        // All callers must carry the live save-error Cells across a rollback.
+        let guards = source.matches(guard).count();
+        assert!(
+            guards >= 2,
+            "rollback_settings and save_settings must preserve the failure reason: {guards}"
+        );
+        let save_settings_body = source_region(
+            source,
+            "    fn save_settings(&mut self) -> bool {",
+            "    /// Load a tab's directory/history",
+        );
+        assert!(
+            save_settings_body.contains(guard),
+            "save_settings must restore the pre-write snapshot on failure"
+        );
+        assert!(
+            save_settings_body.contains("self.keymap = KeyMap::from_settings"),
+            "the restored keymap must match the restored settings"
         );
 
         // R2/BG01: a stale snapshot flips `changed_on_disk` on the LIVE value.

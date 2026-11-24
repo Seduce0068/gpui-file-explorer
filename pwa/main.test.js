@@ -10,6 +10,7 @@ const {
   doubleClickCommand,
   nextSearchGeneration,
   isCurrentSearchRequest,
+  shouldNotifySwUpdate,
   longPressTargetIndex,
   canPickDirectory,
   emptyStateText,
@@ -662,12 +663,18 @@ test('service worker precaches the shell and every core wasm asset (BG13)', () =
     assert.ok(sw.includes(`'${asset}'`), `sw.js must precache ${asset}`);
   }
   // snippet のディレクトリは wasm-pack のハッシュ依存なので実配置から導く。
-  const snippetDir = fs.readdirSync(path.join(__dirname, 'pkg', 'snippets'))[0];
-  assert.ok(snippetDir, 'pkg/snippets/<hash>/inline0.js must exist');
-  assert.ok(
-    sw.includes(`'./pkg/snippets/${snippetDir}/inline0.js'`),
-    'sw.js must precache the actual generated inline0.js'
-  );
+  // pwa/pkg/ は gitignore 済みのビルド成果物のため clean checkout には無い。
+  // 無い場合はハッシュに依存するアサーションだけをスキップし、sw.js の
+  // 静的な precache 一覧とイベントハンドラは検証し続ける（BH07）。
+  const snippetDirPath = path.join(__dirname, 'pkg', 'snippets');
+  if (fs.existsSync(snippetDirPath)) {
+    const snippetDir = fs.readdirSync(snippetDirPath)[0];
+    assert.ok(snippetDir, 'pkg/snippets/<hash>/inline0.js must exist');
+    assert.ok(
+      sw.includes(`'./pkg/snippets/${snippetDir}/inline0.js'`),
+      'sw.js must precache the actual generated inline0.js'
+    );
+  }
   for (const listener of ['install', 'activate', 'fetch']) {
     assert.ok(sw.includes(`addEventListener('${listener}'`), `missing ${listener} handler`);
   }
@@ -675,10 +682,74 @@ test('service worker precaches the shell and every core wasm asset (BG13)', () =
   assert.ok(sw.includes('self.clients.claim()'), 'activate must claim existing clients');
 });
 
+test('service worker keeps the old shell when precache fails (BH01/BH16)', () => {
+  const sw = readPwaFile('sw.js');
+  // 失敗を console.warn で飲み込まず、install を失敗させること。
+  assert.ok(sw.includes('throw error'), 'precache failure must reject install');
+  assert.ok(!/console\.warn\s*\(/.test(sw), 'precaching failures must not be swallowed');
+  assert.ok(
+    !/\.then\(\(\) => self\.skipWaiting\(\)\)/.test(sw),
+    'install must not skipWaiting before precache is confirmed'
+  );
+  assert.ok(
+    sw.includes("type === 'SKIP_WAITING'"),
+    'a waiting worker must be activated by a client message'
+  );
+});
+
+test('service worker scopes cache writes and deletion (BH09/BH10)', () => {
+  const sw = readPwaFile('sw.js');
+  assert.ok(sw.includes('key.startsWith(CACHE_PREFIX)'), 'only own caches may be deleted');
+  assert.ok(sw.includes('!keep.has(key)'), 'current caches must survive cleanup');
+  assert.ok(sw.includes('new Set([CACHE_NAME, RUNTIME_CACHE])'), 'keep set must cover live caches');
+  assert.ok(
+    !/filter\(\(key\) => key !== CACHE_NAME\)/.test(sw),
+    'other service workers caches must survive'
+  );
+  assert.ok(sw.includes('RUNTIME_CACHE'), 'runtime responses need a separate cache');
+  assert.ok(sw.includes('RUNTIME_MAX_ENTRIES'), 'runtime cache needs an entry cap');
+  assert.ok(sw.includes('RUNTIME_TTL_MS'), 'runtime cache needs a freshness bound');
+  assert.ok(sw.includes('if (url.search) return false'), 'query URLs must not proliferate');
+  assert.ok(sw.includes('{ ignoreSearch: true }'), 'navigation shell must ignore search');
+  assert.ok(sw.includes("request.mode === 'navigate'"), 'navigation needs a distinct strategy');
+});
+
 test('main.js registers the service worker during boot (BG13)', () => {
   const main = readPwaFile('main.js');
   assert.ok(main.includes("navigator.serviceWorker.register('./sw.js')"));
   assert.ok(main.includes("'serviceWorker' in navigator"), 'guard unsupported browsers');
+});
+
+test('main.js wires the service worker update flow and reload affordance (BH02)', () => {
+  const main = readPwaFile('main.js');
+  for (const marker of [
+    "addEventListener('updatefound'",
+    "addEventListener('statechange'",
+    "type: 'SKIP_WAITING'",
+    "addEventListener('controllerchange'",
+    'window.location.reload()',
+  ]) {
+    assert.ok(main.includes(marker), `main.js must contain ${marker}`);
+  }
+  const html = readPwaFile('index.html');
+  assert.ok(html.includes('id="update-reload"'), 'a reload button must exist');
+  assert.ok(html.includes('aria-live="polite"'), '#status must announce the update');
+});
+
+test('shouldNotifySwUpdate only announces real updates', () => {
+  assert.equal(shouldNotifySwUpdate({
+    hasController: true, workerState: 'installed',
+  }), true, 'a controlled page with a newly installed worker is an update');
+  assert.equal(shouldNotifySwUpdate({
+    hasController: false, workerState: 'installed',
+  }), false, 'first install must not be announced as an update');
+  assert.equal(shouldNotifySwUpdate({
+    hasController: true, workerState: 'installing',
+  }), false, 'only the installed state is actionable');
+  assert.equal(shouldNotifySwUpdate({
+    hasController: true, workerState: 'installed', alreadyNotified: true,
+  }), false, 'the notice must not repeat');
+  assert.equal(shouldNotifySwUpdate(), false, 'missing context is not an update');
 });
 
 test('manifest name and inline favicon agree (BG19/20)', () => {

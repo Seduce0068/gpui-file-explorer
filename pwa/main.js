@@ -19,6 +19,8 @@ const CLICK_SUPPRESS_MS = 700;
 const hasDom = typeof document !== 'undefined';
 const els = hasDom ? {
   status: document.getElementById('status'),
+  // SW 更新通知の再読込導線（index.html の #status 直下に配置）。
+  updateReload: document.getElementById('update-reload'),
   search: document.getElementById('search'),
   pickDir: document.getElementById('pick-dir'),
   modeNote: document.getElementById('mode-note'),
@@ -46,6 +48,8 @@ const state = {
   // 検索リクエストの単調カウンタ。連続入力 / clearSearch / スワイプバックの
   // 後に古い await 完了が新しい結果を上書きしないための識別子（BD05）。
   searchGeneration: 0,
+  // SW の更新を通知済みなら、後続の setStatus で通知を上書きしない（BH02）。
+  updateNotified: false,
   rootName: '.',
   // 現在描画中の一覧と選択状態（タップ / 長押し / スワイプ / キーボードで共有）。
   // 選択は object 参照ではなく path で保持する。再描画 / 検索 / 再ソートで
@@ -318,8 +322,20 @@ function updatePickDirAvailability({
 }
 
 function setStatus(message, level = 'info') {
+  // wasm 初期化完了などの通常通知で更新通知を消さない。エラーは重要なので通す。
+  if (state.updateNotified && level !== 'error') return;
   els.status.textContent = message;
   els.status.dataset.level = level;
+}
+
+// SW 更新通知の判定を純粋関数にして node --test から検証できるようにする。
+// 初回インストール（制御中の SW が無い状態）では通知しない。
+function shouldNotifySwUpdate({
+  hasController = false,
+  workerState = '',
+  alreadyNotified = false,
+} = {}) {
+  return Boolean(hasController) && workerState === 'installed' && !alreadyNotified;
 }
 
 function supportsFileSystemAccess() {
@@ -1078,6 +1094,70 @@ async function onPickDirectory() {
   }
 }
 
+// --- Service Worker の更新ライフサイクル（BH02 / BH16） ---------------------
+
+function announceSwUpdate(registration, worker) {
+  state.updateNotified = true;
+  // #status は role=status / aria-live=polite。直接書いて更新を読み上げる。
+  els.status.textContent = '新しい版が利用可能です。「新しい版を読み込む」を押すと更新されます。';
+  els.status.dataset.level = 'info';
+
+  if (els.updateReload) {
+    els.updateReload.hidden = false;
+    els.updateReload.addEventListener('click', () => {
+      const waiting = registration.waiting || worker;
+      if (waiting && typeof waiting.postMessage === 'function') {
+        // install では skipWaiting() しない代わりに、ここで待機 SW を進める。
+        waiting.postMessage({ type: 'SKIP_WAITING' });
+      } else {
+        window.location.reload();
+      }
+    }, { once: true });
+  }
+
+  // 新 SW が control を取った時点で再読込し、新しいシェルを反映する。
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    window.location.reload();
+  }, { once: true });
+}
+
+function watchInstallingWorker(registration, worker) {
+  worker.addEventListener('statechange', () => {
+    if (shouldNotifySwUpdate({
+      hasController: Boolean(navigator.serviceWorker.controller),
+      workerState: worker.state,
+      alreadyNotified: state.updateNotified,
+    })) {
+      announceSwUpdate(registration, worker);
+    }
+  });
+}
+
+function watchServiceWorker(registration) {
+  // ページを開いた時点で待機 SW が居る場合（前回の通知を無視した等）も通知する。
+  const waiting = registration.waiting;
+  if (shouldNotifySwUpdate({
+    hasController: Boolean(navigator.serviceWorker.controller),
+    workerState: waiting && waiting.state,
+    alreadyNotified: state.updateNotified,
+  })) {
+    announceSwUpdate(registration, waiting);
+  }
+  if (registration.installing) watchInstallingWorker(registration, registration.installing);
+  registration.addEventListener('updatefound', () => {
+    if (registration.installing) watchInstallingWorker(registration, registration.installing);
+  });
+}
+
+function registerServiceWorker() {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('./sw.js')
+    .then((registration) => watchServiceWorker(registration))
+    .catch((error) => {
+      console.warn('service worker の登録に失敗しました:', error);
+    });
+}
+
 // --- 起動 -----------------------------------------------------------------
 
 const DEMO_ENTRIES = [
@@ -1102,11 +1182,8 @@ function useDemo(message) {
 async function boot() {
   // BG13: service worker を登録してオフライン起動可能にする。登録失敗は
   // オンライン動作へ影響しないため警告どまり（file:// / 非対応ブラウザも継続）。
-  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch((error) => {
-      console.warn('service worker の登録に失敗しました:', error);
-    });
-  }
+  // 更新ライフサイクル（updatefound → 通知 → SKIP_WAITING → reload）もここで配線する。
+  registerServiceWorker();
 
   els.search.addEventListener('input', () => {
     window.clearTimeout(state.debounce);
@@ -1190,6 +1267,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // 非同期検索の世代ガード / 長押し対象の再解決（BD05 / BD12）。
     nextSearchGeneration,
     isCurrentSearchRequest,
+    // SW 更新通知の判定（BH02）。
+    shouldNotifySwUpdate,
     longPressTargetIndex,
     canPickDirectory,
     emptyStateText,

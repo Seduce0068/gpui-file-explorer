@@ -7,6 +7,13 @@
 # 共有ワークフローには cargo-deny / cargo-vet 用の入力が無いため
 # （2026-11 時点）、サプライチェーン監査のみ別ジョブで実行する。
 # 共通ワークフロー側に入力が追加された場合は委譲して本ジョブを削除する。
+#
+# 対象外: PWA（node --test pwa/main.test.js）と Debian パッケージ検証
+# （packaging/linux/build-deb.sh --verify）は Node / dpkg ツールチェーンを
+# 要するため、この CI では実行しない（node ステップは存在しない）。
+# これらはローカルの scripts/check.sh がゲートし、ビルド成果物が無い
+# clean checkout では SKIPPED（--strict では失敗）となる。したがって
+# check.sh のスキップ文言に「CI runs it」を含めてはならない。
 name: CI
 
 on:

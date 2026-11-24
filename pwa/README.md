@@ -82,13 +82,27 @@ python3 -m http.server 8765 --directory pwa
 `sw.js` が静的 5 ファイル（`/`、`index.html`、`manifest.webmanifest`、
 `main.js`、`style.css`）と `pkg/gfe_core.js` / `pkg/gfe_core_bg.wasm` /
 `pkg/snippets/<hash>/inline0.js` を precache する。`main.js` の `boot()` が
-`./sw.js` を登録し、install 時に `skipWaiting()`、activate 時に
-`clients.claim()` を呼ぶため、初回ロード後はリロードなしで制御される。
-fetch は同一オリジンの GET だけを cache-first で処理し、ナビゲーションは
-`index.html` へフォールバックする。外部送信は行わない。
+`./sw.js` を登録する。静的シェルの更新を永続反映するため、install では
+`skipWaiting()` を呼ばず、activate で `clients.claim()` により制御を取る。
 
-cache-first のため静的シェルを更新したら `sw.js` の `CACHE_NAME` も
-インクリメントする（現在 `gfe-viewer-v2`）。古い cache は activate 時に削除される。
+precache は 1 ファイルでも失敗したら install を失敗させ、旧 SW / 旧キャッシュを
+維持する（部分的なキャッシュでオフラインが黙って死ぬのを防ぐため）。安全な
+シェル更新は次の手順で行う。
+
+1. 静的シェルを変更したら `sw.js` の `CACHE_NAME` をインクリメントする
+   （現在 `gfe-viewer-v2`）。SW のバイト列が変わるため `updatefound` が発火する。
+2. 更新された SW が `installed` になると、`main.js` が `#status`（aria-live）に
+   更新通知を出し、「新しい版を読み込む」ボタンを表示する。
+3. ボタンは待機中の SW へ `SKIP_WAITING` を送り、`controllerchange` で再読込する。
+   通知を無視しても、次回ページを開いたときに待機 SW を検出して再通知する。
+
+`activate` が削除するのは `gfe-viewer-` で始まる自アプリのキャッシュだけ。
+他 SW のキャッシュは残す。ナビゲーション要求は network-first（失敗時は
+`ignoreSearch` 付きで `index.html` へフォールバック）のため、オンラインでは
+常に最新のシェルを取得する。静的アセットは cache-first だが、runtime 保存は
+既知の拡張子に限定し、クエリ付き URL は保存しない。さらに runtime キャッシュは
+件数上限（32 件）と TTL（24 時間）を設けて無限増殖と stale 化を防ぐ。外部送信は行わない。
+
 wasm-pack の再ビルドで snippet のハッシュが変わった場合は `sw.js` の
 precache パスも更新してください（`ls pwa/pkg/snippets` で確認）。
 マニフェスト名は `GFE Viewer` に統一し、`index.html` の `<link rel="icon">` が
@@ -96,7 +110,9 @@ precache パスも更新してください（`ls pwa/pkg/snippets` で確認）�
 
 オフラインの受け入れは Playwright で確認する。オンラインで一覧 4 件を読み、
 `navigator.serviceWorker.ready` を待ってから `setOffline(true)` → reload し、
-一覧 4 件が再描画されることを見る。`sw.js` の precache 一覧と登録呼び出しは
+一覧 4 件が再描画されることを見る。更新通知は `sw.js` を書き換えて
+`CACHE_NAME` を進めた後にリロードし、`#status` の通知と
+`#update-reload` の表示を確認する。`sw.js` の precache 一覧と登録呼び出しは
 `node --test pwa/main.test.js` で固定している。
 
 ## ファイル選択とブラウザ対応

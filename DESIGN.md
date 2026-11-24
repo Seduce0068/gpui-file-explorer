@@ -1343,6 +1343,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 | 0.1-要件 | 2026-11-22 | 新要件を反映: Windows を第一級ターゲットへ昇格、Explorer / Double Commander 並みの UX を明示要件化、Android / iOS を要件化（[モバイル対応 ADR](docs/adr/adr-20261122-mobile-android-ios-support.md) を approved（2026-11-23 承認）・未実装） |
 | 0.1-要件 | 2026-11-23 | 新要件の個別 ADR を 4 件追加: [デュアルペイン UI](docs/adr/adr-20261122-dual-pane-ui.md)（2026-11-22）/ [日本語照合](docs/adr/adr-20261123-japanese-collation.md)（2026-11-23）/ [OS ファイルクリップボード](docs/adr/adr-20261123-os-file-clipboard.md)（2026-11-23）/ [Windows ネイティブ API](docs/adr/adr-20261123-windows-native-api-strategy.md)（2026-11-23）。いずれも **draft・未承認**で、DESIGN.md の確定済み ADR-001〜012 とは別系列 |
 | 0.1-as-built | 2026-11-23 | core 抽出と win32 クレート追加を反映: §4.1 を workspace 構成（core / app / poc / win32）として as-built 注記を追加し、差分表の model / ops / search / error 行を `gfe_core` の re-export／互換シェルへ更新。Windows ドライブ列挙は `gfe-win32` 経由で実装済み（実機未検証）、macOS は未対応 |
+| 0.1-as-built | 2026-11-24 | §10.2 as-built（core 抽出）を反映・日付同期 |
 
 2026-11-22 の as-built 差分の内訳。保存検索 / ブックマークラベルは §4.1
 の差分表と [app/README.md](app/README.md) の「再帰検索」を参照。

@@ -264,6 +264,9 @@ macOS は実機動作検証を行わない。
 - ビューア受け入れは「Android Compose アプリ + iOS/Android 共通 PWA の1画面」とする。
 - Android は Jetpack Compose、PWA は React 等の Web フロントエンドで、
   コアAPI経由の一覧・検索を表示し、両者で同じ結果が出ることを確認する。
+  as-built（2026-11-24）: PWA は React ではなく Vanilla JS（`pwa/main.js`）で
+  実装し、`wasm-bindgen` 生成の `pkg/gfe_core.js` を直接 import してコア API
+  を呼ぶ。Web Worker / React state は使用しない（設計案からの逸脱）。
 - SwiftUI アプリ版は新方針では対象外につき試作しない。
 - 選択肢Aとの工数差とライセンス境界を再見積もりし、最終方針をユーザーへ提示。
 
