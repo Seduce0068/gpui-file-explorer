@@ -3,7 +3,7 @@
 - 日付: 2026-11-11
 - 担当: gpui-poc-builder（task-4）
 - 対象: Kubuntu 2026.04 / KDE Plasma 6 / Wayland (`XDG_SESSION_TYPE=wayland`, `WAYLAND_DISPLAY=wayland-0`, `DISPLAY=:1`) / NVIDIA GTX 1660 SUPER / rustc・cargo 1.99.1 / 12 cores
-- 成果物: `work/gpui-file-explorer/poc/`（実行可能な PoC プロジェクト）、`poc/screenshot/window-crop.png`（実行証拠）
+- 成果物: `work/gpui-file-explorer/poc/`（実行可能な PoC プロジェクト）。スクリーンショットはプライバシー上の理由から削除済み
 
 ## 0. 結論
 
@@ -214,11 +214,9 @@ $ gdbus call --session --dest org.freedesktop.portal.Desktop \
     --method org.freedesktop.portal.Screenshot.Screenshot "" "{}"
 (objectpath '/org/freedesktop/portal/desktop/request/1_1889/t',)
 # 保存: <home>/picture/Screenshot_20261111_120500.png (2560x1440)
-$ cp ~/picture/Screenshot_20261111_120500.png poc/screenshot/wayland-window.png
-$ convert ... -crop 820x620+870+390 +repage poc/screenshot/window-crop.png
 ```
 
-スクリーンショット（`poc/screenshot/window-crop.png`）で確認できた内容:
+スクリーンショット（現在は削除済み）で確認できた内容:
 
 - タイトルバー: `GPUI File Explorer PoC`
 - ヘッダ: `GPUI File Explorer PoC — <home>` / 右に `gpui-kit 0.9.1 / gpui-pre 0.3.12`
@@ -405,4 +403,4 @@ kill -TERM <pid>
 - `poc/Cargo.toml` … `gpui-kit = "=0.9.1"` のみ
 - `poc/.cargo/config.toml` … `libxkbcommon-x11` ローカル symlink 用 `-L native=...`
 - `poc/native-libs/libxkbcommon-x11.so` … システム `.so.0` への symlink
-- `poc/screenshot/wayland-window.png` / `window-crop.png` … 実行証拠
+- 実行証拠のスクリーンショットは削除済み（実パス・識別子を含むため）

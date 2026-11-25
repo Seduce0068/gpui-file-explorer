@@ -799,7 +799,7 @@ sudo apt install -y gcc g++ clang libfontconfig-dev libwayland-dev \
 
 - **stderr 0 行**（EGL/Vulkan/Wayland のエラーなし）。ネイティブ Wayland ウィンドウとして起動。
 - KWin D-Bus 検証: `caption="GPUI File Explorer PoC"`, `resourceClass/resourceName="gpui-file-explorer-poc"`, サイズ 760x548, `minimized=false`, `fullscreen=false`。
-- XDG Desktop Portal のスクリーンショットで、`$HOME` の **167 entries** が非同期ロード後に描画され、選択ハイライトとステータス行が表示されることを確認。証拠: [`poc/screenshot/window-crop.png`](poc/screenshot/window-crop.png), [`poc/screenshot/wayland-window.png`](poc/screenshot/wayland-window.png)。
+- XDG Desktop Portal のスクリーンショットで、`$HOME` の **167 entries** が非同期ロード後に描画され、選択ハイライトとステータス行が表示されることを確認。証拠画像は実パス・識別子を含むため削除済み。
 - `SIGTERM` でクリーン終了し、ウィンドウが消滅することを確認。release バイナリでも同様に起動確認。
 
 ### A.4 実測で踏んだ罠と回避策

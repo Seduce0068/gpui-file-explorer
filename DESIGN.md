@@ -1326,7 +1326,7 @@ qdbus6 --literal org.kde.KWin /WindowsRunner org.kde.krunner1.Match "GPUI File E
 - API 棚卸し: [`notes/api-notes.md`](notes/api-notes.md)（§2 仮想リスト / §5 オーバーレイ / §6 非同期 / §9 core に無いもの / §11 ファイル:行 根拠）
 - エコシステム: [`notes/ecosystem-notes.md`](notes/ecosystem-notes.md)（§1 入手経路 / §2 コンポーネント表 / §5 供給網・ライセンス）
 - FS/OS 統合: [`notes/fs-cross-platform-notes.md`](notes/fs-cross-platform-notes.md)（§2 監視 / §5 操作 / §7 クリップボード / §9 マトリクス / §10 落とし穴 22 / §12 crate 表）
-- POC: [`notes/poc-report.md`](notes/poc-report.md) / [`poc/src/main.rs`](poc/src/main.rs) / [`poc/README.md`](poc/README.md) / [`poc/screenshot/`](poc/screenshot/)
+- POC: [`notes/poc-report.md`](notes/poc-report.md) / [`poc/src/main.rs`](poc/src/main.rs) / [`poc/README.md`](poc/README.md)
 - 試作実装: [`app/`](app/) / [`app/README.md`](app/README.md)（実装・既知の制限・設計からの差分）
 - ライセンス原本: 本リポジトリの [LICENSE](LICENSE) / [app/NOTICE.md](app/NOTICE.md)（AGPL 全文・第三者表示）
 - 新要件の個別 ADR: [ADR 索引](docs/adr/index.md)（5 件。モバイルのみ
