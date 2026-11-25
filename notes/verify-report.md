@@ -79,8 +79,7 @@ async-channel 2.5.0 Apache-2.0 OR MIT / chrono 0.4.45 MIT OR Apache-2.0
 041cc9b8…  screenshot/window.png == window-crop.png == watcher-before.png   ← 同一ファイル
 0cd6f279…  screenshot/watcher-after.png == watcher-refresh-crop.png        ← 同一ファイル
 37307ad9…  screenshot/settings-restore-crop.png
-5c1661d8…  screenshot/wayland-window.png
-a8b8c401…  screenshot/watcher-refresh.png / ea308b19… settings-restore.png
+a8b8c401…  screenshot/watcher-refresh.png
 ```
 
 ## 2. AC-1〜AC-13 対応表（DESIGN §10.4）
@@ -181,7 +180,7 @@ GUI の独立再実行は Lead 管轄。以下は実装者が残した成果物�
    - `app/screenshot/window-crop.png`（1140x790）: タイトルバー `GPUI File Explorer`、ツールバー（←→↑⟳・パンくず `/ › tmp › gpui-fe-demo`・新規フォルダ・目アイコン）、サイドバー 8 項目（ホーム/デスクトップ/ドキュメント/ダウンロード/ピクチャ/ミュージック/ビデオ/ルート）、列ヘッダ（名前/サイズ/更新日時）、一覧（dirs first、`file2.txt` < `file10.txt` の自然順、日本語フォルダ名・日本語ファイル名も表示）、ステータスバー（パス・12 件・選択・隠し 1 件・監視 2 ディレクトリ）を確認。**5 領域すべて実在＝AC-5 の主張は本物**。
    - `app/screenshot/watcher-refresh-crop.png`: 起動中に作成した `from-bash-while-running.txt` が行として追加され、件数が **12→13** に増えている。監視更新の証拠として妥当（AC-7）。ただし AC 用の `watcher-before.png`/`watcher-after.png` は本画像とバイト同一のコピー（§1-4）。
    - `app/screenshot/settings-restore-crop.png`: 再起動後のパンくずが `/ › tmp › gpui-fe-persist-demo`。AC-11 の復元証拠として妥当。
-   - `wayland-window.png`（2560x1440 全画面の portal 出力）はサイズ・内容からフルスクリーンショットで、crop 元として整合。
+   - フルスクリーンショット（portal 出力）はプライバシー上の理由から削除済み。crop 画像のみ保持。
 3. **設定ファイル（DESIGN §8.1 スキーマ確認）**
    - `~/.config/gpui-file-explorer/settings.json` は
      `{"version":1,"last_dir":"/tmp/gpui-fe-schema-check","sort":{"key":"name","dir":"asc","dirs_first":true},"show_hidden":false,"view":"details"}`
