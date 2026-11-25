@@ -205,7 +205,7 @@ crates.io API で 2026-11-11 に取得した値。ダウンロード数は累計
 
 ## 3. ビルド要件
 
-### 3.1 Linux / Wayland / X11（本命環境: Kubuntu 2026.04 KDE Plasma 6 Wayland / GTX 1660 SUPER）
+### 3.1 Linux / Wayland / X11（本命環境: Kubuntu 2026.04 KDE Plasma 6 Wayland / NVIDIA GPU）
 
 - **feature flags**:
   - `gpui-pre`（コア crate）の既定 feature は `["font-kit", "wayland", "x11", "windows-manifest"]`【検証済】。
@@ -221,7 +221,7 @@ crates.io API で 2026-11-11 に取得した値。ダウンロード数は累計
   # pkg-config が無ければ追加
   ```
   - `libasound2-dev` は `speech` feature のみ必要。
-  - **Vulkan ドライバが必須**（`libvulkan1` だけでは不十分）。GTX 1660 SUPER は NVIDIA proprietary ドライバで Vulkan 可。
+  - **Vulkan ドライバが必須**（`libvulkan1` だけでは不十分）。NVIDIA GPU は NVIDIA proprietary ドライバで Vulkan 可。
   - `libwebkit2gtk-4.1-dev` は WebView 機能用（使わなくてもリンク要件に入る場合あり）。
 - **Rust**: gpui-kit の locked 依存（`oo7 0.6.0`）が Rust 1.92+ を要求。手元は 1.99.1 なので OK【検証済/Lead 環境】。
 - **Zed 側の Linux 前提**（work/zed/docs/linux.md、2026-11-10 時点の Zed ドキュメント）:
@@ -488,7 +488,7 @@ test:
    hoja の記述から GPUI の D&D 実装は Wayland で制約があることまでは確認。
 3. **ネイティブファイルダイアログ**（開く/保存）の gpui-pre での公開 API（`Prompts` trait 相当）。
    gpui スナップショットに `src/window/prompts.rs` は存在するが、gpui-pre-platform からの利用可否は未確認。
-4. **KDE Plasma 6 Wayland 実機での動作**（IME、クリップボード、ウィンドウ装飾、HiDPI、Vulkan/GTX 1660 SUPER）。
+4. **KDE Plasma 6 Wayland 実機での動作**（IME、クリップボード、ウィンドウ装飾、HiDPI、Vulkan/NVIDIA GPU）。
 5. **`gpui-ce` の crates.io 公開状況と API 互換性**（GitHub のみ確認。Atlas は vendor 利用）。
 6. **`gpui-pre-linux` の依存詳細**（wgpu、ashpd、accesskit_unix、notify-rust 等）は Lead が検証済み。
    本ノートでは `gpui-pre-platform` が `gpui-pre-linux/windows/macos/web/ios/wgpu` を =0.3.12 で選択することまで確認。

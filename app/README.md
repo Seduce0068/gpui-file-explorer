@@ -22,7 +22,7 @@ Android / iOS は要件化のみで未実装です。
 ## 検証環境
 
 - Kubuntu 2026.04 / KDE Plasma 6 / Wayland（ネイティブ Wayland ウィンドウ）
-- NVIDIA GTX 1660 SUPER / rustc 1.99.1 / cargo 1.99.1（**検証済みツールチェーン**）
+- NVIDIA GPU / rustc 1.99.1 / cargo 1.99.1（**検証済みツールチェーン**）
 - Rust バージョン: `app/Cargo.toml` の `rust-version = "1.92"` が宣言 MSRV（下限）。
   実検証では `cargo +1.92.0 check --locked --workspace --all-targets` が
   依存クレート `gpui-pre-util 0.3.12` の不安定機能 `slice_as_array`（E0658）で

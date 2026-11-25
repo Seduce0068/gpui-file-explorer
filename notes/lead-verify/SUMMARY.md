@@ -3,7 +3,7 @@
 実装者（fe-dev）の報告とは別に、Lead が最終状態の試作を再ビルド・再実行して確認した記録。
 
 ## 環境
-- Kubuntu 2026.04 / KDE Plasma 6 / Wayland（ネイティブ）/ NVIDIA GTX 1660 SUPER / rustc 1.99.1
+- Kubuntu 2026.04 / KDE Plasma 6 / Wayland（ネイティブ）/ NVIDIA GPU / rustc 1.99.1
 - 試作: `work/gpui-file-explorer/app/`（gpui-kit 0.9.1）
 
 ## 1. ビルド・テスト

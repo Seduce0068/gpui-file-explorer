@@ -2,7 +2,7 @@
 
 - 日付: 2026-11-11
 - 担当: gpui-poc-builder（task-4）
-- 対象: Kubuntu 2026.04 / KDE Plasma 6 / Wayland (`XDG_SESSION_TYPE=wayland`, `WAYLAND_DISPLAY=wayland-0`, `DISPLAY=:1`) / NVIDIA GTX 1660 SUPER / rustc・cargo 1.99.1 / 12 cores
+- 対象: Kubuntu 2026.04 / KDE Plasma 6 / Wayland (`XDG_SESSION_TYPE=wayland`, `WAYLAND_DISPLAY=wayland-0`, `DISPLAY=:1`) / NVIDIA GPU / rustc・cargo 1.99.1 / 複数コア
 - 成果物: `work/gpui-file-explorer/poc/`（実行可能な PoC プロジェクト）。スクリーンショットはプライバシー上の理由から削除済み
 
 ## 0. 結論
@@ -10,13 +10,13 @@
 **スタックA `gpui-kit = "=0.9.1"`（内部で gpui-pre 0.3.12 + gpui-pre-platform 0.3.12、
 Zed gpui snapshot zed@d2a4fb6）で、このマシン上のビルドと Wayland 実行に成功した。**
 
-- 依存含む初回ビルド: **1m31s / 警告 0**（12 コア、debug。release は 3m05s / 51 MiB）
+- 依存含む初回ビルド: **1m31s / 警告 0**（複数コア、debug。release は数分 / 数十 MiB）
 - リンク時のシステムライブラリ不足（`libxkbcommon-x11`）が唯一のビルドブロッカーで、
   **sudo なし・システム変更なしのローカル symlink + `.cargo/config.toml` で回避**した。
 - 実行時は **ネイティブ Wayland ウィンドウ**が表示され、**stderr 出力 0 行**
   （EGL/Vulkan/Wayland/GPU エラーなし）。KWin D-Bus でウィンドウ実在・geometry を確認。
 - 非同期ディレクトリ読み込み（`cx.background_spawn`）→ `uniform_list` 描画 →
-  ステータス行、まで実際に動作（スクリーンショットで 167 entries 表示を確認）。
+  ステータス行、まで実際に動作（スクリーンショットで <entry-count> entries 表示を確認）。
 - キーボード/マウス操作の**入力注入による E2E 検証は未実施**（Wayland ネイティブ向けの
   `kdotool` 等が未導入、`xdotool` は Wayland ネイティブ窓に無効）。これは環境制約。
 
@@ -220,10 +220,10 @@ $ gdbus call --session --dest org.freedesktop.portal.Desktop \
 
 - タイトルバー: `GPUI File Explorer PoC`
 - ヘッダ: `GPUI File Explorer PoC — <home>` / 右に `gpui-kit 0.9.1 / gpui-pre 0.3.12`
-- リスト: `DIR .agents / .aitk / .amazon-q.dotfiles.bak / .android / .antigravity-ide ...`
+- リスト: `DIR <hidden-dir-1> / <hidden-dir-2> / <hidden-dir-3> / <hidden-dir-4> / <hidden-dir-5> ...`
   （ディレクトリ優先ソート、サイズ列はディレクトリ `-`、更新時刻は `2d ago` 等の相対表示）
-- 先頭行 `.agents` が選択ハイライト表示
-- ステータス行: `167 entries | .agents <dir> 2d ago`（**非同期ロード完了 + 件数表示**）
+- 先頭行 `<hidden-dir-1>` が選択ハイライト表示
+- ステータス行: `<entry-count> entries | <hidden-dir-1> <dir> <age> ago`（**非同期ロード完了 + 件数表示**）
 - フォント: システムフォントで ASCII は問題なく描画（明示的フォント登録なし）
 
 → 非同期ディレクトリ読込 → 仮想化リスト描画 → ステータス行、が実際に動くことを確認。

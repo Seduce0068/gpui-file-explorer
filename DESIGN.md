@@ -3,7 +3,7 @@
 - 版: **0.1**（2026-11-11、初版。以後の変更は本ファイル末尾の変更履歴に追記）
 - 対象コード: [`app/`](app/)（Rust 試作 / crate 名 `gpui-file-explorer`）
 - 前提資料: [`RESEARCH.md`](RESEARCH.md) / [`notes/api-notes.md`](notes/api-notes.md) / [`notes/ecosystem-notes.md`](notes/ecosystem-notes.md) / [`notes/fs-cross-platform-notes.md`](notes/fs-cross-platform-notes.md) / [`notes/poc-report.md`](notes/poc-report.md) / [`poc/src/main.rs`](poc/src/main.rs)
-- 想定環境: Kubuntu 2026.04 / KDE Plasma 6 / Wayland / NVIDIA GTX 1660 SUPER / rustc 1.99.1（POC 実測、[`notes/poc-report.md`](notes/poc-report.md)）
+- 想定環境: Kubuntu 2026.04 / KDE Plasma 6 / Wayland / NVIDIA GPU / rustc 1.99.1（POC 実測、[`notes/poc-report.md`](notes/poc-report.md)）
 - Rust ツールチェーン: 1.99.1 は**検証済み**。`app/Cargo.toml` の
   宣言 MSRV は 1.92 だが、実検証で `cargo +1.92.0 check --locked` は
   `gpui-pre-util 0.3.12` の `slice_as_array`（E0658）で失敗したため、

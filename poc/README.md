@@ -2,7 +2,7 @@
 
 `gpui-kit` 0.9.1（内部で `gpui-pre` 0.3.12 = Zed GPUI snapshot + `gpui-pre-platform` 0.3.12）で
 作った最小限のファイルエクスプローラ。クロスプラットフォーム GPUI スタックが
-このマシン（Kubuntu 2026.04 / KDE Plasma / Wayland / NVIDIA GTX 1660 SUPER）で
+このマシン（Kubuntu 2026.04 / KDE Plasma / Wayland / NVIDIA GPU）で
 ビルド・実行できることの検証用。
 
 ## 機能
@@ -70,6 +70,6 @@ Wayland セッションでネイティブ Wayland ウィンドウとして表示
 - 実行: stderr 出力 0 行（EGL/Vulkan/Wayland エラーなし）
 - ウィンドウ: KWin D-Bus で `caption="GPUI File Explorer PoC"`,
   `resourceClass="gpui-file-explorer-poc"`, 760x548, ネイティブ Wayland を確認
-- スクリーンショット: `screenshot/window-crop.png`（非同期ロードで 167 entries 表示）
+- スクリーンショット: `screenshot/window-crop.png`（非同期ロードで <entry-count> entries 表示）
 
 詳細は `../notes/poc-report.md` を参照。

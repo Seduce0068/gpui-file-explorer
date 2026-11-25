@@ -2,7 +2,7 @@
 
 - 調査日: **2026-11-11**（Asia/Tokyo）
 - 対象: Rust + GPUI で Linux / Windows / macOS 向けのデスクトップ・ファイルエクスプローラーを新規に作る場合
-- 検証環境: Kubuntu 2026.04（KDE Plasma 6 / Wayland / NVIDIA GTX 1660 SUPER）、Rust 1.99.1、12 コア / 62 GB RAM
+- 検証環境: Kubuntu 2026.04（KDE Plasma 6 / Wayland / NVIDIA GPU）、Rust 1.99.1、複数コア / 十分な RAM
 - 先行コンテキスト: 同日未明に GPUI 系 crate の依存監査（`.tmp-deps-audit/`）、前日に Zed 1.27 の設定・環境調査（`work/zed/`）を実施済み。本レポートはその続きとして「自作アプリの設計判断」に必要な要点をまとめたもの。
 
 **関連ノート（詳細な一次調査。本レポートは要点の統合版）**
@@ -30,7 +30,7 @@
 4. **一覧の仮想化**: 固定行高なら `uniform_list`（✅ 0.3.9 ソース）、可変行高なら `list`/`ListState`、アイコングリッドは「1 行 = N セル」を `uniform_list` に流すのが最速。カスタム `Element` は最後の手段（`uniform_list` 実装が参考になる）。
 5. **コンテキストメニューは GPUI core に存在しない**（✅ grep 0 件）。`gpui-kit` の `PopupMenu` を使うか、`deferred` + `anchored` + `on_mouse_down_out` で自作する。Zed の `crates/ui` は GPL-3.0-or-later なので**コピー不可**（✅ raw GitHub で確認）。
 6. **OS 統合は思ったより GPUI コアが持っている**: ネイティブのファイル選択 `prompt_for_paths` / 保存先 `prompt_for_new_path`、`reveal_path`（ファイラで表示）、`open_with_system`、`open_url`、クリップボードの**ファイルパス表現**（`ClipboardEntry::ExternalPaths`）、OS からのファイルドロップ（`ExternalPaths` / `FileDropEvent`）、アプリ外へのファイルドラッグ（`external_drag_payload`、Wayland 実装確認済み ✅）が core API にある。
-7. **Linux（本命環境）は Wayland/X11 とも実装が揃っている**: `gpui-pre-linux` が Wayland（wayland-client）と X11（x11rb）を実装し、レンダラは wgpu、ファイルダイアログは XDG ポータル（ashpd）、通知は notify-rust、アクセシビリティは accesskit_unix、IME（Wayland text-input / X11 XIM）も実装（✅ 取得ソース確認）。GPU は Vulkan 必須で、GTX 1660 SUPER + NVIDIA proprietary ドライバなら稼働見込み（⚠ PoC で最終確認）。
+7. **Linux（本命環境）は Wayland/X11 とも実装が揃っている**: `gpui-pre-linux` が Wayland（wayland-client）と X11（x11rb）を実装し、レンダラは wgpu、ファイルダイアログは XDG ポータル（ashpd）、通知は notify-rust、アクセシビリティは accesskit_unix、IME（Wayland text-input / X11 XIM）も実装（✅ 取得ソース確認）。GPU は Vulkan 必須で、NVIDIA GPU + NVIDIA proprietary ドライバなら稼働見込み（⚠ PoC で最終確認）。
 8. **クロスプラットフォームの本当の難所は UI ではなく FS 差**: 非 UTF-8 ファイル名（Linux）、NFD 正規化（macOS）、大小文字非区別と長パス（Windows）、ネットワーク FS の監視不能、ゴミ箱に入らない FS、大小文字だけの rename、シンボリックリンク判定など。詳細は [`notes/fs-cross-platform-notes.md`](notes/fs-cross-platform-notes.md) の落とし穴 22 項目がそのまま設計チェックリストになる。
 9. **ファイル監視は「表示中ディレクトリ + 親、非再帰」が正解**: `notify` 8.2.2 + `notify-debouncer-full` 0.7.0、300〜500 ms デバウンス、自操作の抑制窓、5〜10 秒の定期リコンサイル（イベント溢れ対策）をセットで。再帰 watch は初期実装ではやらない（inotify watch 消費・ネットワーク FS で破綻）。
 10. **アイコン戦略**: まず**同梱 SVG フォールバック**（`gpui-kit` の Lucide アイコン 1,818 種 + 拡張子マップ）で成立させる。OS ネイティブアイコン（Linux: freedesktop-icons、Windows: `SHGetFileInfoW`、macOS: `NSWorkspace`）と画像サムネイル（`image` crate）は Phase 1/2。重いので非同期 + キャッシュ + scale をキーに含める。
@@ -517,7 +517,7 @@ GPUI core には**コンテキストメニュー部品が無い**（✅ `grep -r
 - **依存**: `ashpd`（XDG ポータル = ファイルダイアログ/Trash）、`accesskit_unix`（AT-SPI）、`notify-rust`（通知）、`wayland-client`/`wayland-protocols`、`x11rb`、`xkbcommon`、`calloop-wayland-source`。
 - **実装確認済みの機能**: Wayland の **IME**（`text-input` + `handle_ime`）、X11 の **XIM**（`xim_handler.rs`）、Wayland の**アプリ外ファイルドラッグ**（`start_external_drag` + `text/uri-list`）、**ファイルドロップ受信**（`ExternalPaths`）、**ファイル clipboard**（`text/uri-list` + 独自 MIME）。✅
 - **ファイルダイアログ**: `app.rs` の `prompt_for_paths` は Linux プラットフォーム実装経由（`linux/platform.rs` の実装あり ✅）。XDG ポータルが無い/拒否されるとエラーになる（doc 明記）。
-- **描画**: Vulkan 必須。NVIDIA proprietary ドライバ（GTX 1660 SUPER）で動作見込み（⚠ PoC で最終確認）。ソフトウェアレンダリングのフォールバックは無い想定。
+- **描画**: Vulkan 必須。NVIDIA proprietary ドライバ（NVIDIA GPU）で動作見込み（⚠ PoC で最終確認）。ソフトウェアレンダリングのフォールバックは無い想定。
 - **KDE 固有**: CSD/SSD は `WindowOptions::window_decorations` で切替（`TitlebarOptions::appears_transparent` は macOS/Windows のみ）。グローバルメニューバー（`set_menus`）はプラットフォーム実装があるが、KDE Wayland での挙動は ⚠ 未検証。分数スケーリング（125%/150%）の見え方は ⚠ 要確認（X11 は `GPUI_X11_SCALE_FACTOR`、Wayland は compositor 依存）。
 - **inotify 上限**: 実測 518,185 watches / 1,024 instances / 16,384 queued events。監視は非再帰なので通常は余裕だが、他アプリと共有するので過信しない。
 
@@ -799,7 +799,7 @@ sudo apt install -y gcc g++ clang libfontconfig-dev libwayland-dev \
 
 - **stderr 0 行**（EGL/Vulkan/Wayland のエラーなし）。ネイティブ Wayland ウィンドウとして起動。
 - KWin D-Bus 検証: `caption="GPUI File Explorer PoC"`, `resourceClass/resourceName="gpui-file-explorer-poc"`, サイズ 760x548, `minimized=false`, `fullscreen=false`。
-- XDG Desktop Portal のスクリーンショットで、`$HOME` の **167 entries** が非同期ロード後に描画され、選択ハイライトとステータス行が表示されることを確認。証拠画像は実パス・識別子を含むため削除済み。
+- XDG Desktop Portal のスクリーンショットで、`$HOME` の **<entry-count> entries** が非同期ロード後に描画され、選択ハイライトとステータス行が表示されることを確認。証拠画像は実パス・識別子を含むため削除済み。
 - `SIGTERM` でクリーン終了し、ウィンドウが消滅することを確認。release バイナリでも同様に起動確認。
 
 ### A.4 実測で踏んだ罠と回避策
