@@ -79,7 +79,6 @@ async-channel 2.5.0 Apache-2.0 OR MIT / chrono 0.4.45 MIT OR Apache-2.0
 041cc9b8…  screenshot/window.png == window-crop.png == watcher-before.png   ← 同一ファイル
 0cd6f279…  screenshot/watcher-after.png == watcher-refresh-crop.png        ← 同一ファイル
 37307ad9…  screenshot/settings-restore-crop.png
-a8b8c401…  screenshot/watcher-refresh.png
 ```
 
 ## 2. AC-1〜AC-13 対応表（DESIGN §10.4）
